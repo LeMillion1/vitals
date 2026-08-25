@@ -337,6 +337,37 @@ async def list_professional_roster(
     return roster
 
 
+async def has_relationship_awaiting_first_consent(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+) -> bool:
+    """Whether an accepted professional is waiting for the patient's first choice.
+
+    Revoked historical consent does not turn back into a new-invitation task:
+    any consent version proves the patient already made the first decision.
+    """
+
+    has_any_consent = (
+        select(ConsentGrant.id)
+        .where(ConsentGrant.relationship_id == CareRelationship.id)
+        .correlate(CareRelationship)
+        .exists()
+    )
+    relationship_id = await session.scalar(
+        select(CareRelationship.id)
+        .where(
+            CareRelationship.subject_id == subject_id,
+            CareRelationship.subject_owner_user_id == owner_user_id,
+            CareRelationship.status == CareRelationshipStatus.ACTIVE.value,
+            ~has_any_consent,
+        )
+        .limit(1)
+    )
+    return relationship_id is not None
+
+
 async def _relationship_of_patient(
     session: AsyncSession, *, relationship_id: uuid.UUID, actor_user_id: uuid.UUID
 ) -> CareRelationship:
@@ -736,6 +767,7 @@ __all__ = [
     "end_relationship",
     "establish_from_invitation",
     "grant_consent",
+    "has_relationship_awaiting_first_consent",
     "load_relationship_grant",
     "list_professional_roster",
     "revoke_consent",

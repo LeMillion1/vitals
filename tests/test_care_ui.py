@@ -352,6 +352,45 @@ async def test_the_roster_puts_unread_patient_conversations_first(doctor_client)
     )
 
 
+async def test_the_patient_is_prompted_after_a_professional_accepts(
+    client, db_session
+):
+    owner, subject = await _patient(db_session, "care-consent-task")
+    doctor = await _user(
+        db_session,
+        "care-consent-task-doctor",
+        roles=(UserRoleName.DOCTOR,),
+    )
+    relationship = await _take_into_care(
+        db_session,
+        owner=owner,
+        subject=subject,
+        professional=doctor,
+        consent=False,
+    )
+    await db_session.commit()
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client.cookies.set(SESSION_COOKIE, create_session(owner.username))
+    page = await client.get("/today", headers={"Accept": "text/html"})
+    assert page.status_code == 200
+    assert 'href="/settings/care"' in page.text
+    assert "Choose access" in page.text or "Выбрать доступ" in page.text
+
+    await relationships.grant_consent(
+        db_session,
+        relationship_id=relationship.id,
+        actor_user_id=owner.id,
+    )
+    await db_session.commit()
+    page = await client.get("/today", headers={"Accept": "text/html"})
+    assert page.status_code == 200
+    assert "Choose access" not in page.text
+    assert "Выбрать доступ" not in page.text
+
+
 async def test_a_professional_keeps_phone_navigation_and_logout(client, db_session):
     doctor = await _user(
         db_session, "mobile-doctor", roles=(UserRoleName.DOCTOR,)

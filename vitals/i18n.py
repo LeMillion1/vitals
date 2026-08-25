@@ -1218,6 +1218,8 @@ _EN: dict[str, str] = {
     "care.accept_email_note": "The invitation is bound to one address. You have to be signed in with that exact address, verified.",
     "care.accept_submit": "Accept",
     "care.accepted_waiting": "Invitation accepted. The patient will now choose what to share with you; their record stays closed until then.",
+    "care.consent_task": "A professional accepted your invitation and is waiting for you to choose what to share.",
+    "care.consent_task_action": "Choose access",
     "care.record_title": "Record",
     "care.record_period": "{start} — {end}",
     "care.record_empty": "Nothing recorded yet.",
@@ -3032,6 +3034,8 @@ _RU: dict[str, str] = {
     "care.accept_email_note": "Приглашение привязано к одному адресу. Нужно быть вошедшим именно с этим адресом, подтверждённым.",
     "care.accept_submit": "Принять",
     "care.accepted_waiting": "Приглашение принято. Теперь подопечный выберет, чем с вами поделиться; до этого его запись останется закрытой.",
+    "care.consent_task": "Специалист принял ваше приглашение и ждёт, когда вы выберете, чем поделиться.",
+    "care.consent_task_action": "Выбрать доступ",
     # ── Доступ поддержки: администратор просит, пациент отвечает ────────────
     "support.patient_title": "Кто читал мою запись",
     "support.patient_heading": "Доступ платформы",

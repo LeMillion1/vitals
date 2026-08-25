@@ -423,6 +423,41 @@ async def load_support_banner(
         logger.exception("support banner load failed; hiding the banner")
 
 
+async def load_care_consent_task(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    """Show a patient that an accepted professional is waiting for consent.
+
+    This is derived from the durable relationship rather than copied into a
+    second notification table. It therefore appears on the next document GET,
+    disappears immediately after the first consent decision, and cannot become
+    a stale task after care ends.
+    """
+
+    request.state.care_consent_task = False
+    accept = request.headers.get("accept", "")
+    if request.method != "GET":
+        return
+    if accept and "text/html" not in accept and "*/*" not in accept:
+        return
+    try:
+        scope = await get_request_chrome_scope(request, db)
+        if scope is None:
+            return
+        from vitals.services.care import relationships
+
+        request.state.care_consent_task = (
+            await relationships.has_relationship_awaiting_first_consent(
+                db,
+                subject_id=scope.subject_id,
+                owner_user_id=scope.user_id,
+            )
+        )
+    except Exception:
+        logger.exception("care consent task load failed; hiding the task")
+
+
 async def load_language(
     request: Request,
     db: AsyncSession = Depends(get_session),

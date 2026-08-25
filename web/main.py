@@ -54,6 +54,7 @@ from web.deps import (
     get_session,
     get_redis,
     load_enabled_modules,
+    load_care_consent_task,
     load_language,
     load_nav_status,
     load_support_banner,
@@ -326,9 +327,13 @@ app = FastAPI(
         Depends(load_enabled_modules),
         # After load_enabled_modules — it reads the resolved module map.
         Depends(load_nav_status),
-        # Last: it is the only one whose absence changes nothing else on the
-        # page, and the only one a patient is entitled to see on every page.
+        # Patient-wide banners come last: their absence changes nothing else on
+        # the page, while their live state must be visible from every page.
         Depends(load_support_banner),
+        # A professional accepted the patient's invitation and is waiting for
+        # the patient's first sharing decision. Derived from that relationship,
+        # so it clears without a notification cleanup job.
+        Depends(load_care_consent_task),
     ],
 )
 

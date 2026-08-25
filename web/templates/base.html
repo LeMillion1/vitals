@@ -484,6 +484,15 @@
         </div>
         {% endif %}
 
+        {% if request.state.care_consent_task %}
+        <div class="flex-none px-6 pt-5 max-w-6xl mx-auto w-full">
+            <div class="v-alert info flex flex-wrap items-center justify-between gap-3">
+                <span>{{ t("care.consent_task") }}</span>
+                <a href="/settings/care" class="v-btn-ghost text-xs">{{ t("care.consent_task_action") }}</a>
+            </div>
+        </div>
+        {% endif %}
+
         {% if alerts %}
         <div id="alerts-container" class="flex-none px-6 pt-5 max-w-6xl mx-auto w-full space-y-2">
             {% if alerts|length > 1 %}

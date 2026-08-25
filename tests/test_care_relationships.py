@@ -119,6 +119,39 @@ async def _may(session, professional, subject, *, key="weight", action=None):
     )
 
 
+async def test_the_first_consent_task_never_reappears_after_revocation(db_session):
+    owner, subject, _professional, relationship = await _in_care(
+        db_session, "first-consent-task"
+    )
+    assert await relationships.has_relationship_awaiting_first_consent(
+        db_session,
+        subject_id=subject.id,
+        owner_user_id=owner.id,
+    )
+
+    await relationships.grant_consent(
+        db_session,
+        relationship_id=relationship.id,
+        actor_user_id=owner.id,
+    )
+    assert not await relationships.has_relationship_awaiting_first_consent(
+        db_session,
+        subject_id=subject.id,
+        owner_user_id=owner.id,
+    )
+
+    await relationships.revoke_consent(
+        db_session,
+        relationship_id=relationship.id,
+        actor_user_id=owner.id,
+    )
+    assert not await relationships.has_relationship_awaiting_first_consent(
+        db_session,
+        subject_id=subject.id,
+        owner_user_id=owner.id,
+    )
+
+
 # ── Neither half is sufficient ───────────────────────────────────────────────
 
 

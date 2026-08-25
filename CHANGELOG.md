@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — accepted care invitations become a patient task
+
+Once a professional accepts an invitation, the patient sees a persistent,
+one-click prompt to choose what to share. The prompt is derived from the live
+relationship and disappears as soon as the first consent decision is saved.
+
 ### Added — one professional inbox across every patient
 
 The patient roster is now a work queue: records with unread conversations come

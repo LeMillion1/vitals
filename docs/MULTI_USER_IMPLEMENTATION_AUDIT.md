@@ -102,8 +102,8 @@ a current validation result.
   participant has an independent read cursor, and only newer messages from
   somebody else count as unread. The professional roster is the cross-patient
   inbox: unread records come first with a direct conversation action and recent
-  message date. Message attachments and a patient notification for accepted
-  invitations remain unbuilt.
+  message date. An accepted invitation now becomes a persistent patient task
+  until the first consent decision. Message attachments remain unbuilt.
 
 ### Controlled support
 
@@ -274,8 +274,7 @@ the OS buffer filled, the server blocked while handling a request. The fixture
 now writes its synthetic server log to the run's temporary directory, and the
 complete suite passes: 35 scenarios in 93.49 seconds.
 
-The largest remaining confirmed UX gaps are the missing invitation task,
-support expiry shown without time/countdown,
+The largest remaining confirmed UX gaps are support expiry shown without time/countdown,
 low-contrast `--faint` microcopy outside the touched care screens, and roster
 states beyond conversation urgency.
 
@@ -334,6 +333,12 @@ contracts, 80 PostgreSQL care/RLS tests after the full migration cycle, and the
 full 4,639-test fast suite (168 skipped, 35 deselected). Its unread-first roster
 was inspected at desktop and 390 px phone widths with no horizontal overflow or
 browser console errors.
+
+The accepted-invitation patient task passed 168 focused care/i18n/auth tests,
+476 care/UI/auth/design tests, 48 PostgreSQL care tests after the full migration
+cycle, and the full 4,641-test fast suite (168 skipped, 35 deselected). Its
+global banner was inspected at desktop and 390 px phone widths; the phone action
+is 44 px high, with no horizontal overflow or browser console errors.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

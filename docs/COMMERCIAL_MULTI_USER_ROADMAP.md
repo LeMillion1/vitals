@@ -30,14 +30,14 @@ than trusting them if this date has gone stale.
 | Alembic head | `0066` — 66 revisions |
 | Schema | 77 tables; 64 carry `subject_id` and are covered by an RLS policy; 53 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,639 fast passed / 168 skipped; 492 focused care/UI/design tests; migration plus 80 focused PostgreSQL care/RLS tests |
+| Suites | 4,641 fast passed / 168 skipped; 476 focused care/UI/auth/design tests; migration plus 48 current PostgreSQL care tests (80 care/RLS on the inbox cutover) |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
 expansion and backfill, PR-04 scoped services + policy engine + FORCE RLS,
 PR-05 OIDC, provisioning and the registration decision, PR-06
 files/portability/settings, PR-07 professionals/relationships/consent, PR-08
-professional UX (minus the inbox), PR-09 minus its notification transport,
+professional UX, PR-09 minus its notification transport,
 PR-11 care-team messaging (minus private attachments), PR-12's read-only support
 access, PR-10.
 
@@ -1079,6 +1079,10 @@ Delivered:
   invitation, and a GET only asks: a one-time link must not be spent by a link
   preview. Expired consent is shown as expired in the roster and is not rendered
   as a link after the record resolver has closed it.
+- The roster is also the professional's cross-patient inbox: unread records are
+  first, show recent conversation activity and link directly to messages. On the
+  patient side, an accepted invitation becomes a persistent one-click consent
+  task until that patient makes the first sharing decision.
 - **The selected patient travels in the URL, never in the session.** That is the
   design rather than a URL style — a stale tab submitting an old form must land
   on the patient it was rendered for, not on whoever is selected now. Driven by
@@ -1562,11 +1566,11 @@ nothing to do with permission. Giving that route a policy-aware branch — or
 hanging the download off `/care/{subject_id}/…` where the subject travels in the
 path — is its own change with its own authorization story.
 
-**No notification either**, which is PR-09's remaining gap rather than this
-one's: the transport went with Telegram and web push has not landed, so a
-message waits on the screen. The scope item about previews containing no PHI has
-nothing to be about yet, and `AuditEvent`'s metadata allowlist already makes a
-body impossible to put in one.
+**No outbound message notification either**, which is PR-09's remaining gap
+rather than this one's: the transport went with Telegram and web push has not
+landed, so a message waits in the in-app inbox. The scope item about previews
+containing no PHI has nothing to be about yet, and `AuditEvent`'s metadata
+allowlist already makes a body impossible to put in one.
 
 Original scope:
 
