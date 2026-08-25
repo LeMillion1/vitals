@@ -199,6 +199,20 @@ a current validation result.
 - MCP access tokens now validate both `aud` and `iss`; registry-backed tokens
   cannot omit either installation-binding claim.
 
+### Portability v1
+
+- The personal JSON export and import are subject-bound and exclude identity,
+  roles, consent, support/audit state, credentials, and file bytes.
+- The audit found that v1 also suppressed mandatory
+  `integration_connection_id` and `file_asset_id` references while still
+  carrying their dependent provider/photo rows. Such files could be exported
+  but not restored. The schema-derived boundary now refuses those rows on
+  export and rejects crafted/older files before deleting any existing data;
+  both self-service HTTP paths return controlled errors instead of a late 500.
+- This is fail-closed containment, not complete portability. Provider provenance
+  and private resources require the versioned archive graph planned for v2;
+  multi-subject full backup remains unimplemented.
+
 ## Documentation file verdicts
 
 ### `COMMERCIAL_MULTI_USER_ROADMAP.md` — useful target, unreliable status

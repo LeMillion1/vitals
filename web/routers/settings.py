@@ -1688,9 +1688,15 @@ async def export_subject_backup(
     """
 
     ownership = await _authorize_export(db, username)
-    snapshot = await data_portability_service.export_subject(
-        db, subject_id=ownership.subject_id
-    )
+    try:
+        snapshot = await data_portability_service.export_subject(
+            db, subject_id=ownership.subject_id
+        )
+    except data_portability_service.PortabilityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_record_{today_local().strftime('%Y%m%d')}.json"
     return private_json_download(body=body, filename=filename)

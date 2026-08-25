@@ -218,6 +218,46 @@ GENERIC_OUTPUT_SUPPRESSED_COLUMNS = frozenset(
     }
 )
 
+
+def _v1_required_suppressed_columns(table: Any) -> tuple[str, ...]:
+    """Return required ownership/resource columns v1 cannot reconstruct.
+
+    Personal v1 archives deliberately suppress tenant identities and private
+    resource locators.  The subject itself is the one exception: import binds
+    it from the authenticated boundary.  Any other suppressed ``NOT NULL``
+    column without a database default makes a carried row impossible to insert.
+
+    Derive this from the reviewed portability registry and live SQLAlchemy
+    schema so a future required actor, connection, or file root fails closed
+    without another table-name denylist.
+    """
+
+    spec = OWNERSHIP_REGISTRY.get(table.name)
+    if spec is None or not spec.user_portable or "subject_id" not in table.columns:
+        return ()
+    return tuple(
+        column.name
+        for column in table.columns
+        if column.name != "subject_id"
+        and column.name in GENERIC_OUTPUT_SUPPRESSED_COLUMNS
+        and not column.nullable
+        and column.default is None
+        and column.server_default is None
+    )
+
+
+def _refuse_unrestorable_v1_rows(table: Any, rows: Sequence[Any]) -> None:
+    """Refuse a non-empty personal section v1 cannot faithfully reload."""
+
+    required = _v1_required_suppressed_columns(table)
+    if rows and required:
+        raise _contract_error(
+            "portability.error.v1_unportable_reference",
+            table=table.name,
+            column=required[0],
+        )
+
+
 # Backup v1 is intentionally single-subject and never transports a subject UUID.
 # This row-level marker preserves the distinction between a subject-bound row and
 # a legitimate global row in mixed/optional tables without making a local UUID
@@ -552,6 +592,7 @@ async def export_subject(
             if name not in GENERIC_OUTPUT_SUPPRESSED_COLUMNS
         ]
         mappings = result.mappings().all()
+        _refuse_unrestorable_v1_rows(table, mappings)
         carried[table.name] = {mapping["id"] for mapping in mappings}
         out[table.name] = [
             {col: _serialize_value(mapping[col]) for col in column_names}
@@ -1618,6 +1659,7 @@ def _validate_subject_payload(payload: Any) -> BackupMetadata:
                 raise _contract_error(
                     "portability.error.v1_bad_reference", table=key
                 )
+        _refuse_unrestorable_v1_rows(table, value)
     return meta
 
 

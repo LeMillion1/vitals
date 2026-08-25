@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — personal portability v1 refuses unrestorable resource graphs
+
+Personal v1 exports no longer emit JSON that silently drops a required provider
+connection or private-file root and then fails during restore. The check is
+derived from the ownership registry and SQLAlchemy schema: if a portable row has
+a required suppressed resource reference that v1 cannot reconstruct, export and
+import fail before disclosure or mutation with a controlled error. Existing
+record data remains untouched, and the self-export HTTP boundary returns a 409
+instead of an internal error.
+
 ### Added — patient-approved one-time support exports
 
 Platform support may now request a complete personal portability export as a

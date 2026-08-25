@@ -443,6 +443,67 @@ async def test_a_malformed_reference_descriptor_is_refused(db_session):
         await portability.import_subject(db_session, snapshot, subject_id=mine.id)
 
 
+@pytest.mark.parametrize(
+    ("table_name", "required_column"),
+    (
+        ("garmin_daily", "integration_connection_id"),
+        ("progress_photos", "file_asset_id"),
+    ),
+)
+async def test_v1_rejects_unrestorable_required_roots_before_deleting_the_record(
+    db_session, table_name, required_column
+):
+    """A crafted or older archive cannot turn a schema error into data loss."""
+
+    from vitals.models.weight import WeightLog
+
+    mine = await _subject(db_session, f"import-required-{table_name}")
+    sentinel = await _weight(db_session, mine.id, date(2026, 8, 23), 80.0)
+    snapshot = await portability.export_subject(db_session, subject_id=mine.id)
+    snapshot[table_name] = [{"id": 9001}]
+
+    with pytest.raises(portability.PortabilityError, match=required_column):
+        await portability.import_subject(db_session, snapshot, subject_id=mine.id)
+
+    preserved = await db_session.scalar(
+        select(WeightLog).where(
+            WeightLog.id == sentinel.id,
+            WeightLog.subject_id == mine.id,
+        )
+    )
+    assert preserved is not None
+    assert preserved.weight_kg == 80.0
+
+
+@pytest.mark.parametrize(
+    "table_name", ("garmin_daily", "progress_photos")
+)
+async def test_v1_unrestorable_archive_is_a_controlled_http_400(
+    auth_client, table_name
+):
+    """The browser boundary must not leak the later NOT NULL failure as a 500."""
+
+    import io
+    import json
+
+    payload = {
+        "metadata": {"version": "1.0", "kind": portability.KIND_SUBJECT},
+        table_name: [{"id": 9001}],
+    }
+    response = await auth_client.post(
+        "/settings/import-subject",
+        files={
+            "backup_file": (
+                "record.json",
+                io.BytesIO(json.dumps(payload).encode()),
+                "application/json",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+
+
 async def test_the_reference_map_is_derived_from_the_schema(db_session):
     """A reference added later must not silently become a portable local id."""
 

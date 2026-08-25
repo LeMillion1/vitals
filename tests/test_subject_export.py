@@ -145,6 +145,79 @@ async def test_an_export_without_a_subject_is_refused(db_session):
         await portability.export_subject(db_session, subject_id=None)
 
 
+async def test_v1_refuses_provider_rows_whose_required_connection_is_suppressed(
+    db_session,
+):
+    """A download must not claim to be restorable after removing mandatory C."""
+
+    from datetime import date
+
+    from vitals.models.garmin import GarminDaily
+    from vitals.models.tenancy import IntegrationConnection
+
+    mine = await _subject(db_session, "export-required-connection")
+    connection = IntegrationConnection(
+        subject_id=mine.id,
+        provider="garmin",
+        connection_type="account",
+        external_account_discriminator="synthetic-portability-v1",
+        status="disabled",
+    )
+    db_session.add(connection)
+    await db_session.flush()
+    db_session.add(
+        GarminDaily(
+            subject_id=mine.id,
+            integration_connection_id=connection.id,
+            date=date(2026, 8, 21),
+            domain=Domain.GARMIN.value,
+            source=Source.GARMIN_API.value,
+        )
+    )
+    await db_session.flush()
+
+    with pytest.raises(
+        portability.PortabilityError, match="integration_connection_id"
+    ):
+        await portability.export_subject(db_session, subject_id=mine.id)
+
+
+async def test_v1_refuses_photos_whose_required_file_asset_is_suppressed(
+    db_session,
+):
+    """A metadata-only JSON file cannot restore a required private-file root."""
+
+    from datetime import date
+
+    from vitals.models.tenancy import FileAsset
+    from vitals.models.weight import ProgressPhoto
+
+    mine = await _subject(db_session, "export-required-file")
+    asset = FileAsset(
+        subject_id=mine.id,
+        purpose="progress_photo",
+        storage_backend="legacy_local",
+        storage_ref="uploads/synthetic-portability-v1.jpg",
+        status="legacy_placeholder",
+    )
+    db_session.add(asset)
+    await db_session.flush()
+    db_session.add(
+        ProgressPhoto(
+            subject_id=mine.id,
+            file_asset_id=asset.id,
+            date=date(2026, 8, 22),
+            domain=Domain.WEIGHT.value,
+            source=Source.MANUAL.value,
+            file_key=asset.storage_ref,
+        )
+    )
+    await db_session.flush()
+
+    with pytest.raises(portability.PortabilityError, match="file_asset_id"):
+        await portability.export_subject(db_session, subject_id=mine.id)
+
+
 async def test_a_personal_export_is_not_a_backup_the_importer_will_eat(db_session):
     """The mistake this guard exists for is plausible and the blast radius is not.
 
@@ -191,6 +264,21 @@ async def test_the_route_hands_back_only_the_callers_record(
     assert body["metadata"]["kind"] == portability.KIND_SUBJECT
     assert {row["name"] for row in body["supplements"]} == {"Route probe"}
     assert "app_settings" not in body
+
+
+async def test_the_route_reports_an_unrepresentable_v1_record_without_a_500(
+    auth_client, monkeypatch
+):
+    async def unrepresentable(*_args, **_kwargs):
+        raise portability.PortabilityError(
+            "This record cannot be represented by portability v1."
+        )
+
+    monkeypatch.setattr(portability, "export_subject", unrepresentable)
+    response = await auth_client.get("/settings/export-subject")
+
+    assert response.status_code == 409
+    assert "portability v1" in response.json()["detail"]
 
 
 async def test_the_full_backup_refuses_a_shared_installation_in_words(
