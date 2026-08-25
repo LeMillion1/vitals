@@ -76,6 +76,14 @@ async def test_the_operator_sees_the_queue_and_verifies_one_profile(
     assert display_name in page.text
     assert credential_reference in page.text
     assert doctor_username in page.text
+    assert (
+        f'action="/settings/platform/professionals/{profile_id}/verify" '
+        'method="POST" hx-boost="false"'
+    ) in page.text
+    assert (
+        f'action="/settings/platform/professionals/{profile_id}/reject" '
+        'method="POST" hx-boost="false"'
+    ) in page.text
 
     response = await client.post(
         f"/settings/platform/professionals/{profile_id}/verify",
@@ -121,6 +129,11 @@ async def test_reject_suspend_and_reinstate_are_explicit_state_changes(
         follow_redirects=False,
     )
     assert verified_response.status_code == 303
+    verified_page = await client.get("/settings/platform/professionals")
+    assert (
+        f'action="/settings/platform/professionals/{active_id}/suspend" '
+        'method="POST" hx-boost="false"'
+    ) in verified_page.text
     suspended_response = await client.post(
         f"/settings/platform/professionals/{active_id}/suspend",
         data={"note": "Credential expired."},
@@ -135,6 +148,11 @@ async def test_reject_suspend_and_reinstate_are_explicit_state_changes(
     assert (
         await db_session.get(ProfessionalProfile, active_id)
     ).verification_status == ProfessionalVerificationStatus.SUSPENDED.value
+    suspended_page = await client.get("/settings/platform/professionals")
+    assert (
+        f'action="/settings/platform/professionals/{active_id}/reinstate" '
+        'method="POST" hx-boost="false"'
+    ) in suspended_page.text
 
     reinstated = await client.post(
         f"/settings/platform/professionals/{active_id}/reinstate",

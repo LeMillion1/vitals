@@ -53,7 +53,7 @@ the others remain useful provenance for the remediations named below:
 | Application services | 105 tracked non-`__init__` modules after the care, authentication, admission, analytics, persistence, and notification moves | Verified |
 | Flat service debt | 75 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
 | Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
-| Commercial Git history | 277 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
+| Commercial Git history | 278 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
 current commit. Only a command executed against the current tree is recorded as
@@ -472,6 +472,12 @@ scheduler, and RLS tests. Compose rebuilt the current application, Alembic
 reported `0074 (head)`, `/health` reported the database, Redis, and scheduler
 healthy, and container introspection confirmed the hourly platform-classified
 job with the shared 300-second lock. The slice changes no browser UI.
+
+The professional-review navigation fix then passed 466 focused review, OIDC,
+i18n, design, static, router, and mobile tests. Tailwind rebuilt without a
+generated CSS change, focused Ruff and diff checks passed, and the unchanged
+full fast gate remained at 4,981 passed (183 skipped, 35 UI deselected). All
+four recent-auth review forms now use full browser POST navigation.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

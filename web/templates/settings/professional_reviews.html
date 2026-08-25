@@ -56,11 +56,11 @@
             <div class="v-alert warn">{{ t("professional_review.self_review") }}</div>
             {% else %}
             <div class="grid gap-4 md:grid-cols-2">
-                <form action="/settings/platform/professionals/{{ row.profile_id }}/verify" method="POST" class="space-y-2">
+                <form action="/settings/platform/professionals/{{ row.profile_id }}/verify" method="POST" hx-boost="false" class="space-y-2">
                     <p class="v-text-micro" style="color: var(--muted)">{{ t("professional_review.verify_help") }}</p>
                     <button type="submit" class="v-btn">{{ t("professional_review.verify") }}</button>
                 </form>
-                <form action="/settings/platform/professionals/{{ row.profile_id }}/reject" method="POST" class="space-y-2">
+                <form action="/settings/platform/professionals/{{ row.profile_id }}/reject" method="POST" hx-boost="false" class="space-y-2">
                     <label for="reject-note-{{ row.profile_id }}" class="v-label">{{ t("professional_review.reason") }}</label>
                     <textarea id="reject-note-{{ row.profile_id }}" name="note" maxlength="2000" required class="v-input" rows="2"></textarea>
                     <button type="submit" class="v-btn-ghost">{{ t("professional_review.reject") }}</button>
@@ -84,7 +84,7 @@
                 <span class="v-chip">{{ t("care.onboarding.verified", name=row.display_name) }}</span>
             </div>
             {% if row.user_id != operator_user_id %}
-            <form action="/settings/platform/professionals/{{ row.profile_id }}/suspend" method="POST" class="flex flex-col md:flex-row md:items-end gap-3">
+            <form action="/settings/platform/professionals/{{ row.profile_id }}/suspend" method="POST" hx-boost="false" class="flex flex-col md:flex-row md:items-end gap-3">
                 <div class="flex-1">
                     <label for="suspend-note-{{ row.profile_id }}" class="v-label">{{ t("professional_review.suspension_reason") }}</label>
                     <input id="suspend-note-{{ row.profile_id }}" name="note" maxlength="2000" required class="v-input mt-2">
@@ -107,7 +107,7 @@
                 <p class="v-text-body">{{ row.review_note }}</p>
             </div>
             {% if row.user_id != operator_user_id %}
-            <form action="/settings/platform/professionals/{{ row.profile_id }}/reinstate" method="POST">
+            <form action="/settings/platform/professionals/{{ row.profile_id }}/reinstate" method="POST" hx-boost="false">
                 <button type="submit" class="v-btn-ghost">{{ t("professional_review.reinstate") }}</button>
             </form>
             {% endif %}

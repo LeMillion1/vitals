@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — professional review step-up uses normal browser navigation
+
+Verify, reject, suspend, and reinstate forms now opt out of the global HTMX
+boost. A stale operator session therefore follows the existing recent-auth
+redirect through a full browser navigation instead of receiving an HTMX/XHR
+JSON 401 response that leaves the review screen looking inert.
+
 ### Added — account-admission retention now runs automatically
 
 The shared scheduler now expires overdue invitations and administrator-approval
