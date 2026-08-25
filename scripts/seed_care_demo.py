@@ -128,7 +128,12 @@ async def _account(
 
 
 async def _patient(
-    session: AsyncSession, username: str, display_name: str, *, seed: int = 0
+    session: AsyncSession,
+    username: str,
+    display_name: str,
+    *,
+    seed: int = 0,
+    include_provider_credentials: bool = True,
 ) -> tuple[User, HealthSubject]:
     """A patient, through the same call the product uses.
 
@@ -158,21 +163,21 @@ async def _patient(
     user.password_hash = _DEV_HASH
     user.email_verified_at = now_utc()
     subject = await session.get(HealthSubject, provisioned.subject_id)
-    # A synthetic credential of their own, so the settings, Garmin and Hevy
-    # cards render the connected state a real patient's would. Nothing here ever
-    # reaches a provider: the demo seeds facts directly, and these strings would
-    # fail a real login on purpose.
-    await provider_credentials_service.set_garmin_credentials(
-        session,
-        subject_id=subject.id,
-        email=f"{username}@demo.invalid",
-        password="demo-not-a-real-password",
-    )
-    await provider_credentials_service.set_hevy_credentials(
-        session,
-        subject_id=subject.id,
-        api_key=f"demo-not-a-real-key-{seed}",
-    )
+    if include_provider_credentials:
+        # The local visual demo renders connected provider cards. Compose role
+        # smoke deliberately disables this: a long browser run must have no
+        # credential for a background job to try against a real provider.
+        await provider_credentials_service.set_garmin_credentials(
+            session,
+            subject_id=subject.id,
+            email=f"{username}@demo.invalid",
+            password="demo-not-a-real-password",
+        )
+        await provider_credentials_service.set_hevy_credentials(
+            session,
+            subject_id=subject.id,
+            api_key=f"demo-not-a-real-key-{seed}",
+        )
     await _seed_record(session, subject.id, seed=seed)
     return user, subject
 
@@ -360,7 +365,11 @@ async def _take_into_care(
     )
 
 
-async def build(session: AsyncSession) -> list[tuple[str, str]]:
+async def build(
+    session: AsyncSession,
+    *,
+    include_provider_credentials: bool = True,
+) -> list[tuple[str, str]]:
     """Return (username, description) for everybody worth signing in as."""
 
     from web.auth import create_session
@@ -376,7 +385,12 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
     who.append(("admin", "platform superadmin — verifies professionals, restores"))
 
     # The account ``.env`` names, so the password login works for one of them.
-    timur, timur_subject = await _patient(session, "timur", "Timur")
+    timur, timur_subject = await _patient(
+        session,
+        "timur",
+        "Timur",
+        include_provider_credentials=include_provider_credentials,
+    )
     who.append(("timur", "patient — the account the password login signs in as"))
 
     doctor_a = await _professional(
@@ -433,6 +447,7 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
                 f"patient{index:02d}",
                 f"Patient {index:02d}",
                 seed=index,
+                include_provider_credentials=include_provider_credentials,
             )
         )
     who.append(("patient01", "patient — sees a doctor and a trainer at once"))
