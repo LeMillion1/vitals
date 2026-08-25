@@ -30,7 +30,7 @@ than trusting them if this date has gone stale.
 | Alembic head | `0070` — 70 revisions |
 | Schema | 80 tables; 66 carry `subject_id` and are covered by an RLS policy; 55 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,751 fast passed / 171 skipped / 35 UI deselected; 24 focused dispatcher tests / 1 PostgreSQL-only skip; migration plus 74 current PostgreSQL dispatcher/outbox/RLS/scheduler tests |
+| Suites | 4,754 fast passed / 171 skipped / 35 UI deselected; 87 focused worker/push/i18n/design/security tests; migration plus 74 current PostgreSQL dispatcher/outbox/RLS/scheduler tests |
 | Domains / scheduled jobs | 14 and 15, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -96,14 +96,15 @@ one-line fix.
 
 **Two behaviours will look like bugs if you don't know they were chosen:**
 
-1. **Care wakeups have a sender, but the worker does not render them yet.** Telegram
+1. **Care wakeups are intentionally generic.** Telegram
    was removed outright (see the decision log); revision `0068` stores encrypted
    account/device subscriptions, the explicit permission UI is live, revision
    `0069` writes a PHI-free, subject-isolated care outbox in the message
    transaction, and revision `0070` plus the shared scheduler dispatch it only
    after fresh account, relationship, role, consent, and device checks. The
-   fixed payload contains no presentation content, and service-worker
-   notification rendering has not landed. The proactive layer composes a brief
+   fixed payload contains no presentation content. The service worker owns the
+   localized neutral copy, coalesces wakeups, and opens only `/messages`; it
+   accepts no title, body, identifier, or URL from the payload. The proactive layer composes a brief
    on schedule and stores it in `/reports`, and every proactive send resolves to "no
    endpoint", which every caller already handles as an ordinary answer.
    `channels.resolve_legacy_bound_notifier` returns `None`. Its historical
@@ -1387,9 +1388,9 @@ definitive provider rejection without pretending it was an uncertain failure.
 The shared scheduler claims those rows only after fresh account, exact
 relationship, role, consent, and device-generation checks, commits before I/O,
 and never retries an uncertain attempt. It encrypts and signs only a generic
-wakeup. Service-worker notification rendering remains the next UI increment;
-proactive brief sends still resolve to "no endpoint" because this transport is
-intentionally care-message-only.
+wakeup. The root-scoped worker now renders catalog-backed neutral copy and opens
+only the care inbox; proactive brief sends still resolve to "no endpoint"
+because this transport is intentionally care-message-only.
 
 **The shape of the rest.** `.env` should hold only what belongs to the
 installation: the database and Redis, the session secret, the identity provider,
@@ -1587,11 +1588,11 @@ pausing consent stops the next professional download while self-ownership keeps
 the patient's copy readable. Files are forced to download with no-store caching,
 and the Compose backup sidecar archives the private volume separately.
 
-**No outbound message notification either**, which is PR-09's remaining gap
-rather than this one's: the transport went with Telegram and web push has not
-landed, so a message waits in the in-app inbox. The scope item about previews
-containing no PHI has nothing to be about yet, and `AuditEvent`'s metadata
-allowlist already makes a body impossible to put in one.
+Outbound care-message notification is completed by PR-09 rather than by the
+thread domain itself. The outbox, dispatcher, and worker carry only a fixed
+wakeup; localized title/body live in the worker, and a click opens the inbox
+without embedding a patient or thread identifier. `AuditEvent`'s metadata
+allowlist likewise makes a message body impossible to put in one.
 
 Original scope:
 
@@ -1738,8 +1739,8 @@ Additional gates:
   born in `account_provisioning_service` and nowhere else; an operator reaches
   it through `scripts/provision_account.py`.
 - [x] Isolate files, settings, portability — PR-06.
-- [~] Isolate connectors, scheduler, and messaging — PR-09 server dispatch is
-  complete; service-worker rendering remains. Every job about a record runs
+- [x] Isolate connectors, scheduler, and messaging — PR-09 care dispatch and
+  PHI-free worker rendering are complete. Every job about a record runs
   once per record and on that record's own clock; the four provider jobs fan
   out per connection, and each account has
   its own credential, token store, session cache and login breaker. Messaging

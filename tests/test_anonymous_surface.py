@@ -7,6 +7,7 @@ anything else joins it — which is how ``GET /openapi.json`` (122 paths, includ
 ``/glp1/injection`` and ``/hrt/*``, served to anyone who asked) stayed open for
 months while ``/docs`` and ``/redoc`` were shut.
 """
+import json
 import os
 
 import pytest
@@ -121,6 +122,13 @@ async def test_the_service_worker_is_public_but_root_scoped_and_revalidated(clie
     assert response.headers["service-worker-allowed"] == "/"
     assert response.headers["cache-control"] == "no-cache"
     assert b"self.addEventListener('fetch'" in response.content
+    assert b"self.addEventListener('push'" in response.content
+    prelude = response.text.split(";\n", 1)[0].split("=", 1)[1]
+    copy = json.loads(prelude)
+    assert copy["en"]["title"] == "New message"
+    assert copy["en"]["body"] == "Open your Vitals inbox to read it."
+    assert copy["ru"]["title"] == "Новое сообщение"
+    assert copy["ru"]["body"] == "Откройте входящие Vitals, чтобы прочитать его."
 
 
 # ── Uploaded files ────────────────────────────────────────────────────────────

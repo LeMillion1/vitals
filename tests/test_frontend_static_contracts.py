@@ -50,6 +50,25 @@ def test_service_worker_is_registered_at_the_origin_root():
     assert "updateViaCache: 'none'" in registration
 
 
+def test_service_worker_push_never_accepts_notification_content_or_url():
+    """The encrypted provider payload is a wakeup, never notification content."""
+
+    push_handler = SW_JS[SW_JS.index("self.addEventListener('push'") :]
+    push_handler = push_handler[: push_handler.index("self.addEventListener('notificationclick'")]
+    assert "isCareWakeup(payload)" in push_handler
+    assert "showCareNotification()" in push_handler
+    assert "payload." not in push_handler
+    assert "event.data.text" not in push_handler
+
+    click_handler = SW_JS[SW_JS.index("self.addEventListener('notificationclick'") :]
+    click_handler = click_handler[: click_handler.index("self.addEventListener('fetch'")]
+    assert "isCareWakeup(event.notification.data)" in click_handler
+    assert "openCareInbox()" in click_handler
+    assert "event.notification.data.url" not in click_handler
+    assert "New message" not in SW_JS
+    assert "Новое сообщение" not in SW_JS
+
+
 def test_response_error_handler_reads_every_error_shape():
     """Routers answer with ``error``/``message``, not only FastAPI's ``detail``."""
     handler = BASE_HTML[BASE_HTML.index("addEventListener('htmx:responseError'"):]

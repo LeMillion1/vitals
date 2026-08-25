@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — care wakeups now become private, generic browser notifications
+
+The root-scoped service worker accepts only the exact versioned care-message
+wakeup and ignores malformed, unknown, or extended payloads. Notification copy
+comes from the shared RU/EN catalog; the worker never accepts a title, message,
+name, filename, identifier, or URL from the provider payload. A stable tag
+coalesces wakeups, and a click uses the fixed `/messages` destination rather
+than a subject or thread deep link. The device locale is persisted only after
+the current account proves ownership of that browser subscription, preventing
+a second account in a shared browser from changing the first account's
+notification language. Permission remains an explicit per-device click.
+
 ### Added — care wakeups are dispatched at most once after fresh consent checks
 
 Revision `0070` and the shared scheduler complete the server-side care-push
@@ -19,8 +31,8 @@ gone, rejected, ambiguous, protocol, and transport outcomes are terminal and
 never return to pending; a crashed or cancelled attempt becomes stale and
 ambiguous instead of being sent twice. A provider `404/410` erases credentials
 only if the browser has not re-enrolled since the attempt began. The payload is
-still the fixed PHI-free care wakeup. Service-worker notification rendering is
-the remaining separate UI step.
+still the fixed PHI-free care wakeup; the service worker renders it without
+accepting presentation content from the sender.
 
 ### Added — Web Push transport has one PHI-free operation
 
@@ -45,8 +57,8 @@ and devices enrolled later receive no historical claim. Composite foreign keys,
 a unique message/recipient/device triple, and FORCE RLS prevent cross-subject,
 cross-account, and duplicate rows. The outbox deliberately stores no rendered
 notification, message text, name, filename, endpoint, or provider response.
-Server-side dispatch now rechecks every claim; service-worker rendering remains
-separate, so the outbox still carries no presentation content.
+Server-side dispatch rechecks every claim, while the service worker owns its
+fixed presentation copy, so the outbox still carries no presentation content.
 
 ### Added — care notifications are an explicit per-device choice
 
@@ -56,9 +68,8 @@ only after an explicit click, exposes only the installation's public VAPID key,
 and never lists device endpoints or account/patient identifiers. The control
 detects unsupported and denied browsers, shared-browser ownership conflicts,
 device limits, and VAPID key rotation; an existing subscription remains
-removable even after browser permission is denied. Notification content remains
-disabled until the separate service-worker step; server-side delivery now uses
-only the fixed generic wakeup.
+removable even after browser permission is denied. Server-side delivery and the
+worker now share only the fixed generic wakeup.
 
 ### Fixed — the PWA worker controls the application, not only static files
 
@@ -810,7 +821,7 @@ next professional download while the patient keeps their record. Revision
 `0070` adds definitive provider rejection semantics. The PHI-free transport is
 now called by a consent-rechecking, at-most-once scheduler job. New work remains
 visible through the durable in-app unread count even when a wakeup is missed;
-service-worker notification rendering follows separately.
+the service worker renders a generic notification and returns to the inbox.
 
 
 ### Fixed — six defects a browser found and the suites could not

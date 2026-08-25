@@ -5,6 +5,7 @@ Redis cache connection, and background APScheduler thread.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -14,14 +15,15 @@ from urllib.parse import urlencode, urlsplit
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import (
-    FileResponse,
     JSONResponse,
     RedirectResponse,
+    Response,
 )
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vitals.i18n import get_js_strings
 from vitals.services import health_profile_service
 from vitals.services.access_resolution import AccessDeniedError
 from vitals.services.alerts_service import AlertLegacyBridgeError
@@ -363,7 +365,7 @@ add_security_headers(app)
 UPLOADS_DIR = os.path.realpath(os.path.join(STATIC_DIR, "uploads"))
 
 
-async def service_worker(request: Request) -> FileResponse:
+async def service_worker(request: Request) -> Response:
     """Serve the PWA worker at the origin root so its scope can be ``/``.
 
     A worker fetched from ``/static/sw.js`` is confined to ``/static/`` unless
@@ -374,8 +376,23 @@ async def service_worker(request: Request) -> FileResponse:
     """
 
     del request
-    return FileResponse(
-        os.path.join(STATIC_DIR, "sw.js"),
+    with open(os.path.join(STATIC_DIR, "sw.js"), encoding="utf-8") as worker:
+        source = worker.read()
+    copy = {
+        lang: {
+            "title": get_js_strings(lang)["care.push_notification_title"],
+            "body": get_js_strings(lang)["care.push_notification_body"],
+        }
+        for lang in ("en", "ru")
+    }
+    prefix = "self.__VITALS_PUSH_COPY__=" + json.dumps(
+        copy,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ) + ";\n"
+    return Response(
+        content=prefix + source,
         media_type="application/javascript",
         headers={
             "Cache-Control": "no-cache",

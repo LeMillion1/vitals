@@ -165,11 +165,8 @@ verifiable GitHub pull request: the commercial history has only one merge
 commit. Keep this document as target/decision history and use this audit for the
 current state.
 
-The following roadmap targets are not shipped: service-worker notification
-content (encrypted account/device subscriptions landed in `0068`; explicit
-enrollment, the subject-isolated outbox, a fixed PHI-free transport boundary,
-and consent-rechecked at-most-once server dispatch have since landed),
-invitation inbox, multi-subject full backup, support repair/export
+The following roadmap targets are not shipped: invitation inbox,
+multi-subject full backup, support repair/export
 and break-glass, registration modes, lab
 marker collision migration, private-byte relocation outside static storage, and
 final legacy configuration contraction.
@@ -410,7 +407,15 @@ cannot release a credential to the network. The final dispatcher file passed
 24 fast tests (one PostgreSQL-only skip), the full fast suite passed 4,751 tests
 (171 skipped, 35 UI deselected), and PostgreSQL 15 completed the real
 `head → 0034 → head` cycle plus 74 dispatcher/outbox/RLS/scheduler tests.
-Service-worker rendering remains separate.
+The root-scoped worker now accepts only the exact generic wakeup, selects
+catalog-backed RU/EN copy from a locale learned only after device ownership is
+proved, coalesces it under a non-PHI tag, and opens only `/messages`.
+Its executable Node harness plus push/i18n/design/security contracts passed 87
+focused tests, and the full fast suite advanced to 4,754 passed (171 skipped,
+35 UI deselected). The existing Compose stack rebuilt on revision `0070` and
+reported PostgreSQL, Redis, and the scheduler healthy. A live browser confirmed
+that `/sw.js` was active at root scope, controlled the page, emitted no console
+warning, and did not change the existing notification-permission state.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

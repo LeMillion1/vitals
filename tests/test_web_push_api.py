@@ -248,3 +248,18 @@ def test_button_visibility_cannot_be_overridden_by_the_ghost_button_css():
     assert partial.count('style="display: none"') == 2
     assert "enable.style.display = settings.enable ? '' : 'none'" in script
     assert "disable.style.display = settings.disable ? '' : 'none'" in script
+
+
+def test_locale_is_shared_only_after_current_account_proves_device_ownership():
+    script = (ROOT / "web/static/web_push.js").read_text(encoding="utf-8")
+    assert script.count("await rememberOwnedLocale(registration)") == 2
+    status_proof = script.index("if (serverState.enabled)")
+    status_sync = script.index("await rememberOwnedLocale(registration)")
+    conflict = script.index("setState(card, 'conflict'")
+    assert status_proof < status_sync < conflict
+
+    registration_proof = script.index("await jsonPost('/subscription', {")
+    registration_sync = script.rindex("await rememberOwnedLocale(registration)")
+    assert registration_proof < registration_sync
+    assert "kind: 'set_locale'" in script
+    assert "document.documentElement.lang === 'ru' ? 'ru' : 'en'" in script

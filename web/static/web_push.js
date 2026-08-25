@@ -76,6 +76,22 @@
     return registration;
   }
 
+  async function rememberOwnedLocale(registration) {
+    try {
+      const ready = registration.active
+        ? registration
+        : await navigator.serviceWorker.ready;
+      if (!ready.active) return;
+      ready.active.postMessage({
+        kind: 'set_locale',
+        v: 1,
+        locale: document.documentElement.lang === 'ru' ? 'ru' : 'en'
+      });
+    } catch (_error) {
+      // Enrollment is authoritative; locale sync is a best-effort preference.
+    }
+  }
+
   async function inspect(card, config) {
     const registration = await navigator.serviceWorker.getRegistration('/');
     const subscription = registration
@@ -91,6 +107,7 @@
     }
     const serverState = await jsonPost('/status', { endpoint: subscription.endpoint });
     if (serverState.enabled) {
+      await rememberOwnedLocale(registration);
       if (Notification.permission === 'denied') {
         setState(card, 'denied', { disable: true });
       } else if (sameApplicationServerKey(subscription, config.applicationServerKey)) {
@@ -132,6 +149,7 @@
       endpoint: subscription.endpoint,
       keys: payload.keys
     });
+    await rememberOwnedLocale(registration);
     setState(card, 'enabled', { disable: true });
   }
 
