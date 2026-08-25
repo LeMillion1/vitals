@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — MCP credentials have a durable patient and consent boundary
+
+New connector credentials now name exactly one health subject and persist exact
+domain/action capabilities. A professional credential is additionally tied to
+one care relationship and immutable consent version; pausing, revoking, or
+superseding that consent makes the credential fail on its next verification.
+Pre-cutover credentials are bound only to a record owned by their account, and
+credentials whose accounts own no record are retained only as revoked history.
+
 ### Fixed — professionals keep navigation on a phone
 
 Doctors and trainers without a personal health record now retain a compact

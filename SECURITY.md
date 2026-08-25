@@ -2,11 +2,13 @@
 
 ## Supported Versions
 
-Vitals is a single-user, self-hosted application. Only the latest commit on `master` is supported.
+This commercial fork is completing a multi-user transition. Only the latest
+commit on `commercial/main` is supported; upstream `master` remains the
+single-user self-hosted edition.
 
 | Version | Supported |
 |---------|-----------|
-| latest (`master`) | ✅ |
+| latest (`commercial/main`) | ✅ |
 | older commits | ❌ |
 
 ## Reporting a Vulnerability
@@ -27,10 +29,14 @@ You will receive a response within **72 hours**. If the issue is confirmed, a fi
 
 ## Security Design Notes
 
-Vitals is designed for **single-user self-hosted deployment**, not as a multi-tenant SaaS. The security model assumes:
+The commercial branch is designed for a shared service with patient, professional,
+support, and platform roles. Until the final release gate is recorded, deploy it
+only in a controlled environment and keep public registration disabled. The
+security model assumes:
 
-- The application runs on your own server behind a VPN or Cloudflare Access
-- Only you have access to the dashboard
+- The application runs behind a TLS-terminating reverse proxy; operational
+  interfaces remain private
+- Only provisioned accounts can enter while registration is disabled
 - The `.env` file with credentials is never committed to the repository
 
 Key security controls already in place:
@@ -100,11 +106,16 @@ chat id cannot belong to more than one person.
 
 ## Revoking Claude.ai Access
 
-MCP access tokens are stateless (signed, not stored), so there is no per-token
-revoke. To revoke Claude.ai's access, **rotate `VITALS_SESSION_SECRET`** in your
-`.env` and restart the app. That invalidates every signature at once — all MCP
-tokens *and* your browser session cookie — so you will need to log in again and
-reconnect the Claude.ai connector.
+Every newly issued MCP credential carries a `jti` backed by a durable registry
+row. Disconnect that connector from Settings to revoke it without signing out
+other browsers or connectors. Each token also names one health subject and an
+exact capability set. A professional token is bound to a relationship and
+consent version, so pausing, revoking, expiring, or replacing that consent takes
+effect on the next verification.
+
+Pre-registry owner credentials are adopted on first use and then become
+individually revocable. Rotating `VITALS_SESSION_SECRET` remains an emergency
+installation-wide action: it invalidates every signed browser and MCP token.
 
 ## What is NOT a Security Issue
 

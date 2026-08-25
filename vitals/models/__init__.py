@@ -12,6 +12,8 @@ from vitals.models.app_settings import AppSetting
 from vitals.models.identity import (
     AuditEvent,
     HealthSubject,
+    McpAccessToken,
+    McpAccessTokenScope,
     SupportAccessGrant,
     SupportAccessScope,
     User,
@@ -130,6 +132,8 @@ __all__ = [
     "User",
     "UserRole",
     "HealthSubject",
+    "McpAccessToken",
+    "McpAccessTokenScope",
     "SupportAccessGrant",
     "SupportAccessScope",
     "ProfessionalProfile",

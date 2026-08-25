@@ -444,15 +444,25 @@ async def oauth_token(
     cfg = get_web_config()
     audience = mcp_tokens.audience_for(cfg.public_url)
     try:
+        from vitals.services.legacy_ownership import (
+            LegacyOwnershipError,
+            resolve_legacy_ownership_context,
+        )
+
+        ownership = await resolve_legacy_ownership_context(
+            db,
+            actor_username=code_data["username"],
+        )
         token_payload, _record = await mcp_tokens.issue(
             db,
             username=code_data["username"],
+            subject_id=ownership.subject_id,
             client_id=client_id,
             audience=audience,
             issuer=cfg.public_url.rstrip("/"),
             client_name=code_data.get("client_name"),
         )
-    except mcp_tokens.McpTokenError:
+    except (mcp_tokens.McpTokenError, LegacyOwnershipError):
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_grant",

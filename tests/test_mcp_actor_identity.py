@@ -17,6 +17,10 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from mcp.server.auth.middleware.auth_context import auth_context_var
+from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+from mcp.server.auth.provider import AccessToken
+from mcp.server.mcpserver.exceptions import ToolError
 
 from vitals.enums import Domain, Source, UserStatus
 from vitals.models.identity import HealthSubject, User
@@ -73,6 +77,17 @@ def _no_actor_left_behind():
 
 def _acting_as(username: str | None):
     return mcp_router._MCP_ACTOR.set(username)
+
+
+def _grant_context(*, user_id, subject_id, scopes):
+    access = AccessToken(
+        token="synthetic-scoped-token",
+        client_id="vitals-claude-connector",
+        scopes=list(scopes),
+        subject=str(user_id),
+        claims={"sub": str(user_id), "health_subject": str(subject_id)},
+    )
+    return auth_context_var.set(AuthenticatedUser(access))
 
 
 async def _second_person(session, slug: str = "mcp-other") -> HealthSubject:
@@ -146,6 +161,47 @@ async def test_a_token_reaches_the_record_of_the_account_that_authorized_it(
         assert _weights(await mcp_router.get_weight_logs(limit=10)) == [OTHER_WEIGHT]
     finally:
         mcp_router._MCP_ACTOR.reset(restore)
+
+
+async def test_a_scoped_sdk_token_routes_reads_to_its_bound_patient(
+    db_session, legacy_owner_roots
+):
+    """The post-cutover path uses the stable ids verified from the grant row."""
+
+    other = await _both_people(db_session, legacy_owner_roots)
+    restore = _grant_context(
+        user_id=other.owner_user_id,
+        subject_id=other.id,
+        scopes=("domain:weight:list",),
+    )
+    try:
+        assert _weights(await mcp_router.get_weight_logs(limit=10)) == [OTHER_WEIGHT]
+    finally:
+        auth_context_var.reset(restore)
+
+
+async def test_tool_listing_and_direct_invocation_use_the_same_exact_scopes(
+    db_session, legacy_owner_roots
+):
+    restore = _grant_context(
+        user_id=legacy_owner_roots.user_id,
+        subject_id=legacy_owner_roots.subject_id,
+        scopes=("domain:weight:list",),
+    )
+    try:
+        listed = {tool.name for tool in await mcp_router.mcp.list_tools()}
+        assert "get_weight_logs" in listed
+        assert "get_lab_results" not in listed
+        assert "log_weight" not in listed
+        with pytest.raises(ToolError, match="Unknown tool"):
+            await mcp_router.mcp.call_tool("get_lab_results", {})
+    finally:
+        auth_context_var.reset(restore)
+
+
+def test_every_mcp_tool_has_an_explicit_authorization_classification():
+    registered = {tool.name for tool in mcp_router.mcp._tool_manager.list_tools()}
+    assert set(mcp_router.TOOL_ACCESS) == registered
 
 
 async def test_a_write_lands_in_the_record_of_the_token_that_made_it(

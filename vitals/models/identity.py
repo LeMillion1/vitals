@@ -461,7 +461,7 @@ class SupportAccessScope(Base):
 
 
 class McpAccessToken(Base):
-    """One connector's access to one account, and the ability to take it back.
+    """One connector's bounded access grant, and the ability to take it back.
 
     The token itself stays a signed value the server does not need to look up to
     validate — that is what makes it cheap. This row is what makes it
@@ -487,7 +487,28 @@ class McpAccessToken(Base):
         CheckConstraint(
             "expires_at > issued_at", name="ck_mcp_access_tokens_positive_ttl"
         ),
+        CheckConstraint(
+            "subject_id IS NOT NULL OR revoked_at IS NOT NULL",
+            name="ck_mcp_access_tokens_subject_or_revoked",
+        ),
+        CheckConstraint(
+            "(relationship_id IS NULL AND consent_grant_id IS NULL AND "
+            "consent_version IS NULL) OR (relationship_id IS NOT NULL AND "
+            "consent_grant_id IS NOT NULL AND consent_version IS NOT NULL)",
+            name="ck_mcp_access_tokens_professional_binding",
+        ),
+        CheckConstraint(
+            "consent_version IS NULL OR consent_version >= 1",
+            name="ck_mcp_access_tokens_consent_version",
+        ),
+        UniqueConstraint("id", "subject_id", name="uq_mcp_access_tokens_id_subject"),
         Index("ix_mcp_access_tokens_user_issued", "user_id", "issued_at"),
+        Index(
+            "ix_mcp_access_tokens_subject_live",
+            "subject_id",
+            "revoked_at",
+            "expires_at",
+        ),
     )
 
     #: The ``jti``. Generated when the token is minted and carried inside it, so
@@ -498,6 +519,26 @@ class McpAccessToken(Base):
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    #: The one health record this credential may address. A pre-cutover row
+    #: whose account owns no record is retained only as revoked history.
+    subject_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("health_subjects.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    #: Cross-subject credentials are snapshots of one relationship and one
+    #: concrete consent version. Owner credentials leave all three fields null.
+    relationship_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("care_relationships.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    consent_grant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("consent_grants.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    consent_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     #: Which client holds it, and what that client calls itself. The name comes
     #: from a client metadata document when the client brought one; a
     #: pre-registered connector has none, and the screen shows the id instead.
@@ -529,6 +570,77 @@ class McpAccessToken(Base):
     updated_at: Mapped[datetime] = _updated_at()
 
     user: Mapped[User] = relationship(foreign_keys=[user_id])
+    scopes: Mapped[list["McpAccessTokenScope"]] = relationship(
+        back_populates="token",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class McpAccessTokenScope(Base):
+    """One exact capability delegated to one MCP credential.
+
+    Token scopes are copied, never inferred from a role at request time. For a
+    professional they must be a subset of the bound consent version; for an
+    owner they are the explicit capabilities approved on the connector screen.
+    Wildcards are forbidden so a later domain cannot silently enter an old
+    credential's reach.
+    """
+
+    __tablename__ = "mcp_access_token_scopes"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["token_id", "subject_id"],
+            ["mcp_access_tokens.id", "mcp_access_tokens.subject_id"],
+            name="fk_mcp_access_token_scopes_token_subject",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "token_id",
+            "resource_type",
+            "resource_key",
+            "action",
+            name="uq_mcp_access_token_scopes_capability",
+        ),
+        CheckConstraint(
+            "resource_type IN ('domain', 'artifact', 'operation')",
+            name="ck_mcp_access_token_scopes_resource_type",
+        ),
+        CheckConstraint(
+            "action IN ('read', 'list', 'search', 'create', 'update', 'delete', "
+            "'attach', 'share', 'export', 'sync', 'message', 'repair')",
+            name="ck_mcp_access_token_scopes_action",
+        ),
+        CheckConstraint(
+            "length(trim(resource_key)) > 0 AND length(resource_key) <= 128",
+            name="ck_mcp_access_token_scopes_resource_key",
+        ),
+        CheckConstraint(
+            "resource_key NOT LIKE '%*%'",
+            name="ck_mcp_access_token_scopes_no_wildcard",
+        ),
+        Index(
+            "ix_mcp_access_token_scopes_subject_capability",
+            "subject_id",
+            "resource_type",
+            "resource_key",
+            "action",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    token_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("health_subjects.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    resource_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    resource_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+    token: Mapped[McpAccessToken] = relationship(back_populates="scopes")
 
 
 class ExternalApiToken(Base):

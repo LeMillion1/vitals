@@ -28,8 +28,9 @@ def test_every_registered_table_has_exactly_one_ownership_contract():
     # 0060 added ``integration_credentials``; 72 since 0061 added the care-team
     # thread, its participants and its messages; 74 since 0062 added the support
     # access request and its scopes; 75 since 0063 added the per-subject external
-    # API token; 76 since 0064 added the connector token that can be revoked.
-    assert len(OWNERSHIP_REGISTRY) == 76
+    # API token; 76 since 0064 added the revocable connector token; 77 since 0065
+    # normalized each connector's exact capabilities.
+    assert len(OWNERSHIP_REGISTRY) == 77
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -91,6 +92,7 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "professional_notes",
         "external_api_tokens",
         "mcp_access_tokens",
+        "mcp_access_token_scopes",
         "professional_profiles",
         "shared_reports",
         "subject_settings",

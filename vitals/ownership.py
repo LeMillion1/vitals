@@ -405,10 +405,20 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.REQUIRED,
         user_portable=False,
     ),
-    # An account's connector credentials, not a subject's data: the token
-    # authorizes a person, and which record they then reach is decided per
-    # request by the subject seam.
-    "mcp_access_tokens": _ACCOUNT,
+    # Connector grants belong to the authorizing account and name exactly one
+    # record. A nullable subject is retained only for revoked pre-cutover rows.
+    "mcp_access_tokens": OwnershipSpec(
+        OwnershipClass.ACCOUNT_CONTROL,
+        # Revoked pre-cutover rows whose account never owned a record are kept
+        # for history and are the only rows allowed to leave this null.
+        subject=TargetColumn.OPTIONAL,
+        user_portable=False,
+    ),
+    "mcp_access_token_scopes": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL_CHILD,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "support_access_requests": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL,
         subject=TargetColumn.REQUIRED,

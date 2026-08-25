@@ -29,14 +29,17 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from collections.abc import Iterable
 from typing import Any, Sequence
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import UserStatus
-from vitals.models.identity import McpAccessToken, User
+from vitals.access import AccessScope, PolicyAction, PolicyResourceType
+from vitals.enums import Domain, UserStatus
+from vitals.models.identity import HealthSubject, McpAccessToken, McpAccessTokenScope, User
 
 TOKEN_TYPE = "mcp_access_token"
 
@@ -64,6 +67,67 @@ class VerifiedToken:
     username: str
     client_id: str
     audience: str
+    subject_id: uuid.UUID
+    relationship_id: uuid.UUID | None
+    consent_grant_id: uuid.UUID | None
+    consent_version: int | None
+    scopes: frozenset[AccessScope]
+
+
+_OWNER_DOMAIN_ACTIONS = (
+    PolicyAction.READ,
+    PolicyAction.LIST,
+    PolicyAction.SEARCH,
+    PolicyAction.CREATE,
+    PolicyAction.UPDATE,
+    PolicyAction.DELETE,
+)
+
+
+def owner_scopes() -> frozenset[AccessScope]:
+    """The concrete capabilities offered to an owner on today's MCP surface.
+
+    Materialized into each token at issuance. Adding a domain later does not
+    widen an already-issued credential, even though a newly approved connector
+    can receive the new domain.
+    """
+
+    domains = frozenset(
+        AccessScope(
+            resource_type=PolicyResourceType.DOMAIN,
+            resource_key=domain.value,
+            action=action,
+        )
+        for domain in Domain
+        if domain is not Domain.SYSTEM
+        for action in _OWNER_DOMAIN_ACTIONS
+    )
+    surfaces = frozenset(
+        {
+            AccessScope(PolicyResourceType.ARTIFACT, "health_profile", PolicyAction.READ),
+            AccessScope(PolicyResourceType.ARTIFACT, "weekly_digest", PolicyAction.READ),
+            AccessScope(PolicyResourceType.ARTIFACT, "weekly_digest", PolicyAction.LIST),
+            AccessScope(PolicyResourceType.ARTIFACT, "weekly_digest", PolicyAction.CREATE),
+            AccessScope(PolicyResourceType.ARTIFACT, "safety_alert", PolicyAction.READ),
+            AccessScope(PolicyResourceType.ARTIFACT, "safety_alert", PolicyAction.UPDATE),
+            AccessScope(PolicyResourceType.OPERATION, "conflict.check", PolicyAction.READ),
+            AccessScope(PolicyResourceType.OPERATION, "modules", PolicyAction.READ),
+            AccessScope(PolicyResourceType.OPERATION, "modules", PolicyAction.UPDATE),
+            AccessScope(PolicyResourceType.OPERATION, "proactive", PolicyAction.READ),
+            AccessScope(PolicyResourceType.OPERATION, "record.export", PolicyAction.EXPORT),
+            AccessScope(PolicyResourceType.OPERATION, "garmin.sync", PolicyAction.SYNC),
+            AccessScope(PolicyResourceType.OPERATION, "hevy.sync", PolicyAction.SYNC),
+        }
+    )
+    return domains | surfaces
+
+
+def _scope_claim(scope: AccessScope) -> str:
+    return f"{scope.resource_type.value}:{scope.resource_key}:{scope.action.value}"
+
+
+def _claims(scopes: Iterable[AccessScope]) -> list[str]:
+    return sorted(_scope_claim(scope) for scope in scopes)
 
 
 def audience_for(public_url: str) -> str:
@@ -115,6 +179,8 @@ async def issue(
     issuer: str,
     client_name: str | None = None,
     lifetime: timedelta = TOKEN_LIFETIME,
+    subject_id: uuid.UUID,
+    scopes: Iterable[AccessScope] | None = None,
 ) -> tuple[dict[str, Any], McpAccessToken]:
     """Record a connector and return the payload to sign for it. Never commits.
 
@@ -135,15 +201,76 @@ async def issue(
     if user is None:
         raise McpTokenError("a connector token needs an active account behind it")
 
+    from vitals.services.access_resolution import resolve_access_context
+
+    if not isinstance(subject_id, uuid.UUID) or subject_id.int == 0:
+        raise McpTokenError("a connector token must name one health subject")
+    from vitals.persistence.rls import bind_session_subject
+
+    # Binding narrows the reads below; it grants nothing. The access context is
+    # still what proves whether this account owns or has consent for the record.
+    await bind_session_subject(session, subject_id)
+    context = await resolve_access_context(
+        session,
+        user_id=user.id,
+        subject_id=subject_id,
+    )
+    relationship = None
+    if context.subject_owner_user_id == user.id:
+        allowed_scopes = owner_scopes()
+    else:
+        relationship = context.relationship_grant
+        if relationship is None or not relationship.active:
+            raise McpTokenError(
+                "cross-subject connector access needs one active care relationship"
+            )
+        allowed_scopes = relationship.scopes
+
+    try:
+        granted_scopes = frozenset(allowed_scopes if scopes is None else scopes)
+    except TypeError as exc:
+        raise McpTokenError("connector scopes must be an iterable") from exc
+    if not granted_scopes or any(
+        not isinstance(scope, AccessScope) for scope in granted_scopes
+    ):
+        raise McpTokenError("a connector token needs at least one exact scope")
+    if not granted_scopes.issubset(allowed_scopes):
+        raise McpTokenError("requested connector scopes exceed current consent")
+
     now = await _now(session)
+    expires_at = now + lifetime
+    if relationship is not None:
+        expires_at = min(expires_at, relationship.expires_at)
+        if expires_at <= now:
+            raise McpTokenError("the selected consent has expired")
     record = McpAccessToken(
         user_id=user.id,
+        subject_id=subject_id,
+        relationship_id=relationship.relationship_id if relationship else None,
+        consent_grant_id=relationship.consent_grant_id if relationship else None,
+        consent_version=relationship.consent_version if relationship else None,
         client_id=client_id,
         client_name=client_name,
         audience=audience,
         issued_at=now,
-        expires_at=now + lifetime,
+        expires_at=expires_at,
     )
+    record.scopes = [
+        McpAccessTokenScope(
+            subject_id=subject_id,
+            resource_type=scope.resource_type.value,
+            resource_key=scope.resource_key,
+            action=scope.action.value,
+        )
+        for scope in sorted(
+            granted_scopes,
+            key=lambda value: (
+                value.resource_type.value,
+                value.resource_key,
+                value.action.value,
+            ),
+        )
+    ]
     session.add(record)
     await session.flush()
 
@@ -158,6 +285,11 @@ async def issue(
         "aud": audience,
         "iss": issuer,
         "jti": str(record.id),
+        "health_subject": str(subject_id),
+        "relationship": str(relationship.relationship_id) if relationship else None,
+        "consent_grant": str(relationship.consent_grant_id) if relationship else None,
+        "consent_version": relationship.consent_version if relationship else None,
+        "scopes": _claims(granted_scopes),
     }
     return payload, record
 
@@ -214,6 +346,18 @@ async def verify(
 
     now = await _now(session)
 
+    if raw_jti is not None:
+        try:
+            claimed_subject = uuid.UUID(str(payload.get("health_subject")))
+        except (ValueError, AttributeError, TypeError):
+            return None
+        from vitals.persistence.rls import RlsSessionError, bind_session_subject
+
+        try:
+            await bind_session_subject(session, claimed_subject)
+        except RlsSessionError:
+            return None
+
     if raw_jti is None:
         record = await _adopt(
             session,
@@ -231,7 +375,11 @@ async def verify(
             jti = uuid.UUID(str(raw_jti))
         except (ValueError, AttributeError, TypeError):
             return None
-        record = await session.get(McpAccessToken, jti)
+        record = await session.scalar(
+            select(McpAccessToken)
+            .options(selectinload(McpAccessToken.scopes))
+            .where(McpAccessToken.id == jti)
+        )
         if record is None:
             # A signature this server made for a row that no longer exists is a
             # token from before a restore, or one whose row was deleted. Neither
@@ -247,6 +395,74 @@ async def verify(
     if user is None or user.status != UserStatus.ACTIVE.value:
         return None
 
+    if record.subject_id is None:
+        return None
+
+    persisted_scopes = frozenset(
+        AccessScope(
+            resource_type=PolicyResourceType(scope.resource_type),
+            resource_key=scope.resource_key,
+            action=PolicyAction(scope.action),
+        )
+        for scope in record.scopes
+    )
+    if not persisted_scopes:
+        return None
+
+    if raw_jti is not None:
+        if payload.get("sub") != str(record.user_id):
+            return None
+        if payload.get("health_subject") != str(record.subject_id):
+            return None
+        expected_relationship = (
+            str(record.relationship_id) if record.relationship_id else None
+        )
+        expected_consent = (
+            str(record.consent_grant_id) if record.consent_grant_id else None
+        )
+        if payload.get("relationship") != expected_relationship:
+            return None
+        if payload.get("consent_grant") != expected_consent:
+            return None
+        if payload.get("consent_version") != record.consent_version:
+            return None
+        if payload.get("scopes") != _claims(persisted_scopes):
+            return None
+
+    if record.relationship_id is None:
+        owner_id = await session.scalar(
+            select(HealthSubject.owner_user_id).where(
+                HealthSubject.id == record.subject_id
+            )
+        )
+        if owner_id != record.user_id:
+            return None
+    else:
+        from vitals.services.access_resolution import (
+            AccessResolutionError,
+            resolve_access_context,
+        )
+
+        try:
+            context = await resolve_access_context(
+                session,
+                user_id=record.user_id,
+                subject_id=record.subject_id,
+                evaluated_at=now,
+            )
+        except AccessResolutionError:
+            return None
+        relationship = context.relationship_grant
+        if (
+            relationship is None
+            or not relationship.active
+            or relationship.relationship_id != record.relationship_id
+            or relationship.consent_grant_id != record.consent_grant_id
+            or relationship.consent_version != record.consent_version
+            or not persisted_scopes.issubset(relationship.scopes)
+        ):
+            return None
+
     today = now.date()
     if record.last_used_on is None or _as_utc(record.last_used_on).date() != today:
         record.last_used_on = now
@@ -257,6 +473,11 @@ async def verify(
         username=username or user.username,
         client_id=record.client_id,
         audience=record.audience,
+        subject_id=record.subject_id,
+        relationship_id=record.relationship_id,
+        consent_grant_id=record.consent_grant_id,
+        consent_version=record.consent_version,
+        scopes=persisted_scopes,
     )
 
 
@@ -280,10 +501,6 @@ async def _adopt(
     from vitals.services.identity_service import normalize_username
 
     key = _legacy_key(token)
-    existing = await session.get(McpAccessToken, key)
-    if existing is not None:
-        return existing
-
     if not username:
         return None
     lookup = normalize_username(username).lookup_key
@@ -296,16 +513,47 @@ async def _adopt(
     if user is None:
         return None
 
+    subject_id = await session.scalar(
+        select(HealthSubject.id).where(HealthSubject.owner_user_id == user.id)
+    )
+    if subject_id is None:
+        return None
+
+    from vitals.persistence.rls import bind_session_subject
+
+    await bind_session_subject(session, subject_id)
+    existing = await session.scalar(
+        select(McpAccessToken)
+        .options(selectinload(McpAccessToken.scopes))
+        .where(
+            McpAccessToken.id == key,
+            McpAccessToken.subject_id == subject_id,
+        )
+    )
+    if existing is not None:
+        return existing
+    granted_scopes = owner_scopes()
+
     issued = _as_utc(signed_at) if signed_at else now
     record = McpAccessToken(
         id=key,
         user_id=user.id,
+        subject_id=subject_id,
         client_id=str(payload.get("client_id") or "unknown"),
         audience=audience,
         issued_at=issued,
         expires_at=issued + TOKEN_LIFETIME,
         adopted=True,
     )
+    record.scopes = [
+        McpAccessTokenScope(
+            subject_id=subject_id,
+            resource_type=scope.resource_type.value,
+            resource_key=scope.resource_key,
+            action=scope.action.value,
+        )
+        for scope in granted_scopes
+    ]
     session.add(record)
     try:
         await session.flush()
@@ -313,7 +561,14 @@ async def _adopt(
         # Two concurrent first uses of the same old token. Whoever lost the race
         # reads the row the winner wrote.
         await session.rollback()
-        return await session.get(McpAccessToken, key)
+        return await session.scalar(
+            select(McpAccessToken)
+            .options(selectinload(McpAccessToken.scopes))
+            .where(
+                McpAccessToken.id == key,
+                McpAccessToken.subject_id == subject_id,
+            )
+        )
     return record
 
 
@@ -327,7 +582,12 @@ async def revoke(
     nothing else records.
     """
 
-    record = await session.get(McpAccessToken, jti)
+    record = await session.scalar(
+        select(McpAccessToken).where(
+            McpAccessToken.id == jti,
+            McpAccessToken.user_id == user_id,
+        )
+    )
     if record is None or record.user_id != user_id:
         # Not "you may not touch this": somebody probing ids learns nothing.
         raise TokenNotFound("no such connector")
@@ -365,6 +625,7 @@ __all__ = [
     "is_live",
     "issue",
     "list_for_user",
+    "owner_scopes",
     "revoke",
     "verify",
 ]

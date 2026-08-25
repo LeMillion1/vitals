@@ -67,6 +67,7 @@ _POLICY_REVISIONS = (
     "0061_care_team_threads_and_messages",
     "0062_support_access_requests",
     "0063_external_api_tokens",
+    "0065_subject_scoped_mcp_grants",
 )
 
 

@@ -15,12 +15,16 @@ suspension.*
 
 from __future__ import annotations
 
-from datetime import timedelta
+import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
-from vitals.enums import UserStatus
-from vitals.models.identity import McpAccessToken, User
+from vitals.access import AccessScope, PolicyAction, PolicyResourceType
+from vitals.enums import UserRoleName, UserStatus
+from vitals.models.identity import HealthSubject, McpAccessToken, User, UserRole
+from vitals.models.professional import CareRelationship, ConsentGrant, ConsentScope
 from vitals.services.authentication import mcp_tokens as tokens
 
 CLIENT = "vitals-claude-connector"
@@ -29,9 +33,18 @@ ISSUER = "http://test"
 
 
 async def _issue(session, username: str = "tester", **overrides):
+    subject_id = overrides.pop("subject_id", None)
+    if subject_id is None:
+        subject_id = await session.scalar(
+            select(HealthSubject.id)
+            .join(User, User.id == HealthSubject.owner_user_id)
+            .where(User.normalized_username == username)
+        )
+    assert subject_id is not None
     payload, record = await tokens.issue(
         session,
         username=username,
+        subject_id=subject_id,
         client_id=overrides.pop("client_id", CLIENT),
         audience=overrides.pop("audience", AUDIENCE),
         issuer=ISSUER,
@@ -51,6 +64,47 @@ async def _verify(session, payload, *, token: str = "signed-value", **overrides)
         expected_issuer=overrides.pop("expected_issuer", ISSUER),
         **overrides,
     )
+
+
+async def _professional_grant(session, legacy_owner_roots):
+    professional = User(
+        username="scoped-doctor",
+        normalized_username="scoped-doctor",
+        password_hash="$synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    session.add(professional)
+    await session.flush()
+    session.add(UserRole(user_id=professional.id, role=UserRoleName.DOCTOR.value))
+    relationship = CareRelationship(
+        subject_id=legacy_owner_roots.subject_id,
+        subject_owner_user_id=legacy_owner_roots.user_id,
+        professional_user_id=professional.id,
+        kind="doctor",
+        status="active",
+    )
+    session.add(relationship)
+    await session.flush()
+    grant = ConsentGrant(
+        relationship_id=relationship.id,
+        subject_id=legacy_owner_roots.subject_id,
+        version=1,
+        status="active",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    session.add(grant)
+    await session.flush()
+    session.add(
+        ConsentScope(
+            consent_grant_id=grant.id,
+            subject_id=legacy_owner_roots.subject_id,
+            resource_type="domain",
+            resource_key="weight",
+            action="read",
+        )
+    )
+    await session.flush()
+    return professional, relationship, grant
 
 
 # ── What the token is for ────────────────────────────────────────────────────
@@ -73,6 +127,110 @@ async def test_a_minted_token_names_the_account_the_resource_and_itself(
     assert payload["iss"] == ISSUER
     assert payload["jti"] == str(record.id)
     assert record.audience == AUDIENCE
+    assert payload["health_subject"] == str(legacy_owner_roots.subject_id)
+    assert record.subject_id == legacy_owner_roots.subject_id
+    assert payload["scopes"]
+
+
+async def test_a_professional_token_is_one_patient_one_consent_and_exact_scopes(
+    db_session, legacy_owner_roots
+):
+    professional, relationship, grant = await _professional_grant(
+        db_session, legacy_owner_roots
+    )
+    requested = {
+        AccessScope(
+            resource_type=PolicyResourceType.DOMAIN,
+            resource_key="weight",
+            action=PolicyAction.READ,
+        )
+    }
+
+    payload, record = await _issue(
+        db_session,
+        username=professional.username,
+        subject_id=legacy_owner_roots.subject_id,
+        scopes=requested,
+    )
+
+    assert record.relationship_id == relationship.id
+    assert record.consent_grant_id == grant.id
+    assert record.consent_version == 1
+    assert payload["relationship"] == str(relationship.id)
+    assert payload["consent_grant"] == str(grant.id)
+    assert payload["consent_version"] == 1
+    verified = await _verify(db_session, payload)
+    assert verified is not None
+    assert verified.subject_id == legacy_owner_roots.subject_id
+    assert verified.scopes == requested
+
+
+async def test_a_professional_cannot_mint_beyond_patient_consent(
+    db_session, legacy_owner_roots
+):
+    professional, _relationship, _grant = await _professional_grant(
+        db_session, legacy_owner_roots
+    )
+    update_weight = {
+        AccessScope(
+            resource_type=PolicyResourceType.DOMAIN,
+            resource_key="weight",
+            action=PolicyAction.UPDATE,
+        )
+    }
+    with pytest.raises(tokens.McpTokenError, match="exceed current consent"):
+        await tokens.issue(
+            db_session,
+            username=professional.username,
+            client_id=CLIENT,
+            audience=AUDIENCE,
+            issuer=ISSUER,
+            subject_id=legacy_owner_roots.subject_id,
+            scopes=update_weight,
+        )
+
+
+async def test_consent_change_invalidates_a_professional_token_immediately(
+    db_session, legacy_owner_roots
+):
+    professional, _relationship, grant = await _professional_grant(
+        db_session, legacy_owner_roots
+    )
+    payload, _record = await _issue(
+        db_session,
+        username=professional.username,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    assert await _verify(db_session, payload) is not None
+
+    grant.status = "revoked"
+    grant.revoked_at = datetime.now(timezone.utc)
+    await db_session.commit()
+    assert await _verify(db_session, payload) is None
+
+
+@pytest.mark.parametrize(
+    ("claim", "replacement"),
+    [
+        ("health_subject", lambda: str(uuid.uuid4())),
+        ("relationship", lambda: str(uuid.uuid4())),
+        ("consent_version", lambda: 99),
+        ("scopes", lambda: ["domain:labs:read"]),
+    ],
+)
+async def test_a_signed_grant_claim_cannot_disagree_with_its_registry_row(
+    db_session, legacy_owner_roots, claim, replacement
+):
+    professional, _relationship, _grant = await _professional_grant(
+        db_session, legacy_owner_roots
+    )
+    payload, _record = await _issue(
+        db_session,
+        username=professional.username,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    payload[claim] = replacement()
+    assert await _verify(db_session, payload) is None
 
 
 async def test_a_token_minted_for_another_resource_is_refused(
