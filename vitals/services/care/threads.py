@@ -31,11 +31,12 @@ than as a promise.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from vitals.access import (
     AccessContext,
@@ -88,6 +89,15 @@ class ThreadNotFound(CareThreadError):
 
 class NotTheAuthor(CareThreadError):
     """Only the person who said it may correct it."""
+
+
+@dataclass(frozen=True, slots=True)
+class CareThreadSummary:
+    """One inbox row, including reader-specific state."""
+
+    thread: CareThread
+    last_message_at: datetime | None
+    unread: bool
 
 
 def _text(value: object, field: str, *, limit: int) -> str:
@@ -333,6 +343,10 @@ async def add_participant(
     if existing is not None:
         existing.removed_at = None
         existing.relationship_id = relationship.id
+        # Rejoining opens the room from this point forward. Messages written
+        # while somebody was explicitly absent stay visible history, but do not
+        # arrive as newly assigned unread work.
+        existing.last_read_at = await _now(session)
         await session.flush()
         return existing
 
@@ -397,7 +411,7 @@ async def send_message(
     )
     if thread.status != CareThreadStatus.OPEN.value:
         raise NotInTheConversation("this conversation is closed")
-    await _require_participation(
+    participation = await _require_participation(
         session, thread_id=thread.id, user_id=context.principal.user_id
     )
     # Live care is re-checked here as well as at the policy: a relationship that
@@ -419,6 +433,9 @@ async def send_message(
     session.add(message)
     # So a roster ordered by activity is ordered by what actually happened.
     thread.updated_at = said_at
+    # Saying something is also proof that the author reached this point in the
+    # conversation. Their own message must never create unread work for them.
+    participation.last_read_at = said_at
     await session.flush()
     return message
 
@@ -488,6 +505,59 @@ async def list_threads(
     )
 
 
+async def list_thread_summaries(
+    session: AsyncSession, *, context: AccessContext
+) -> list[CareThreadSummary]:
+    """Reader-specific conversation rows, unread first and then most recent."""
+
+    _require_scope(context, action=READ_ACTION)
+    participation = aliased(CareThreadParticipant)
+    last_message_at = (
+        select(func.max(CareMessage.created_at))
+        .where(CareMessage.thread_id == CareThread.id)
+        .correlate(CareThread)
+        .scalar_subquery()
+    )
+    has_unread = (
+        select(CareMessage.id)
+        .where(
+            CareMessage.thread_id == CareThread.id,
+            CareMessage.actor_user_id != context.principal.user_id,
+            CareMessage.created_at > participation.last_read_at,
+        )
+        .correlate(CareThread, participation)
+        .exists()
+    )
+    rows = (
+        await session.execute(
+            select(
+                CareThread,
+                last_message_at.label("last_message_at"),
+                has_unread.label("unread"),
+            )
+            .join(participation, participation.thread_id == CareThread.id)
+            .where(
+                CareThread.subject_id == context.subject_id,
+                participation.user_id == context.principal.user_id,
+                participation.removed_at.is_(None),
+            )
+            .order_by(
+                has_unread.desc(),
+                func.coalesce(last_message_at, CareThread.updated_at).desc(),
+                CareThread.id,
+            )
+        )
+    ).all()
+    return [
+        CareThreadSummary(
+            thread=thread,
+            last_message_at=message_at,
+            unread=bool(unread),
+        )
+        for thread, message_at, unread in rows
+    ]
+
+
 async def read_thread(
     session: AsyncSession, *, context: AccessContext, thread_id: uuid.UUID
 ) -> tuple[CareThread, list[CareMessage], list[CareThreadParticipant]]:
@@ -526,6 +596,41 @@ async def read_thread(
         )
     )
     return thread, messages, participants
+
+
+async def mark_thread_read(
+    session: AsyncSession, *, context: AccessContext, thread_id: uuid.UUID
+) -> CareThreadParticipant:
+    """Advance this reader only to the latest message currently persisted.
+
+    The cursor is a message timestamp, not wall-clock now. A concurrent message
+    committed after the aggregate read therefore remains newer and unread.
+    Never commits.
+    """
+
+    _require_scope(context, action=READ_ACTION)
+    thread = await _thread(session, context=context, thread_id=thread_id)
+    participation = await session.scalar(
+        select(CareThreadParticipant)
+        .where(
+            CareThreadParticipant.thread_id == thread.id,
+            CareThreadParticipant.user_id == context.principal.user_id,
+            CareThreadParticipant.removed_at.is_(None),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if participation is None:
+        raise NotInTheConversation("you are not in this conversation")
+    latest = await session.scalar(
+        select(func.max(CareMessage.created_at)).where(
+            CareMessage.thread_id == thread.id
+        )
+    )
+    if latest is not None and latest > participation.last_read_at:
+        participation.last_read_at = latest
+        await session.flush()
+    return participation
 
 
 async def close_thread(
@@ -567,27 +672,32 @@ async def reopen_thread(
 async def unread_marker(
     session: AsyncSession, *, context: AccessContext
 ) -> int:
-    """How many conversations this account is in that are still open.
-
-    Not an unread count — nothing tracks reads yet, and inventing a per-reader
-    marker to put a number on a nav item would be storing state to decorate a
-    screen. An open-thread count is a true thing that is useful for the same
-    place.
-    """
+    """How many conversations contain a newer message from somebody else."""
 
     _require_scope(context, action=READ_ACTION)
+    participation = aliased(CareThreadParticipant)
+    has_unread = (
+        select(CareMessage.id)
+        .where(
+            CareMessage.thread_id == CareThread.id,
+            CareMessage.actor_user_id != context.principal.user_id,
+            CareMessage.created_at > participation.last_read_at,
+        )
+        .correlate(CareThread, participation)
+        .exists()
+    )
     total = await session.scalar(
         select(func.count())
         .select_from(CareThread)
         .join(
-            CareThreadParticipant,
-            CareThreadParticipant.thread_id == CareThread.id,
+            participation,
+            participation.thread_id == CareThread.id,
         )
         .where(
             CareThread.subject_id == context.subject_id,
-            CareThread.status == CareThreadStatus.OPEN.value,
-            CareThreadParticipant.user_id == context.principal.user_id,
-            CareThreadParticipant.removed_at.is_(None),
+            participation.user_id == context.principal.user_id,
+            participation.removed_at.is_(None),
+            has_unread,
         )
     )
     return int(total or 0)
@@ -596,6 +706,7 @@ async def unread_marker(
 __all__ = [
     "CareThreadError",
     "CareThreadValidationError",
+    "CareThreadSummary",
     "MESSAGE_OPERATION",
     "NotInTheConversation",
     "NotTheAuthor",
@@ -605,6 +716,8 @@ __all__ = [
     "add_participant",
     "close_thread",
     "list_threads",
+    "list_thread_summaries",
+    "mark_thread_read",
     "open_thread",
     "read_thread",
     "remove_participant",

@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — conversations have real per-person unread state
+
+Each patient and professional now has an independent read cursor in every care
+conversation. A message from somebody else is shown as new until that person
+opens the thread; sending a reply also acknowledges the messages it answers.
+Existing history is marked read during the migration so an upgrade does not
+manufacture a backlog.
+
 ### Added — professionals choose one patient when connecting an assistant
 
 The connector approval screen now shows the health record being authorized. A

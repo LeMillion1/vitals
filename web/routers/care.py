@@ -417,16 +417,18 @@ async def messages(
     """
 
     try:
-        threads = await care_threads.list_threads(db, context=care.access)
+        thread_summaries = await care_threads.list_thread_summaries(
+            db, context=care.access
+        )
     except care_threads.NotInTheConversation:
-        threads = []
+        thread_summaries = []
     return templates.TemplateResponse(
         request,
         "care/messages.html",
         {
             "username": username,
             "care": care,
-            "threads": threads,
+            "threads": thread_summaries,
             "open_thread": None,
             "thread_messages": [],
             "participants": [],
@@ -482,6 +484,14 @@ async def thread(
     # has no presentation-name column. It is the right label whenever they are
     # speaking as the subject of this conversation.
     names[care.access.subject_owner_user_id] = care.subject_display_name
+
+    # A GET changes only this reader's cursor. The service advances to the
+    # latest message it actually selected, so a concurrent later send remains
+    # unread rather than disappearing behind wall-clock now.
+    await care_threads.mark_thread_read(
+        db, context=care.access, thread_id=opened.id
+    )
+    await db.commit()
 
     return templates.TemplateResponse(
         request,

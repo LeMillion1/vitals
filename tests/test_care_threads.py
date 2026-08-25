@@ -434,6 +434,93 @@ async def test_the_default_consent_carries_the_conversation(db_session):
     assert conversation == {PolicyAction.READ, PolicyAction.MESSAGE}
 
 
+# ── Unread state belongs to each participant ────────────────────────────────
+
+
+async def test_a_message_is_unread_only_for_the_other_participant(db_session):
+    owner, subject = await _patient(db_session, "thread-unread")
+    doctor, _rel, _grant = await _take_into_care(
+        db_session, subject=subject, owner=owner, slug="thread-unread-doc"
+    )
+    doctor_context = await _context(db_session, doctor, subject)
+    patient_context = await _context(db_session, owner, subject)
+    thread = await threads.open_thread(
+        db_session, context=doctor_context, title="Bloods"
+    )
+    await threads.send_message(
+        db_session,
+        context=doctor_context,
+        thread_id=thread.id,
+        body="Please fast.",
+    )
+    await db_session.commit()
+
+    assert await threads.unread_marker(
+        db_session, context=doctor_context
+    ) == 0
+    assert await threads.unread_marker(
+        db_session, context=patient_context
+    ) == 1
+    summaries = await threads.list_thread_summaries(
+        db_session, context=patient_context
+    )
+    assert [(item.thread.id, item.unread) for item in summaries] == [
+        (thread.id, True)
+    ]
+
+
+async def test_opening_a_thread_advances_only_that_readers_cursor(db_session):
+    owner, subject = await _patient(db_session, "thread-read-cursor")
+    doctor, _rel, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-read-cursor-doc",
+    )
+    doctor_context = await _context(db_session, doctor, subject)
+    patient_context = await _context(db_session, owner, subject)
+    thread = await threads.open_thread(
+        db_session, context=doctor_context, title="Bloods"
+    )
+    await threads.send_message(
+        db_session,
+        context=doctor_context,
+        thread_id=thread.id,
+        body="First.",
+    )
+    await db_session.commit()
+
+    await threads.mark_thread_read(
+        db_session, context=patient_context, thread_id=thread.id
+    )
+    await db_session.commit()
+    assert await threads.unread_marker(
+        db_session, context=patient_context
+    ) == 0
+
+    # A later professional message is new work; the patient's own reply is not.
+    await threads.send_message(
+        db_session,
+        context=doctor_context,
+        thread_id=thread.id,
+        body="Second.",
+    )
+    await db_session.commit()
+    assert await threads.unread_marker(
+        db_session, context=patient_context
+    ) == 1
+    await threads.send_message(
+        db_session,
+        context=patient_context,
+        thread_id=thread.id,
+        body="Understood.",
+    )
+    await db_session.commit()
+    assert await threads.unread_marker(
+        db_session, context=patient_context
+    ) == 0
+
+
 # ── Nothing is deleted ───────────────────────────────────────────────────────
 
 

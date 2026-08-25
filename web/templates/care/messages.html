@@ -35,42 +35,55 @@
     <div class="v-card p-6 space-y-4">
         {{ card_header(t("care.threads_title")) }}
 
-        {% if may_send %}
-        {# The action names the patient, exactly as the note form does. A tab
-           left open on somebody else starts a conversation with somebody else,
-           which is the point — see web/care_context.py. #}
-        <form action="/care/{{ care.subject_id }}/messages" method="POST" class="space-y-3">
-            <label for="thread-title" class="v-label">{{ t("care.thread_title_label") }}</label>
-            <input id="thread-title" name="title" type="text" class="v-input" required
-                   maxlength="200" placeholder="{{ t('care.thread_title_placeholder') }}">
-            <label for="thread-first-message" class="v-label">{{ t("care.message_label") }}</label>
-            <textarea id="thread-first-message" name="body" rows="4" maxlength="20000"
-                      class="v-input" required
-                      placeholder="{{ t('care.message_placeholder') }}"></textarea>
-            <div class="flex justify-end">
-                <button type="submit" class="v-btn text-xs">{{ t("care.thread_open") }}</button>
-            </div>
-        </form>
-        {% endif %}
-
         {% if threads %}
         <div class="space-y-2">
             {% for item in threads %}
             {# ``flex`` on the anchor, not ``block`` beside it: the two are the
                same property and the later one wins, which is a coin toss to
                read. #}
-            <a href="/care/{{ care.subject_id }}/messages/{{ item.id }}"
+            <a href="/care/{{ care.subject_id }}/messages/{{ item.thread.id }}"
                class="v-card-inset p-4 flex items-center justify-between gap-3">
-                <span class="v-text-body">{{ item.title }}</span>
-                <span class="v-text-micro" style="color: var(--muted)">
-                    {% if item.status == 'closed' %}{{ t("care.thread_closed") }} · {% endif %}
-                    {{ item.updated_at | format_date }}
+                <span class="v-text-body{% if item.unread %} font-semibold{% endif %}">
+                    {{ item.thread.title }}
+                </span>
+                <span class="flex items-center gap-2">
+                    {% if item.unread %}
+                    <span class="v-chip v-chip-sm">{{ t("care.thread_unread") }}</span>
+                    {% endif %}
+                    <span class="v-text-micro" style="color: var(--muted)">
+                        {% if item.thread.status == 'closed' %}{{ t("care.thread_closed") }} · {% endif %}
+                        {{ (item.last_message_at or item.thread.updated_at) | format_date }}
+                    </span>
                 </span>
             </a>
             {% endfor %}
         </div>
         {% else %}
         <p class="v-text-body" style="color: var(--muted)">{{ t("care.threads_empty") }}</p>
+        {% endif %}
+
+        {% if may_send %}
+        {# Existing conversations are the inbox and stay above creation. The
+           empty state opens this immediately; otherwise a native disclosure
+           keeps a large form from pushing new messages below the phone fold. #}
+        <details class="v-card-inset p-4"{% if not threads %} open{% endif %}>
+            <summary class="v-btn-ghost cursor-pointer">{{ t("care.thread_new") }}</summary>
+            {# The action names the patient, exactly as the note form does. A
+               stale tab cannot retarget this conversation through session
+               state. #}
+            <form action="/care/{{ care.subject_id }}/messages" method="POST" class="pt-4 space-y-3">
+                <label for="thread-title" class="v-label">{{ t("care.thread_title_label") }}</label>
+                <input id="thread-title" name="title" type="text" class="v-input" required
+                       maxlength="200" placeholder="{{ t('care.thread_title_placeholder') }}">
+                <label for="thread-first-message" class="v-label">{{ t("care.message_label") }}</label>
+                <textarea id="thread-first-message" name="body" rows="4" maxlength="20000"
+                          class="v-input" required
+                          placeholder="{{ t('care.message_placeholder') }}"></textarea>
+                <div class="flex justify-end">
+                    <button type="submit" class="v-btn text-xs">{{ t("care.thread_open") }}</button>
+                </div>
+            </form>
+        </details>
         {% endif %}
     </div>
     {% endif %}

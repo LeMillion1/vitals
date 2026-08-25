@@ -552,6 +552,43 @@ async def test_a_conversation_starts_with_its_first_message(
     assert message.body == "Please fast for twelve hours."
 
 
+async def test_the_patient_sees_new_until_the_conversation_is_opened(
+    doctor_client,
+):
+    client, _doctor, (owner_a, subject_a), _b = doctor_client
+    opened = await client.post(
+        f"/care/{subject_a.id}/messages",
+        data={"title": "Bloods", "body": "Please fast for twelve hours."},
+        follow_redirects=False,
+    )
+    assert opened.status_code == 303
+    thread_id = opened.headers["location"].rsplit("/", 1)[1]
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client.cookies.set(SESSION_COOKIE, create_session(owner_a.username))
+    inbox = await client.get(
+        f"/care/{subject_a.id}/messages", headers={"Accept": "text/html"}
+    )
+    assert inbox.status_code == 200
+    unread_badges = (
+        'class="v-chip v-chip-sm">Новое</span>',
+        'class="v-chip v-chip-sm">New</span>',
+    )
+    assert any(badge in inbox.text for badge in unread_badges)
+
+    conversation = await client.get(
+        f"/care/{subject_a.id}/messages/{thread_id}",
+        headers={"Accept": "text/html"},
+    )
+    assert conversation.status_code == 200
+    inbox = await client.get(
+        f"/care/{subject_a.id}/messages", headers={"Accept": "text/html"}
+    )
+    assert all(badge not in inbox.text for badge in unread_badges)
+
+
 async def test_another_patients_thread_is_not_reachable_by_its_id(
     doctor_client, db_session
 ):

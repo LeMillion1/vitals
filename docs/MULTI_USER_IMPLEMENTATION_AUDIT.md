@@ -41,7 +41,7 @@ the others remain useful provenance for the remediations named below:
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0065 (head)`; 65 files in `migrations/versions` | Verified |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0066 (head)`; 66 files in `migrations/versions` | Verified |
 | SQLAlchemy tables | `len(Base.metadata.tables)` → 77 | Verified |
 | Ownership registry | `len(OWNERSHIP_REGISTRY)` → 77 | Verified and exhaustive in code |
 | Subject-scoped tables | 64 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
@@ -96,9 +96,11 @@ a current validation result.
   scopes; changing the selection creates a new immutable consent version. Plan
   creation, author-only activation and archival are visible, and notes/plans
   name their author.
-- A new conversation now takes its topic and first message together. Message
-  attachments, unread state, a professional inbox, and a patient notification
-  for accepted invitations remain unbuilt.
+- A new conversation now takes its topic and first message together. Each
+  participant has an independent read cursor, and only newer messages from
+  somebody else count as unread. Message attachments, a cross-patient
+  professional inbox, and a patient notification for accepted invitations
+  remain unbuilt.
 
 ### Controlled support
 
@@ -270,7 +272,7 @@ now writes its synthetic server log to the run's temporary directory, and the
 complete suite passes: 35 scenarios in 93.49 seconds.
 
 The largest remaining confirmed UX gaps are the missing invitation task/inbox,
-conversations without unread state, support expiry shown without time/countdown,
+support expiry shown without time/countdown,
 low-contrast `--faint` microcopy outside the touched care screens, and roster
 cards without urgency or recent-activity prioritization.
 
@@ -308,9 +310,20 @@ Post-audit credential cutover validation on `7523d26`:
 - Compose rebuilt at head and `/health` returned 200; the OAuth patient picker
   was inspected at 1440×900 and 390×844 with no browser console errors.
 
+Post-audit care unread cutover validation on the `0066` tree:
+
+- 59 focused care-thread, care-UI, and i18n tests passed; the broader UI/static
+  contract selection passed 401 tests;
+- a fresh PostgreSQL 15 instance completed `head → 0034 → head`, then 54 focused
+  care and RLS tests passed;
+- the full fast suite passed 4,637 tests, skipped 168, and deselected 35;
+- Compose upgraded the retained synthetic stack to `0066`, `/health` returned
+  200, and the unread-first conversation list was inspected at desktop and
+  phone widths with no browser console errors.
+
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun
-after `0065`:
+after the later revisions:
 
 - focused ownership/runbook contracts: 12 passed;
 - design/static/mobile contracts: 313 passed;

@@ -79,7 +79,7 @@ page needs the same edit:
 | the backfill phases | `OWNERSHIP_BACKFILL_SEQUENCE` in `vitals/ownership_deploy.py` | 18 |
 | the domains | `vitals.enums.Domain` | 14 |
 | the scheduled jobs | `vitals/scheduler/jobs.py` | 14, of which 11 fan out per record |
-| migration count | `migrations/versions/` | 65, head `0065` |
+| migration count | `migrations/versions/` | 66, head `0066` |
 | RLS table count | revisions `0050` + `0051` + `0055` + `0056` + `0057` + `0060` + `0061` + `0062` + `0063` + `0065`, asserted in `tests/test_row_level_security.py` | 64 |
 | platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 8 |
 | routers, application-service modules | `web/routers/`, `vitals/services/` | 28 and 96 |

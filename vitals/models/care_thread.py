@@ -137,12 +137,22 @@ class CareThreadParticipant(Base):
             "(relationship_id IS NULL) OR (removed_at IS NULL OR removed_at > joined_at)",
             name="ck_care_thread_participants_removal",
         ),
+        CheckConstraint(
+            "last_read_at >= joined_at",
+            name="ck_care_thread_participants_read_cursor",
+        ),
         Index(
             "ix_care_thread_participants_subject_user",
             "subject_id",
             "user_id",
         ),
         Index("ix_care_thread_participants_thread", "thread_id"),
+        Index(
+            "ix_care_thread_participants_user_unread",
+            "user_id",
+            "subject_id",
+            "last_read_at",
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -166,6 +176,12 @@ class CareThreadParticipant(Base):
         nullable=True,
     )
     joined_at: Mapped[datetime] = _created_at()
+    #: Per-reader cursor. It advances only to a message this participant has
+    #: actually opened (or authored), never to wall-clock "now", so a message
+    #: racing with a page read cannot be swallowed as already seen.
+    last_read_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     #: Set rather than deleted. Somebody who left is part of the record of who
     #: was in the room when a thing was said.
     removed_at: Mapped[Optional[datetime]] = mapped_column(

@@ -27,10 +27,10 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0065` — 65 revisions |
+| Alembic head | `0066` — 66 revisions |
 | Schema | 77 tables; 64 carry `subject_id` and are covered by an RLS policy; 53 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,634 fast passed / 168 skipped; 518 focused UI/OAuth tests; migration plus 53 focused PostgreSQL tests |
+| Suites | 4,637 fast passed / 168 skipped; 518 focused UI/OAuth tests; migration plus 54 focused PostgreSQL care/RLS tests |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -1524,6 +1524,10 @@ Delivered, as three tables and one service:
   back to `(thread, subject)` — a message filed under somebody else's thread
   would be invisible to its own patient and visible to another, and the
   constraint is why it cannot exist.
+- Revision `0066` adds one durable read cursor per participant. Unread means a
+  newer message from somebody else, not merely an open thread; opening a thread
+  advances only to the latest persisted message, so a concurrent send remains
+  new.
 - **The subject is a participant from the moment a thread exists, and cannot be
   removed by anybody including themselves.** That is enforced in
   `remove_participant` rather than documented, and it is the difference between
