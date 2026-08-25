@@ -90,7 +90,7 @@ async def _openrouter_connection(
 
 def _upload() -> UploadFile:
     return UploadFile(
-        BytesIO(b"synthetic-lab-document"),
+        BytesIO(b"\x89PNG\r\n\x1a\nsynthetic-lab-document"),
         filename="panel.png",
         headers=Headers({"content-type": "image/png"}),
     )
