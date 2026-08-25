@@ -74,6 +74,11 @@ PHI-free audit event on the first successful release. The file is assembled only
 in request memory and returned with private no-store headers; no reusable export
 artifact is kept by the service.
 
+Docker build contexts exclude local medical uploads, provider sessions, OAuth
+token files, environment variants, private keys/certificates, local databases,
+and backups. A runtime bind mount can hide a path in a running container but
+cannot remove bytes already captured by an earlier `COPY` image layer.
+
 Browser cookies are signed, not encrypted. New compatibility cookies carry only
 a format version, token type, legacy auth source, and username; roles, subjects,
 grants, credentials, and PHI are deliberately excluded. Existing signed

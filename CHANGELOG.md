@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — private health files excluded from Docker image layers
+
+The Docker build context now excludes legacy medical uploads, Garmin sessions,
+OAuth token files, every local environment variant, private keys/certificates,
+local databases, backups, and IDE state. Runtime bind mounts and volumes do not
+protect build layers: without these exclusions, `COPY . .` could retain ignored
+host health data or credentials inside a locally built image.
+
 ### Fixed — personal portability v1 refuses unrestorable resource graphs
 
 Personal v1 exports no longer emit JSON that silently drops a required provider

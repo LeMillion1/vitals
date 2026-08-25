@@ -13,9 +13,21 @@ node_modules/
 web/node_modules/
 
 # Secrets + local artifacts (env is injected at runtime via compose env_file)
-.env
-.env.local
+.env*
+config.local.*
+*.pem
+*.key
+*.crt
+*.cert
+private_key.txt
+oauth_tokens*.json
+garmin_session/
+.garmin_session/
+*garmin*session*
+web/static/uploads/
 *.db
+*.sqlite
+*.sqlite3
 backups/
 .coverage
 htmlcov/
@@ -23,5 +35,6 @@ htmlcov/
 # Repo / scratch
 .git/
 .gitignore
+.idea/
 test_*.txt
 _boot_check.py
