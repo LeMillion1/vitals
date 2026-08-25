@@ -144,7 +144,11 @@ async def principal_user_id(request: Request, session: AsyncSession) -> uuid.UUI
 
 
 async def resolve_care_context(
-    session: AsyncSession, *, user_id: uuid.UUID, subject_id: uuid.UUID
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    subject_id: uuid.UUID,
+    support_grant_id: uuid.UUID | None = None,
 ) -> CareContext:
     """Build the context for one professional looking at one patient.
 
@@ -155,7 +159,10 @@ async def resolve_care_context(
 
     try:
         access = await resolve_access_context(
-            session, user_id=user_id, subject_id=subject_id
+            session,
+            user_id=user_id,
+            subject_id=subject_id,
+            support_grant_id=support_grant_id,
         )
     except AccessResolutionError:
         raise _MISSING from None
@@ -256,13 +263,27 @@ async def require_care_context(
     """
 
     user_id = await principal_user_id(request, db)
+    selectors = request.query_params.getlist("support_grant_id")
+    if len(selectors) > 1:
+        raise _MISSING
+    support_grant_id = None
+    if selectors:
+        try:
+            support_grant_id = uuid.UUID(selectors[0])
+        except (TypeError, ValueError, AttributeError):
+            raise _MISSING from None
     # This delivery path can serve exactly the subject named in the URL. Bind
     # that isolation boundary before resolution because a support grant is
     # itself subject-protected under PostgreSQL RLS and cannot be inspected in
     # an unbound transaction. Binding is not authorization: the policy context
     # below must still prove ownership, live care, or an exact support grant.
     await bind_session_subject(db, subject_id)
-    return await resolve_care_context(db, user_id=user_id, subject_id=subject_id)
+    return await resolve_care_context(
+        db,
+        user_id=user_id,
+        subject_id=subject_id,
+        support_grant_id=support_grant_id,
+    )
 
 
 __all__ = [

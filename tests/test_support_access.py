@@ -11,6 +11,7 @@ bounded in time and in scope. Either side can end it. Nothing is deleted.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
@@ -1270,6 +1271,200 @@ async def test_a_granted_record_opens_and_shows_only_what_was_granted(
     assert '<div class="mh-eyebrow">Анализы</div>' not in page.text
     assert '<div class="mh-eyebrow">Nutrition</div>' not in page.text
     assert '<div class="mh-eyebrow">Питание</div>' not in page.text
+
+
+async def test_same_admin_grants_stay_exact_from_console_link_through_audit(
+    client, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from vitals.services.access_resolution import SupportGrantSelectionError
+
+    admin = await _admin(db_session, "care-support-multi-admin")
+    grants = {}
+    for domain in (Domain.LABS, Domain.NUTRITION):
+        request = await support.open_request(
+            db_session,
+            admin_user_id=admin.id,
+            subject_id=legacy_owner_roots.subject_id,
+            reason=f"Checking the synthetic {domain.value} import.",
+            scopes=support.read_scopes_for((domain,)),
+        )
+        grants[domain] = await support.approve_request(
+            db_session,
+            owner_user_id=legacy_owner_roots.user_id,
+            request_id=request.id,
+        )
+    await db_session.commit()
+    grant_ids = {domain: grant.id for domain, grant in grants.items()}
+
+    with pytest.raises(SupportGrantSelectionError):
+        await resolve_access_context(
+            db_session,
+            user_id=admin.id,
+            subject_id=legacy_owner_roots.subject_id,
+        )
+    for domain, grant in grants.items():
+        selected = await resolve_access_context(
+            db_session,
+            user_id=admin.id,
+            subject_id=legacy_owner_roots.subject_id,
+            support_grant_id=grant_ids[domain],
+        )
+        assert selected.support_grant is not None
+        assert selected.support_grant.grant_id == grant_ids[domain]
+        assert {scope.resource_key for scope in selected.support_grant.scopes} == {
+            domain.value
+        }
+
+    _sign_in(client, admin.username)
+    console = await client.get(
+        "/settings/platform/support", headers={"Accept": "text/html"}
+    )
+    assert console.status_code == 200
+    for grant_id in grant_ids.values():
+        assert (
+            f'/care/{legacy_owner_roots.subject_id}?support_grant_id={grant_id}'
+            in console.text
+        )
+
+    async def exact_synthetic_projection(_db, care):
+        from datetime import date
+
+        from vitals.services.care.record_projection import RecordProjection
+
+        allowed = {
+            scope.resource_key
+            for scope in care.access.support_grant.scopes
+            if scope.resource_type is PolicyResourceType.DOMAIN
+        }
+        visible_key = next(iter(allowed))
+        return RecordProjection(
+            record={
+                Domain.LABS.value: {"out_of_range": []},
+                Domain.NUTRITION.value: {
+                    "avg_calories_per_day": None,
+                    "avg_protein_per_day_g": None,
+                    "days_with_logs": 0,
+                },
+            },
+            coverage={
+                Domain.LABS.value: {
+                    "status": (
+                        "available" if Domain.LABS.value in allowed else "disabled"
+                    ),
+                    "module": Domain.LABS.value,
+                },
+                Domain.NUTRITION.value: {
+                    "status": (
+                        "available"
+                        if Domain.NUTRITION.value in allowed
+                        else "disabled"
+                    ),
+                    "module": Domain.NUTRITION.value,
+                },
+            },
+            period={"period_start": date(2026, 1, 1), "period_end": date(2026, 1, 7)},
+            withheld_domains=(),
+            loaded_domains=(visible_key,),
+            restricted=True,
+        )
+
+    monkeypatch.setattr("web.routers.care._visible_record", exact_synthetic_projection)
+    rendered = {}
+    for domain, grant_id in grant_ids.items():
+        page = await client.get(
+            f"/care/{legacy_owner_roots.subject_id}?support_grant_id={grant_id}",
+            headers={"Accept": "text/html"},
+        )
+        assert page.status_code == 200
+        rendered[domain] = page.text
+
+    labs_cards = (
+        '<div class="mh-eyebrow">Labs</div>',
+        '<div class="mh-eyebrow">Анализы</div>',
+    )
+    nutrition_cards = (
+        '<div class="mh-eyebrow">Nutrition</div>',
+        '<div class="mh-eyebrow">Питание</div>',
+    )
+    assert any(card in rendered[Domain.LABS] for card in labs_cards)
+    assert not any(card in rendered[Domain.LABS] for card in nutrition_cards)
+    assert any(card in rendered[Domain.NUTRITION] for card in nutrition_cards)
+    assert not any(card in rendered[Domain.NUTRITION] for card in labs_cards)
+
+    events = list(
+        (
+            await db_session.execute(
+                select(AuditEvent)
+                .where(AuditEvent.event_type == support.EVENT_RECORD_OPENED)
+                .order_by(AuditEvent.occurred_at, AuditEvent.id)
+            )
+        ).scalars()
+    )
+    assert {event.support_access_grant_id for event in events} == {
+        grant_ids[Domain.LABS],
+        grant_ids[Domain.NUTRITION],
+    }
+    assert len(events) == 2
+    audit_count = len(events)
+
+    other_admin = await _admin(db_session, "care-support-foreign-admin")
+    foreign_request = await support.open_request(
+        db_session,
+        admin_user_id=other_admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="A synthetic grant belonging to another administrator.",
+        scopes=support.read_scopes_for((Domain.WEIGHT,)),
+    )
+    foreign_grant = await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=foreign_request.id,
+    )
+    await db_session.commit()
+    foreign_grant_id = foreign_grant.id
+
+    async def phi_read_would_be_a_bug(*_args, **_kwargs):
+        raise AssertionError("invalid support selector reached the PHI projection")
+
+    monkeypatch.setattr("web.routers.care._visible_record", phi_read_would_be_a_bug)
+    refused_urls = (
+        f"/care/{legacy_owner_roots.subject_id}",
+        f"/care/{legacy_owner_roots.subject_id}?support_grant_id={uuid.uuid4()}",
+        f"/care/{legacy_owner_roots.subject_id}?support_grant_id=not-a-uuid",
+        f"/care/{legacy_owner_roots.subject_id}?support_grant_id={grant_ids[Domain.LABS]}"
+        f"&support_grant_id={grant_ids[Domain.NUTRITION]}",
+        f"/care/{legacy_owner_roots.subject_id}?support_grant_id={foreign_grant_id}",
+    )
+    for url in refused_urls:
+        refused = await client.get(url, headers={"Accept": "text/html"})
+        assert refused.status_code == 404
+
+    await support.revoke_grant(
+        db_session,
+        actor_user_id=legacy_owner_roots.user_id,
+        grant_id=grant_ids[Domain.LABS],
+        reason="Synthetic owner revocation.",
+    )
+    await db_session.commit()
+    revoked = await client.get(
+        f"/care/{legacy_owner_roots.subject_id}"
+        f"?support_grant_id={grant_ids[Domain.LABS]}",
+        headers={"Accept": "text/html"},
+    )
+    assert revoked.status_code == 404
+    assert (
+        int(
+            await db_session.scalar(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.event_type == support.EVENT_RECORD_OPENED)
+            )
+            or 0
+        )
+        == audit_count
+    )
 
 
 async def test_each_support_record_response_commits_one_phi_free_read_event(

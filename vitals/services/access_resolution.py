@@ -59,6 +59,10 @@ class AccessDeniedError(AccessResolutionError):
     """The policy engine refused this exact resource and action."""
 
 
+class SupportGrantSelectionError(AccessResolutionError):
+    """An exact support grant was invalid or an implicit choice was ambiguous."""
+
+
 async def _load_principal(session: AsyncSession, user_id: uuid.UUID) -> Principal:
     with session.no_autoflush:
         row = (
@@ -93,6 +97,7 @@ async def resolve_access_context(
     user_id: uuid.UUID,
     subject_id: uuid.UUID | None,
     evaluated_at: datetime | None = None,
+    support_grant_id: uuid.UUID | None = None,
 ) -> AccessContext:
     """Build the immutable snapshot one policy evaluation is decided from.
 
@@ -112,6 +117,12 @@ async def resolve_access_context(
 
     if not isinstance(user_id, uuid.UUID) or user_id.int == 0:
         raise AccessResolutionError("user_id must be a non-zero UUID")
+    if support_grant_id is not None and (
+        not isinstance(support_grant_id, uuid.UUID) or support_grant_id.int == 0
+    ):
+        raise SupportGrantSelectionError(
+            "support_grant_id must be a non-zero UUID when supplied"
+        )
     principal = await _load_principal(session, user_id)
 
     with session.no_autoflush:
@@ -160,6 +171,12 @@ async def resolve_access_context(
                 professional_user_id=principal.user_id,
                 evaluated_at=decided_at,
             )
+        relationship_is_live = bool(
+            relationship_grant is not None
+            and relationship_grant.active
+            and relationship_grant.revoked_at is None
+            and decided_at < relationship_grant.expires_at
+        )
 
         # Only for an actual superadmin, and only for somebody else's record.
         # This module's docstring has promised support grants were read here
@@ -168,16 +185,45 @@ async def resolve_access_context(
         # authorized exactly nothing. Gated on the role so an ordinary
         # professional's request does not pay for a query that can only ever
         # answer "no".
-        if UserRoleName.PLATFORM_SUPERADMIN in principal.roles:
-            from vitals.services.support_access_service import load_support_grant
+        if UserRoleName.PLATFORM_SUPERADMIN in principal.roles and (
+            support_grant_id is not None or not relationship_is_live
+        ):
+            from vitals.services.support_access_service import (
+                AmbiguousSupportGrant,
+                NotAPlatformAdmin,
+                load_support_grant,
+            )
 
-            with session.no_autoflush:
-                support_grant = await load_support_grant(
-                    session,
-                    subject_id=resolved_subject_id,
-                    admin_user_id=principal.user_id,
-                    evaluated_at=decided_at,
+            try:
+                with session.no_autoflush:
+                    support_grant = await load_support_grant(
+                        session,
+                        subject_id=resolved_subject_id,
+                        admin_user_id=principal.user_id,
+                        evaluated_at=decided_at,
+                        support_grant_id=support_grant_id,
+                    )
+            except (AmbiguousSupportGrant, NotAPlatformAdmin) as exc:
+                raise SupportGrantSelectionError(
+                    "support grant selection was refused"
+                ) from exc
+            if support_grant_id is not None and support_grant is None:
+                raise SupportGrantSelectionError(
+                    "the selected support grant is not live for this actor and subject"
                 )
+            if support_grant_id is not None:
+                # An explicit support door is one authorization basis, not an
+                # invitation to union it with this account's professional
+                # consent. The selected grant's exact scopes stand alone.
+                relationship_grant = None
+        elif support_grant_id is not None:
+            raise SupportGrantSelectionError(
+                "only platform support may select a support grant"
+            )
+    elif support_grant_id is not None:
+        raise SupportGrantSelectionError(
+            "self access cannot be based on a support grant selector"
+        )
 
     return AccessContext(
         principal=principal,
@@ -236,6 +282,7 @@ __all__ = [
     "NoAccessibleSubjectError",
     "PrincipalNotFoundError",
     "SubjectNotFoundError",
+    "SupportGrantSelectionError",
     "require_access",
     "resolve_access_context",
 ]

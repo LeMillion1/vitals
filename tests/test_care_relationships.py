@@ -213,6 +213,74 @@ async def test_both_together_open_exactly_what_was_agreed(db_session):
     assert not await _may(db_session, professional, subject, key="system")
 
 
+async def test_professional_path_is_not_shadowed_by_ambiguous_support_grants(
+    db_session,
+):
+    from vitals.services import support_access_service as support
+
+    owner, subject, professional, relationship = await _in_care(
+        db_session, "care-support-dual-role"
+    )
+    await relationships.grant_consent(
+        db_session, relationship_id=relationship.id, actor_user_id=owner.id
+    )
+    db_session.add(
+        UserRole(
+            user_id=professional.id,
+            role=UserRoleName.PLATFORM_SUPERADMIN.value,
+        )
+    )
+    await db_session.flush()
+
+    support_grants = {}
+    for domain in (Domain.LABS, Domain.NUTRITION):
+        request = await support.open_request(
+            db_session,
+            admin_user_id=professional.id,
+            subject_id=subject.id,
+            reason=f"Synthetic dual-role {domain.value} check.",
+            scopes=support.read_scopes_for((domain,)),
+        )
+        support_grants[domain] = await support.approve_request(
+            db_session, owner_user_id=owner.id, request_id=request.id
+        )
+    await db_session.commit()
+
+    professional_context = await resolve_access_context(
+        db_session, user_id=professional.id, subject_id=subject.id
+    )
+    assert professional_context.relationship_grant is not None
+    assert professional_context.support_grant is None
+
+    selected = await resolve_access_context(
+        db_session,
+        user_id=professional.id,
+        subject_id=subject.id,
+        support_grant_id=support_grants[Domain.LABS].id,
+    )
+    assert selected.relationship_grant is None
+    assert selected.support_grant is not None
+    assert selected.support_grant.grant_id == support_grants[Domain.LABS].id
+    assert is_allowed(
+        selected,
+        AccessRequest(
+            subject_id=subject.id,
+            resource_type=PolicyResourceType.DOMAIN,
+            resource_key=Domain.LABS.value,
+            action=PolicyAction.READ,
+        ),
+    )
+    assert not is_allowed(
+        selected,
+        AccessRequest(
+            subject_id=subject.id,
+            resource_type=PolicyResourceType.DOMAIN,
+            resource_key=Domain.NUTRITION.value,
+            action=PolicyAction.READ,
+        ),
+    )
+
+
 async def test_the_role_alone_is_still_nothing(db_session):
     """Holding the doctor role has never been access and must not become it."""
 

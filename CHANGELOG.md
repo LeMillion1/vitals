@@ -8,6 +8,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — support openings select one exact grant
+
+Every operator-console record link now carries the ID of the grant whose
+sections it displays. The care resolver validates that exact grant against the
+subject, holder, live administrator role, status, expiry, and scopes, and the
+successful read event records that same ID. Two simultaneous grants held by one
+administrator are never merged or chosen by expiry order; an ambiguous direct
+URL and malformed, foreign, expired, or revoked selectors return the same 404
+before a medical query or success audit can run.
+
+An administrator who also has a live professional relationship keeps the
+ordinary doctor or trainer path when no support selector is present. Choosing
+an exact support link switches to that support grant alone, so professional
+consent cannot silently broaden the selected support opening.
+
 ### Fixed — care records query only authorized sections
 
 The professional and support record screen no longer builds a full cross-domain

@@ -1011,6 +1011,16 @@ async def test_real_postgres_support_disclosure_and_patient_history_bind_one_sub
             grant = await support.approve_request(
                 seed, owner_user_id=owner.id, request_id=request.id
             )
+            second_request = await support.open_request(
+                seed,
+                admin_user_id=operator.id,
+                subject_id=subject.id,
+                reason="Second synthetic RLS support check.",
+                scopes=support.read_scopes_for((Domain.NUTRITION,)),
+            )
+            await support.approve_request(
+                seed, owner_user_id=owner.id, request_id=second_request.id
+            )
             owner_id = owner.id
             operator_id = operator.id
             subject_id = subject.id
@@ -1035,6 +1045,7 @@ async def test_real_postgres_support_disclosure_and_patient_history_bind_one_sub
                     "type": "http",
                     "method": "GET",
                     "path": f"/care/{subject_id}",
+                    "query_string": f"support_grant_id={grant_id}".encode("ascii"),
                     "headers": [
                         (
                             b"cookie",
@@ -1051,6 +1062,10 @@ async def test_real_postgres_support_disclosure_and_patient_history_bind_one_sub
             )
             context = care.access
             assert context.support_grant is not None
+            assert context.support_grant.grant_id == grant_id
+            assert {scope.resource_key for scope in context.support_grant.scopes} == {
+                Domain.LABS.value
+            }
             assert not in_platform_scope(disclosure)
             await support.record_record_opened(
                 disclosure,

@@ -131,6 +131,12 @@ a current validation result.
 - Every support mutation now requires authentication performed within the last
   15 minutes. OIDC step-up uses `prompt=login` and validates the returned
   `auth_time`; legacy mode clears the stale cookie and requires login again.
+- The operator console opens one exact grant. The selected ID is rechecked
+  against subject, holder, role, status, expiry, and scopes and is carried to
+  the immutable read event. Multiple grants held by the same administrator are
+  never merged or guessed between; ambiguous and invalid direct URLs fail
+  before PHI is queried. A dual-role doctor/administrator keeps the professional
+  path unless an explicit support link is selected.
 - Every successful support-granted record response now commits one PHI-free,
   grant-correlated read event before medical HTML is returned. The patient's
   access centre shows the operator, exact local timestamp, and approved scopes
@@ -160,9 +166,6 @@ a current validation result.
   directly from the database clock without writing on GET, prioritizes requests
   that still need an answer, and attributes live, natural-expiry, owner-revoked,
   and holder-returned grant lifecycles with exact local timestamps.
-- One administrator holding multiple disjoint live grants for the same subject
-  is still resolved by an implicit expiry ordering when opening `/care`; an
-  exact grant selector and fail-closed ambiguous direct URL remain required.
 
 ### OIDC
 
@@ -514,6 +517,11 @@ diff checks passed, and Tailwind rebuilt through the pinned local Node 24
 runtime without a generated CSS change. PostgreSQL and Compose are rerun at the
 combined controlled-support gate below rather than claimed by this query-only
 slice.
+
+Exact same-administrator grant selection then passed 102 focused access,
+relationship, support, and templating tests (three PostgreSQL-only skips), plus
+focused Ruff and diff checks. The new PostgreSQL RLS selector case is included
+in the combined controlled-support gate rather than reported as a local pass.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

@@ -119,6 +119,10 @@ class GrantNotFound(SupportAccessError):
     """No such grant, or not one this actor may act on."""
 
 
+class AmbiguousSupportGrant(SupportAccessError):
+    """More than one live grant exists and the caller did not select one."""
+
+
 class RequestNotPending(SupportAccessError):
     """The request has already been answered, withdrawn, or has lapsed."""
 
@@ -571,17 +575,18 @@ async def load_support_grant(
     subject_id: uuid.UUID,
     admin_user_id: uuid.UUID,
     evaluated_at: datetime,
+    support_grant_id: uuid.UUID | None = None,
 ) -> SupportGrant | None:
-    """Assemble the snapshot the policy decides one support request from.
+    """Assemble one exact, live support grant snapshot for policy evaluation.
 
-    Returns ``None`` whenever anything is missing, which is not a refusal: the
-    policy is deny-by-default and a missing grant leaves it that way. Everything
-    returned here is re-checked in :func:`vitals.access.is_allowed` — the
-    grantee, the status, the expiry, the mode ceiling and the exact scope — so
-    this being permissive by mistake still cannot authorize anything on its own.
+    A supplied id must match this subject and grantee and be live. Without one,
+    the historical direct URL remains compatible only when exactly one grant is
+    live. Two grants are never merged and never guessed between: ambiguity is a
+    refusal that the delivery layer renders as the same 404 as every other miss.
     """
 
-    grant = await session.scalar(
+    await _require_platform_admin(session, user_id=admin_user_id)
+    statement = (
         select(SupportAccessGrant)
         .options(selectinload(SupportAccessGrant.scopes))
         .where(
@@ -590,11 +595,27 @@ async def load_support_grant(
             SupportAccessGrant.status == SupportAccessStatus.ACTIVE.value,
             SupportAccessGrant.expires_at > evaluated_at,
         )
-        .order_by(SupportAccessGrant.expires_at.desc())
-        .limit(1)
     )
-    if grant is None:
+    if support_grant_id is not None:
+        statement = statement.where(SupportAccessGrant.id == support_grant_id)
+    grants = list(
+        (
+            await session.execute(
+                statement.order_by(
+                    SupportAccessGrant.expires_at.desc(), SupportAccessGrant.id
+                ).limit(2)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not grants:
         return None
+    if support_grant_id is None and len(grants) > 1:
+        raise AmbiguousSupportGrant(
+            "multiple live support grants require an exact grant selector"
+        )
+    grant = grants[0]
     return SupportGrant(
         grant_id=grant.id,
         granted_to_user_id=grant.granted_to_user_id,
@@ -1239,6 +1260,7 @@ async def expire_stale(session: AsyncSession) -> tuple[int, int]:
 
 
 __all__ = [
+    "AmbiguousSupportGrant",
     "DEFAULT_GRANT_TTL",
     "GrantNotFound",
     "MAX_GRANT_TTL",

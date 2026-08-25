@@ -33,7 +33,7 @@
                     <time datetime="{{ grant.expires_at.isoformat() }}">{{ grant.expires_at | format_datetime }}</time>
                 </span>
                 <div class="flex flex-wrap gap-3">
-                    <a href="/care/{{ grant.subject_id }}" class="v-btn-ghost text-xs">{{ t("support.open_record") }}</a>
+                    <a href="/care/{{ grant.subject_id }}?support_grant_id={{ grant.grant_id }}" class="v-btn-ghost text-xs">{{ t("support.open_record") }}</a>
                     <form action="/settings/platform/support/grant/{{ grant.grant_id }}/revoke" method="POST">
                         <input type="hidden" name="subject_id" value="{{ grant.subject_id }}">
                         <button type="submit" class="v-btn-ghost text-xs">{{ t("support.hand_back") }}</button>
