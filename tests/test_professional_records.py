@@ -73,6 +73,7 @@ async def _in_care_with_consent(session, slug: str, *, scopes=None):
         session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status="pending",
         status="verified",
     )
     issued = await invitations.invite(
@@ -256,6 +257,7 @@ async def test_a_second_professional_cannot_edit_the_first_ones_note(db_session)
         db_session,
         profile_id=second_profile.id,
         reviewer_user_id=second_operator.id,
+        expected_status="pending",
         status="verified",
     )
     issued = await invitations.invite(

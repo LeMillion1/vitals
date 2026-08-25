@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import (
     CheckConstraint,
@@ -29,6 +29,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    event,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -147,6 +148,88 @@ class ProfessionalProfile(Base):
     verified_by: Mapped[Optional[User]] = relationship(
         foreign_keys=[verified_by_user_id]
     )
+    review_decisions: Mapped[list["ProfessionalReviewDecision"]] = relationship(
+        back_populates="profile",
+        order_by="ProfessionalReviewDecision.created_at",
+    )
+
+
+class ProfessionalReviewDecision(Base):
+    """One immutable operator transition, including the reason seen at the time."""
+
+    __tablename__ = "professional_review_decisions"
+    __table_args__ = (
+        CheckConstraint(
+            f"from_status IN ({_values(ProfessionalVerificationStatus)})",
+            name="ck_professional_review_decisions_from_status",
+        ),
+        CheckConstraint(
+            f"to_status IN ({_values(ProfessionalVerificationStatus)})",
+            name="ck_professional_review_decisions_to_status",
+        ),
+        CheckConstraint(
+            "(from_status = 'pending' AND to_status IN ('verified', 'rejected')) "
+            "OR (from_status = 'verified' AND to_status = 'suspended') "
+            "OR (from_status = 'suspended' AND to_status = 'verified')",
+            name="ck_professional_review_decisions_transition",
+        ),
+        CheckConstraint(
+            "(to_status IN ('rejected', 'suspended') "
+            "AND note IS NOT NULL AND length(trim(note)) > 0 "
+            "AND length(note) <= 2000) OR "
+            "(to_status NOT IN ('rejected', 'suspended') AND note IS NULL)",
+            name="ck_professional_review_decisions_note",
+        ),
+        Index(
+            "ix_professional_review_decisions_profile_created",
+            "profile_id",
+            "created_at",
+        ),
+        Index(
+            "ix_professional_review_decisions_reviewer_created",
+            "reviewer_user_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    profile_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("professional_profiles.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    reviewer_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    from_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+
+    profile: Mapped[ProfessionalProfile] = relationship(
+        back_populates="review_decisions"
+    )
+    reviewer: Mapped[User] = relationship(foreign_keys=[reviewer_user_id])
+
+
+def _reject_professional_review_mutation(
+    _mapper: Any, _connection: Any, _target: ProfessionalReviewDecision
+) -> None:
+    raise ValueError("professional_review_decisions are append-only")
+
+
+event.listen(
+    ProfessionalReviewDecision,
+    "before_update",
+    _reject_professional_review_mutation,
+)
+event.listen(
+    ProfessionalReviewDecision,
+    "before_delete",
+    _reject_professional_review_mutation,
+)
 
 
 
@@ -675,4 +758,5 @@ __all__ = [
     "ProfessionalInvitation",
     "ProfessionalNote",
     "ProfessionalProfile",
+    "ProfessionalReviewDecision",
 ]

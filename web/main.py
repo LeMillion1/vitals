@@ -927,6 +927,9 @@ from web.routers.support_access import (  # noqa: E402
     admin_router as support_admin_router,
     patient_router as support_patient_router,
 )
+from web.routers.professional_reviews import (  # noqa: E402
+    router as professional_reviews_router,
+)
 from web.routers.glp1 import router as glp1_router  # noqa: E402
 from web.routers.supplements import router as supplements_router  # noqa: E402
 from web.routers.hrt import router as hrt_router  # noqa: E402
@@ -973,9 +976,10 @@ app.include_router(messages_router)
 # The API never returns a device list or any subject/care identifiers.
 app.include_router(web_push_router)
 # Both sides of a support grant. Registered before the settings router for
-# the reason the consents router is: /settings/platform/support and
+# the reason the consents router is: the platform support/professional paths and
 # /settings/access must be matched by their own routes rather than swallowed.
 app.include_router(support_admin_router)
+app.include_router(professional_reviews_router)
 app.include_router(support_patient_router)
 app.include_router(garmin_router)
 app.include_router(labs_router)

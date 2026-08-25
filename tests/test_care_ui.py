@@ -78,6 +78,7 @@ async def _take_into_care(session, *, owner, subject, professional, consent=True
             session,
             profile_id=profile.id,
             reviewer_user_id=operator.id,
+            expected_status="pending",
             status="verified",
         )
     email = f"{professional.username}@example.test"
@@ -135,6 +136,7 @@ async def doctor_client(client, db_session, legacy_owner_roots):
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status="pending",
         status="verified",
     )
 
@@ -244,6 +246,7 @@ async def test_a_rejected_professional_can_correct_the_same_profile(
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status="pending",
         status="rejected",
         note="Use the public register number",
     )
@@ -652,6 +655,7 @@ async def test_a_suspension_closes_the_roster_record_and_direct_routes(
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status="verified",
         status="suspended",
         note="Synthetic licence withdrawal",
     )

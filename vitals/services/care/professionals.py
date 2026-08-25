@@ -16,6 +16,7 @@ questions and they get different tables.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
@@ -23,13 +24,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
+    AuditOutcome,
     ProfessionalKind,
     ProfessionalVerificationStatus,
     UserRoleName,
     UserStatus,
 )
-from vitals.models.identity import User, UserRole
-from vitals.models.professional import ProfessionalProfile
+from vitals.models.identity import AuditEvent, User, UserRole
+from vitals.models.professional import ProfessionalProfile, ProfessionalReviewDecision
 from vitals.services.identity_service import acquire_identity_governance_lock
 
 #: Statuses a professional may put their own profile into. Everything else is an
@@ -48,6 +50,55 @@ ROLE_FOR_KIND = {
     ProfessionalKind.DOCTOR: UserRoleName.DOCTOR,
     ProfessionalKind.TRAINER: UserRoleName.TRAINER,
 }
+
+_AUDIT_SURFACE = "care.professionals"
+
+_REVIEW_TRANSITIONS = frozenset(
+    {
+        (
+            ProfessionalVerificationStatus.PENDING,
+            ProfessionalVerificationStatus.VERIFIED,
+        ),
+        (
+            ProfessionalVerificationStatus.PENDING,
+            ProfessionalVerificationStatus.REJECTED,
+        ),
+        (
+            ProfessionalVerificationStatus.VERIFIED,
+            ProfessionalVerificationStatus.SUSPENDED,
+        ),
+        (
+            ProfessionalVerificationStatus.SUSPENDED,
+            ProfessionalVerificationStatus.VERIFIED,
+        ),
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ProfessionalReviewHistoryEntry:
+    from_status: str
+    to_status: str
+    reviewer_username: str
+    note: str | None
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ProfessionalReviewEntry:
+    """The bounded account claim an operator may review; never a health record."""
+
+    profile_id: uuid.UUID
+    user_id: uuid.UUID
+    username: str
+    kind: str
+    verification_status: str
+    display_name: str
+    credential_reference: str | None
+    review_note: str | None
+    created_at: datetime
+    updated_at: datetime
+    history: tuple[ProfessionalReviewHistoryEntry, ...]
 
 
 class ProfessionalError(RuntimeError):
@@ -210,12 +261,13 @@ async def _require_reviewer(session: AsyncSession, reviewer_user_id: uuid.UUID) 
     approved this" stays a statement about two people rather than one.
     """
 
-    await _active_user(session, reviewer_user_id)
-    roles = set(
-        await session.scalars(
-            select(UserRole.role).where(UserRole.user_id == reviewer_user_id)
+    with session.no_autoflush:
+        await _active_user(session, reviewer_user_id)
+        roles = set(
+            await session.scalars(
+                select(UserRole.role).where(UserRole.user_id == reviewer_user_id)
+            )
         )
-    )
     if UserRoleName.PLATFORM_SUPERADMIN.value not in roles:
         raise NotAReviewerError("verifying a professional is an operator's decision")
 
@@ -225,6 +277,7 @@ async def decide(
     *,
     profile_id: uuid.UUID,
     reviewer_user_id: uuid.UUID,
+    expected_status: ProfessionalVerificationStatus | str,
     status: ProfessionalVerificationStatus | str,
     note: str | None = None,
 ) -> ProfessionalProfile:
@@ -245,6 +298,11 @@ async def decide(
         if isinstance(status, ProfessionalVerificationStatus)
         else ProfessionalVerificationStatus(str(status))
     )
+    expected = (
+        expected_status
+        if isinstance(expected_status, ProfessionalVerificationStatus)
+        else ProfessionalVerificationStatus(str(expected_status))
+    )
     if resolved in _SELF_SERVE_STATUSES:
         raise ProfessionalValidationError(
             "a review records a verdict, not a return to the queue"
@@ -264,6 +322,19 @@ async def decide(
         raise ProfessionalNotFoundError("no such professional profile")
     if profile.user_id == reviewer_user_id:
         raise NotAReviewerError("a claim cannot be reviewed by the person making it")
+    current = ProfessionalVerificationStatus(profile.verification_status)
+    if current is not expected or (current, resolved) not in _REVIEW_TRANSITIONS:
+        raise ProfessionalConflictError(
+            "the professional profile changed or this review transition is not allowed"
+        )
+
+    if resolved is ProfessionalVerificationStatus.VERIFIED:
+        await _active_user(session, profile.user_id)
+        await _require_kind_role(
+            session,
+            user_id=profile.user_id,
+            kind=ProfessionalKind(profile.kind),
+        )
 
     cleaned_note = _clean(note, "note", limit=2000, required=False)
     if (
@@ -287,6 +358,31 @@ async def decide(
         # stamp behind would let a suspended profile still read as checked.
         profile.verified_at = None
         profile.verified_by_user_id = None
+    session.add(
+        ProfessionalReviewDecision(
+            profile_id=profile.id,
+            reviewer_user_id=reviewer_user_id,
+            from_status=current.value,
+            to_status=resolved.value,
+            note=cleaned_note,
+        )
+    )
+    session.add(
+        AuditEvent(
+            actor_user_id=reviewer_user_id,
+            subject_id=None,
+            event_type=f"care.professional_profile.{resolved.value}",
+            outcome=AuditOutcome.SUCCESS.value,
+            resource_type="professional_profile",
+            resource_id=str(profile.id),
+            metadata_json={
+                "source_surface": _AUDIT_SURFACE,
+                "result_code": f"{current.value}_to_{resolved.value}",
+                "resource_type": "professional_profile",
+                "resource_id": str(profile.id),
+            },
+        )
+    )
     await session.flush()
     return profile
 
@@ -307,18 +403,161 @@ async def is_verified(session: AsyncSession, *, user_id: uuid.UUID) -> bool:
     return status == ProfessionalVerificationStatus.VERIFIED.value
 
 
-async def pending_queue(session: AsyncSession) -> list[ProfessionalProfile]:
-    """Claims waiting for somebody to look at them, oldest first."""
+async def review_console(
+    session: AsyncSession, *, reviewer_user_id: uuid.UUID
+) -> tuple[ProfessionalReviewEntry, ...]:
+    """Return professional claims only after a fresh operator authorization.
 
-    return list(
-        await session.scalars(
-            select(ProfessionalProfile)
-            .where(
-                ProfessionalProfile.verification_status
-                == ProfessionalVerificationStatus.PENDING.value
+    The credential reference is private account data.  Keeping the reviewer
+    check in this service means a future delivery surface cannot accidentally
+    turn the queue into an authenticated-but-global directory.
+    """
+
+    await _require_reviewer(session, reviewer_user_id)
+    rows = list(
+        (
+            await session.execute(
+                select(
+                    ProfessionalProfile.id,
+                    ProfessionalProfile.user_id,
+                    User.username,
+                    ProfessionalProfile.kind,
+                    ProfessionalProfile.verification_status,
+                    ProfessionalProfile.display_name,
+                    ProfessionalProfile.credential_reference,
+                    ProfessionalProfile.review_note,
+                    ProfessionalProfile.created_at,
+                    ProfessionalProfile.updated_at,
+                )
+                .join(User, User.id == ProfessionalProfile.user_id)
+                .order_by(ProfessionalProfile.created_at, ProfessionalProfile.id)
             )
-            .order_by(ProfessionalProfile.created_at, ProfessionalProfile.id)
+        ).all()
+    )
+    priority = {
+        ProfessionalVerificationStatus.PENDING.value: 0,
+        ProfessionalVerificationStatus.VERIFIED.value: 1,
+        ProfessionalVerificationStatus.SUSPENDED.value: 2,
+        ProfessionalVerificationStatus.REJECTED.value: 3,
+        ProfessionalVerificationStatus.UNVERIFIED.value: 4,
+    }
+    history_rows = (
+        await session.execute(
+            select(
+                ProfessionalReviewDecision.profile_id,
+                ProfessionalReviewDecision.from_status,
+                ProfessionalReviewDecision.to_status,
+                User.username,
+                ProfessionalReviewDecision.note,
+                ProfessionalReviewDecision.created_at,
+            )
+            .join(User, User.id == ProfessionalReviewDecision.reviewer_user_id)
+            .order_by(
+                ProfessionalReviewDecision.created_at,
+                ProfessionalReviewDecision.id,
+            )
         )
+    ).all()
+    history_by_profile: dict[
+        uuid.UUID, list[ProfessionalReviewHistoryEntry]
+    ] = {}
+    for row in history_rows:
+        history_by_profile.setdefault(row.profile_id, []).append(
+            ProfessionalReviewHistoryEntry(
+                from_status=row.from_status,
+                to_status=row.to_status,
+                reviewer_username=row.username,
+                note=row.note,
+                created_at=row.created_at,
+            )
+        )
+    entries = [
+        ProfessionalReviewEntry(
+            profile_id=row.id,
+            user_id=row.user_id,
+            username=row.username,
+            kind=row.kind,
+            verification_status=row.verification_status,
+            display_name=row.display_name,
+            credential_reference=row.credential_reference,
+            review_note=row.review_note,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            history=tuple(history_by_profile.get(row.id, ())),
+        )
+        for row in rows
+    ]
+    entries.sort(
+        key=lambda entry: (
+            priority.get(entry.verification_status, 99),
+            entry.created_at,
+            str(entry.profile_id),
+        )
+    )
+    return tuple(entries)
+
+
+async def verify_profile(
+    session: AsyncSession,
+    *,
+    profile_id: uuid.UUID,
+    reviewer_user_id: uuid.UUID,
+) -> ProfessionalProfile:
+    return await decide(
+        session,
+        profile_id=profile_id,
+        reviewer_user_id=reviewer_user_id,
+        expected_status=ProfessionalVerificationStatus.PENDING,
+        status=ProfessionalVerificationStatus.VERIFIED,
+    )
+
+
+async def reject_profile(
+    session: AsyncSession,
+    *,
+    profile_id: uuid.UUID,
+    reviewer_user_id: uuid.UUID,
+    note: str,
+) -> ProfessionalProfile:
+    return await decide(
+        session,
+        profile_id=profile_id,
+        reviewer_user_id=reviewer_user_id,
+        expected_status=ProfessionalVerificationStatus.PENDING,
+        status=ProfessionalVerificationStatus.REJECTED,
+        note=note,
+    )
+
+
+async def suspend_profile(
+    session: AsyncSession,
+    *,
+    profile_id: uuid.UUID,
+    reviewer_user_id: uuid.UUID,
+    note: str,
+) -> ProfessionalProfile:
+    return await decide(
+        session,
+        profile_id=profile_id,
+        reviewer_user_id=reviewer_user_id,
+        expected_status=ProfessionalVerificationStatus.VERIFIED,
+        status=ProfessionalVerificationStatus.SUSPENDED,
+        note=note,
+    )
+
+
+async def reinstate_profile(
+    session: AsyncSession,
+    *,
+    profile_id: uuid.UUID,
+    reviewer_user_id: uuid.UUID,
+) -> ProfessionalProfile:
+    return await decide(
+        session,
+        profile_id=profile_id,
+        reviewer_user_id=reviewer_user_id,
+        expected_status=ProfessionalVerificationStatus.SUSPENDED,
+        status=ProfessionalVerificationStatus.VERIFIED,
     )
 
 
@@ -327,11 +566,17 @@ __all__ = [
     "ProfessionalConflictError",
     "ProfessionalError",
     "ProfessionalNotFoundError",
+    "ProfessionalReviewEntry",
+    "ProfessionalReviewHistoryEntry",
     "ProfessionalValidationError",
     "ROLE_FOR_KIND",
     "decide",
     "is_verified",
-    "pending_queue",
+    "reinstate_profile",
+    "reject_profile",
     "resubmit_profile",
+    "review_console",
     "submit_profile",
+    "suspend_profile",
+    "verify_profile",
 ]

@@ -107,6 +107,7 @@ async def _professional_grant(session, legacy_owner_roots):
         session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status="pending",
         status="verified",
     )
     relationship = CareRelationship(
@@ -269,6 +270,7 @@ async def test_profile_suspension_invalidates_a_professional_token_immediately(
         db_session,
         profile_id=profile.id,
         reviewer_user_id=reviewer_id,
+        expected_status="verified",
         status="suspended",
         note="synthetic licence withdrawal",
     )

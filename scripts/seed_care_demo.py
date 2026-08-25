@@ -416,6 +416,7 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
             session,
             profile_id=profile_id,
             reviewer_user_id=operator.id,
+            expected_status=ProfessionalVerificationStatus.PENDING,
             status=ProfessionalVerificationStatus.VERIFIED,
         )
 

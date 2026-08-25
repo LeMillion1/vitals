@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — operators can complete professional review in the browser
+
+Platform superadmins now have a dedicated responsive professional-review queue
+with fixed verify, reject, suspend, and reinstate actions. Every change requires
+recent authentication, locks against stale decisions and push claims, rechecks
+the target account and exact role, and writes both an append-only operational
+audit event and immutable review history. Credential references and review
+reasons remain confined to the operator surface; no decision grants patient
+access without a separate relationship and consent.
+
 ### Added — professionals have one clear onboarding home
 
 Doctor- and trainer-only accounts now land on `/care` instead of bouncing

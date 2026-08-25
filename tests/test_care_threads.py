@@ -72,6 +72,7 @@ async def _take_into_care(
         session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status="pending",
         status="verified",
     )
     issued = await invitations.invite(
@@ -259,6 +260,7 @@ async def test_a_suspended_professional_cannot_be_added_to_a_conversation(
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status=ProfessionalVerificationStatus.VERIFIED,
         status=ProfessionalVerificationStatus.SUSPENDED,
         note="synthetic licence withdrawal",
     )

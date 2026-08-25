@@ -119,6 +119,7 @@ from vitals.models.professional import (
     ProfessionalInvitation,
     ProfessionalNote,
     ProfessionalProfile,
+    ProfessionalReviewDecision,
 )
 
 __all__ = [
@@ -139,6 +140,7 @@ __all__ = [
     "SupportAccessGrant",
     "SupportAccessScope",
     "ProfessionalProfile",
+    "ProfessionalReviewDecision",
     "ProfessionalInvitation",
     "CarePlan",
     "CareRelationship",

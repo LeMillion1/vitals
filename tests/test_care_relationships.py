@@ -95,6 +95,7 @@ async def _in_care(session, slug: str, *, kind=ProfessionalKind.DOCTOR):
         session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status="pending",
         status="verified",
     )
     issued = await invitations.invite(
@@ -436,12 +437,29 @@ async def test_only_a_verified_profile_can_establish_care(db_session, status):
         kind=ProfessionalKind.DOCTOR,
         display_name=f"Dr {slug}",
     )
-    if status is not ProfessionalVerificationStatus.PENDING:
+    if status is ProfessionalVerificationStatus.REJECTED:
         await professionals.decide(
             db_session,
             profile_id=profile.id,
             reviewer_user_id=operator.id,
+            expected_status=ProfessionalVerificationStatus.PENDING,
             status=status,
+            note="synthetic review refusal",
+        )
+    elif status is ProfessionalVerificationStatus.SUSPENDED:
+        await professionals.decide(
+            db_session,
+            profile_id=profile.id,
+            reviewer_user_id=operator.id,
+            expected_status=ProfessionalVerificationStatus.PENDING,
+            status=ProfessionalVerificationStatus.VERIFIED,
+        )
+        await professionals.decide(
+            db_session,
+            profile_id=profile.id,
+            reviewer_user_id=operator.id,
+            expected_status=ProfessionalVerificationStatus.VERIFIED,
+            status=ProfessionalVerificationStatus.SUSPENDED,
             note="synthetic review refusal",
         )
     issued = await invitations.invite(
@@ -525,6 +543,7 @@ async def test_suspending_a_profile_closes_the_next_read(db_session):
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status=ProfessionalVerificationStatus.VERIFIED,
         status=ProfessionalVerificationStatus.SUSPENDED,
         note="synthetic licence withdrawal",
     )
@@ -564,6 +583,7 @@ async def test_a_suspended_profile_disappears_from_the_cross_subject_roster(
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status=ProfessionalVerificationStatus.VERIFIED,
         status=ProfessionalVerificationStatus.SUSPENDED,
         note="synthetic licence withdrawal",
     )

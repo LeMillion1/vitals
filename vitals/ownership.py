@@ -359,6 +359,15 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         actor=TargetColumn.NONE,
         user_portable=False,
     ),
+    # Immutable operator evidence about an account-plane verification claim.
+    # It is deliberately not patient-scoped and must not appear in an ordinary
+    # user's portability archive: it contains the reviewer's internal reason.
+    "professional_review_decisions": OwnershipSpec(
+        OwnershipClass.ACCOUNT_CONTROL,
+        subject=TargetColumn.NONE,
+        actor=TargetColumn.NONE,
+        user_portable=False,
+    ),
     # The patient's offer, so it is the patient's row — which puts it inside
     # row security. Accepting reads it in the platform scope, because the
     # professional is not bound to this subject yet and the token is what

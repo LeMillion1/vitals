@@ -147,6 +147,7 @@ async def _queued_for_professional(db_session, roots, *, token: str):
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status="pending",
         status="verified",
     )
     relationship = CareRelationship(
@@ -509,6 +510,7 @@ async def test_suspended_professional_profile_stops_background_push(
         db_session,
         profile_id=profile.id,
         reviewer_user_id=reviewer_id,
+        expected_status=ProfessionalVerificationStatus.VERIFIED,
         status=ProfessionalVerificationStatus.SUSPENDED,
         note="synthetic licence withdrawal",
     )
@@ -891,6 +893,7 @@ async def test_postgres_claim_fences_a_concurrent_profile_suspension(
                 review_session,
                 profile_id=profile_id,
                 reviewer_user_id=reviewer_id,
+                expected_status=ProfessionalVerificationStatus.VERIFIED,
                 status=ProfessionalVerificationStatus.SUSPENDED,
                 note="synthetic concurrent suspension",
             )

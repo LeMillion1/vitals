@@ -47,6 +47,16 @@
             <span class="mh-more-name">{{ t('care.roster_heading') }}</span>
         </a>
         {% endif %}
+        {% if request.state.is_platform_admin %}
+        <a href="/settings/platform/support" class="mh-more-row">
+            <span class="mh-more-ico">{{ mh_icon('settings') }}</span>
+            <span class="mh-more-name">{{ t('support.console_heading') }}</span>
+        </a>
+        <a href="/settings/platform/professionals" class="mh-more-row">
+            <span class="mh-more-ico">{{ mh_icon('patients') }}</span>
+            <span class="mh-more-name">{{ t('professional_review.heading') }}</span>
+        </a>
+        {% endif %}
         <a href="/messages" class="mh-more-row">
             <span class="mh-more-ico">{{ mh_icon('messages') }}</span>
             <span class="mh-more-name">{{ t('care.messages_title') }}</span>

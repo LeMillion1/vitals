@@ -953,6 +953,10 @@ body.ui-masthead .mh-bnav.mh-role-bnav-3 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+body.ui-masthead .mh-bnav.mh-role-bnav-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 @media (max-width: 767px) {
     body.ui-masthead .mh-bnav {
         display: grid;

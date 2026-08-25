@@ -64,6 +64,7 @@ async def _professional_in_care(db_session, legacy_owner_roots):
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status="pending",
         status="verified",
     )
     relationship = CareRelationship(
@@ -447,6 +448,7 @@ async def test_a_suspended_profile_cannot_list_a_patient_for_oauth(
         db_session,
         profile_id=profile.id,
         reviewer_user_id=reviewer_id,
+        expected_status="verified",
         status="suspended",
         note="synthetic licence withdrawal",
     )

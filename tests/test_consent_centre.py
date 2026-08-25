@@ -104,6 +104,7 @@ async def _verify_professional(session, user: User, *, slug: str) -> None:
         session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
+        expected_status=ProfessionalVerificationStatus.PENDING,
         status=ProfessionalVerificationStatus.VERIFIED,
     )
 
