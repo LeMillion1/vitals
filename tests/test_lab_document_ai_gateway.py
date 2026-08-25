@@ -20,6 +20,7 @@ from vitals.enums import (
     AIInvocationStatus,
     Domain,
     FileAssetPurpose,
+    FileStorageBackend,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
@@ -149,6 +150,37 @@ async def _prepare(session: AsyncSession, *, suffix: str = "panel"):
         byte_size=len(FILE_BYTES),
         sha256_hex=SHA256,
     )
+
+
+async def test_legacy_prepare_retry_reuses_exact_existing_roots(
+    db_session,
+    legacy_owner_roots,
+):
+    await _configure_platform(db_session, legacy_owner_roots)
+    storage_ref = _storage_ref("legacy-retry")
+    first = await lab_ai.prepare_lab_document_parse(
+        db_session,
+        actor_username=get_web_config().auth_username,
+        storage_ref=storage_ref,
+        media_type="image/png",
+        byte_size=len(FILE_BYTES),
+        sha256_hex=SHA256,
+    )
+    await db_session.commit()
+    second = await lab_ai.prepare_lab_document_parse(
+        db_session,
+        actor_username=get_web_config().auth_username,
+        storage_ref=storage_ref,
+        media_type="image/png",
+        byte_size=len(FILE_BYTES),
+        sha256_hex=SHA256,
+    )
+    assert second.file_asset_id == first.file_asset_id
+    assert second.raw_payload_id == first.raw_payload_id
+    asset = await db_session.get(FileAsset, first.file_asset_id)
+    assert asset.storage_backend == FileStorageBackend.LEGACY_LOCAL.value
+    assert await db_session.scalar(select(func.count()).select_from(FileAsset)) == 1
+    assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 1
 
 
 def _observed() -> dict:

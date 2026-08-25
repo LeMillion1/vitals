@@ -516,7 +516,7 @@ async def test_web_upload_and_confirm_keep_owned_boundary_kwargs_and_chain(
     monkeypatch.setattr(body_scan_service, "save_scan", save_probe)
     monkeypatch.setattr(body_scan_service, "refresh_alerts", refresh_probe)
     upload = UploadFile(
-        BytesIO(b"synthetic-body-scan"),
+        BytesIO(b"\x89PNG\r\n\x1a\nsynthetic-body-scan"),
         filename="scan.png",
         headers=Headers({"content-type": "image/png"}),
     )
@@ -623,7 +623,7 @@ async def test_web_upload_ignores_disabled_historical_subject_openrouter(
         extracted,
     )
     upload = UploadFile(
-        BytesIO(b"synthetic-revoked-body-scan"),
+        BytesIO(b"\x89PNG\r\n\x1a\nsynthetic-revoked-body-scan"),
         filename="scan.png",
         headers=Headers({"content-type": "image/png"}),
     )

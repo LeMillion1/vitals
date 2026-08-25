@@ -1104,7 +1104,7 @@ async def test_delete_failure_rolls_back_fact_and_file_lifecycle_together(
     asset, photo = await _owned_photo(db_session, identity, "delete-failure")
     asset_id, photo_id = asset.id, photo.id
     await db_session.commit()
-    original_mark = file_asset_service.mark_legacy_local_deleted
+    original_mark = file_asset_service.mark_local_deleted
 
     async def fail_after_lifecycle(*args, **kwargs):
         await original_mark(*args, **kwargs)
@@ -1112,7 +1112,7 @@ async def test_delete_failure_rolls_back_fact_and_file_lifecycle_together(
 
     monkeypatch.setattr(
         file_asset_service,
-        "mark_legacy_local_deleted",
+        "mark_local_deleted",
         fail_after_lifecycle,
     )
     with pytest.raises(RuntimeError, match="synthetic failure"):

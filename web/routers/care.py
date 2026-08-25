@@ -6,7 +6,6 @@ not a URL style choice — see ``web.care_context`` for why a server-side
 """
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import date as date_type
 from urllib.parse import quote
@@ -29,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.access import PolicyAction, PolicyResourceType
 from vitals.enums import (
     CarePlanStatus,
+    FileStorageBackend,
     ProfessionalKind,
     ProfessionalVerificationStatus,
     UserRoleName,
@@ -49,6 +49,7 @@ from web.uploads import (
     iter_verified_file,
     open_verified_file,
     prepare_medical_document,
+    remove_stored_file,
     safe_medical_media_type,
     write_private_file,
 )
@@ -82,10 +83,13 @@ async def _attach_private_document(
             content_sha256=document.sha256_hex,
         )
     except BaseException:
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
+        await run_in_threadpool(
+            remove_stored_file,
+            storage_backend=FileStorageBackend.PRIVATE_LOCAL.value,
+            storage_ref=storage_ref,
+            static_dir=STATIC_DIR,
+            private_root=private_root,
+        )
         raise
     return path
 

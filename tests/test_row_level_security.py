@@ -761,6 +761,11 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
         # record to investigate must be a choice from an auditable list, not a
         # free-text search that finds a patient by name.
         ("vitals/services/support_access_service.py", "reachable_subjects"),
+        # Fixed-target operator cutover. It must enumerate every legacy file
+        # root across subjects; output is aggregate-only and every changed row
+        # is independently committed with an append-only audit event.
+        ("vitals/operations/file_storage_relocation.py", "inspect"),
+        ("vitals/operations/file_storage_relocation.py", "_commit_one"),
     }
 
     def _enclosing(tree):

@@ -54,6 +54,52 @@ class FileAssetNotFoundError(FileAssetServiceError):
     """No matching legacy-local asset exists in the requested subject scope."""
 
 
+def local_asset_is_live(asset: FileAsset) -> bool:
+    """Whether one local row has a coherent, servable backend/lifecycle pair."""
+
+    return (
+        asset.deleted_at is None
+        and asset.purged_at is None
+        and (
+            (
+                asset.storage_backend == FileStorageBackend.LEGACY_LOCAL.value
+                and asset.status
+                in {
+                    FileAssetStatus.LEGACY_PLACEHOLDER.value,
+                    FileAssetStatus.PENDING.value,
+                }
+            )
+            or (
+                asset.storage_backend == FileStorageBackend.PRIVATE_LOCAL.value
+                and asset.status == FileAssetStatus.ACTIVE.value
+                and asset.media_type is not None
+                and asset.byte_size is not None
+                and asset.sha256_hex is not None
+            )
+        )
+    )
+
+
+def local_asset_is_retired(asset: FileAsset) -> bool:
+    """Whether a local row has one of the two coherent retired states."""
+
+    return asset.storage_backend in {
+        FileStorageBackend.LEGACY_LOCAL.value,
+        FileStorageBackend.PRIVATE_LOCAL.value,
+    } and (
+        (
+            asset.status == FileAssetStatus.DELETED.value
+            and asset.deleted_at is not None
+            and asset.purged_at is None
+        )
+        or (
+            asset.status == FileAssetStatus.PURGED.value
+            and asset.deleted_at is not None
+            and asset.purged_at is not None
+        )
+    )
+
+
 def _coerce_purpose(value: FileAssetPurpose | str) -> FileAssetPurpose:
     if not isinstance(value, (FileAssetPurpose, str)):
         raise FileAssetValidationError("purpose must be a FileAssetPurpose or string")
@@ -168,6 +214,20 @@ async def _find_existing_legacy_local(
         select(FileAsset)
         .where(
             FileAsset.storage_backend == FileStorageBackend.LEGACY_LOCAL.value,
+            FileAsset.storage_ref == storage_ref,
+        )
+        .with_for_update()
+    )
+
+
+async def _find_existing_private_local(
+    session: AsyncSession,
+    storage_ref: str,
+) -> FileAsset | None:
+    return await session.scalar(
+        select(FileAsset)
+        .where(
+            FileAsset.storage_backend == FileStorageBackend.PRIVATE_LOCAL.value,
             FileAsset.storage_ref == storage_ref,
         )
         .with_for_update()
@@ -355,6 +415,23 @@ async def register_private_local(
         subject_id=subject_id,
         uploaded_by_user_id=uploaded_by_user_id,
     )
+    existing = await _find_existing_private_local(session, normalized_storage_ref)
+    if existing is not None:
+        reconciled = await _reconcile_existing(
+            session,
+            existing,
+            subject_id=subject_id,
+            uploaded_by_user_id=uploaded_by_user_id,
+            purpose=normalized_purpose,
+            media_type=normalized_media_type,
+            size_bytes=normalized_size,
+            content_sha256=normalized_sha256,
+        )
+        if not local_asset_is_live(reconciled):
+            raise FileAssetConflictError(
+                "private storage_ref has an invalid lifecycle state"
+            )
+        return reconciled
     asset = FileAsset(
         subject_id=subject_id,
         uploaded_by_user_id=uploaded_by_user_id,
@@ -367,8 +444,38 @@ async def register_private_local(
         sha256_hex=normalized_sha256,
         status=FileAssetStatus.ACTIVE.value,
     )
-    session.add(asset)
-    await session.flush()
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        session.add(asset)
+        await session.flush()
+        return asset
+    try:
+        async with session.begin_nested():
+            session.add(asset)
+            await session.flush()
+    except IntegrityError as exc:
+        existing = await _find_existing_private_local(
+            session, normalized_storage_ref
+        )
+        if existing is None:
+            raise FileAssetConflictError(
+                "private-local asset could not be registered"
+            ) from exc
+        reconciled = await _reconcile_existing(
+            session,
+            existing,
+            subject_id=subject_id,
+            uploaded_by_user_id=uploaded_by_user_id,
+            purpose=normalized_purpose,
+            media_type=normalized_media_type,
+            size_bytes=normalized_size,
+            content_sha256=normalized_sha256,
+        )
+        if not local_asset_is_live(reconciled):
+            raise FileAssetConflictError(
+                "private storage_ref has an invalid lifecycle state"
+            )
+        return reconciled
     return asset
 
 
@@ -434,6 +541,69 @@ async def mark_legacy_local_deleted(
     return asset
 
 
+async def mark_local_deleted(
+    session: AsyncSession,
+    *,
+    file_asset_id: uuid.UUID,
+    subject_id: uuid.UUID,
+    purged: bool,
+) -> FileAsset:
+    """Retire subject-scoped bytes in either supported local backend.
+
+    This is metadata-only and flush-only.  The delivery boundary commits the
+    soft deletion before removing bytes, then records the monotonic purge after
+    deletion succeeds.  ``mark_legacy_local_deleted`` remains the deliberately
+    narrow compatibility API used by ownership backfills.
+    """
+
+    _validate_uuid(file_asset_id, "file_asset_id")
+    _validate_uuid(subject_id, "subject_id")
+    if not isinstance(purged, bool):
+        raise FileAssetValidationError("purged must be a bool")
+
+    asset = await session.scalar(
+        select(FileAsset)
+        .where(
+            FileAsset.id == file_asset_id,
+            FileAsset.subject_id == subject_id,
+            FileAsset.storage_backend.in_(
+                (
+                    FileStorageBackend.LEGACY_LOCAL.value,
+                    FileStorageBackend.PRIVATE_LOCAL.value,
+                )
+            ),
+        )
+        .with_for_update()
+    )
+    if asset is None:
+        raise FileAssetNotFoundError("local asset does not exist in subject scope")
+    if asset.status == FileAssetStatus.PURGED.value:
+        return asset
+    if not purged and asset.status == FileAssetStatus.DELETED.value:
+        return asset
+    if asset.status not in {
+        FileAssetStatus.LEGACY_PLACEHOLDER.value,
+        FileAssetStatus.PENDING.value,
+        FileAssetStatus.ACTIVE.value,
+        FileAssetStatus.DELETED.value,
+    }:
+        raise FileAssetConflictError("local asset has an invalid lifecycle state")
+
+    database_now = await session.scalar(select(func.now()))
+    if database_now is None:  # pragma: no cover
+        raise FileAssetServiceError("database did not return a lifecycle timestamp")
+    if asset.deleted_at is None:
+        asset.deleted_at = database_now
+    if purged:
+        asset.purged_at = database_now
+        asset.status = FileAssetStatus.PURGED.value
+    else:
+        asset.purged_at = None
+        asset.status = FileAssetStatus.DELETED.value
+    await session.flush()
+    return asset
+
+
 #: Lifecycle states whose bytes may still be handed to somebody. A deleted or
 #: purged asset is not a 403 and not an error — it simply has no download, the
 #: same answer a key that never existed gets.
@@ -476,6 +646,33 @@ async def resolve_for_download(
     )
     if asset is None:
         raise FileAssetNotFoundError("no servable asset for that key in this scope")
+    return asset
+
+
+async def resolve_local_asset(
+    session: AsyncSession,
+    *,
+    file_asset_id: uuid.UUID,
+    subject_id: uuid.UUID,
+) -> FileAsset:
+    """Resolve local storage metadata by an already-authorized asset id."""
+
+    _validate_uuid(file_asset_id, "file_asset_id")
+    _validate_uuid(subject_id, "subject_id")
+    asset = await session.scalar(
+        select(FileAsset).where(
+            FileAsset.id == file_asset_id,
+            FileAsset.subject_id == subject_id,
+            FileAsset.storage_backend.in_(
+                (
+                    FileStorageBackend.LEGACY_LOCAL.value,
+                    FileStorageBackend.PRIVATE_LOCAL.value,
+                )
+            ),
+        )
+    )
+    if asset is None:
+        raise FileAssetNotFoundError("local asset does not exist in subject scope")
     return asset
 
 
@@ -523,9 +720,13 @@ __all__ = [
     "FileAssetSubjectNotFoundError",
     "FileAssetUploaderNotFoundError",
     "FileAssetValidationError",
+    "local_asset_is_live",
+    "local_asset_is_retired",
+    "mark_local_deleted",
     "mark_legacy_local_deleted",
     "opaque_keys_for",
     "register_private_local",
     "register_legacy_local",
+    "resolve_local_asset",
     "resolve_for_download",
 ]

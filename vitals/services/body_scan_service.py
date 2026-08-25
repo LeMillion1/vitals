@@ -35,7 +35,6 @@ from vitals.enums import (
     Domain,
     FileAssetPurpose,
     FileAssetStatus,
-    FileStorageBackend,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
@@ -49,7 +48,13 @@ from vitals.models.identity import HealthSubject
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import alerts_service, conflict_engine, raw_payload_service, weight_service
+from vitals.services import (
+    alerts_service,
+    conflict_engine,
+    file_asset_service,
+    raw_payload_service,
+    weight_service,
+)
 from vitals.analytics.body_metrics import (
     CAT_OTHER,
     METRIC_REGISTRY,
@@ -334,9 +339,7 @@ async def _validate_upload_chain(
         or raw.source != Source.BODY_SCAN.value
         or raw.file_asset_id != asset.id
         or asset.purpose != FileAssetPurpose.BODY_SCAN_DOCUMENT.value
-        or asset.storage_backend != FileStorageBackend.LEGACY_LOCAL.value
-        or asset.status
-        in {FileAssetStatus.DELETED.value, FileAssetStatus.PURGED.value}
+        or not file_asset_service.local_asset_is_live(asset)
         or raw.external_id != asset.storage_ref
     ):
         raise conflict_engine.ConflictRawOwnershipError(
@@ -1221,11 +1224,8 @@ async def _validate_migrated_sheet_root(
         or asset.subject_id != subject_id
         or asset.uploaded_by_user_id is not None
         or asset.purpose != FileAssetPurpose.BODY_SCAN_DOCUMENT.value
-        or asset.storage_backend != FileStorageBackend.LEGACY_LOCAL.value
         or asset.storage_ref != scan.file_key
-        or asset.status != FileAssetStatus.LEGACY_PLACEHOLDER.value
-        or asset.deleted_at is not None
-        or asset.purged_at is not None
+        or not file_asset_service.local_asset_is_live(asset)
     ):
         raise conflict_engine.ConflictRawOwnershipError(
             "historical body-scan sheet root is not the reviewed placeholder"

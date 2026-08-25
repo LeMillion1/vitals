@@ -4,21 +4,21 @@ from __future__ import annotations
 
 from datetime import date as date_type
 import logging
-import os
-import uuid
 from typing import Optional
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from vitals.config import load_config
 from vitals.enums import (
     AIInvocationStatus,
     Domain,
     FileAssetPurpose,
+    FileStorageBackend,
     Source,
 )
 from vitals.i18n import t
@@ -35,14 +35,17 @@ from vitals.services import (
 from vitals.analytics import body_metrics
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
+from web.config import get_web_config
 from web.deps import get_session, require_auth, require_module
 from web.ratelimit import rate_limit
 from web.templating import STATIC_DIR, templates
 from web.uploads import (
     IMAGE_EXTS,
     PreparedMedicalDocument,
-    legacy_upload_disk_path,
     prepare_medical_document,
+    private_storage_ref,
+    remove_stored_file,
+    write_private_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -552,7 +555,7 @@ async def add_photo_entry(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    """Saves up to 5 daily progress photos to static/uploads/ and references them in the DB."""
+    """Save up to five daily progress photos in the private file root."""
     on_date = date_type.fromisoformat(date)
 
     # Gather all uploaded files from both "file" (single-field tests) and "files" (multiple files input)
@@ -576,7 +579,7 @@ async def add_photo_entry(
             detail=t("weight.error.too_many_files")
         )
 
-    written_paths: list[str] = []
+    written_refs: list[str] = []
     prepared_files: list[tuple[str, PreparedMedicalDocument]] = []
     try:
         for f in uploaded_files:
@@ -585,14 +588,17 @@ async def add_photo_entry(
                 allowed_extensions=IMAGE_EXTS,
             )
             assert document is not None  # The collection excludes blank fields.
-            unique_filename = f"{uuid.uuid4().hex}{document.extension}"
-            file_key = f"uploads/{unique_filename}"
-            file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            written_paths.append(file_path)
-
-            with open(file_path, "wb") as buffer:
-                buffer.write(document.body)
+            file_key = private_storage_ref(
+                FileAssetPurpose.PROGRESS_PHOTO,
+                document.extension,
+            )
+            await run_in_threadpool(
+                write_private_file,
+                get_web_config().private_file_root,
+                file_key,
+                document.body,
+            )
+            written_refs.append(file_key)
 
             prepared_files.append((file_key, document))
 
@@ -603,7 +609,7 @@ async def add_photo_entry(
         )
         identity = conflict_context.identity
         for file_key, document in prepared_files:
-            asset = await file_asset_service.register_legacy_local(
+            asset = await file_asset_service.register_private_local(
                 db,
                 subject_id=identity.subject_id,
                 uploaded_by_user_id=identity.actor_user_id,
@@ -628,13 +634,17 @@ async def add_photo_entry(
             await db.rollback()
         except BaseException:
             logger.exception("Could not roll back failed progress-photo transaction")
-        for path in written_paths:
+        for storage_ref in written_refs:
             try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
+                await run_in_threadpool(
+                    remove_stored_file,
+                    storage_backend=FileStorageBackend.PRIVATE_LOCAL.value,
+                    storage_ref=storage_ref,
+                    static_dir=STATIC_DIR,
+                    private_root=get_web_config().private_file_root,
+                )
             except OSError as exc:
-                logger.warning("Could not clean up failed progress upload %s: %s", path, exc)
+                logger.warning("Could not clean up failed progress upload: %s", exc)
         raise
 
     try:
@@ -650,7 +660,7 @@ async def add_photo_entry(
             logger.exception("Could not reset session after progress-photo commit failure")
         logger.exception(
             "Progress-photo commit outcome is ambiguous; preserved %d upload file(s)",
-            len(written_paths),
+            len(written_refs),
         )
         raise
 
@@ -670,9 +680,10 @@ class BodyScanMetricIn(BaseModel):
 
 
 class BodyScanConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     date: str
     device: Optional[str] = None
-    file_key: Optional[str] = None
     raw_payload_id: Optional[int] = None
     note: Optional[str] = None
     override: bool = False
@@ -682,7 +693,8 @@ class BodyScanConfirm(BaseModel):
 async def _cleanup_uncommitted_body_upload(
     db: AsyncSession,
     *,
-    file_path: str,
+    storage_ref: str,
+    file_written: bool,
 ) -> None:
     """Best-effort rollback and byte cleanup before the first durable commit."""
 
@@ -690,12 +702,17 @@ async def _cleanup_uncommitted_body_upload(
         await db.rollback()
     except BaseException:
         logger.exception("Could not roll back failed body-upload transaction")
-    try:
-        os.remove(file_path)
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        logger.warning("Could not clean up failed body upload %s: %s", file_path, exc)
+    if file_written:
+        try:
+            await run_in_threadpool(
+                remove_stored_file,
+                storage_backend=FileStorageBackend.PRIVATE_LOCAL.value,
+                storage_ref=storage_ref,
+                static_dir=STATIC_DIR,
+                private_root=get_web_config().private_file_root,
+            )
+        except OSError as exc:
+            logger.warning("Could not clean up failed body upload: %s", exc)
 
 
 @router.post("/body-scan/upload")
@@ -720,13 +737,17 @@ async def body_scan_upload(
     assert document is not None  # FastAPI requires this upload field.
     ext = document.extension
     contents = document.body
-    file_key = f"body/{uuid.uuid4().hex}{ext}"
-    file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
+    file_key = private_storage_ref(FileAssetPurpose.BODY_SCAN_DOCUMENT, ext)
+    file_written = False
     prepared = None
     try:
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, "wb") as fh:
-            fh.write(contents)
+        await run_in_threadpool(
+            write_private_file,
+            get_web_config().private_file_root,
+            file_key,
+            contents,
+        )
+        file_written = True
         prepared = await body_scan_ai_service.prepare_body_scan_parse(
             db,
             actor_username=username,
@@ -734,12 +755,17 @@ async def body_scan_upload(
             media_type=document.media_type,
             byte_size=document.byte_size,
             sha256_hex=document.sha256_hex,
+            storage_backend=FileStorageBackend.PRIVATE_LOCAL,
         )
     except (
         ai_gateway_service.AIGatewayConfigurationError,
         ai_gateway_service.AIQuotaExceededError,
     ) as exc:
-        await _cleanup_uncommitted_body_upload(db, file_path=file_path)
+        await _cleanup_uncommitted_body_upload(
+            db,
+            storage_ref=file_key,
+            file_written=file_written,
+        )
         reason = (
             "quota"
             if isinstance(exc, ai_gateway_service.AIQuotaExceededError)
@@ -757,7 +783,11 @@ async def body_scan_upload(
             }
         )
     except BaseException:
-        await _cleanup_uncommitted_body_upload(db, file_path=file_path)
+        await _cleanup_uncommitted_body_upload(
+            db,
+            storage_ref=file_key,
+            file_written=file_written,
+        )
         raise
 
     try:
@@ -902,7 +932,6 @@ async def body_scan_upload(
         "scan": {
             "date": scan_date,
             "device": extracted.get("device"),
-            "file_key": file_key,
             "raw_payload_id": prepared.raw_payload_id,
             "metrics": rows,
         },
@@ -934,7 +963,7 @@ async def body_scan_confirm(
             db,
             on_date=on_date,
             device=payload.device,
-            file_key=payload.file_key,
+            file_key=None,
             raw_payload_id=payload.raw_payload_id,
             metrics=[m.model_dump() for m in payload.metrics],
             note=payload.note,
@@ -988,7 +1017,6 @@ async def delete_body_scan_entry(
     if scan is None:
         return _back(request)
 
-    file_key = scan.file_key if scan is not None else None
     file_asset_id = scan.file_asset_id if scan is not None else None
     deleted = await body_scan_service.delete_scan(
         db,
@@ -1006,26 +1034,40 @@ async def delete_body_scan_entry(
             prepared_weight_write=prepared_weight_write,
         )
     if deleted and file_asset_id is not None:
-        await file_asset_service.mark_legacy_local_deleted(
+        asset = await file_asset_service.resolve_local_asset(
+            db,
+            file_asset_id=file_asset_id,
+            subject_id=identity.subject_id,
+        )
+        physical_backend = asset.storage_backend
+        physical_ref = asset.storage_ref
+        await file_asset_service.mark_local_deleted(
             db,
             file_asset_id=file_asset_id,
             subject_id=identity.subject_id,
             purged=False,
         )
+    else:
+        physical_backend = None
+        physical_ref = None
     await db.commit()
 
     bytes_purged = False
-    if deleted and file_key:
+    if deleted and physical_backend is not None and physical_ref is not None:
         try:
-            file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
-            if os.path.exists(file_path):
-                os.remove(file_path)
+            await run_in_threadpool(
+                remove_stored_file,
+                storage_backend=physical_backend,
+                storage_ref=physical_ref,
+                static_dir=STATIC_DIR,
+                private_root=get_web_config().private_file_root,
+            )
             bytes_purged = True
         except (OSError, ValueError) as e:
-            logger.warning("Could not remove scan file %s: %s", file_key, e)
+            logger.warning("Could not remove body-scan bytes: %s", e)
 
     if bytes_purged and file_asset_id is not None:
-        await file_asset_service.mark_legacy_local_deleted(
+        await file_asset_service.mark_local_deleted(
             db,
             file_asset_id=file_asset_id,
             subject_id=identity.subject_id,
@@ -1126,21 +1168,32 @@ async def delete_photo_entry(
         identity=conflict_context.identity,
         prepared_conflict_write=prepared,
     )
+    if receipt is not None and receipt.file_asset_id is not None:
+        asset = await file_asset_service.resolve_local_asset(
+            db,
+            file_asset_id=receipt.file_asset_id,
+            subject_id=conflict_context.identity.subject_id,
+        )
+        physical_backend = asset.storage_backend
+        physical_ref = asset.storage_ref
+    else:
+        physical_backend = None
+        physical_ref = None
     await db.commit()
 
     bytes_purged = False
-    if receipt is not None:
+    if physical_backend is not None and physical_ref is not None:
         try:
-            file_path = legacy_upload_disk_path(STATIC_DIR, receipt.file_key)
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            bytes_purged = not os.path.exists(file_path)
-        except (OSError, ValueError) as e:
-            logger.warning(
-                "Could not remove progress photo %s: %s",
-                receipt.file_key,
-                e,
+            await run_in_threadpool(
+                remove_stored_file,
+                storage_backend=physical_backend,
+                storage_ref=physical_ref,
+                static_dir=STATIC_DIR,
+                private_root=get_web_config().private_file_root,
             )
+            bytes_purged = True
+        except (OSError, ValueError) as e:
+            logger.warning("Could not remove progress-photo bytes: %s", e)
 
     if (
         bytes_purged
@@ -1156,7 +1209,7 @@ async def delete_photo_entry(
             raise weight_service.ProgressPhotoOwnershipError(
                 "progress-photo identity changed during physical purge"
             )
-        await file_asset_service.mark_legacy_local_deleted(
+        await file_asset_service.mark_local_deleted(
             db,
             file_asset_id=receipt.file_asset_id,
             subject_id=purge_context.identity.subject_id,

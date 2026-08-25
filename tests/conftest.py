@@ -154,6 +154,15 @@ def _reset_engine_registries():
     scheduler_mod.clear_jobs()
 
 
+@pytest.fixture(autouse=True)
+def _private_file_test_root(tmp_path, monkeypatch):
+    """Every test gets writable private storage outside the static tree."""
+
+    private_root = tmp_path / "private_files"
+    monkeypatch.setenv("VITALS_PRIVATE_FILE_ROOT", str(private_root))
+    return private_root
+
+
 _SQLITE_SCHEMA_READY = False
 # Which of the two schemas the shared SQLite database currently holds.
 _SQLITE_SCHEMA_MODE: str | None = None

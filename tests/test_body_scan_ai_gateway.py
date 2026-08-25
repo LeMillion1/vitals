@@ -10,7 +10,6 @@ import uuid
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from io import BytesIO
-from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
@@ -26,6 +25,7 @@ from vitals.enums import (
     AIInvocationStatus,
     Domain,
     FileAssetPurpose,
+    FileStorageBackend,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
@@ -63,7 +63,7 @@ PERIOD_START = date(2026, 8, 1)
 PERIOD_END = date(2026, 9, 1)
 MODEL = "synthetic/body-vision-model"
 SECRET = "synthetic-platform-secret"
-FILE_BYTES = b"synthetic-private-body-image"
+FILE_BYTES = b"\x89PNG\r\n\x1a\nsynthetic-private-body-image"
 SHA256 = hashlib.sha256(FILE_BYTES).hexdigest()
 EXTRACTED = {
     "date": DAY.isoformat(),
@@ -166,6 +166,37 @@ async def _prepare(session: AsyncSession, *, suffix: str = "panel"):
         byte_size=len(FILE_BYTES),
         sha256_hex=SHA256,
     )
+
+
+async def test_legacy_prepare_retry_reuses_exact_existing_roots(
+    db_session,
+    legacy_owner_roots,
+):
+    await _configure_platform(db_session, legacy_owner_roots)
+    storage_ref = _storage_ref("legacy-retry")
+    first = await body_ai.prepare_body_scan_parse(
+        db_session,
+        actor_username=get_web_config().auth_username,
+        storage_ref=storage_ref,
+        media_type="image/png",
+        byte_size=len(FILE_BYTES),
+        sha256_hex=SHA256,
+    )
+    await db_session.commit()
+    second = await body_ai.prepare_body_scan_parse(
+        db_session,
+        actor_username=get_web_config().auth_username,
+        storage_ref=storage_ref,
+        media_type="image/png",
+        byte_size=len(FILE_BYTES),
+        sha256_hex=SHA256,
+    )
+    assert second.file_asset_id == first.file_asset_id
+    assert second.raw_payload_id == first.raw_payload_id
+    asset = await db_session.get(FileAsset, first.file_asset_id)
+    assert asset.storage_backend == FileStorageBackend.LEGACY_LOCAL.value
+    assert await db_session.scalar(select(func.count()).select_from(FileAsset)) == 1
+    assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 1
 
 
 def _observed() -> dict:
@@ -471,21 +502,19 @@ async def test_web_precommit_failure_rolls_back_roots_and_removes_private_bytes(
     db_session,
     legacy_owner_roots,
     platform_ai_ready,
-    tmp_path,
+    _private_file_test_root,
     monkeypatch,
 ):
     del legacy_owner_roots, platform_ai_ready
-    from web.routers import weight as weight_router
 
     async def fail_reservation(*_args, **_kwargs):
         raise RuntimeError("synthetic body reservation failure")
 
-    monkeypatch.setattr(weight_router, "STATIC_DIR", tmp_path)
     monkeypatch.setattr(gateway, "reserve_ai_invocation", fail_reservation)
     with pytest.raises(RuntimeError, match="reservation failure"):
         await _web_upload(db_session)
 
-    assert not any(path.is_file() for path in tmp_path.rglob("*"))
+    assert not any(path.is_file() for path in _private_file_test_root.rglob("*"))
     assert await db_session.scalar(select(func.count()).select_from(FileAsset)) == 0
     assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
     assert await db_session.scalar(select(func.count()).select_from(AIInvocation)) == 0
@@ -495,63 +524,39 @@ async def test_web_quota_precommit_failure_returns_bounded_reason_and_cleans_byt
     db_session,
     legacy_owner_roots,
     platform_ai_ready,
-    tmp_path,
+    _private_file_test_root,
     monkeypatch,
 ):
     del legacy_owner_roots, platform_ai_ready
-    from web.routers import weight as weight_router
 
     async def reject_quota(*_args, **_kwargs):
         raise gateway.AIQuotaExceededError("synthetic quota")
 
-    monkeypatch.setattr(weight_router, "STATIC_DIR", tmp_path)
     monkeypatch.setattr(gateway, "reserve_ai_invocation", reject_quota)
     response = await _web_upload(db_session)
 
     assert response.status_code == 200
     assert json.loads(response.body)["reason"] == "quota"
-    assert not any(path.is_file() for path in tmp_path.rglob("*"))
+    assert not any(path.is_file() for path in _private_file_test_root.rglob("*"))
     assert await db_session.scalar(select(func.count()).select_from(FileAsset)) == 0
     assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
 
 
 async def test_web_partial_file_write_failure_removes_sensitive_bytes(
     db_session,
-    tmp_path,
+    _private_file_test_root,
     monkeypatch,
 ):
-    from web.routers import weight as weight_router
+    from vitals.persistence import file_storage
 
-    real_open = open
-    body_root = (tmp_path / "uploads" / "body").resolve()
+    def fail_publish(_parent_fd, _temporary, _destination):
+        raise OSError("synthetic partial body write")
 
-    class PartialWrite:
-        def __init__(self, path):
-            self._file = real_open(path, "wb")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, _exc_type, _exc, _traceback):
-            self._file.close()
-
-        def write(self, contents):
-            self._file.write(contents[:4])
-            self._file.flush()
-            raise OSError("synthetic partial body write")
-
-    def partial_open(path, mode="r", *args, **kwargs):
-        resolved = Path(path).resolve()
-        if mode == "wb" and resolved.is_relative_to(body_root):
-            return PartialWrite(path)
-        return real_open(path, mode, *args, **kwargs)
-
-    monkeypatch.setattr(weight_router, "STATIC_DIR", tmp_path)
-    monkeypatch.setattr("builtins.open", partial_open)
+    monkeypatch.setattr(file_storage, "_publish_temporary", fail_publish)
     with pytest.raises(OSError, match="partial body write"):
         await _web_upload(db_session)
 
-    assert not any(path.is_file() for path in tmp_path.rglob("*"))
+    assert not any(path.is_file() for path in _private_file_test_root.rglob("*"))
     assert await db_session.scalar(select(func.count()).select_from(FileAsset)) == 0
     assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
 
@@ -584,7 +589,7 @@ async def test_web_local_pdf_failure_cancels_without_provider_call(
     monkeypatch.setattr(body_ai, "render_body_scan", provider_must_not_run)
     response = await _web_upload(
         db_session,
-        file_bytes=b"not-a-valid-pdf",
+        file_bytes=b"%PDF-not-a-valid-pdf",
         filename="broken.pdf",
         content_type="application/pdf",
     )

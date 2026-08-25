@@ -30,7 +30,7 @@ window.labsUpload = function (showUploadInitial) {
         lqFailed: 0,
         lqErrors: [],
         lqConfirmed: 0,
-        lqLab: { date: '', lab_name: '', file_key: null, raw_payload_id: null },
+        lqLab: { date: '', lab_name: '', raw_payload_id: null },
         lqRows: [],
 
         async lqSubmit(e) {
@@ -86,7 +86,6 @@ window.labsUpload = function (showUploadInitial) {
                 this.lqLab = {
                     date: data.lab.date,
                     lab_name: data.lab.lab_name || '',
-                    file_key: data.lab.file_key,
                     raw_payload_id: data.lab.raw_payload_id
                 };
                 this.lqRows = (data.lab.markers || []).map(r => ({ ...r }));
@@ -125,7 +124,6 @@ window.labsUpload = function (showUploadInitial) {
             const payload = {
                 date: this.lqLab.date,
                 lab_name: this.lqLab.lab_name || null,
-                file_key: this.lqLab.file_key,
                 raw_payload_id: this.lqLab.raw_payload_id,
                 markers: rows
             };

@@ -58,7 +58,12 @@ from vitals.models.labs import DOMAIN, LabMarker, LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import alerts_service, conflict_engine, raw_payload_service
+from vitals.services import (
+    alerts_service,
+    conflict_engine,
+    file_asset_service,
+    raw_payload_service,
+)
 from vitals.services.upload_ownership_service import resolve_owned_upload_reference
 from vitals.utils.timeutils import now_local, today_local
 
@@ -849,6 +854,7 @@ async def _validate_parser_upload_chain(
     if (
         asset.subject_id != identity.subject_id
         or asset.purpose != FileAssetPurpose.LAB_DOCUMENT.value
+        or not file_asset_service.local_asset_is_live(asset)
         or raw.external_id != asset.storage_ref
     ):
         raise conflict_engine.ConflictRawOwnershipError(

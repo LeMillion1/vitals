@@ -241,7 +241,7 @@ window.weightOSDashboard = function (defaultTab) {
         bsUploading: false,
         bsPreviewOpen: false,
         bsError: '',
-        bsScan: { date: '', device: '', file_key: null, raw_payload_id: null },
+        bsScan: { date: '', device: '', raw_payload_id: null },
         bsRows: [],
         bsOverride: false,
         bsAwaitingOverride: false,
@@ -271,7 +271,6 @@ window.weightOSDashboard = function (defaultTab) {
                     this.bsScan = {
                         date: data.scan.date,
                         device: data.scan.device || '',
-                        file_key: data.scan.file_key,
                         raw_payload_id: data.scan.raw_payload_id
                     };
                     this.bsRows = (data.scan.metrics || []).map(r => ({ ...r }));
@@ -302,7 +301,6 @@ window.weightOSDashboard = function (defaultTab) {
             const payload = {
                 date: this.bsScan.date,
                 device: this.bsScan.device || null,
-                file_key: this.bsScan.file_key,
                 raw_payload_id: this.bsScan.raw_payload_id,
                 note: null,
                 override: this.bsOverride,

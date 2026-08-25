@@ -4,20 +4,21 @@ defer-retest, delete."""
 from __future__ import annotations
 
 import logging
-import os
-import uuid
 from datetime import date as date_type
 from typing import Optional
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from vitals.enums import (
     AIInvocationStatus,
     Domain,
+    FileAssetPurpose,
+    FileStorageBackend,
 )
 from vitals.i18n import t
 from vitals.services import (
@@ -28,12 +29,15 @@ from vitals.services import (
     labs_service,
 )
 from vitals.services.conflict_engine import ConflictBlocked
+from web.config import get_web_config
 from web.deps import get_session, require_auth
 from web.ratelimit import rate_limit
 from web.templating import STATIC_DIR, templates
 from web.uploads import (
-    legacy_upload_disk_path,
     prepare_medical_document,
+    private_storage_ref,
+    remove_stored_file,
+    write_private_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -235,9 +239,10 @@ class LabMarkerIn(BaseModel):
 
 
 class LabConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     date: str
     lab_name: Optional[str] = None
-    file_key: Optional[str] = None
     raw_payload_id: Optional[int] = None
     markers: list[LabMarkerIn] = []
     override: bool = False
@@ -266,30 +271,39 @@ async def upload_document(
     assert document is not None  # FastAPI requires this upload field.
     ext = document.extension
     contents = document.body
-    file_key = f"labs/{uuid.uuid4().hex}{ext}"
-    file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
+    storage_ref = private_storage_ref(FileAssetPurpose.LAB_DOCUMENT, ext)
+    file_written = False
     prepared = None
     try:
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, "wb") as fh:
-            fh.write(contents)
+        await run_in_threadpool(
+            write_private_file,
+            get_web_config().private_file_root,
+            storage_ref,
+            contents,
+        )
+        file_written = True
         prepared = await lab_document_ai_service.prepare_lab_document_parse(
             db,
             actor_username=username,
-            storage_ref=file_key,
+            storage_ref=storage_ref,
             media_type=document.media_type,
             byte_size=document.byte_size,
             sha256_hex=document.sha256_hex,
+            storage_backend=FileStorageBackend.PRIVATE_LOCAL,
         )
     except (
         ai_gateway_service.AIGatewayConfigurationError,
         ai_gateway_service.AIQuotaExceededError,
     ) as exc:
         await db.rollback()
-        try:
-            os.remove(file_path)
-        except FileNotFoundError:
-            pass
+        if file_written:
+            await run_in_threadpool(
+                remove_stored_file,
+                storage_backend=FileStorageBackend.PRIVATE_LOCAL.value,
+                storage_ref=storage_ref,
+                static_dir=STATIC_DIR,
+                private_root=get_web_config().private_file_root,
+            )
         reason = (
             "quota"
             if isinstance(exc, ai_gateway_service.AIQuotaExceededError)
@@ -311,12 +325,17 @@ async def upload_document(
             await db.rollback()
         except BaseException:
             logger.exception("Could not roll back failed lab-upload transaction")
-        try:
-            os.remove(file_path)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            logger.warning("Could not clean up failed lab upload %s: %s", file_path, exc)
+        if file_written:
+            try:
+                await run_in_threadpool(
+                    remove_stored_file,
+                    storage_backend=FileStorageBackend.PRIVATE_LOCAL.value,
+                    storage_ref=storage_ref,
+                    static_dir=STATIC_DIR,
+                    private_root=get_web_config().private_file_root,
+                )
+            except OSError as exc:
+                logger.warning("Could not clean up failed lab upload: %s", exc)
         raise
 
     try:
@@ -466,7 +485,6 @@ async def upload_document(
         "lab": {
             "date": lab_date.isoformat(),
             "lab_name": extracted.get("lab_name"),
-            "file_key": file_key,
             "raw_payload_id": prepared.raw_payload_id,
             "markers": rows,
         },
@@ -498,7 +516,7 @@ async def labs_confirm(
             markers=[m.model_dump() for m in payload.markers],
             lab_name=payload.lab_name,
             raw_payload_id=payload.raw_payload_id,
-            file_key=payload.file_key,
+            file_key=None,
             override=payload.override,
             identity=conflict_context.identity,
             prepared_conflict_write=prepared,

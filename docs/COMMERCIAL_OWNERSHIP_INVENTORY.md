@@ -282,10 +282,21 @@ checks its recorded size and SHA-256, and streams the same descriptor instead of
 reopening a path after verification. Every private response is `no-store` and
 `nosniff`; all storage and integrity failures retain the same 404 surface.
 
-Remaining work: the bytes still live under `web/static/uploads` on the same bind
-mount as the site assets. Nothing serves from there any more, so the seal is
-sufficient, but moving the tree to a private root would make the guarantee
-structural rather than a matter of route ordering.
+New lab documents, body scans, and progress photos now write to
+`VITALS_PRIVATE_FILE_ROOT` with the `private_local` backend. Each path component
+is owner-only and opened without following symlinks; publication is exclusive
+and crash-durable. The browser receives only `FileAsset.opaque_key` and cannot
+submit a physical locator during confirmation. Historical `legacy_local` rows
+remain readable for compatibility, including already-reserved AI invocations.
+
+`scripts/relocate_private_files.py` is the bounded operator cutover. It defaults
+to a count-only status report; `--apply` copies one independently committed
+batch through a single source descriptor, verifies size and SHA-256, and updates
+the complete `FileAsset` graph to a random private locator. It is resumable from
+the backend recorded on the asset and its audit output contains no locator or
+subject data. The legacy source bytes are deliberately retained after the
+metadata commit. Removing them remains a separate future cleanup checkpoint so
+a lost commit acknowledgement can never delete the only known-good copy.
 
 ### Portability, backup, and the difference between them
 

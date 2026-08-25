@@ -35,7 +35,6 @@ from vitals.enums import (
     Domain,
     FileAssetPurpose,
     FileAssetStatus,
-    FileStorageBackend,
     IntegrationConnectionType,
     IntegrationProvider,
     IntegrationConnectionStatus,
@@ -611,37 +610,15 @@ async def _validate_body_scan_ai_origin(
     asset = await session.scalar(
         asset_stmt.execution_options(populate_existing=True)
     )
-    live_file = (
-        asset is not None
-        and asset.status
-        in {
-            FileAssetStatus.LEGACY_PLACEHOLDER.value,
-            FileAssetStatus.PENDING.value,
-        }
-        and asset.deleted_at is None
-        and asset.purged_at is None
-    )
+    live_file = asset is not None and file_asset_service.local_asset_is_live(asset)
     retired_file = (
-        asset is not None
-        and (
-            (
-                asset.status == FileAssetStatus.DELETED.value
-                and asset.deleted_at is not None
-                and asset.purged_at is None
-            )
-            or (
-                asset.status == FileAssetStatus.PURGED.value
-                and asset.deleted_at is not None
-                and asset.purged_at is not None
-            )
-        )
+        asset is not None and file_asset_service.local_asset_is_retired(asset)
     )
     if (
         asset is None
         or asset.subject_id != subject_id
         or asset.uploaded_by_user_id != actor_user_id
         or asset.purpose != FileAssetPurpose.BODY_SCAN_DOCUMENT.value
-        or asset.storage_backend != FileStorageBackend.LEGACY_LOCAL.value
         or (not live_file and (require_live_file or not retired_file))
         or raw.external_id != asset.storage_ref
     ):
@@ -2507,17 +2484,11 @@ async def _progress_photo_scope_rows(
                 "progress photo links to a missing file asset"
             )
         expected_uploaders = {None} if migrated_historical else {owner_user_id}
-        expected_statuses = (
-            (FileAssetStatus.LEGACY_PLACEHOLDER.value,)
-            if migrated_historical
-            else _PROGRESS_PHOTO_LIVE_ASSET_STATUSES
-        )
         if (
             asset.subject_id != subject_id
             or asset.uploaded_by_user_id not in expected_uploaders
             or asset.purpose != FileAssetPurpose.PROGRESS_PHOTO.value
-            or asset.storage_backend != FileStorageBackend.LEGACY_LOCAL.value
-            or asset.status not in expected_statuses
+            or not file_asset_service.local_asset_is_live(asset)
             or asset.storage_ref != row.file_key
         ):
             raise ProgressPhotoOwnershipError(
@@ -2575,8 +2546,7 @@ async def add_progress_photo(
         asset.subject_id != identity.subject_id
         or asset.uploaded_by_user_id != identity.actor_user_id
         or asset.purpose != FileAssetPurpose.PROGRESS_PHOTO.value
-        or asset.storage_backend != FileStorageBackend.LEGACY_LOCAL.value
-        or asset.status not in _PROGRESS_PHOTO_LIVE_ASSET_STATUSES
+        or not file_asset_service.local_asset_is_live(asset)
     ):
         raise ProgressPhotoOwnershipError(
             "progress photo file asset is not authoritative in subject scope"
@@ -3235,7 +3205,7 @@ async def delete_progress_photo(
             raise ProgressPhotoOwnershipError(
                 "progress photo file asset disappeared during deletion"
             )
-        await file_asset_service.mark_legacy_local_deleted(
+        await file_asset_service.mark_local_deleted(
             session,
             file_asset_id=row.file_asset_id,
             subject_id=identity.subject_id,

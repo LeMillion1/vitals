@@ -545,17 +545,23 @@ def _validate_existing_roots(
     media_type: str,
     byte_size: int,
     sha256_hex: str,
+    storage_backend: FileStorageBackend,
 ) -> None:
+    expected_status = (
+        FileAssetStatus.ACTIVE.value
+        if storage_backend is FileStorageBackend.PRIVATE_LOCAL
+        else FileAssetStatus.LEGACY_PLACEHOLDER.value
+    )
     if (
         asset.subject_id != identity.subject_id
         or asset.uploaded_by_user_id != identity.actor_user_id
         or asset.purpose != FileAssetPurpose.BODY_SCAN_DOCUMENT.value
-        or asset.storage_backend != FileStorageBackend.LEGACY_LOCAL.value
+        or asset.storage_backend != storage_backend.value
         or asset.storage_ref != storage_ref
         or asset.media_type != media_type
         or asset.byte_size != byte_size
         or asset.sha256_hex != sha256_hex
-        or asset.status != FileAssetStatus.LEGACY_PLACEHOLDER.value
+        or asset.status != expected_status
         or asset.deleted_at is not None
         or asset.purged_at is not None
     ):
@@ -727,8 +733,13 @@ async def prepare_body_scan_parse(
     media_type: str,
     byte_size: int,
     sha256_hex: str,
+    storage_backend: FileStorageBackend | str = FileStorageBackend.LEGACY_LOCAL,
 ) -> PreparedBodyScanParse:
-    """Create exact file/raw roots and reserve one paid parser invocation."""
+    """Create exact file/raw roots and reserve one paid parser invocation.
+
+    The default preserves retries of legacy in-flight uploads. New HTTP uploads
+    explicitly select the private backend.
+    """
 
     cleaned_ref = _clean_storage_ref(storage_ref)
     cleaned_media = _clean_media_type(media_type)
@@ -739,7 +750,25 @@ async def prepare_body_scan_parse(
         session,
         actor_username=actor_username,
     )
-    asset = await file_asset_service.register_legacy_local(
+    try:
+        normalized_backend = FileStorageBackend(storage_backend)
+    except (TypeError, ValueError) as exc:
+        raise BodyScanAIValidationError(
+            "body-scan document storage backend is invalid"
+        ) from exc
+    if normalized_backend not in {
+        FileStorageBackend.LEGACY_LOCAL,
+        FileStorageBackend.PRIVATE_LOCAL,
+    }:
+        raise BodyScanAIValidationError(
+            "body-scan document storage backend is invalid"
+        )
+    register = (
+        file_asset_service.register_private_local
+        if normalized_backend is FileStorageBackend.PRIVATE_LOCAL
+        else file_asset_service.register_legacy_local
+    )
+    asset = await register(
         session,
         subject_id=identity.subject_id,
         uploaded_by_user_id=identity.actor_user_id,
@@ -792,6 +821,7 @@ async def prepare_body_scan_parse(
         media_type=cleaned_media,
         byte_size=cleaned_size,
         sha256_hex=cleaned_sha,
+        storage_backend=normalized_backend,
     )
     invocations = list(
         await session.scalars(

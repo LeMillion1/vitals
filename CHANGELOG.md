@@ -8,6 +8,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — new medical uploads use private storage
+
+New lab documents, body scans, and progress photos are stored under the
+dedicated `VITALS_PRIVATE_FILE_ROOT` volume with opaque random locators, not
+under `web/static/uploads`. Browser confirmation no longer accepts or returns a
+physical file locator. Private reads and deletes use descriptor-relative,
+no-symlink filesystem operations; exclusive publication fsyncs the file and its
+parent directory before metadata may commit.
+
+Historical `legacy_local` assets remain readable, including already-reserved AI
+retries. The new `scripts/relocate_private_files.py` operator command defaults to
+a count-only status report and relocates only a bounded batch with `--apply`.
+Each asset graph is independently committed after same-descriptor size and
+SHA-256 verification, so reruns are idempotent. Legacy source bytes are retained
+for a separate cleanup checkpoint rather than being deleted across an ambiguous
+database commit.
+
 ### Added — three-account emergency read access
 
 Vitals now has a separately governed break-glass path for an urgent, exact
@@ -2174,9 +2191,10 @@ this was reachable from the suite.
   and a same-origin script. The name is not in the HTML now.
 - `/static/uploads/{key:path}` remains as a seal: 404 for everybody, with no
   session dependency, so the static mount can never reach the private tree. A
-  test pins that it is registered ahead of the mount. The bytes still live under
-  `web/static/uploads`; moving them to a private root would make the guarantee
-  structural rather than a matter of route ordering, and is follow-up work.
+  test pins that it is registered ahead of the mount. At this release the bytes
+  still lived under `web/static/uploads`; the Unreleased private-storage cutover
+  above completes that follow-up for new lab, body-scan, and progress-photo
+  writes while preserving legacy read compatibility.
 
 ### Added — restoring one record without touching anybody else's (PR-06)
 

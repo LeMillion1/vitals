@@ -14,6 +14,8 @@ from vitals.enums import (
     AIInvocationStatus,
     Domain,
     FileAssetPurpose,
+    FileAssetStatus,
+    FileStorageBackend,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
@@ -29,6 +31,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import ProgressPhoto, WeightLog
 from vitals.ownership import WriteIdentity
+from vitals.persistence.file_storage import private_file_disk_path
 from vitals.services import (
     ai_gateway_service,
     body_scan_service,
@@ -41,6 +44,21 @@ from vitals.services import (
 )
 from vitals.services.upload_ownership_service import UploadOwnershipError
 from web.templating import STATIC_DIR
+from web.routers.labs import LabConfirm
+from web.routers.weight import BodyScanConfirm
+from pydantic import ValidationError
+
+
+@pytest.mark.parametrize("model", [LabConfirm, BodyScanConfirm])
+def test_browser_confirm_contract_rejects_physical_file_key(model):
+    payload = {
+        "date": "2026-08-25",
+        "raw_payload_id": 1,
+        "file_key": "uploads/client-controlled.png",
+    }
+    payload["markers" if model is LabConfirm else "metrics"] = []
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
 
 
 async def _identity_graph(
@@ -598,35 +616,16 @@ async def test_lab_partial_file_write_failure_removes_sensitive_bytes(
     auth_client,
     db_session,
     monkeypatch,
-    synthetic_upload_cleanup,
+    _private_file_test_root,
 ):
     """A short disk write must not leave an untracked medical document behind."""
 
-    real_open = open
-    uploads_root = os.path.realpath(os.path.join(STATIC_DIR, "uploads", "labs"))
+    from vitals.persistence import file_storage
 
-    class PartialWrite:
-        def __init__(self, path):
-            self._file = real_open(path, "wb")
+    def fail_publish(_parent_fd, _temporary, _destination):
+        raise OSError("synthetic partial lab write")
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            self._file.close()
-
-        def write(self, contents):
-            self._file.write(contents[:4])
-            self._file.flush()
-            raise OSError("synthetic partial lab write")
-
-    def partial_open(path, mode="r", *args, **kwargs):
-        if mode == "wb" and os.path.realpath(path).startswith(uploads_root + os.sep):
-            return PartialWrite(path)
-        return real_open(path, mode, *args, **kwargs)
-
-    monkeypatch.setattr("builtins.open", partial_open)
-    before = _directory_snapshot("labs")
+    monkeypatch.setattr(file_storage, "_publish_temporary", fail_publish)
 
     with pytest.raises(OSError, match="partial lab write"):
         await auth_client.post(
@@ -634,7 +633,7 @@ async def test_lab_partial_file_write_failure_removes_sensitive_bytes(
             files={"file": ("panel.png", b"\x89PNG\r\n\x1a\nsynthetic-private-lab", "image/png")},
         )
 
-    assert _directory_snapshot("labs") == before
+    assert not [path for path in _private_file_test_root.rglob("*") if path.is_file()]
     assert await db_session.scalar(select(func.count()).select_from(FileAsset)) == 0
     assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
 
@@ -792,7 +791,7 @@ async def test_document_commit_ambiguity_preserves_committed_metadata_and_bytes(
     extract_service,
     fake_extract,
     file_name,
-    synthetic_upload_cleanup,
+    _private_file_test_root,
     platform_ai_ready,
 ):
     monkeypatch.setattr(extract_service, "extract_from_file", fake_extract)
@@ -803,24 +802,25 @@ async def test_document_commit_ambiguity_preserves_committed_metadata_and_bytes(
         raise RuntimeError("synthetic lost commit acknowledgement")
 
     monkeypatch.setattr(db_session, "commit", commit_then_lose_ack)
-    before = _directory_snapshot(relative_dir)
     with pytest.raises(RuntimeError, match="lost commit"):
         await auth_client.post(
             endpoint,
             files={"file": (file_name, b"\x89PNG\r\n\x1a\nsynthetic-document", "image/png")},
         )
 
-    added = _directory_snapshot(relative_dir) - before
-    assert len(added) == 1
     asset = await db_session.scalar(select(FileAsset))
     raw = await db_session.scalar(select(RawPayload))
     assert asset is not None and raw is not None
     assert raw.file_asset_id == asset.id
-    assert os.path.isfile(os.path.join(STATIC_DIR, "uploads", relative_dir, added.pop()))
+    assert asset.storage_backend == FileStorageBackend.PRIVATE_LOCAL.value
+    assert asset.status == FileAssetStatus.ACTIVE.value
+    assert os.path.isfile(
+        private_file_disk_path(str(_private_file_test_root), asset.storage_ref)
+    )
 
 
 async def test_progress_commit_ambiguity_preserves_committed_metadata_and_bytes(
-    auth_client, db_session, monkeypatch, synthetic_upload_cleanup
+    auth_client, db_session, monkeypatch, _private_file_test_root
 ):
     real_commit = db_session.commit
 
@@ -829,7 +829,6 @@ async def test_progress_commit_ambiguity_preserves_committed_metadata_and_bytes(
         raise RuntimeError("synthetic lost progress commit acknowledgement")
 
     monkeypatch.setattr(db_session, "commit", commit_then_lose_ack)
-    before = _directory_snapshot("")
     with pytest.raises(RuntimeError, match="lost progress commit"):
         await auth_client.post(
             "/weight/photo",
@@ -841,19 +840,18 @@ async def test_progress_commit_ambiguity_preserves_committed_metadata_and_bytes(
     asset = await db_session.scalar(select(FileAsset))
     assert photo is not None and asset is not None
     assert photo.file_asset_id == asset.id
-    added = {
-        name
-        for name in (_directory_snapshot("") - before)
-        if name == os.path.basename(photo.file_key)
-    }
-    assert added == {os.path.basename(photo.file_key)}
+    assert asset.storage_backend == FileStorageBackend.PRIVATE_LOCAL.value
+    assert asset.status == FileAssetStatus.ACTIVE.value
+    assert os.path.isfile(
+        private_file_disk_path(str(_private_file_test_root), asset.storage_ref)
+    )
 
 
 async def test_web_document_upload_stamps_openrouter_connection(
     auth_client,
     db_session,
     monkeypatch,
-    synthetic_upload_cleanup,
+    _private_file_test_root,
     platform_ai_ready,
 ):
     monkeypatch.setattr(
@@ -892,7 +890,11 @@ async def test_web_document_upload_stamps_openrouter_connection(
         AIInvocationSource.WEB.value,
         AIInvocationStatus.SUCCEEDED.value,
     )
-    assert asset.storage_ref == payload["file_key"]
+    assert "file_key" not in payload
+    assert asset.storage_backend == FileStorageBackend.PRIVATE_LOCAL.value
+    assert os.path.isfile(
+        private_file_disk_path(str(_private_file_test_root), asset.storage_ref)
+    )
 
 
 @pytest.mark.parametrize("domain", ["body", "labs"])

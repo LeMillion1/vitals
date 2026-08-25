@@ -18,18 +18,27 @@ from __future__ import annotations
 
 import codecs
 import hashlib
-import hmac
 import os
-import stat
-import tempfile
-import uuid
 from dataclasses import dataclass
 from pathlib import PurePath
-from typing import AsyncIterator, BinaryIO, Iterator
+from typing import AsyncIterator
 
 from fastapi import HTTPException, UploadFile, status
 
-from vitals.enums import FileStorageBackend
+from vitals.enums import FileAssetPurpose
+from vitals.persistence import file_storage as _file_storage
+
+# Compatibility imports for existing HTTP callers. Filesystem implementation
+# belongs to the core persistence boundary, not to FastAPI upload validation.
+VerifiedPrivateFile = _file_storage.VerifiedPrivateFile
+iter_verified_file = _file_storage.iter_verified_file
+legacy_upload_disk_path = _file_storage.legacy_upload_disk_path
+open_verified_file = _file_storage.open_verified_file
+private_file_disk_path = _file_storage.private_file_disk_path
+private_storage_ref = _file_storage.private_storage_ref
+remove_stored_file = _file_storage.remove_stored_file
+stored_file_disk_path = _file_storage.stored_file_disk_path
+write_private_file = _file_storage.write_private_file
 
 # Per-kind extension allowlists (lower-case, with the leading dot).
 IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"})
@@ -70,14 +79,6 @@ class PreparedMedicalDocument:
         return len(self.body)
 
 
-@dataclass(slots=True)
-class VerifiedPrivateFile:
-    """One integrity-checked descriptor, ready to stream without reopening."""
-
-    stream: BinaryIO
-    byte_size: int
-
-
 def safe_medical_media_type(media_type: str | None) -> str:
     """Return only a content type that cannot turn a stored upload into HTML/SVG."""
 
@@ -86,182 +87,10 @@ def safe_medical_media_type(media_type: str | None) -> str:
     return "application/octet-stream"
 
 
-def legacy_upload_disk_path(static_dir: str, storage_ref: str) -> str:
-    """Resolve a validated legacy ``FileAsset.storage_ref`` under uploads.
-
-    Progress-photo references historically include the leading ``uploads/``;
-    lab/body references are already relative to that directory.  The realpath
-    containment check protects delete/cleanup callers from a forged legacy DB
-    value as well as from symlinks leaving the private tree.
-    """
-
-    if not isinstance(storage_ref, str) or not storage_ref:
-        raise ValueError("storage_ref must be a non-empty string")
-    relative = (
-        storage_ref.removeprefix("uploads/")
-        if storage_ref.startswith("uploads/")
-        else storage_ref
-    )
-    uploads_root = os.path.realpath(os.path.join(static_dir, "uploads"))
-    path = os.path.realpath(os.path.join(uploads_root, relative))
-    if not path.startswith(uploads_root + os.sep):
-        raise ValueError("storage_ref leaves the private uploads directory")
-    return path
-
-
-def private_file_disk_path(private_root: str, storage_ref: str) -> str:
-    """Resolve a canonical private-local locator below an absolute root."""
-
-    if not isinstance(private_root, str) or not os.path.isabs(private_root):
-        raise ValueError("private file root must be an absolute path")
-    if not isinstance(storage_ref, str) or not storage_ref:
-        raise ValueError("storage_ref must be a non-empty string")
-    if (
-        storage_ref != storage_ref.strip()
-        or storage_ref.startswith("/")
-        or "\\" in storage_ref
-        or "\x00" in storage_ref
-        or ".." in storage_ref
-        or any(ord(character) < 32 or ord(character) == 127 for character in storage_ref)
-        or any(segment in {"", ".", ".."} for segment in storage_ref.split("/"))
-    ):
-        raise ValueError("storage_ref must be a canonical private path")
-    root = os.path.realpath(private_root)
-    path = os.path.realpath(os.path.join(root, storage_ref))
-    if not path.startswith(root + os.sep):
-        raise ValueError("storage_ref leaves the private file root")
-    return path
-
-
-def stored_file_disk_path(
-    *,
-    storage_backend: str,
-    storage_ref: str,
-    static_dir: str,
-    private_root: str,
-) -> str:
-    """Resolve one supported backend without exposing its locator to a route."""
-
-    if storage_backend == FileStorageBackend.LEGACY_LOCAL.value:
-        return legacy_upload_disk_path(static_dir, storage_ref)
-    if storage_backend == FileStorageBackend.PRIVATE_LOCAL.value:
-        return private_file_disk_path(private_root, storage_ref)
-    raise ValueError("unsupported private-file storage backend")
-
-
-def open_verified_file(
-    *,
-    storage_backend: str,
-    storage_ref: str,
-    static_dir: str,
-    private_root: str,
-    expected_size: int | None,
-    expected_sha256: str | None,
-) -> VerifiedPrivateFile:
-    """Open, verify and return the same descriptor that delivery will stream.
-
-    Verification and response delivery must use one descriptor. Hashing a path
-    and then handing that path to ``FileResponse`` would allow a replacement in
-    between those operations. Legacy placeholders without complete metadata
-    remain readable during the compatibility window, but every active private
-    object is required by the schema to have both values.
-    """
-
-    if expected_size is not None and (
-        not isinstance(expected_size, int)
-        or isinstance(expected_size, bool)
-        or expected_size < 0
-    ):
-        raise ValueError("stored file has invalid size metadata")
-    if expected_sha256 is not None and (
-        not isinstance(expected_sha256, str)
-        or len(expected_sha256) != 64
-        or any(character not in "0123456789abcdef" for character in expected_sha256)
-    ):
-        raise ValueError("stored file has invalid digest metadata")
-
-    path = stored_file_disk_path(
-        storage_backend=storage_backend,
-        storage_ref=storage_ref,
-        static_dir=static_dir,
-        private_root=private_root,
-    )
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    stream = os.fdopen(descriptor, "rb")
-    try:
-        file_stat = os.fstat(stream.fileno())
-        if not stat.S_ISREG(file_stat.st_mode):
-            raise ValueError("stored object is not a regular file")
-        if expected_size is not None and file_stat.st_size != expected_size:
-            raise ValueError("stored file size does not match metadata")
-        if expected_sha256 is not None:
-            digest = hashlib.sha256()
-            while chunk := stream.read(_CHUNK):
-                digest.update(chunk)
-            if not hmac.compare_digest(digest.hexdigest(), expected_sha256):
-                raise ValueError("stored file digest does not match metadata")
-            stream.seek(0)
-        return VerifiedPrivateFile(stream=stream, byte_size=file_stat.st_size)
-    except BaseException:
-        stream.close()
-        raise
-
-
-def iter_verified_file(
-    verified: VerifiedPrivateFile,
-    *,
-    chunk_size: int = _CHUNK,
-) -> Iterator[bytes]:
-    """Stream a verified descriptor in bounded chunks and always close it."""
-
-    try:
-        while chunk := verified.stream.read(chunk_size):
-            yield chunk
-    finally:
-        verified.stream.close()
-
-
 def care_attachment_storage_ref(extension: str) -> str:
     """Mint a locator unrelated to patient, thread, filename, or download URL."""
 
-    if extension not in DOC_EXTS:
-        raise ValueError("unsupported care attachment extension")
-    key = uuid.uuid4().hex
-    return f"care/{key[:2]}/{key}{extension}"
-
-
-def write_private_file(private_root: str, storage_ref: str, body: bytes) -> str:
-    """Atomically write owner-only bytes and return their validated path."""
-
-    path = private_file_disk_path(private_root, storage_ref)
-    parent = os.path.dirname(path)
-    os.makedirs(parent, mode=0o700, exist_ok=True)
-    # Resolve again after creating the parent, so a configured path containing a
-    # symlink cannot leave the private tree between validation and the write.
-    path = private_file_disk_path(private_root, storage_ref)
-    fd, temporary = tempfile.mkstemp(prefix=".incoming-", dir=parent)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(body)
-            stream.flush()
-            os.fsync(stream.fileno())
-        # Generated names make collisions fantastically unlikely, but a
-        # collision must fail rather than replace existing medical bytes.
-        os.link(temporary, path)
-        os.unlink(temporary)
-    except BaseException:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
-    return path
+    return private_storage_ref(FileAssetPurpose.CARE_MESSAGE_ATTACHMENT, extension)
 
 
 def file_ext(filename: str | None) -> str:

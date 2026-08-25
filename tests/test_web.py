@@ -13,9 +13,11 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.models.labs import LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
+from vitals.models.tenancy import FileAsset
 from vitals.models.weight import WeightLog
 from vitals.services import conflict_engine, weight_service
 from vitals.services.modules_service import SETTINGS_KEY
+from vitals.persistence.file_storage import private_file_disk_path
 from vitals.utils.timeutils import today_local
 
 # No module-level ``pytest.mark.asyncio``: pytest.ini runs asyncio_mode=auto, and
@@ -1165,16 +1167,10 @@ async def test_labs_upload_extraction_failure_returns_error_json(
 
 
 async def test_failed_extraction_keeps_auditable_raw_and_file(
-    auth_client, db_session, monkeypatch, platform_ai_ready
+    auth_client, db_session, monkeypatch, platform_ai_ready, _private_file_test_root
 ):
     """A paid/ambiguous parse keeps its raw-first document graph for audit."""
-    import os
-
     from vitals.services import labs_service
-    from web.templating import STATIC_DIR
-
-    uploads = os.path.join(STATIC_DIR, "uploads", "labs")
-    before = set(os.listdir(uploads)) if os.path.isdir(uploads) else set()
 
     async def fake_extract(
         contents, *, llm, content_type, filename=None, model, max_tokens
@@ -1189,13 +1185,13 @@ async def test_failed_extraction_keeps_auditable_raw_and_file(
     )
     assert r.json()["ok"] is False
 
-    after = set(os.listdir(uploads)) if os.path.isdir(uploads) else set()
-    added = after - before
-    assert len(added) == 1
     raw = await db_session.scalar(select(RawPayload))
     assert raw is not None and raw.processed_at is None
-    for name in added:
-        os.remove(os.path.join(uploads, name))
+    asset = await db_session.get(FileAsset, raw.file_asset_id)
+    assert asset is not None
+    assert Path(
+        private_file_disk_path(str(_private_file_test_root), asset.storage_ref)
+    ).is_file()
 
 
 async def test_labs_upload_returns_preview_without_persisting_results(
@@ -1235,6 +1231,7 @@ async def test_labs_upload_returns_preview_without_persisting_results(
     assert data["ok"] is True
     assert data["lab"]["date"] == "2026-06-10"
     assert data["lab"]["lab_name"] == "Synevo"
+    assert "file_key" not in data["lab"]
     assert data["lab"]["markers"] == [
         {"marker": "Ferritin", "value": 95.0, "unit": "ng/mL", "ref_low": 30.0, "ref_high": 400.0}
     ]
@@ -1285,7 +1282,6 @@ async def test_labs_confirm_persists_edited_markers(
         json={
             "date": lab["date"],
             "lab_name": lab["lab_name"],
-            "file_key": lab["file_key"],
             "raw_payload_id": lab["raw_payload_id"],
             "markers": [{**lab["markers"][0], "value": 105}],
         },
@@ -1585,11 +1581,12 @@ async def test_generic_alert_routes_include_provider_but_exclude_platform(
     assert platform.resolved_at is None
 
 
-async def test_progress_photo_upload_and_delete(auth_client, db_session):
+async def test_progress_photo_upload_and_delete(
+    auth_client, db_session, _private_file_test_root
+):
     """Test that progress photos are correctly uploaded, saved on disk, and deleted."""
     import os
     from vitals.models.weight import ProgressPhoto
-    from web.templating import STATIC_DIR
 
     photo_data = b"\xff\xd8\xfffake-jpeg-image-bytes"
     file_path = None
@@ -1613,7 +1610,10 @@ async def test_progress_photo_upload_and_delete(auth_client, db_session):
         assert photo.file_key.startswith("uploads/")
 
         # Confirm it is saved on disk
-        file_path = os.path.join(STATIC_DIR, photo.file_key)
+        asset = await db_session.get(FileAsset, photo.file_asset_id)
+        file_path = private_file_disk_path(
+            str(_private_file_test_root), asset.storage_ref
+        )
         assert os.path.exists(file_path)
         with open(file_path, "rb") as f:
             assert f.read() == photo_data
@@ -1640,11 +1640,12 @@ async def test_progress_photo_upload_and_delete(auth_client, db_session):
                 pass
 
 
-async def test_progress_photo_multiple_upload_success(auth_client, db_session):
+async def test_progress_photo_multiple_upload_success(
+    auth_client, db_session, _private_file_test_root
+):
     """Test that multiple progress photos are correctly uploaded, saved on disk, and DB."""
     import os
     from vitals.models.weight import ProgressPhoto
-    from web.templating import STATIC_DIR
 
     photo_data_1 = b"\xff\xd8\xfffake-jpeg-image-bytes-1"
     photo_data_2 = b"\xff\xd8\xfffake-jpeg-image-bytes-2"
@@ -1675,7 +1676,10 @@ async def test_progress_photo_multiple_upload_success(auth_client, db_session):
             assert photo.file_key.startswith("uploads/")
 
             # Confirm saved on disk
-            path = os.path.join(STATIC_DIR, photo.file_key)
+            asset = await db_session.get(FileAsset, photo.file_asset_id)
+            path = private_file_disk_path(
+                str(_private_file_test_root), asset.storage_ref
+            )
             file_paths.append(path)
             assert os.path.exists(path)
 

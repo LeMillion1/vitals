@@ -1017,6 +1017,11 @@ Delivered:
   answers 404 to everybody so the static mount can never reach the private
   tree. Two checks the old path-addressed route needed — purpose gating and the
   `uploads/labs/x` alias — are gone with what they defended against.
+- New lab documents, body scans, and progress photos use `private_local` under
+  `VITALS_PRIVATE_FILE_ROOT`; browser confirmation accepts no physical locator.
+  Historical `legacy_local` assets remain read-compatible, and the bounded
+  `scripts/relocate_private_files.py` operator command can resume from the
+  backend stored on each independently committed `FileAsset`.
 - Upload confirmation was already bound to subject, raw payload, uploader and
   the intended model by the PR-03/PR-04 work; PR-06 pins the last of those with
   a test that offers a lab sheet through the body-scan door and vice versa.
@@ -1034,9 +1039,9 @@ Delivered:
 Not done, and stated rather than implied: `import_full` still deletes each
 portable table unqualified. That is correct for a whole-database restore, which
 is now an operator's operation, but it leaves the operator path all-or-nothing
-while the personal one is scoped. Moving the uploads tree out of
-`web/static/uploads` to a private root would also make the file guarantee
-structural rather than a matter of route ordering.
+while the personal one is scoped. The private-file relocation deliberately
+retains each legacy source after the metadata commit; hard removal needs a
+second durable cleanup checkpoint and is not part of the relocation command.
 
 Original scope:
 
