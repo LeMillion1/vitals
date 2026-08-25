@@ -30,6 +30,7 @@ vitals/services/care/
 vitals/services/authentication/
 ├── admission/
 │   ├── invitations.py # email-bound one-time account admission
+│   ├── console.py     # redacted operator registration projection
 │   ├── requests.py    # federated request and operator decision
 │   └── retention.py   # bounded expiry and applicant-PII scrubbing
 ├── federation.py      # provider identity to local account
@@ -86,10 +87,10 @@ page needs the same edit:
 | the domains | `vitals.enums.Domain` | 14 |
 | external integration modules | tracked non-`__init__` modules in `vitals/integrations/` | 5 |
 | the scheduled jobs | `vitals/scheduler/jobs.py` | 15, of which 11 fan out per record |
-| migration count | `migrations/versions/` | 72, head `0072` |
+| migration count | `migrations/versions/` | 73, head `0073` |
 | RLS table count | revisions `0050` + `0051` + `0055` + `0056` + `0057` + `0060` + `0061` + `0062` + `0063` + `0065` + `0067` + `0069`, asserted in `tests/test_row_level_security.py` | 66 |
 | platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 10 |
-| routers, tracked application-service modules | `web/routers/`, `vitals/services/` | 31 and 104 |
+| routers, tracked application-service modules | `web/routers/`, `vitals/services/` | 32 and 105 |
 
 The **39 columns** the timeline attributes to revision `0049` is deliberately
 *not* in that table: it is the length of that revision's own

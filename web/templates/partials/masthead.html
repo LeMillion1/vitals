@@ -162,7 +162,7 @@
                refuses them outright — this was the one link in the product
                whose intended audience could not reach it. #}
             <a href="/settings/platform/support" class="mh-rail-foot-link {% if current_path.startswith('/settings/platform/support') %}is-active{% endif %}">{{ t('support.console_heading') }}</a>
-            <a href="/settings/platform/professionals" class="mh-rail-foot-link {% if current_path.startswith('/settings/platform/professionals') %}is-active{% endif %}">{{ t('professional_review.heading') }}</a>
+            <a href="/settings/platform/registration" class="mh-rail-foot-link {% if current_path.startswith('/settings/platform/registration') or current_path.startswith('/settings/platform/professionals') %}is-active{% endif %}">{{ t('registration.operator.heading') }}</a>
             {% endif %}
             {% if request.state.has_own_record %}
             {# The patient's door into the conversations about their own record.

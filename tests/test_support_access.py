@@ -1047,7 +1047,7 @@ async def test_the_console_has_a_link_somebody_can_actually_click(
     page = await client.get("/care", headers={"Accept": "text/html"})
     assert page.status_code == 200
     assert "/settings/platform/support" in page.text
-    assert "/settings/platform/professionals" in page.text
+    assert "/settings/platform/registration" in page.text
     del legacy_owner_roots
 
 
@@ -1062,7 +1062,7 @@ async def test_the_console_link_is_not_offered_to_anybody_else(
     _sign_in(client, "rail-member")
     page = await client.get("/weight", headers={"Accept": "text/html"})
     assert "/settings/platform/support" not in page.text
-    assert "/settings/platform/professionals" not in page.text
+    assert "/settings/platform/registration" not in page.text
     del legacy_owner_roots
 
 

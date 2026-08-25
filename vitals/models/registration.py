@@ -60,9 +60,19 @@ class RegistrationInvitation(Base):
         UniqueConstraint(
             "token_digest", name="uq_registration_invitations_token_digest"
         ),
+        UniqueConstraint(
+            "issuance_request_digest",
+            name="uq_registration_invitations_issuance_request_digest",
+        ),
         CheckConstraint(
             f"token_digest IS NULL OR ({_LOWERCASE_SHA256_CHECK})",
             name="ck_registration_invitations_token_digest",
+        ),
+        CheckConstraint(
+            "issuance_request_digest IS NULL OR ("
+            f"{_LOWERCASE_SHA256_CHECK.replace('token_digest', 'issuance_request_digest')}"
+            ")",
+            name="ck_registration_invitations_issuance_request_digest",
         ),
         CheckConstraint(
             "normalized_email IS NULL OR "
@@ -146,6 +156,9 @@ class RegistrationInvitation(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     token_digest: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    issuance_request_digest: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
     normalized_email: Mapped[Optional[str]] = mapped_column(
         String(320), nullable=True
     )

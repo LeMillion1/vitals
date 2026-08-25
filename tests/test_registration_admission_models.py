@@ -92,6 +92,7 @@ async def test_create_all_registers_admission_tables_constraints_and_restrict_fk
     assert {"registration_invitations", "registration_requests"} <= tables
     assert {
         "ck_registration_invitations_token_digest",
+        "ck_registration_invitations_issuance_request_digest",
         "ck_registration_invitations_normalized_email",
         "ck_registration_invitations_expiry",
         "ck_registration_invitations_state",
@@ -148,6 +149,9 @@ async def test_pending_rows_receive_database_defaults(db_session):
         {"token_digest": "a" * 63},
         {"token_digest": "A" * 64},
         {"token_digest": "g" * 64},
+        {"issuance_request_digest": "a" * 63},
+        {"issuance_request_digest": "A" * 64},
+        {"issuance_request_digest": "g" * 64},
         {"normalized_email": "   "},
         {"normalized_email": "x" * 321},
         {"account_kind": "platform_superadmin"},
@@ -184,6 +188,30 @@ async def test_invitation_token_digest_is_unique(db_session):
             **(
                 _invitation_values(inviter, suffix="b")
                 | {"token_digest": first.token_digest}
+            )
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+async def test_invitation_issuance_request_digest_is_unique(db_session):
+    inviter = await _user(db_session, "unique-request-inviter")
+    request_digest = hashlib.sha256(b"one-browser-form").hexdigest()
+    first = RegistrationInvitation(
+        **(
+            _invitation_values(inviter, suffix="request-a")
+            | {"issuance_request_digest": request_digest}
+        )
+    )
+    db_session.add(first)
+    await db_session.flush()
+
+    db_session.add(
+        RegistrationInvitation(
+            **(
+                _invitation_values(inviter, suffix="request-b")
+                | {"issuance_request_digest": request_digest}
             )
         )
     )

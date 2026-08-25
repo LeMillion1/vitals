@@ -21,11 +21,14 @@ def _named_model_constraints(model, constraint_type: str) -> set[str]:
     }
 
 
-def test_0072_upgrade_downgrade_and_model_parity(monkeypatch):
+def test_0072_to_0073_upgrade_downgrade_and_model_parity(monkeypatch):
     """Exercise the real reversible DDL and pin its complete public shape."""
 
-    migration = importlib.import_module(
+    foundation = importlib.import_module(
         "migrations.versions.0072_registration_admission_schema"
+    )
+    idempotency = importlib.import_module(
+        "migrations.versions.0073_registration_invitation_idempotency"
     )
     engine = create_engine("sqlite://")
     models = (RegistrationInvitation, RegistrationRequest)
@@ -41,9 +44,12 @@ def test_0072_upgrade_downgrade_and_model_parity(monkeypatch):
                 Column("id", Uuid(as_uuid=True), primary_key=True),
             ).create(connection)
             context = MigrationContext.configure(connection)
-            monkeypatch.setattr(migration, "op", Operations(context))
+            operations = Operations(context)
+            monkeypatch.setattr(foundation, "op", operations)
+            monkeypatch.setattr(idempotency, "op", operations)
 
-            migration.upgrade()
+            foundation.upgrade()
+            idempotency.upgrade()
             inspector = inspect(connection)
 
             for model in models:
@@ -109,7 +115,8 @@ def test_0072_upgrade_downgrade_and_model_parity(monkeypatch):
                 }
                 assert migrated_fks == model_fks
 
-            migration.downgrade()
+            idempotency.downgrade()
+            foundation.downgrade()
             assert set(inspect(connection).get_table_names()) == {"users"}
     finally:
         engine.dispose()

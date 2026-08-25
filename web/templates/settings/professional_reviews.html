@@ -6,7 +6,9 @@
 <div hx-history="false"></div>
 {% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
-    {% call masthead_header('settings', t('professional_review.heading'), []) %}{% endcall %}
+    {% call masthead_header('settings', t('professional_review.heading'), []) %}
+        <a href="/settings/platform/registration" class="v-btn-ghost text-xs">{{ t("registration.operator.back") }}</a>
+    {% endcall %}
     <p class="v-text-body max-w-2xl" style="color: var(--muted)">
         {{ t("professional_review.description") }}
     </p>

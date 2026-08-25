@@ -41,7 +41,7 @@ the others remain useful provenance for the remediations named below:
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0072 (head)`; 72 files in `migrations/versions` | Verified |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0073 (head)`; 73 files in `migrations/versions` | Verified |
 | SQLAlchemy tables | `len(Base.metadata.tables)` → 83 | Verified |
 | Ownership registry | `len(OWNERSHIP_REGISTRY)` → 83 | Verified and exhaustive in code |
 | Subject-scoped tables | 66 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
@@ -49,11 +49,11 @@ the others remain useful provenance for the remediations named below:
 | Ownership cutover | 18 ordered backfill phases and 18 matching scripts | Verified |
 | Domain enum | 14 health domains | Verified |
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
-| Web routers | 31 modules under `web/routers` | Verified |
-| Application services | 104 tracked non-`__init__` modules after the care, authentication, admission, analytics, persistence, and notification moves | Verified |
+| Web routers | 32 modules under `web/routers` | Verified |
+| Application services | 105 tracked non-`__init__` modules after the care, authentication, admission, analytics, persistence, and notification moves | Verified |
 | Flat service debt | 75 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
 | Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
-| Commercial Git history | 275 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
+| Commercial Git history | 276 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
 current commit. Only a command executed against the current tree is recorded as
@@ -71,14 +71,16 @@ a current validation result.
 - Every federated protected request now checks the live active account and
   session version. Suspending an account or calling `revoke_all_sessions` closes
   the next request.
-- Registration remains unavailable end to end. Revision `0072` supplies
+- Open and administrator-approved registration remain unavailable end to end.
+  Revision `0072` supplies
   constrained, purge-ready invitation and approval-request state, and
   `authentication.admission` implements their transactional domain lifecycles.
   The `invite_only` recipient now has a fragment-scrubbing browser exchange and
-  fresh OIDC callback that atomically consumes the exact invitation. Supported
-  operator issue/revoke/delivery controls and scheduled retention are not wired,
-  and the `admin_approved` browser/operator flow is still absent, so neither mode
-  is ready to enable operationally.
+  fresh OIDC callback that atomically consumes the exact invitation. A protected
+  operator screen shows redacted live invitations, returns a configured-origin
+  link once, and revokes links even after closure. Scheduled retention and the
+  `admin_approved` browser/operator flow are still absent; `invite_only` is the
+  only non-closed mode with a complete interactive path.
 
 ### Data isolation
 
@@ -439,6 +441,26 @@ that the exchange clears old local authentication handles. A separate executable
 JS failure harness forced `history.replaceState` to throw and observed zero
 exchange requests. Synthetic invitations were then
 revoked through the domain service and the test stack returned to `disabled`.
+
+The operator invitation console on revision `0073` then passed 683 focused
+admission, OIDC, support-access, i18n, design, static, router, mobile, and web
+tests (nine PostgreSQL-only skips). The full fast suite passed 4,978 tests (183
+skipped, 35 UI deselected), full Ruff and diff checks passed, and Tailwind
+rebuilt without a generated CSS change. PostgreSQL 15 completed the real
+`head → 0034 → head` migration cycle and all 74 final invitation-console,
+admission-model, and migration tests; a broader pre-final admission/federation/
+RLS selection had passed 142 tests. Compose rebuilt the application at revision
+`0073`; `/health` reported the database, Redis, and scheduler healthy. A live
+desktop browser confirmed the protected operator page, masked recipient labels,
+unambiguous invitation references, and revoke controls. An older SSO session
+was correctly redirected to fresh step-up before an issue mutation. The test
+IdP password was unavailable, so that manual mutation was not completed in the
+browser; focused HTTP tests proved issue, durable refresh/restart replay,
+pagination, and revoke behavior on SQLite and PostgreSQL instead. Synthetic
+roles and invitations were removed, registration returned to `disabled`, and
+the original Compose configuration was restored. Phone-width behavior remains
+covered by the mobile contracts rather than a live viewport capture in this
+run.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

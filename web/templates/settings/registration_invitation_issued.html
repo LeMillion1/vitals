@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="{{ request.state.lang if request.state is defined else 'en' }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <title>{{ t("registration.operator.issued_title") }}</title>
+    <link rel="stylesheet" href="/static/fonts.css">
+    <link rel="stylesheet" href="/static/tailwind.css">
+    <link rel="stylesheet" href="/static/vitals.css">
+    <link rel="stylesheet" href="/static/vitals-masthead.css">
+</head>
+<body class="ui-masthead">
+    <main class="v-page px-6 py-7 max-w-2xl mx-auto">
+        <section class="v-card p-6 space-y-5" aria-labelledby="issued-heading">
+            <div>
+                <div class="v-eyebrow">Vitals</div>
+                <h1 id="issued-heading" class="v-heading-1 mt-2">{{ t("registration.operator.issued_heading") }}</h1>
+            </div>
+            <div class="v-alert warn">{{ t("registration.operator.issued_once") }}</div>
+            <p class="v-text-micro" style="color: var(--muted)">{{ t("registration.operator.reference") }} {{ invitation_reference }}</p>
+            <div>
+                <label for="invitation-link" class="v-label">{{ t("registration.operator.invitation_link") }}</label>
+                <textarea id="invitation-link" class="v-input mt-2" rows="4" readonly>{{ invitation_link }}</textarea>
+            </div>
+            <div class="flex flex-wrap justify-between gap-3">
+                <a href="/settings/platform/registration" class="v-btn-ghost">{{ t("registration.operator.back") }}</a>
+                <button type="button" class="v-btn" data-copy-invitation>{{ t("registration.operator.copy") }}</button>
+            </div>
+            <p class="v-text-micro" data-copy-status aria-live="polite" style="color: var(--muted)"></p>
+        </section>
+    </main>
+    <script nonce="{{ csp_nonce }}">
+        (function () {
+            var button = document.querySelector('[data-copy-invitation]');
+            var field = document.getElementById('invitation-link');
+            var status = document.querySelector('[data-copy-status]');
+            var copied = {{ t("registration.operator.copied")|tojson }};
+            var manual = {{ t("registration.operator.copy_manually")|tojson }};
+            button.addEventListener('click', function () {
+                var fallback = function () {
+                    field.focus();
+                    field.select();
+                    try {
+                        status.textContent = document.execCommand('copy') ? copied : manual;
+                    } catch (error) {
+                        status.textContent = manual;
+                    }
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(field.value).then(function () {
+                        status.textContent = copied;
+                    }).catch(fallback);
+                } else {
+                    fallback();
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

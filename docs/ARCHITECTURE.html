@@ -348,9 +348,9 @@ tbody tr:hover td { background: var(--surface-2); }
   <p class="standfirst">A self-hosted health-data service — fourteen domains, five external integration modules and one data lake — where every medical fact belongs to a named health subject and cross-subject access requires an explicit consent or support grant.</p>
   <div class="meta">
     <span><b>83</b> tables</span>
-    <span><b>72</b> migrations</span>
+    <span><b>73</b> migrations</span>
     <span><b>14</b> domains</span>
-    <span><b>104</b> application services</span>
+    <span><b>105</b> application services</span>
     <span><b>66</b> RLS tables</span>
     <span>Reviewed <b>2026-08-25</b></span>
   </div>
@@ -434,10 +434,10 @@ flowchart TB
 flowchart LR
   subgraph proc ["FastAPI process"]
     direction TB
-    web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>31 routers, server-rendered</span>"]
+    web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>32 routers, server-rendered</span>"]
     mcpsrv["<b>MCP server</b><br/><span style='font-size:11px'>tools, resources, prompts</span>"]
     api["<b>External read API</b><br/><span style='font-size:11px'>summary for other surfaces</span>"]
-    svc["<b>Application services</b><br/><span style='font-size:11px'>104 tracked modules · bounded-context migration active</span>"]
+    svc["<b>Application services</b><br/><span style='font-size:11px'>105 tracked modules · bounded-context migration active</span>"]
     sched["<b>Scheduler</b><br/><span style='font-size:11px'>15 jobs: sync, digest, nudge,<br/>dispatch, reconcile, sweep</span>"]
   end
 

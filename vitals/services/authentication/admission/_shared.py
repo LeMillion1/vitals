@@ -76,6 +76,10 @@ class AdmissionStateError(AdmissionError):
     """An operator attempted a stale or impossible state transition."""
 
 
+class AdmissionReplayError(AdmissionStateError):
+    """An idempotent operator request has already completed."""
+
+
 @dataclass(frozen=True, slots=True)
 class IssuedInvitation:
     invitation: RegistrationInvitation

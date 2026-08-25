@@ -25,11 +25,17 @@ from vitals.services.authentication.admission._shared import (
     AdmissionError,
     AdmissionForbidden,
     AdmissionRefused,
+    AdmissionReplayError,
     AdmissionResult,
     AdmissionStateError,
     AdmissionValidationError,
     IssuedInvitation,
     RetentionResult,
+)
+from vitals.services.authentication.admission.console import (
+    InvitationConsoleEntry,
+    RegistrationConsole,
+    registration_console,
 )
 from vitals.services.authentication.admission.invitations import (
     claim_invitation,
@@ -61,10 +67,13 @@ __all__ = [
     "AdmissionError",
     "AdmissionForbidden",
     "AdmissionRefused",
+    "AdmissionReplayError",
     "AdmissionResult",
     "AdmissionStateError",
     "AdmissionValidationError",
     "IssuedInvitation",
+    "InvitationConsoleEntry",
+    "RegistrationConsole",
     "RetentionResult",
     "approve_request",
     "claim_invitation",
@@ -75,6 +84,7 @@ __all__ = [
     "issue_invitation",
     "purge_terminal",
     "reject_request",
+    "registration_console",
     "revoke_invitation",
     "submit_request",
 ]

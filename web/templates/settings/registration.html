@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}{{ t("registration.operator.title") }}{% endblock %}
+
+{% block content %}
+<div hx-history="false"></div>
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
+<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
+    {% call masthead_header('settings', t('registration.operator.heading'), []) %}
+        <a href="/settings/platform/professionals" class="v-btn-ghost text-xs">{{ t("registration.operator.review_professionals") }}</a>
+    {% endcall %}
+    <p class="v-text-body max-w-2xl" style="color: var(--muted)">
+        {{ t("registration.operator.description") }}
+    </p>
+
+    {% if decided %}<div class="v-alert good">{{ t("registration.operator.decided_" ~ decided) }}</div>{% endif %}
+    {% if error %}<div class="v-alert warn">{{ t("registration.operator.error_" ~ error) }}</div>{% endif %}
+
+    <section class="v-card p-6 space-y-4">
+        {{ card_header(t("registration.operator.door_title")) }}
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div class="v-card-inset p-4">
+                <div class="v-label">{{ t("registration.operator.stored_mode") }}</div>
+                <div class="v-text-body mt-1">{{ t("registration.operator.mode_" ~ console.stored_mode.value) }}</div>
+            </div>
+            <div class="v-card-inset p-4">
+                <div class="v-label">{{ t("registration.operator.effective_mode") }}</div>
+                <div class="v-text-body mt-1">{{ t("registration.operator.mode_" ~ console.effective_mode.value) }}</div>
+            </div>
+        </div>
+        {% if not console.deployment_unlocked %}
+        <div class="v-alert info">{{ t("registration.operator.deployment_locked") }}</div>
+        {% elif not oidc_enabled %}
+        <div class="v-alert warn">{{ t("registration.operator.oidc_required") }}</div>
+        {% elif console.effective_mode.value != 'invite_only' %}
+        <div class="v-alert info">{{ t("registration.operator.invite_mode_required") }}</div>
+        {% endif %}
+    </section>
+
+    {% if can_issue %}
+    <section class="v-card p-6 space-y-4">
+        {{ card_header(t("registration.operator.issue_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("registration.operator.issue_hint") }}</p>
+        <form action="/settings/platform/registration/invitations" method="POST" hx-boost="false" class="space-y-4">
+            <input type="hidden" name="request_nonce" value="{{ issuance_nonce }}">
+            <div>
+                <label for="registration-email" class="v-label">{{ t("registration.operator.email") }}</label>
+                <input id="registration-email" name="email" type="email" maxlength="320" required
+                       autocomplete="off" autocapitalize="none" spellcheck="false" class="v-input mt-2">
+            </div>
+            <div>
+                <label for="registration-kind" class="v-label">{{ t("registration.operator.account_kind") }}</label>
+                <select id="registration-kind" name="account_kind" class="v-input mt-2" required>
+                    {% for kind in account_kinds %}
+                    <option value="{{ kind.value }}">{{ t("registration.operator.kind_" ~ kind.value) }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="flex justify-end">
+                <button type="submit" class="v-btn">{{ t("registration.operator.issue") }}</button>
+            </div>
+        </form>
+    </section>
+    {% endif %}
+
+    <section class="v-card p-6 space-y-4">
+        {{ card_header(t("registration.operator.pending_title"), console.total_live_invitations) }}
+        {% if console.page_count > 1 %}
+        <p class="v-text-micro" style="color: var(--muted)">{{ t("registration.operator.pending_page", page=console.page, pages=console.page_count) }}</p>
+        {% endif %}
+        {% if not console.invitations %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("registration.operator.pending_empty") }}</p>
+        {% endif %}
+        {% for row in console.invitations %}
+        <article class="v-card-inset p-4 flex flex-wrap items-center justify-between gap-4">
+            <div>
+                <h2 class="v-heading-3">{{ row.masked_email }}</h2>
+                <p class="v-text-micro mt-1" style="color: var(--muted)">
+                    {{ t("registration.operator.kind_" ~ row.account_kind) }} · {{ t("registration.operator.expires") }} {{ row.expires_at | format_date }}
+                </p>
+                <p id="invitation-reference-{{ row.invitation_id }}" class="v-text-micro mt-1" style="color: var(--faint)">{{ t("registration.operator.reference") }} {{ row.reference }}</p>
+            </div>
+            <form action="/settings/platform/registration/invitations/{{ row.invitation_id }}/revoke" method="POST" hx-boost="false">
+                <button type="submit" class="v-btn-ghost" aria-describedby="invitation-reference-{{ row.invitation_id }}">{{ t("registration.operator.revoke") }}</button>
+            </form>
+        </article>
+        {% endfor %}
+        {% if console.has_previous or console.has_next %}
+        <nav class="flex flex-wrap justify-between gap-3" aria-label="{{ t('registration.operator.pagination') }}">
+            {% if console.has_previous %}<a href="/settings/platform/registration?page={{ console.page - 1 }}" class="v-btn-ghost">{{ t("registration.operator.previous") }}</a>{% else %}<span></span>{% endif %}
+            {% if console.has_next %}<a href="/settings/platform/registration?page={{ console.page + 1 }}" class="v-btn-ghost">{{ t("registration.operator.next") }}</a>{% endif %}
+        </nav>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}

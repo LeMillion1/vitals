@@ -18,6 +18,7 @@ from vitals.services.authentication.admission._shared import (
     TOKEN_BYTES,
     AdmissionRefused,
     AdmissionResult,
+    AdmissionReplayError,
     AdmissionStateError,
     AdmissionValidationError,
     IssuedInvitation,
@@ -51,6 +52,7 @@ async def issue_invitation(
     email: str,
     account_kind: RegistrationAccountKind | str,
     ttl: timedelta = INVITATION_TTL,
+    issuance_request_digest: str | None = None,
 ) -> IssuedInvitation:
     """Issue one email-bound token, revoking any prior live token for the email."""
 
@@ -60,9 +62,26 @@ async def issue_invitation(
         mailbox = normalize_email(email)
     except IdentityValidationError as exc:
         raise AdmissionValidationError(str(exc)) from exc
+    if issuance_request_digest is not None and (
+        len(issuance_request_digest) != 64
+        or issuance_request_digest != issuance_request_digest.casefold()
+        or any(char not in "0123456789abcdef" for char in issuance_request_digest)
+    ):
+        raise AdmissionValidationError("issuance request digest must be SHA-256")
 
     await acquire_identity_governance_lock(session)
     await require_operator(session, actor_user_id=actor_user_id)
+    if issuance_request_digest is not None:
+        repeated = await session.scalar(
+            select(RegistrationInvitation.id)
+            .where(
+                RegistrationInvitation.issuance_request_digest
+                == issuance_request_digest
+            )
+            .with_for_update()
+        )
+        if repeated is not None:
+            raise AdmissionReplayError("this invitation request already completed")
     await require_mode(session, RegistrationMode.INVITE_ONLY)
 
     email_owner = await session.scalar(
@@ -111,6 +130,7 @@ async def issue_invitation(
     token = secrets.token_urlsafe(TOKEN_BYTES)
     invitation = RegistrationInvitation(
         token_digest=token_digest(token),
+        issuance_request_digest=issuance_request_digest,
         normalized_email=mailbox.lookup_key,
         account_kind=kind.value,
         invited_by_user_id=actor_user_id,

@@ -27,10 +27,10 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0072` — 72 revisions |
+| Alembic head | `0073` — 73 revisions |
 | Schema | 83 tables; 66 carry `subject_id` and are covered by an RLS policy; 55 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,929 fast passed / 182 skipped / 35 UI deselected; 93 focused admission/RLS/auth/architecture tests; migration cycle plus 72 focused PostgreSQL admission/RLS tests |
+| Suites | 4,978 fast passed / 183 skipped / 35 UI deselected; 683 focused admission/OIDC/operator-UI/design/web tests; migration cycle plus 74 final PostgreSQL invitation-console/admission tests |
 | Domains / scheduled jobs | 14 and 15, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -954,9 +954,11 @@ a property of there being nowhere for an account to come from.
   approval requests, and expiry/PII-retention maintenance. They serialize
   identity writes through the shared governance lock, create only the
   server-selected account shape, retain no plaintext bearer token, and never
-  commit on behalf of the caller. This is the domain boundary, not the release:
-  OIDC handoff, operator/browser surfaces, invitation delivery, and scheduled
-  maintenance still need to be connected before either mode is usable.
+  commit on behalf of the caller. The `invite_only` path now connects this
+  boundary to a fragment-scrubbing OIDC handoff and a recent-auth operator
+  screen that issues, copies, lists in redacted form, and revokes invitations.
+  The `admin_approved` browser flow and scheduled retention still need to be
+  connected before those parts of the release are complete.
 - `authentication.provisioning` is the one place a `HealthSubject` is born
   besides the legacy bootstrap. A subject needs four things — an owning account,
   a role, the integration roots every provider path resolves through, and a

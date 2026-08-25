@@ -8,6 +8,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — operators can issue and revoke account invitations
+
+Platform superadmins now have one responsive Registration screen for the
+deployment-gated registration state, creation of member, doctor, or trainer
+invitations, and revocation of every live invitation even after registration is
+closed. Every mutation requires recent authentication and the admission service
+rechecks the live superadmin role under the identity-governance lock. The queue
+contains only masked addresses and never exposes token digests.
+
+The configured public URL, rather than the request Host header, forms the
+recipient link. Its bearer appears exactly once in a direct POST response with a
+standalone no-referrer, no-cache, nonce-CSP document; it never enters a redirect,
+query, cookie, audit event, or later queue response. Registration and
+professional review now share one operator navigation destination, while the
+deployment gate and stored mode remain shell-controlled policy decisions.
+Revision `0073` persists only the SHA-256 digest of each issue-form nonce, so a
+browser POST replay cannot rotate a link after Redis loss, process restart, or
+the invitation's full lifetime. The queue uses stable UUID references and real
+pagination so similar masked addresses remain distinguishable and every live
+invitation stays reachable.
+
 ### Added — account invitations have a safe OIDC recipient handoff
 
 An issued `invite_only` bearer can now travel in a URL fragment, be removed
@@ -24,9 +45,9 @@ mode, pending/revoked/consumed state, database-clock expiry, and the provider's
 exact verified email under the identity-governance lock. It creates one member,
 doctor, or trainer account atomically, never falls through to open registration,
 and rolls back partial graphs on a uniform refusal. Existing linked and bootstrap
-identities sign in normally without spending somebody else's invitation. This
-ships the recipient boundary; supported operator issue/revoke/delivery UI and
-scheduled retention remain separate unfinished work.
+identities sign in normally without spending somebody else's invitation.
+Supported operator issue, copy-delivery, and revoke controls now sit on the
+Registration screen; scheduled retention remains separate unfinished work.
 
 ### Added — registration admission decisions are transactional
 

@@ -122,7 +122,7 @@ Restart the app. From this point:
   browser session. If provider discovery is unavailable, local logout still
   succeeds and the failure is logged.
 
-Controlled-support request, approval, refusal and revoke actions require an
+Controlled-support and registration-invitation mutations require an
 authentication performed within the last fifteen minutes. A stale session is
 redirected through `/auth/start?step_up=true`; Vitals sends `prompt=login` and
 refuses the callback if the provider's `auth_time` is missing or too old. After
@@ -136,11 +136,20 @@ variable — you can remove it, and should.
 The issuer must be `https` unless it is `http://localhost`, which is allowed
 only because a machine talking to itself cannot be intercepted.
 
-## Adding another person while registration is closed
+## Adding another person by invitation
 
-The recipient half of `invite_only` is implemented, but this release does not
-yet expose supported operator issue, revoke, or delivery controls. Do not enable
-that mode operationally until those controls and scheduled retention land. Its
+Keep the deployment gate and stored mode as explicit shell decisions:
+
+```bash
+export VITALS_REGISTRATION_UNLOCKED=1
+python scripts/registration_mode.py --set invite_only
+```
+
+After a fresh platform-superadmin login, open
+`/settings/platform/registration`. Enter the exact recipient address and choose
+Member, Doctor, or Trainer. Copy the returned link immediately: Vitals stores
+only its digest and cannot show it again. The same screen lists live invitations
+with masked addresses and can revoke them even after the mode is closed. Its
 fixed link contract is:
 
 ```text
@@ -156,7 +165,9 @@ strand the invite; final consumption is single-winner. Account creation still
 requires the invitation to remain pending in `invite_only` mode and the provider
 to return the exact invited address with `email_verified: true`. Neither the
 bearer nor an email address belongs in a path, query parameter, application log,
-audit payload, or OIDC handoff cookie.
+audit payload, or OIDC handoff cookie. Automated terminal-row retention is not
+yet scheduled, so review that remaining release item before sustained production
+enrollment.
 
 Creating a local account and deciding which provider identity may enter it are
 two explicit operator actions. Run both from a shell with

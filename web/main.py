@@ -931,6 +931,9 @@ from web.routers.professional_reviews import (  # noqa: E402
     router as professional_reviews_router,
 )
 from web.routers.registration import router as registration_router  # noqa: E402
+from web.routers.registration_operator import (  # noqa: E402
+    router as registration_operator_router,
+)
 from web.routers.glp1 import router as glp1_router  # noqa: E402
 from web.routers.supplements import router as supplements_router  # noqa: E402
 from web.routers.hrt import router as hrt_router  # noqa: E402
@@ -982,6 +985,7 @@ app.include_router(web_push_router)
 app.include_router(support_admin_router)
 app.include_router(professional_reviews_router)
 app.include_router(registration_router)
+app.include_router(registration_operator_router)
 app.include_router(support_patient_router)
 app.include_router(garmin_router)
 app.include_router(labs_router)

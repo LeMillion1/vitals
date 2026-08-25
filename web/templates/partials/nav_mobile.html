@@ -66,9 +66,9 @@
         <span class="v-nav-ico">{{ mh_icon('settings') }}</span>
         <span class="mh-bnav-label">{{ t('support.console_heading') }}</span>
     </a>
-    <a href="/settings/platform/professionals" class="v-bnav-link {% if current_path.startswith('/settings/platform/professionals') %}is-active{% endif %}"{% if current_path.startswith('/settings/platform/professionals') %} aria-current="page"{% endif %}>
+    <a href="/settings/platform/registration" class="v-bnav-link {% if current_path.startswith('/settings/platform/registration') or current_path.startswith('/settings/platform/professionals') %}is-active{% endif %}"{% if current_path.startswith('/settings/platform/registration') or current_path.startswith('/settings/platform/professionals') %} aria-current="page"{% endif %}>
         <span class="v-nav-ico">{{ mh_icon('patients') }}</span>
-        <span class="mh-bnav-label">{{ t('professional_review.nav_short') }}</span>
+        <span class="mh-bnav-label">{{ t('registration.operator.heading') }}</span>
     </a>
     {% endif %}
     <form action="/logout" method="POST" hx-boost="false" class="contents">
