@@ -8,6 +8,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — separately reviewed, reversible support repair
+
+Platform support can now request one exact repair capability: clearing the
+stored body-fat and lean-mass estimates from one retained body measurement.
+The grant also carries the explicit Weight read scope, but it cannot authorize
+another write or an arbitrary patch. A proposal freezes the protected before
+state without changing the record; the patient then approves or declines that
+specific diff before the same live grant holder may execute it.
+
+Execution rechecks the administrator role, subject, grant, expiry, mode, exact
+scopes and unchanged target under locks. A changed target closes the action as
+stale without mutation. The record owner can restore the protected before state
+afterwards if the target has not changed. Audit events contain only opaque IDs,
+fixed outcome codes and the two changed field names; medical values remain in a
+FORCE-RLS subject-control row. No repair path performs network I/O.
+
 ### Fixed — private health files excluded from Docker image layers
 
 The Docker build context now excludes legacy medical uploads, Garmin sessions,

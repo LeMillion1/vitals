@@ -462,6 +462,11 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.REQUIRED,
         user_portable=False,
     ),
+    "support_repair_actions": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "support_access_scopes": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL_CHILD,
         subject=TargetColumn.INHERITED,

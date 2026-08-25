@@ -120,6 +120,33 @@
     </div>
     {% endif %}
 
+    {% if repair_actions %}
+    <div class="v-card p-6 space-y-4" data-support-repairs>
+        {{ card_header(t("support.repair_patient_title")) }}
+        {% for action in repair_actions %}
+        <div class="v-card-inset p-4 space-y-3" data-support-repair="{{ action.status }}">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+                <strong class="v-text-body">{{ action.operator_username }}</strong>
+                <span class="v-text-micro" style="color: var(--muted)">{{ t("support.repair_status_" ~ action.status) }}</span>
+            </div>
+            <p class="v-text-body">{{ action.measurement_date | format_date }} · {{ t("support.repair_fixed_diff") }}</p>
+            <p class="v-text-micro" style="color: var(--muted)">
+                {{ action.before_body_fat_pct | format_number if action.before_body_fat_pct is not none else '—' }}% /
+                {{ action.before_lbm_kg | format_number if action.before_lbm_kg is not none else '—' }} {{ t("common.kg") }} → — / —
+            </p>
+            {% if action.status == 'proposed' %}
+            <div class="flex flex-wrap gap-3">
+                <form action="/settings/access/repairs/{{ action.action_id }}/approve" method="POST"><button type="submit" class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.approve") }}</button></form>
+                <form action="/settings/access/repairs/{{ action.action_id }}/decline" method="POST"><button type="submit" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.decline") }}</button></form>
+            </div>
+            {% elif action.status == 'executed' %}
+            <form action="/settings/access/repairs/{{ action.action_id }}/revert" method="POST" class="flex justify-end"><button type="submit" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.repair_revert") }}</button></form>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
     <!-- ─── ACTUAL SUPPORT OPENINGS ───────────────────────────────────────── -->
     <div class="v-card p-6 space-y-4" data-support-openings>
         {{ card_header(t("support.opened_title")) }}

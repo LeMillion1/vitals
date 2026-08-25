@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy import select
 
 from vitals.access import (
     AccessRequest,
@@ -25,9 +26,11 @@ from vitals.access import (
 )
 from vitals.enums import (
     Domain,
+    Source,
     SupportAccessMode,
     SupportAccessRequestStatus,
     SupportAccessStatus,
+    SupportRepairStatus,
     UserRoleName,
     UserStatus,
 )
@@ -38,6 +41,7 @@ from vitals.models.identity import (
     User,
     UserRole,
 )
+from vitals.models.weight import BodyMeasurement
 from vitals.services import support_access_service as support
 from vitals.services.access_resolution import resolve_access_context
 
@@ -279,17 +283,230 @@ async def test_a_read_grant_does_not_authorize_a_write(db_session):
         )
 
 
-async def test_repair_is_refused_by_name_rather_than_half_built(db_session):
-    """Repair still needs its own review and a bounded diff."""
+async def test_repair_request_accepts_only_the_fixed_exact_scope(db_session):
+    owner, subject = await _patient(db_session, "sup-repair-scope")
+    admin = await _admin(db_session, "sup-repair-scope-admin")
 
-    owner, subject = await _patient(db_session, "sup-unimpl")
-    admin = await _admin(db_session, "sup-unimpl-admin")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=subject.id,
+        reason="Patient reported stale derived estimates in ticket 41.",
+        scopes=support.repair_scope(),
+        mode=SupportAccessMode.REPAIR,
+    )
+    assert request.mode == SupportAccessMode.REPAIR.value
 
     with pytest.raises(support.UnsupportedMode):
-        await _ask(
-            db_session, admin=admin, subject=subject, mode=SupportAccessMode.REPAIR
+        await support.open_request(
+            db_session,
+            admin_user_id=admin.id,
+            subject_id=subject.id,
+            reason="Attempting a broader repair scope.",
+            scopes=support.read_scopes_for((Domain.WEIGHT,)),
+            mode=SupportAccessMode.REPAIR,
         )
     del owner
+
+
+async def _approved_repair_grant(db_session, *, slug: str):
+    owner, subject = await _patient(db_session, slug)
+    admin = await _admin(db_session, f"{slug}-admin")
+    measurement = BodyMeasurement(
+        subject_id=subject.id,
+        actor_user_id=owner.id,
+        date=date(2026, 8, 1),
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        neck_cm=38.0,
+        waist_cm=90.0,
+        body_fat_pct=17.5,
+        lbm_kg=66.0,
+        note="synthetic retained note",
+    )
+    db_session.add(measurement)
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=subject.id,
+        reason="Patient reported stale derived estimates in ticket 41.",
+        scopes=support.repair_scope(),
+        mode=SupportAccessMode.REPAIR,
+    )
+    grant = await support.approve_request(
+        db_session, owner_user_id=owner.id, request_id=request.id
+    )
+    await db_session.commit()
+    context = await resolve_access_context(
+        db_session,
+        user_id=admin.id,
+        subject_id=subject.id,
+        support_grant_id=grant.id,
+    )
+    return owner, subject, admin, measurement, grant, context
+
+
+async def test_fixed_repair_requires_review_executes_and_owner_can_revert(db_session):
+    owner, _subject, admin, measurement, grant, context = (
+        await _approved_repair_grant(db_session, slug="sup-repair-flow")
+    )
+    original = {
+        "neck_cm": measurement.neck_cm,
+        "waist_cm": measurement.waist_cm,
+        "note": measurement.note,
+        "actor_user_id": measurement.actor_user_id,
+        "source": measurement.source,
+    }
+
+    action = await support.propose_clear_derived_estimates(
+        db_session,
+        context=context,
+        measurement_id=measurement.id,
+        idempotency_key=uuid.uuid4(),
+    )
+    duplicate = await support.propose_clear_derived_estimates(
+        db_session,
+        context=context,
+        measurement_id=measurement.id,
+        idempotency_key=action.idempotency_key,
+    )
+    assert duplicate.id == action.id
+    assert action.status == SupportRepairStatus.PROPOSED.value
+    assert (measurement.body_fat_pct, measurement.lbm_kg) == (17.5, 66.0)
+    await db_session.commit()
+
+    await support.review_repair(
+        db_session, owner_user_id=owner.id, action_id=action.id, approve=True
+    )
+    await db_session.commit()
+    executed = await support.execute_repair(
+        db_session, context=context, action_id=action.id
+    )
+    retried = await support.execute_repair(
+        db_session, context=context, action_id=action.id
+    )
+    await db_session.commit()
+    await db_session.refresh(measurement)
+    assert executed.status == SupportRepairStatus.EXECUTED.value
+    assert retried.id == executed.id
+    assert (measurement.body_fat_pct, measurement.lbm_kg) == (None, None)
+    assert {
+        "neck_cm": measurement.neck_cm,
+        "waist_cm": measurement.waist_cm,
+        "note": measurement.note,
+        "actor_user_id": measurement.actor_user_id,
+        "source": measurement.source,
+    } == original
+
+    events = list(
+        await db_session.scalars(
+            select(AuditEvent)
+            .where(
+                AuditEvent.event_type.in_(
+                    (
+                        support.EVENT_REPAIR_PROPOSED,
+                        support.EVENT_REPAIR_APPROVED,
+                        support.EVENT_REPAIR_EXECUTED,
+                    )
+                )
+            )
+            .order_by(AuditEvent.occurred_at)
+        )
+    )
+    assert {event.event_type for event in events} == {
+        support.EVENT_REPAIR_PROPOSED,
+        support.EVENT_REPAIR_APPROVED,
+        support.EVENT_REPAIR_EXECUTED,
+    }
+    assert len(events) == 3
+    for event in events:
+        assert event.support_access_grant_id == grant.id
+        assert event.metadata_json["changed_fields"] == ["body_fat_pct", "lbm_kg"]
+        assert "17.5" not in repr(event.metadata_json)
+        assert "66.0" not in repr(event.metadata_json)
+
+    reverted = await support.revert_repair(
+        db_session, owner_user_id=owner.id, action_id=action.id
+    )
+    await db_session.commit()
+    await db_session.refresh(measurement)
+    assert reverted.status == SupportRepairStatus.REVERTED.value
+    assert (measurement.body_fat_pct, measurement.lbm_kg) == (17.5, 66.0)
+    with pytest.raises(support.RepairStateError):
+        await support.revert_repair(
+            db_session, owner_user_id=owner.id, action_id=action.id
+        )
+    del admin
+
+
+async def test_fixed_repair_closes_stale_instead_of_overwriting_a_new_edit(db_session):
+    owner, _subject, _admin, measurement, _grant, context = (
+        await _approved_repair_grant(db_session, slug="sup-repair-stale")
+    )
+    action = await support.propose_clear_derived_estimates(
+        db_session,
+        context=context,
+        measurement_id=measurement.id,
+        idempotency_key=uuid.uuid4(),
+    )
+    await support.review_repair(
+        db_session, owner_user_id=owner.id, action_id=action.id, approve=True
+    )
+    await db_session.commit()
+
+    measurement.body_fat_pct = 18.25
+    await db_session.commit()
+    stale = await support.execute_repair(
+        db_session, context=context, action_id=action.id
+    )
+    await db_session.commit()
+    await db_session.refresh(measurement)
+    assert stale.status == SupportRepairStatus.STALE.value
+    assert stale.executed_at is None
+    assert (measurement.body_fat_pct, measurement.lbm_kg) == (18.25, 66.0)
+
+
+async def test_repair_review_and_execution_fail_closed_after_grant_expiry(db_session):
+    owner, _subject, _admin, measurement, grant, context = (
+        await _approved_repair_grant(db_session, slug="sup-repair-expired-review")
+    )
+    proposal = await support.propose_clear_derived_estimates(
+        db_session,
+        context=context,
+        measurement_id=measurement.id,
+        idempotency_key=uuid.uuid4(),
+    )
+    grant.approved_at -= timedelta(days=2)
+    grant.expires_at = grant.approved_at + timedelta(hours=1)
+    await db_session.commit()
+    with pytest.raises(support.RepairStateError):
+        await support.review_repair(
+            db_session, owner_user_id=owner.id, action_id=proposal.id, approve=True
+        )
+    await db_session.rollback()
+
+    owner, _subject, _admin, measurement, grant, context = (
+        await _approved_repair_grant(db_session, slug="sup-repair-expired-execute")
+    )
+    proposal = await support.propose_clear_derived_estimates(
+        db_session,
+        context=context,
+        measurement_id=measurement.id,
+        idempotency_key=uuid.uuid4(),
+    )
+    await support.review_repair(
+        db_session, owner_user_id=owner.id, action_id=proposal.id, approve=True
+    )
+    grant.approved_at -= timedelta(days=2)
+    grant.expires_at = grant.approved_at + timedelta(hours=1)
+    await db_session.commit()
+    with pytest.raises(support.NotASupportSession):
+        await support.execute_repair(
+            db_session, context=context, action_id=proposal.id
+        )
+    await db_session.rollback()
+    await db_session.refresh(measurement)
+    assert (measurement.body_fat_pct, measurement.lbm_kg) == (17.5, 66.0)
 
 
 async def test_export_is_a_separate_exact_one_shot_grant(db_session, monkeypatch):
@@ -2316,6 +2533,101 @@ async def test_support_export_http_is_post_only_no_store_and_one_shot(
     assert calls == [legacy_owner_roots.subject_id]
     await db_session.refresh(grant)
     assert grant.status == SupportAccessStatus.CONSUMED.value
+
+
+async def test_exact_repair_http_surfaces_complete_the_reviewed_flow(
+    client, db_session, legacy_owner_roots
+):
+    admin = await _admin(db_session, "web-support-repair-admin")
+    measurement = BodyMeasurement(
+        subject_id=legacy_owner_roots.subject_id,
+        actor_user_id=legacy_owner_roots.user_id,
+        date=date(2035, 8, 1),
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        waist_cm=90.0,
+        body_fat_pct=17.5,
+        lbm_kg=66.0,
+    )
+    db_session.add(measurement)
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Patient reported stale derived estimates in ticket 91.",
+        scopes=support.repair_scope(),
+        mode=SupportAccessMode.REPAIR,
+    )
+    grant = await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=request.id,
+    )
+    await db_session.commit()
+    context = await resolve_access_context(
+        db_session,
+        user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        support_grant_id=grant.id,
+    )
+    action = await support.propose_clear_derived_estimates(
+        db_session,
+        context=context,
+        measurement_id=measurement.id,
+        idempotency_key=uuid.uuid4(),
+    )
+    await db_session.commit()
+
+    workspace_url = (
+        f"/settings/platform/support/{legacy_owner_roots.subject_id}"
+        f"/grant/{grant.id}/repair"
+    )
+    _sign_in(client, admin.username)
+    workspace = await client.get(workspace_url, headers={"Accept": "text/html"})
+    assert workspace.status_code == 200
+    assert f"/repair/{action.id}/execute" not in workspace.text
+
+    _sign_in(client, "tester")
+    patient_page = await client.get(
+        "/settings/access", headers={"Accept": "text/html"}
+    )
+    assert patient_page.status_code == 200
+    assert f"/repairs/{action.id}/approve" in patient_page.text
+    approved = await client.post(
+        f"/settings/access/repairs/{action.id}/approve", follow_redirects=False
+    )
+    assert approved.status_code == 303
+
+    _sign_in(client, admin.username)
+    executed = await client.post(
+        f"{workspace_url}/{action.id}/execute", follow_redirects=False
+    )
+    assert executed.status_code == 303
+    await db_session.refresh(measurement)
+    assert (measurement.body_fat_pct, measurement.lbm_kg) == (None, None)
+
+    _sign_in(client, "tester")
+    patient_page = await client.get(
+        "/settings/access", headers={"Accept": "text/html"}
+    )
+    assert f"/repairs/{action.id}/revert" in patient_page.text
+
+
+async def test_support_repair_invalid_selectors_never_reach_the_workspace(
+    client, db_session, monkeypatch
+):
+    admin = await _admin(db_session, "web-support-repair-invalid-admin")
+    await db_session.commit()
+
+    async def phi_read_would_be_a_bug(*_args, **_kwargs):
+        raise AssertionError("invalid repair selector reached the PHI workspace")
+
+    monkeypatch.setattr(support, "repair_workspace", phi_read_would_be_a_bug)
+    _sign_in(client, admin.username)
+    response = await client.get(
+        "/settings/platform/support/not-a-subject/grant/not-a-grant/repair"
+    )
+    assert response.status_code == 404
 
 
 async def test_support_export_invalid_selector_never_reaches_portability(

@@ -53,6 +53,7 @@ from vitals.models.weight import (
     ProgressPhoto,
     NoiseMarker,
 )
+from vitals.models.support_repair import SupportRepairAction
 
 # Body composition — InBody / МедАсс (BIA) scans.
 from vitals.models.body_scan import BodyScan, BodyScanMetric
@@ -171,6 +172,7 @@ __all__ = [
     "IntegrationConnectionSetting",
     "WeightLog",
     "BodyMeasurement",
+    "SupportRepairAction",
     "ProgressPhoto",
     "NoiseMarker",
     "BodyScan",

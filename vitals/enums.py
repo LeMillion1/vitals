@@ -101,6 +101,17 @@ class SupportAccessRequestStatus(StrEnum):
     EXPIRED = "expired"
 
 
+class SupportRepairStatus(StrEnum):
+    """Lifecycle of one separately reviewed, exact support repair."""
+
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    DECLINED = "declined"
+    EXECUTED = "executed"
+    STALE = "stale"
+    REVERTED = "reverted"
+
+
 class ProfessionalKind(StrEnum):
     """What a professional is, from the patient's point of view.
 

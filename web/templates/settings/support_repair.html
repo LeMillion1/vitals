@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ t("support.repair_workspace_title") }}{% endblock %}
+{% block content %}
+<div hx-history="false"></div>
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
+<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
+    {% call masthead_header('settings', t('support.repair_workspace_heading'), []) %}{% endcall %}
+    <p class="v-text-body max-w-2xl" style="color: var(--muted)">{{ t("support.repair_workspace_hint") }}</p>
+    {% if saved %}<div class="v-alert info">{{ t("support.repair_saved_" ~ saved) }}</div>{% endif %}
+    {% if error %}<div class="v-alert warn">{{ t("support.error_refused") }}</div>{% endif %}
+
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("support.repair_propose_title")) }}
+        {% if measurements %}
+        <form action="/settings/platform/support/{{ context.subject_id }}/grant/{{ context.support_grant.grant_id }}/repair/propose" method="POST" class="space-y-4">
+            <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+            <div>
+                <label for="repair-measurement" class="v-label">{{ t("support.repair_measurement") }}</label>
+                <select id="repair-measurement" name="measurement_id" class="v-input" required>
+                    {% for measurement in measurements %}
+                    <option value="{{ measurement.measurement_id }}">
+                        {{ measurement.date | format_date }} ·
+                        {{ t("weight.fat_pct") }} {{ measurement.body_fat_pct | format_number if measurement.body_fat_pct is not none else '—' }} ·
+                        {{ t("weight.lean_mass") }} {{ measurement.lbm_kg | format_number if measurement.lbm_kg is not none else '—' }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <p class="v-text-body">{{ t("support.repair_fixed_diff") }}</p>
+            <div class="flex justify-end">
+                <button type="submit" class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.repair_propose") }}</button>
+            </div>
+        </form>
+        {% else %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.repair_no_targets") }}</p>
+        {% endif %}
+    </div>
+
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("support.repair_actions_title")) }}
+        {% for action in actions %}
+        <div class="v-card-inset p-4 space-y-3" data-support-repair="{{ action.status }}">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <strong class="v-text-body">{{ action.measurement_date | format_date }}</strong>
+                <span class="v-text-micro" style="color: var(--muted)">{{ t("support.repair_status_" ~ action.status) }}</span>
+            </div>
+            <p class="v-text-body">
+                {{ action.before_body_fat_pct | format_number if action.before_body_fat_pct is not none else '—' }}% /
+                {{ action.before_lbm_kg | format_number if action.before_lbm_kg is not none else '—' }} {{ t("common.kg") }} → — / —
+            </p>
+            {% if action.status == 'approved' %}
+            <form action="/settings/platform/support/{{ context.subject_id }}/grant/{{ context.support_grant.grant_id }}/repair/{{ action.action_id }}/execute" method="POST" class="flex justify-end">
+                <button type="submit" class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.repair_execute") }}</button>
+            </form>
+            {% endif %}
+        </div>
+        {% else %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.repair_actions_empty") }}</p>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

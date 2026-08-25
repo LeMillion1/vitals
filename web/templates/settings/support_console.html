@@ -37,6 +37,8 @@
                     <form action="/settings/platform/support/{{ grant.subject_id }}/grant/{{ grant.grant_id }}/export" method="POST" hx-boost="false">
                         <button type="submit" class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.download_once") }}</button>
                     </form>
+                    {% elif grant.mode == 'repair' %}
+                    <a href="/settings/platform/support/{{ grant.subject_id }}/grant/{{ grant.grant_id }}/repair" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.open_repair") }}</a>
                     {% else %}
                     <a href="/care/{{ grant.subject_id }}?support_grant_id={{ grant.grant_id }}" class="v-btn-ghost text-xs">{{ t("support.open_record") }}</a>
                     {% endif %}
@@ -135,6 +137,33 @@
                 <button type="submit" class="v-btn text-xs">{{ t("support.ask_submit") }}</button>
             </div>
         </form>
+        {% endif %}
+    </div>
+
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("support.repair_ask_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.repair_ask_hint") }}</p>
+        {% if subjects %}
+        <form action="/settings/platform/support/repair/request" method="POST" class="space-y-4">
+            <div>
+                <label for="support-repair-subject" class="v-label">{{ t("support.field_record") }}</label>
+                <select id="support-repair-subject" name="subject_id" class="v-input" required>
+                    {% for subject_id, display_name in subjects %}<option value="{{ subject_id }}">{{ display_name }}</option>{% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="support-repair-reason" class="v-label">{{ t("support.field_reason") }}</label>
+                <textarea id="support-repair-reason" name="reason" rows="3" class="v-input" required maxlength="2000"></textarea>
+            </div>
+            <div>
+                <label for="support-repair-ticket" class="v-label">{{ t("support.field_ticket") }}</label>
+                <input id="support-repair-ticket" name="ticket_reference" type="text" class="v-input" maxlength="120">
+            </div>
+            <p class="v-text-micro" style="color: var(--faint)">{{ t("support.repair_fixed_diff") }}</p>
+            <div class="flex justify-end"><button type="submit" class="v-btn text-xs">{{ t("support.repair_ask_submit") }}</button></div>
+        </form>
+        {% else %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.ask_nobody") }}</p>
         {% endif %}
     </div>
 

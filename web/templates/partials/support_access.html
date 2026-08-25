@@ -8,6 +8,8 @@
             {{ t("support.scope_plans") }}
         {% elif key == "operation:data_portability.subject_export.v1" %}
             {{ t("support.scope_subject_export") }}
+        {% elif key == "operation:body_measurement.clear_derived_estimates" %}
+            {{ t("support.scope_clear_derived_estimates") }}
         {% else %}
             {{ t("support.scope_other") }}
         {% endif %}

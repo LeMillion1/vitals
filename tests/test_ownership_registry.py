@@ -35,7 +35,7 @@ def test_every_registered_table_has_exactly_one_ownership_contract():
     # the subject-isolated care-message push outbox; 81 since 0071 added the
     # immutable professional-review decision history; 83 since 0072 added the
     # invitation and operator-approval admission records.
-    assert len(OWNERSHIP_REGISTRY) == 83
+    assert len(OWNERSHIP_REGISTRY) == 84
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -110,6 +110,7 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "support_access_request_scopes",
         "support_access_requests",
         "support_access_scopes",
+        "support_repair_actions",
         "user_federated_identities",
         "user_roles",
         "user_settings",

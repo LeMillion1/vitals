@@ -101,6 +101,9 @@ class BodyMeasurement(
     __tablename__ = "body_measurements"
     __table_args__ = (
         insights_index(__tablename__),
+        UniqueConstraint(
+            "id", "subject_id", name="uq_body_measurements_id_subject"
+        ),
         Index("ix_body_measurements_subject_date", "subject_id", "date"),
         Index(
             "ix_body_measurements_subject_domain_date",

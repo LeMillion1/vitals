@@ -297,6 +297,12 @@ class SupportAccessGrant(Base):
 
     __tablename__ = "support_access_grants"
     __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "subject_id",
+            "granted_to_user_id",
+            name="uq_support_access_grants_id_subject_grantee",
+        ),
         CheckConstraint(
             f"mode IN ({_values(SupportAccessMode)})",
             name="ck_support_access_grants_mode",

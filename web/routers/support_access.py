@@ -18,7 +18,7 @@ import uuid
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.access import PolicyAction, PolicyResourceType
@@ -33,6 +33,7 @@ from vitals.services.access_resolution import (
     resolve_access_context,
 )
 from vitals.services.legacy_ownership import NoPersonalRecordError
+from vitals.services.conflict_engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
 from web.care_context import principal_user_id
 from web.deps import get_session, require_auth, require_recent_auth
@@ -204,6 +205,198 @@ async def ask_for_export(
     return _back("/settings/platform/support", "asked=export")
 
 
+@admin_router.post("/repair/request")
+async def ask_for_repair(
+    request: Request,
+    subject_id: uuid.UUID = Form(...),
+    reason: str = Form(...),
+    ticket_reference: str = Form(default=""),
+    _username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """Ask for the fixed repair door; each later diff is reviewed again."""
+
+    admin_user_id = await _admin_id(request, db)
+    await bind_session_subject(db, subject_id)
+    try:
+        await support.open_request(
+            db,
+            admin_user_id=admin_user_id,
+            subject_id=subject_id,
+            reason=reason,
+            scopes=support.repair_scope(),
+            ttl=support.DEFAULT_GRANT_TTL,
+            ticket_reference=ticket_reference,
+            mode=SupportAccessMode.REPAIR,
+        )
+    except support.NotAPlatformAdmin as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN) from exc
+    except support.SupportAccessError:
+        await db.rollback()
+        return _back("/settings/platform/support", "error=refused")
+    await db.commit()
+    return _back("/settings/platform/support", "asked=repair")
+
+
+def _repair_selectors(subject_selector: str, grant_selector: str):
+    try:
+        subject_id = uuid.UUID(subject_selector)
+        grant_id = uuid.UUID(grant_selector)
+        if subject_id.int == 0 or grant_id.int == 0:
+            raise ValueError
+        return subject_id, grant_id
+    except (TypeError, ValueError, AttributeError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+
+
+async def _repair_context(
+    request: Request,
+    db: AsyncSession,
+    *,
+    subject_selector: str,
+    grant_selector: str,
+):
+    subject_id, grant_id = _repair_selectors(subject_selector, grant_selector)
+    admin_user_id = await _admin_id(request, db)
+    await bind_session_subject(db, subject_id)
+    context = await resolve_access_context(
+        db,
+        user_id=admin_user_id,
+        subject_id=subject_id,
+        support_grant_id=grant_id,
+    )
+    require_access(
+        context,
+        resource_type=PolicyResourceType.DOMAIN,
+        resource_key=Domain.WEIGHT.value,
+        action=PolicyAction.READ,
+    )
+    require_access(
+        context,
+        resource_type=PolicyResourceType.OPERATION,
+        resource_key=support.REPAIR_OPERATION_KEY,
+        action=PolicyAction.REPAIR,
+    )
+    return context
+
+
+@admin_router.get(
+    "/{subject_selector}/grant/{grant_selector}/repair",
+    response_class=HTMLResponse,
+)
+async def repair_workspace(
+    request: Request,
+    subject_selector: str,
+    grant_selector: str,
+    username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
+    saved: str | None = None,
+    error: str | None = None,
+):
+    try:
+        context = await _repair_context(
+            request,
+            db,
+            subject_selector=subject_selector,
+            grant_selector=grant_selector,
+        )
+        measurements, actions = await support.repair_workspace(db, context=context)
+        response = templates.TemplateResponse(
+            request,
+            "settings/support_repair.html",
+            {
+                "username": username,
+                "context": context,
+                "measurements": measurements,
+                "actions": actions,
+                "idempotency_key": uuid.uuid4(),
+                "saved": saved,
+                "error": error,
+            },
+        )
+        await support.record_record_opened(
+            db, context=context, domain_keys=(Domain.WEIGHT.value,)
+        )
+        await db.commit()
+        return response
+    except (AccessResolutionError, AccessDeniedError, support.SupportAccessError):
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+
+
+@admin_router.post(
+    "/{subject_selector}/grant/{grant_selector}/repair/propose"
+)
+async def propose_repair(
+    request: Request,
+    subject_selector: str,
+    grant_selector: str,
+    measurement_id: int = Form(...),
+    idempotency_key: uuid.UUID = Form(...),
+    _username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    back = (
+        f"/settings/platform/support/{subject_selector}/grant/"
+        f"{grant_selector}/repair"
+    )
+    try:
+        context = await _repair_context(
+            request,
+            db,
+            subject_selector=subject_selector,
+            grant_selector=grant_selector,
+        )
+        await support.propose_clear_derived_estimates(
+            db,
+            context=context,
+            measurement_id=measurement_id,
+            idempotency_key=idempotency_key,
+        )
+        await db.commit()
+    except (AccessResolutionError, AccessDeniedError, support.SupportAccessError):
+        await db.rollback()
+        return _back(back, "error=refused")
+    return _back(back, "saved=proposed")
+
+
+@admin_router.post(
+    "/{subject_selector}/grant/{grant_selector}/repair/{action_id}/execute"
+)
+async def execute_repair(
+    request: Request,
+    subject_selector: str,
+    grant_selector: str,
+    action_id: uuid.UUID,
+    _username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    back = (
+        f"/settings/platform/support/{subject_selector}/grant/"
+        f"{grant_selector}/repair"
+    )
+    try:
+        context = await _repair_context(
+            request,
+            db,
+            subject_selector=subject_selector,
+            grant_selector=grant_selector,
+        )
+        action = await support.execute_repair(db, context=context, action_id=action_id)
+        await db.commit()
+    except ConflictBlocked as exc:
+        await db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"violations": [row.to_dict() for row in exc.violations]},
+        )
+    except (AccessResolutionError, AccessDeniedError, support.SupportAccessError):
+        await db.rollback()
+        return _back(back, "error=refused")
+    marker = "stale" if action.status == "stale" else "executed"
+    return _back(back, f"saved={marker}")
+
+
 @admin_router.post("/{subject_selector}/grant/{grant_selector}/export")
 async def download_export(
     request: Request,
@@ -336,6 +529,7 @@ async def access_history(
     _user_id, subject_id = await _own_subject(request, db)
     context = await resolve_access_context(db, user_id=_user_id, subject_id=None)
     history = await support.list_for_subject(db, context=context)
+    repairs = await support.repair_actions_for_subject(db, context=context)
     opened = await support.record_opened_history(db, subject_id=subject_id)
     live_grants = await support.live_grants_for(db, context=context)
     return templates.TemplateResponse(
@@ -349,6 +543,7 @@ async def access_history(
             "opened": opened.events,
             "opened_has_more": opened.has_more,
             "live_grants": live_grants,
+            "repair_actions": repairs,
             "decided": decided,
             "error": error,
         },
@@ -391,6 +586,67 @@ async def decline(
         return _back("/settings/access", "error=refused")
     await db.commit()
     return _back("/settings/access", "decided=declined")
+
+
+@patient_router.post("/repairs/{action_id}/approve")
+async def approve_repair(
+    request: Request,
+    action_id: uuid.UUID,
+    _username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    user_id, _subject_id = await _own_subject(request, db)
+    try:
+        await support.review_repair(
+            db, owner_user_id=user_id, action_id=action_id, approve=True
+        )
+        await db.commit()
+    except support.SupportAccessError:
+        await db.rollback()
+        return _back("/settings/access", "error=refused")
+    return _back("/settings/access", "decided=repair-approved")
+
+
+@patient_router.post("/repairs/{action_id}/decline")
+async def decline_repair(
+    request: Request,
+    action_id: uuid.UUID,
+    _username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    user_id, _subject_id = await _own_subject(request, db)
+    try:
+        await support.review_repair(
+            db, owner_user_id=user_id, action_id=action_id, approve=False
+        )
+        await db.commit()
+    except support.SupportAccessError:
+        await db.rollback()
+        return _back("/settings/access", "error=refused")
+    return _back("/settings/access", "decided=repair-declined")
+
+
+@patient_router.post("/repairs/{action_id}/revert")
+async def revert_repair(
+    request: Request,
+    action_id: uuid.UUID,
+    _username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    user_id, _subject_id = await _own_subject(request, db)
+    try:
+        await support.revert_repair(db, owner_user_id=user_id, action_id=action_id)
+        await db.commit()
+    except ConflictBlocked as exc:
+        await db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"violations": [row.to_dict() for row in exc.violations]},
+        )
+    except support.SupportAccessError:
+        await db.rollback()
+        return _back("/settings/access", "error=refused")
+    return _back("/settings/access", "decided=repair-reverted")
 
 
 @patient_router.post("/grant/{grant_id}/revoke")
