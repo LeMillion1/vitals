@@ -493,6 +493,13 @@ async def change_user_status(
     # Any lifecycle transition invalidates credentials minted under the previous
     # state.  PR-05 will make browser/MCP validation consume this version.
     user.session_version += 1
+    if status is not UserStatus.ACTIVE:
+        # A browser endpoint is an account credential. Suspending the account
+        # invalidates it in the same transaction as its sessions and status;
+        # reactivation requires an explicit browser permission gesture again.
+        from vitals.services.notifications import web_push_subscriptions
+
+        await web_push_subscriptions.revoke_all(session, user_id=user.id)
     _add_audit_event(
         session,
         actor_user_id=actor_user_id,

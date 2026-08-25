@@ -25,6 +25,7 @@ from vitals.models.tenancy import (
     PlatformIntegrationConnection,
 )
 from vitals.models.credentials import IntegrationCredential
+from vitals.models.web_push import WebPushSubscription
 from vitals.models.care_thread import (
     CareMessage,
     CareMessageAttachment,
@@ -151,6 +152,7 @@ __all__ = [
     "CareThreadParticipant",
     "IntegrationConnection",
     "IntegrationCredential",
+    "WebPushSubscription",
     "PlatformIntegrationConnection",
     "AIInvocation",
     "AIPlatformQuotaPeriod",

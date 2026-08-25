@@ -347,7 +347,7 @@ tbody tr:hover td { background: var(--surface-2); }
   <h1>Vitals Architecture</h1>
   <p class="standfirst">A self-hosted health-data service — fourteen domains, three external integrations and one data lake — where every medical fact belongs to a named health subject and cross-subject access requires an explicit consent or support grant.</p>
   <div class="meta">
-    <span><b>78</b> tables</span>
+    <span><b>79</b> tables</span>
     <span><b>67</b> migrations</span>
     <span><b>14</b> domains</span>
     <span><b>96</b> application services</span>
@@ -441,7 +441,7 @@ flowchart LR
     sched["<b>Scheduler</b><br/><span style='font-size:11px'>14 jobs: sync, digest, nudge,<br/>reconcile, sweep</span>"]
   end
 
-  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>78 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
+  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>79 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
   redis[("<b>Redis</b><br/><span style='font-size:11px'>cache, rate limits,<br/>Garmin token, breaker</span>")]
   files[/"<b>Private files</b><br/><span style='font-size:11px'>photos, scans, PDFs<br/>opaque keys</span>"/]
 

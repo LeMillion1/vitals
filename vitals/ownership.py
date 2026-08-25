@@ -458,6 +458,7 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
     "user_roles": _ACCOUNT,
     "user_settings": _ACCOUNT,
     "users": _ACCOUNT,
+    "web_push_subscriptions": _ACCOUNT,
     "weekly_digests": OwnershipSpec(
         OwnershipClass.SUBJECT_DATA,
         subject=TargetColumn.REQUIRED,

@@ -8,6 +8,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — browser notification endpoints belong to accounts and devices
+
+Revision `0068` adds the storage boundary for web push subscriptions. A browser
+endpoint belongs to the signed-in account rather than to a patient record, so a
+doctor's one device can later receive work across several authorized patients
+without copying a delivery credential into each record. Endpoint URLs and
+encryption keys are authenticated-encrypted under `VITALS_CREDENTIAL_KEY`; only
+an opaque SHA-256 lookup digest remains readable. Registration accepts only
+valid P-256 key material and reviewed public push-service hosts, which prevents
+the future sender from becoming an authenticated SSRF relay. Active devices are
+bounded to ten per account; revocation or account suspension erases ciphertext
+instead of retaining a dormant delivery credential. Delivery and the permission
+UI remain separate follow-up commits.
+
 ### Added — care messages accept private attachments
 
 A patient, doctor, or trainer may attach one validated PDF or image to a care
@@ -731,7 +745,8 @@ message and `FileAsset`; bytes live in a dedicated private volume outside the
 static mount. The download hangs from the subject/thread path and rechecks live
 read consent and participation on every request, so pausing consent stops the
 next professional download while the patient keeps their record. There is still
-no outbound notification transport: web push has not landed, so new work is
+no outbound notification transport: revision `0068` stores device subscriptions
+but has not yet added the care outbox/sender, so new work is
 signalled by the in-app unread count.
 
 
@@ -1141,14 +1156,14 @@ the evening block that asked the questions. Roughly 22,000 lines, and revision
 0058 drops the two tables. That deletes data, and the migration's downgrade
 recreates the shape only — it says so rather than leaving it to be discovered.
 
-**What stayed, and why.** The delivery journal, the morning brief, the nudges and
-the message composition: `notification_delivery_intents` says in its own
-docstring that *a second delivery channel adds rows here, not a second table*,
-and it was built for exactly this — pending/sent/ambiguous outcomes, idempotency,
-dedupe, reconciliation. `resolve_legacy_bound_notifier` is kept as an empty seam
-where a resolver reading a per-subject push subscription belongs. So the
-proactive jobs compose and stay quiet, which is how the app behaved before the
-bot existed.
+**What stayed, and why.** The historical delivery journal, the morning brief,
+the nudges and message composition. The journal's docstring originally claimed
+a second channel would add rows there, but its schema still requires a Telegram
+channel and a subject-owned integration connection. Revision `0068` records the
+correct boundary instead: a browser subscription belongs to an account/device,
+not to one patient. The proactive jobs still compose and stay quiet until a
+separate outbox/sender lands, which is how the app behaved before the bot
+existed.
 
 The layer's master switch was removed rather than left stranded: it *was* the
 `signals` module, so with the module gone it would have read as permanently off

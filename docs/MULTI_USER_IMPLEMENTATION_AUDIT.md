@@ -32,7 +32,7 @@ the others remain useful provenance for the remediations named below:
    specific gaps.
 3. The ownership inventory called itself exhaustive but originally omitted 12
    of 76 live tables. It now includes the subsequently added MCP scope table and
-   matches all 78 machine-registry entries.
+   matches all 79 machine-registry entries.
 4. `ARCHITECTURE.html` was a historical snapshot presented as a live reference.
    Its schema, migration, router, service, RLS, ownership-class, and roadmap
    counters were synchronized during this audit.
@@ -41,9 +41,9 @@ the others remain useful provenance for the remediations named below:
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0067 (head)`; 67 files in `migrations/versions` | Verified |
-| SQLAlchemy tables | `len(Base.metadata.tables)` → 78 | Verified |
-| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 78 | Verified and exhaustive in code |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0068 (head)`; 68 files in `migrations/versions` | Verified |
+| SQLAlchemy tables | `len(Base.metadata.tables)` → 79 | Verified |
+| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 79 | Verified and exhaustive in code |
 | Subject-scoped tables | 65 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
 | Required subject columns | 54 of the 65 `subject_id` columns are non-null | Verified |
 | Ownership cutover | 18 ordered backfill phases and 18 matching scripts | Verified |
@@ -164,7 +164,9 @@ verifiable GitHub pull request: the commercial history has only one merge
 commit. Keep this document as target/decision history and use this audit for the
 current state.
 
-The following roadmap targets are not shipped: notifications/web push,
+The following roadmap targets are not shipped: web-push permission UI,
+consent-rechecked care delivery and its sender (encrypted account/device
+subscriptions landed in `0068`),
 invitation inbox, multi-subject full backup, support repair/export
 and break-glass, registration modes, lab
 marker collision migration, private-byte relocation outside static storage, and
@@ -178,7 +180,8 @@ machine registry is the source of truth and is complete.
 
 The prose inventory previously listed only 64 live and two dropped tables. It
 now includes the missing identity, professional-care, support-request, and
-credential rows, the MCP scope child, and the care attachment row and matches all 78 live tables in the
+credential rows, the MCP scope child, the care attachment row, and the web-push
+subscription row and matches all 79 live tables in the
 machine registry.
 
 The historical Stage 3/4/5 narrative should be archived separately from a

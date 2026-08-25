@@ -27,10 +27,10 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0067` — 67 revisions |
-| Schema | 78 tables; 65 carry `subject_id` and are covered by an RLS policy; 54 have it `NOT NULL` |
+| Alembic head | `0068` — 68 revisions |
+| Schema | 79 tables; 65 carry `subject_id` and are covered by an RLS policy; 54 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,654 fast passed / 168 skipped; 548 focused care/UI/static/design tests; migration plus 199 current PostgreSQL care/RLS/schema tests |
+| Suites | 4,670 fast passed / 168 skipped; 548 focused care/UI/static/design tests; migration plus 74 current PostgreSQL push/identity/RLS/schema tests |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -97,11 +97,13 @@ one-line fix.
 **Two behaviours will look like bugs if you don't know they were chosen:**
 
 1. **There is no notification transport.** Telegram was removed outright (see the
-   decision log); web push has not landed. The proactive layer composes a brief
+   decision log); revision `0068` stores encrypted account/device subscriptions,
+   but the care outbox, sender, and permission UI have not landed. The proactive layer composes a brief
    on schedule and stores it in `/reports`, and every send resolves to "no
    endpoint", which every caller already handles as an ordinary answer.
-   `channels.resolve_legacy_bound_notifier` returns `None` and is the seam a
-   per-subject push subscription plugs into.
+   `channels.resolve_legacy_bound_notifier` returns `None`. Its historical
+   delivery rows still require a Telegram connection; web push is account-scoped
+   and therefore does not pretend that one browser belongs to one subject.
 2. **A new subject has no body on file, and that is the correct state.** The
    profile moved out of `.env` into `health_profile_service`, so the report has
    its five fields back for whoever filled them in — and a subject who has not
@@ -1372,7 +1374,7 @@ mandatory subject and is called once per record by the fan-out; the runner keeps
 only the platform-family jobs, which are about the installation's own state.
 
 What is left in PR-09 is the notification transport. There is none: Telegram was
-removed and web push has not landed, so the proactive layer composes on schedule
+removed and revision `0068` has only the encrypted account/device endpoint, so the proactive layer composes on schedule
 and every send resolves to "no endpoint".
 
 **The shape of the rest.** `.env` should hold only what belongs to the
@@ -1726,7 +1728,8 @@ Additional gates:
   transport. Every job about a record runs once per record and on that record's
   own clock; the four provider jobs fan out per connection, and each account has
   its own credential, token store, session cache and login breaker. Messaging
-  still has no transport: Telegram was removed and web push has not landed, so
+  still has no transport: Telegram was removed and only encrypted web-push
+  subscriptions have landed, so
   every send resolves to "no endpoint".
 - [x] Add verified professionals, relationships, and consent — PR-07, with the
   professional UX in PR-08 (minus the inbox).
@@ -1760,7 +1763,7 @@ Additional gates:
 | 2026-08-19 | Treat password rotation as an explicit environment/DB dual-write until database auth cuts over. | Strict startup hash reconciliation would otherwise turn a legitimate settings change into a startup outage; compensation narrows the unavoidable file/database crash window. |
 | 2026-08-19 | Separate nullable ownership expansion/backfill from the scoped-key cutover, and complete both before a second subject is writable. | Keeping a global unique constraint cannot permit the same date or upstream ID in two subjects. After scoped duplicate data exists, a downgrade to the global-key schema would be lossy and is forbidden. |
 | 2026-08-21 | Keep Alembic schema-only and run each data-backfill phase through a fixed, bounded, resumable operator command. | A production lake rewrite must commit in reviewable batches, preserve deterministic evidence across restart, expose no PHI in operator output, and block schema downgrade once its durable checkpoint exists. |
-| 2026-08-24 | Remove the Telegram transport, the `signals` domain and `day_context` outright rather than making them per-subject. | One bot token and one chat id in the environment is a single-user shape; a shared installation cannot have it. They were also why four scheduled jobs could not be fanned out. The delivery journal (`notification_delivery_intents`) is transport-agnostic by design and is kept as the seam web push plugs into. The cost is real and is recorded rather than hidden: nothing captures free text now, so the symptoms section of the doctor's report — the one thing no device produces — is empty. |
+| 2026-08-24 | Remove the Telegram transport, the `signals` domain and `day_context` outright rather than making them per-subject. | One bot token and one chat id in the environment is a single-user shape; a shared installation cannot have it. They were also why four scheduled jobs could not be fanned out. The historical delivery journal remains for Telegram provenance, but its required connection/channel constraints make it vendor-bound in fact. Web push uses account-owned device subscriptions and a separate consent-rechecked care outbox. The cost is real and is recorded rather than hidden: nothing captures free text now, so the symptoms section of the doctor's report — the one thing no device produces — is empty. |
 | 2026-08-24 | A feature removal includes its settings, in the same release. | Deleting a feature and deleting its knobs are two jobs and the suites only notice the first. What survived the removal above for two days: four `VITALS_TELEGRAM_*` variables nothing read; a week-template block whose inputs had stopped being passed, so `/settings` rendered a heading over an empty box and still answered 200; a module gate that could only return `False`; an AI prompt describing a context key that no longer exists. |
 | 2026-08-24 | Retiring a field from a stored preference policy requires a data migration in the same revision. | `prefs._strict_object` compares a stored row's key set against the code's with `!=`, deliberately, because a preference that has drifted from the code is worth failing on. Removing `evening_time` from the code alone would have made every read raise on any installation that had ever saved its proactive settings. Revision `0059` rewrites the rows. |
 | 2026-08-24 | A settings control whose effect is currently zero comes off the card; its stored value stays. | Quiet hours, the daily message budget and the nudge switches all gate a send, and there is nothing to send with. The delivery engine still reads the stored policy and a first web push has to be governed by something, so the handler now overlays only the fields the form still posts — `Form(default)` would otherwise silently reset what the owner last chose. |

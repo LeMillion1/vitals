@@ -143,6 +143,46 @@ def _encode(secret: Mapping[str, Any]) -> bytes:
     return payload
 
 
+def encrypt_mapping(secret: Mapping[str, Any]) -> bytes:
+    """Authenticated-encrypt one small string mapping with the installation key.
+
+    This is the shared primitive for account/provider credential tables.  It is
+    intentionally synchronous: encryption is local CPU work and callers still
+    own their database row and transaction.
+    """
+
+    return _fernet().encrypt(_encode(secret))
+
+
+def decrypt_mapping(ciphertext: bytes) -> dict[str, str]:
+    """Decrypt a value written by :func:`encrypt_mapping`, failing on tampering."""
+
+    if not isinstance(ciphertext, bytes) or not ciphertext:
+        raise CredentialVaultCorrupt("stored credential ciphertext is invalid")
+    from cryptography.fernet import InvalidToken
+
+    try:
+        payload = _fernet().decrypt(ciphertext)
+    except InvalidToken as exc:
+        raise CredentialVaultCorrupt(
+            "a stored credential did not decrypt with the current "
+            f"{CREDENTIAL_KEY_ENV}"
+        ) from exc
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CredentialVaultCorrupt(
+            "a stored credential did not decode as an object"
+        ) from exc
+    if not isinstance(decoded, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in decoded.items()
+    ):
+        raise CredentialVaultCorrupt(
+            "a stored credential is not an object of strings"
+        )
+    return decoded
+
+
 async def store(
     session: AsyncSession,
     *,
@@ -162,7 +202,7 @@ async def store(
         integration_connection_id, field="integration_connection_id"
     )
     subject_id = _require_uuid(subject_id, field="subject_id")
-    ciphertext = _fernet().encrypt(_encode(secret))
+    ciphertext = encrypt_mapping(secret)
 
     row = await session.scalar(
         select(IntegrationCredential)
@@ -217,32 +257,12 @@ async def load(
     if row is None:
         return None
     try:
-        cipher = _fernet()
+        return decrypt_mapping(bytes(row.ciphertext))
     except CredentialVaultUnavailable:
+        # The availability check above and this decrypt happen in one process,
+        # but tests and operator reloads may change the environment between the
+        # two. Preserve the reader contract: unavailable means not configured.
         return None
-
-    from cryptography.fernet import InvalidToken
-
-    try:
-        payload = cipher.decrypt(bytes(row.ciphertext))
-    except InvalidToken as exc:
-        raise CredentialVaultCorrupt(
-            "a stored provider credential did not decrypt with the current "
-            f"{CREDENTIAL_KEY_ENV}"
-        ) from exc
-    try:
-        decoded = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CredentialVaultCorrupt(
-            "a stored provider credential did not decode as an object"
-        ) from exc
-    if not isinstance(decoded, dict) or not all(
-        isinstance(k, str) and isinstance(v, str) for k, v in decoded.items()
-    ):
-        raise CredentialVaultCorrupt(
-            "a stored provider credential is not an object of strings"
-        )
-    return decoded
 
 
 async def clear(
@@ -283,6 +303,8 @@ __all__ = [
     "CredentialVaultValidationError",
     "VAULT_CREDENTIAL_REF",
     "clear",
+    "decrypt_mapping",
+    "encrypt_mapping",
     "is_available",
     "load",
     "store",

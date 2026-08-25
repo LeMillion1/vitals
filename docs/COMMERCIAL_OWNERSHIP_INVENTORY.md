@@ -17,7 +17,7 @@ The original table-by-table inventory contains the 55 tables present at the
 Stage-0 expansion. The post-foundation and later identity/care tables below keep
 the prose inventory aligned with the machine-readable registry.
 
-**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 78 live tables today.** Revision
+**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 79 live tables today.** Revision
 `0058` also dropped two historical tables: `signals` and `day_context`. Their rows below are
 kept, struck through, at their original numbers — the numbering is referenced
 from the Stage-3 narrative further down, and renumbering would silently
@@ -164,12 +164,13 @@ remain PR-06 work.
 
 The centrally funded OpenRouter, durable delivery, and bounded-backfill slices
 add reviewed control state above the original 55-table inventory rather than
-weakening subject-bound data roots. The delivery slice was built for Telegram and
-outlived it on purpose: `notification_delivery_intents` is transport-agnostic —
-its own docstring says a second channel adds rows there rather than a second
-table — so it is what web push will use, and the phase that backfills historical
-`notifications` still resolves the Telegram recipient those rows were delivered
-to. The transport is gone; its journal is not.
+weakening subject-bound data roots. The delivery slice was built for Telegram
+and outlived it for provenance. Despite its old docstring, it is not transport-
+agnostic in schema: the channel check is Telegram-only and every row requires a
+subject-owned integration connection. A web-push device belongs to an account,
+especially when one professional serves several subjects, so revision `0068`
+adds a separate account-owned encrypted subscription root. The historical
+Telegram transport is gone; its journal is not.
 
 | Table | Ownership | Contract |
 | --- | --- | --- |
@@ -184,6 +185,7 @@ to. The transport is gone; its journal is not.
 | `care_messages` / `CareMessage` | Required S, required author, required thread | One thing somebody said. `edited_at` rather than a delete path; only the author may correct it, and the correction keeps the row. Bodies never reach `AuditEvent`, whose metadata allowlist forbids a display value. |
 | `integration_credentials` / `IntegrationCredential` | Required S and C, keyed by C | The one table here that holds a secret, which is why it is not in `models/tenancy.py`: `credential_ref` on the connection stays a handle, and `vault:v1` is one of the things it names. One Fernet ciphertext of a small JSON object under `VITALS_CREDENTIAL_KEY`, plus `key_version` so rotation is a migration rather than an outage. The foreign key is composite on `(C, S)` so a credential whose two owners disagree cannot exist. No email, account id or key suffix in any column, and never user-portable: an export carrying this row would carry a Garmin password out of the installation, and an import accepting one would let a crafted file plant a credential against another subject's connection. |
 | `ownership_backfill_checkpoints` / `OwnershipBackfillCheckpoint` | Required S control state | One versioned phase checkpoint with stable scan watermarks, cumulative counts, operational timestamps, and lowercase SHA-256 digests. It contains no row payload, title, medical/event date, file path, credential, or free-form error and is excluded from ordinary portability. Any populated checkpoint makes revision `0045` downgrade fail before DDL. |
+| `web_push_subscriptions` / `WebPushSubscription` | Account control plane | One browser-profile endpoint belongs to one user, not one patient. Endpoint URL, `p256dh`, and `auth` are one Fernet ciphertext under `VITALS_CREDENTIAL_KEY`; only a lowercase SHA-256 endpoint digest is readable for exact refresh/revocation. A global unique prevents the same endpoint from silently moving between accounts and active devices are bounded to ten per account. Revocation/account suspension retains the lifecycle row but erases its ciphertext. The row is never ordinary-user portable. |
 
 `WeeklyDigest`, AI-parsed `RawPayload`, AI-assisted `Signal`/`Notification`, and
 future AI artifacts link to `AIInvocation`, not to a fabricated per-subject
@@ -195,7 +197,7 @@ silently reassigned or deleted.
 
 These fourteen live tables arrived after the earlier prose additions. Together
 with the sections above they make this hand-reviewed inventory exhaustive for
-the same 78 live tables as `OWNERSHIP_REGISTRY`.
+the same 79 live tables as `OWNERSHIP_REGISTRY`.
 
 | Table | Ownership | Contract |
 | --- | --- | --- |
