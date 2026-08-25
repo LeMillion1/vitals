@@ -482,7 +482,12 @@ def _subject_rebind_required(table_name: str, row: dict[str, Any]) -> bool:
 
 
 class BackupMetadata(BaseModel):
-    """The backup envelope. Extra keys are ignored so older/newer files still load."""
+    """The backup envelope for the one format this importer implements.
+
+    Extra metadata keys remain forward-compatible, but the format version is an
+    exact contract: a v1 importer must never guess how to interpret another
+    version's table graph.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -778,14 +783,7 @@ async def _describe_outbound_references(
 def _validate_payload(payload: Any) -> BackupMetadata:
     """Structural validation. Raises :class:`PortabilityError` with a clear message
     on anything malformed — no silent acceptance of junk."""
-    if not isinstance(payload, dict):
-        raise PortabilityError(t("import.error.not_json_obj"))
-    if "metadata" not in payload:
-        raise PortabilityError(t("import.error.no_metadata"))
-    try:
-        meta = BackupMetadata.model_validate(payload["metadata"])
-    except ValidationError as exc:
-        raise PortabilityError(t("import.error.bad_metadata", msg=exc.errors()[0].get("msg", exc)))
+    meta = _validate_v1_metadata(payload)
 
     # A subject export and a whole-database backup are both valid JSON with the
     # same envelope and overlapping table names, and this importer replaces
@@ -1726,16 +1724,7 @@ async def _reset_sequences(session: AsyncSession) -> None:
 def _validate_subject_payload(payload: Any) -> BackupMetadata:
     """Structural validation for a personal export, and only for one."""
 
-    if not isinstance(payload, dict):
-        raise PortabilityError(t("import.error.not_json_obj"))
-    if "metadata" not in payload:
-        raise PortabilityError(t("import.error.no_metadata"))
-    try:
-        meta = BackupMetadata.model_validate(payload["metadata"])
-    except ValidationError as exc:
-        raise PortabilityError(
-            t("import.error.bad_metadata", msg=exc.errors()[0].get("msg", exc))
-        )
+    meta = _validate_v1_metadata(payload)
     if meta.kind != KIND_SUBJECT:
         # The mirror of the guard in ``_validate_payload``. A whole-database
         # backup loaded here would be silently truncated to one subject's worth
@@ -1775,6 +1764,29 @@ def _validate_subject_payload(payload: Any) -> BackupMetadata:
                 )
         _refuse_unrestorable_v1_rows(table, value)
     return meta
+
+
+def _validate_v1_metadata(payload: Any) -> BackupMetadata:
+    """Validate the common v1 envelope before an importer can mutate state."""
+
+    if not isinstance(payload, dict):
+        raise PortabilityError(t("import.error.not_json_obj"))
+    if "metadata" not in payload:
+        raise PortabilityError(t("import.error.no_metadata"))
+    metadata = payload["metadata"]
+    if isinstance(metadata, dict):
+        version = metadata.get("version")
+        if type(version) is not str or version != BACKUP_VERSION:
+            raise _contract_error(
+                "portability.error.v1_unsupported_version",
+                expected=BACKUP_VERSION,
+            )
+    try:
+        return BackupMetadata.model_validate(metadata)
+    except ValidationError as exc:
+        raise PortabilityError(
+            t("import.error.bad_metadata", msg=exc.errors()[0].get("msg", exc))
+        ) from exc
 
 
 async def _resolve_catalog_reference(

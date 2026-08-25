@@ -357,6 +357,63 @@ async def test_import_rejects_missing_metadata(db_session):
         await import_full(db_session, {"weight_logs": []})
 
 
+@pytest.mark.parametrize("scope", ("full", "subject"))
+@pytest.mark.parametrize(
+    ("version_case", "version"),
+    (
+        pytest.param("missing", None, id="missing"),
+        pytest.param("non-string", 1, id="non-string"),
+        pytest.param("future", "2.0", id="future"),
+        pytest.param("arbitrary", "v-next", id="arbitrary"),
+    ),
+)
+async def test_v1_import_rejects_other_versions_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    scope,
+    version_case,
+    version,
+):
+    """Neither importer may guess a table contract from an unknown version."""
+
+    sentinel = WeightLog(
+        subject_id=legacy_owner_roots.subject_id,
+        date=date(2026, 8, 24),
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        weight_kg=81.5,
+        superseded=False,
+    )
+    db_session.add(sentinel)
+    await db_session.flush()
+    sentinel_id = sentinel.id
+
+    metadata = {
+        "kind": (
+            data_portability_service.KIND_FULL
+            if scope == "full"
+            else data_portability_service.KIND_SUBJECT
+        )
+    }
+    if version_case != "missing":
+        metadata["version"] = version
+    payload = {"metadata": metadata, "weight_logs": []}
+
+    with pytest.raises(PortabilityError, match=r"1\.0"):
+        if scope == "full":
+            await import_full(db_session, payload)
+        else:
+            await data_portability_service.import_subject(
+                db_session,
+                payload,
+                subject_id=legacy_owner_roots.subject_id,
+            )
+
+    preserved = await db_session.get(WeightLog, sentinel_id)
+    assert preserved is not None
+    assert preserved.weight_kg == 81.5
+
+
 async def test_import_rejects_unknown_table(db_session):
     payload = {"metadata": {"version": "1.0"}, "not_a_real_table": [{"x": 1}]}
     with pytest.raises(PortabilityError, match="(Неизвестн|Unknown)"):
@@ -3357,6 +3414,55 @@ async def test_import_endpoint_rejects_wrong_extension(auth_client):
     files = {"backup_file": ("data.csv", b"a,b,c", "text/csv")}
     r = await auth_client.post("/settings/import", files=files)
     assert r.status_code == 415
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "kind"),
+    (
+        ("/settings/import", data_portability_service.KIND_FULL),
+        ("/settings/import-subject", data_portability_service.KIND_SUBJECT),
+    ),
+)
+async def test_import_http_boundaries_reject_future_version_without_mutation(
+    auth_client,
+    db_session,
+    legacy_owner_roots,
+    endpoint,
+    kind,
+):
+    sentinel = WeightLog(
+        subject_id=legacy_owner_roots.subject_id,
+        date=date(2026, 8, 25),
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        weight_kg=82.5,
+        superseded=False,
+    )
+    db_session.add(sentinel)
+    await db_session.commit()
+    sentinel_id = sentinel.id
+    payload = {
+        "metadata": {"version": "2.0", "kind": kind},
+        "weight_logs": [],
+    }
+
+    response = await auth_client.post(
+        endpoint,
+        files={
+            "backup_file": (
+                "backup.json",
+                json.dumps(payload).encode(),
+                "application/json",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert "1.0" in response.json()["detail"]
+    db_session.expire_all()
+    preserved = await db_session.get(WeightLog, sentinel_id)
+    assert preserved is not None
+    assert preserved.weight_kg == 82.5
 
 
 # ── HRT in the exports (PR #7 review item) ────────────────────────────────────

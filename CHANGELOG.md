@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — portability v1 rejects every other format version
+
+Full and personal restores now require the metadata version to be the exact
+string `1.0` before taking an identity lock or changing any record. Missing,
+non-string, future, and arbitrary versions return a localized controlled error;
+the v1 importer no longer guesses that an unknown archive has the v1 table
+contract.
+
 ### Fixed — one subject-scoped identity for each lab marker
 
 Lab names now have a conservative, subject-scoped identity key, so casing,
