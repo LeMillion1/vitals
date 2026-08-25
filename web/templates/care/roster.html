@@ -22,6 +22,8 @@
     </div>
     {% endif %}
 
+    {% include "partials/web_push_card.html" %}
+
     {% if not patients %}
     <div class="v-card p-6">
         <p class="v-text-body" style="color: var(--muted)">{{ t("care.roster_empty") }}</p>

@@ -45,6 +45,7 @@
     <script src="{{ static_version('/static/vendor/chart.umd.min.js') }}"></script>
     <script src="{{ static_version('/static/vendor/chartjs-plugin-annotation.min.js') }}"></script>
     <script src="{{ static_version('/static/vendor/marked.min.js') }}"></script>
+    <script src="{{ static_version('/static/web_push.js') }}" defer></script>
     <!-- i18n: inject JS translation strings -->
     <script>
         window.__STRINGS__ = {{ get_js_strings(request.state.lang) | tojson | safe }};

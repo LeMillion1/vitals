@@ -31,6 +31,8 @@
     <p class="v-text-body" style="color: var(--muted)">{{ t("care.messages_description") }}</p>
 
     {% if not open_thread %}
+    {% include "partials/web_push_card.html" %}
+
     <!-- ─── THE CONVERSATIONS ──────────────────────────────────────────────── -->
     <div class="v-card p-6 space-y-4">
         {{ card_header(t("care.threads_title")) }}

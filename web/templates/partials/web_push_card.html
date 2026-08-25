@@ -1,0 +1,29 @@
+{% from "partials/masthead.html" import card_header with context %}
+<section class="v-card p-5 space-y-3"
+         data-web-push-card
+         data-status-checking="{{ t('care.push_status_checking') }}"
+         data-status-ready="{{ t('care.push_status_ready') }}"
+         data-status-enabled="{{ t('care.push_status_enabled') }}"
+         data-status-denied="{{ t('care.push_status_denied') }}"
+         data-status-unsupported="{{ t('care.push_status_unsupported') }}"
+         data-status-unavailable="{{ t('care.push_status_unavailable') }}"
+         data-status-conflict="{{ t('care.push_status_conflict') }}"
+         data-status-stale="{{ t('care.push_status_stale') }}"
+         data-status-limit="{{ t('care.push_status_limit') }}"
+         data-status-error="{{ t('care.push_status_error') }}">
+    {% call card_header(t("care.push_title")) %}
+        <span class="v-chip v-chip-sm" data-web-push-status role="status" aria-live="polite">
+            {{ t("care.push_status_checking") }}
+        </span>
+    {% endcall %}
+    <p class="v-text-body max-w-2xl" style="color: var(--muted)">{{ t("care.push_description") }}</p>
+    <p class="v-text-micro" style="color: var(--muted)">{{ t("care.push_privacy") }}</p>
+    <div class="flex flex-wrap items-center gap-2">
+        <button type="button" class="v-btn-ghost text-xs" style="display: none" data-web-push-enable>
+            {{ t("care.push_enable") }}
+        </button>
+        <button type="button" class="v-btn-ghost text-xs" style="display: none" data-web-push-disable>
+            {{ t("care.push_disable") }}
+        </button>
+    </div>
+</section>

@@ -366,6 +366,18 @@ open attachment composer plus an existing download action were inspected at
 1440×900 and 390×844. The phone page had no horizontal overflow
 (`scrollWidth == clientWidth == 390`).
 
+Account/device Web Push enrollment on revision `0068` then passed 508 focused
+push, care, CSRF, anonymous-surface, i18n, design, router, mobile, and web tests;
+the full fast suite passed 4,686 tests (168 skipped, 35 deselected), Tailwind
+rebuilt with the isolated Node runtime, and full Ruff and diff checks passed.
+The authenticated API exposes only availability and the public VAPID key, caps
+streamed JSON at 8 KiB, and returns no endpoint, account, subscription, or
+patient identifier. Patient inbox and doctor roster were inspected live at
+desktop width, then the patient inbox at 390 px with no horizontal overflow.
+That browser run caught and fixed a real cascade error where `.v-btn-ghost`
+overrode Tailwind `.hidden`; denied-permission controls now compute to
+`display:none`. No permission prompt was invoked.
+
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun
 after the later revisions:

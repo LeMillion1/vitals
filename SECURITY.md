@@ -98,11 +98,14 @@ What remains reachable without a session is listed and enforced in
 without a stated reason. Today it is the login and OAuth handshakes, `/health`,
 the Bearer-token external summary, and the published doctor document.
 
-**When web push replaces the transport**, its subscription endpoint is the next
-thing to appear here. The shape to keep: a per-subject subscription in the
-database, not one credential in the environment — the reason the Telegram
-transport could not survive a shared installation is that one bot token and one
-chat id cannot belong to more than one person.
+The authenticated account-notification API stores only the current browser's
+Web Push subscription. A subscription belongs to an account/device, not to a
+health subject: one doctor's browser can receive work across several separately
+authorized patients without copying a delivery credential into every record.
+The endpoint and browser encryption keys are encrypted under the installation's
+credential key, never listed back to the browser, and erased on revocation or
+account suspension. The future care-message outbox remains subject-scoped and
+must revalidate live relationship and consent before delivery.
 
 ## Revoking Claude.ai Access
 

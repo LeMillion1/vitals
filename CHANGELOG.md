@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — care notifications are an explicit per-device choice
+
+Patients, doctors, and trainers can now enable or disable browser notifications
+from their conversation inbox or patient roster. Vitals asks browser permission
+only after an explicit click, exposes only the installation's public VAPID key,
+and never lists device endpoints or account/patient identifiers. The control
+detects unsupported and denied browsers, shared-browser ownership conflicts,
+device limits, and VAPID key rotation; an existing subscription remains
+removable even after browser permission is denied. Notification content and
+server-side delivery remain disabled until the separate care outbox and
+transport land.
+
 ### Fixed — the PWA worker controls the application, not only static files
 
 The service worker is now served and registered at `/sw.js` with root scope,

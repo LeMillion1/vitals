@@ -30,7 +30,7 @@ than trusting them if this date has gone stale.
 | Alembic head | `0068` — 68 revisions |
 | Schema | 79 tables; 65 carry `subject_id` and are covered by an RLS policy; 54 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,672 fast passed / 168 skipped; 114 focused anonymous/static/web tests; migration plus 74 current PostgreSQL push/identity/RLS/schema tests |
+| Suites | 4,686 fast passed / 168 skipped; 508 focused push/care/UI/security tests; migration plus 74 current PostgreSQL push/identity/RLS/schema tests |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership

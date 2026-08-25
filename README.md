@@ -715,6 +715,8 @@ curl -s http://127.0.0.1:8000/health
 | `VITALS_GARMIN_EMAIL` | Email Garmin Connect — то же: аккаунт владельца, не чей-либо ещё | *Опционально* |
 | `VITALS_GARMIN_PASSWORD` | Пароль Garmin Connect | *Опционально* |
 | `VITALS_CREDENTIAL_KEY` | Ключ шифрования для `integration_credentials` — учётные данные провайдеров каждого субъекта. Без него карточка настроек откажется принимать пароль, а не сохранит его открытым текстом. Сгенерировать: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | *Обязательно, если кто-то кроме владельца подключает Garmin/Hevy* |
+| `VITALS_WEB_PUSH_ENABLED` | Включает явную подписку браузеров на уведомления; без полного валидного VAPID-набора UI остаётся недоступным | `false` |
+| `VITALS_WEB_PUSH_VAPID_PUBLIC_KEY` / `VITALS_WEB_PUSH_VAPID_PRIVATE_KEY` / `VITALS_WEB_PUSH_VAPID_SUBJECT` | Пара ключей и контакт инсталляции для Web Push. Сгенерировать: `.venv/bin/python scripts/generate_web_push_keys.py --subject mailto:admin@example.com` | *Обязательно для browser notifications* |
 | `VITALS_GARMIN_TOKEN_DIR` | Путь к токенам Garmin | `/data/garmin_session` |
 | `VITALS_PRIVATE_FILE_ROOT` | Приватное хранилище медицинских файлов вне `/static` | `/data/private_files` |
 | `VITALS_MCP_CLIENT_ID` | OAuth Client ID для MCP | `vitals-claude-connector` |
@@ -1470,6 +1472,8 @@ runtime reader opens them any more.
 | `VITALS_GARMIN_EMAIL` | Garmin Connect email — likewise the owner's account, and nobody else's | *Optional* |
 | `VITALS_GARMIN_PASSWORD` | Garmin Connect password | *Optional* |
 | `VITALS_CREDENTIAL_KEY` | Encryption key for `integration_credentials`, where each subject's provider credentials live. Without it the settings card refuses a password rather than storing it in the clear. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | *Required once anybody but the owner connects Garmin/Hevy* |
+| `VITALS_WEB_PUSH_ENABLED` | Enables explicit browser notification enrollment; the UI stays unavailable without a complete valid VAPID configuration | `false` |
+| `VITALS_WEB_PUSH_VAPID_PUBLIC_KEY` / `VITALS_WEB_PUSH_VAPID_PRIVATE_KEY` / `VITALS_WEB_PUSH_VAPID_SUBJECT` | Installation Web Push key pair and contact. Generate with `.venv/bin/python scripts/generate_web_push_keys.py --subject mailto:admin@example.com` | *Required for browser notifications* |
 | `VITALS_GARMIN_TOKEN_DIR` | Garmin session token path | `/data/garmin_session` |
 | `VITALS_PRIVATE_FILE_ROOT` | Private medical-file storage outside `/static` | `/data/private_files` |
 | `VITALS_MCP_CLIENT_ID` | MCP OAuth Client ID | `vitals-claude-connector` |

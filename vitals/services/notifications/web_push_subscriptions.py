@@ -318,6 +318,31 @@ async def revoke_endpoint(
     return True
 
 
+async def endpoint_is_active(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    endpoint: Any,
+) -> bool:
+    """Whether this exact browser endpoint is active for this exact account.
+
+    This deliberately returns only a boolean.  In particular, an endpoint owned
+    by another account is indistinguishable from an unknown endpoint, so a
+    shared browser cannot be used to discover which local account enabled it.
+    """
+
+    user_id = _require_uuid(user_id, field="user_id")
+    clean_endpoint = _canonical_endpoint(endpoint)
+    row_id = await session.scalar(
+        select(WebPushSubscription.id).where(
+            WebPushSubscription.user_id == user_id,
+            WebPushSubscription.endpoint_hash == endpoint_hash(clean_endpoint),
+            WebPushSubscription.revoked_at.is_(None),
+        )
+    )
+    return row_id is not None
+
+
 async def revoke_all(session: AsyncSession, *, user_id: uuid.UUID) -> int:
     """Revoke every active browser endpoint for one account. Never commits."""
 
@@ -349,6 +374,7 @@ __all__ = [
     "SubscriptionSecret",
     "TooManyWebPushSubscriptions",
     "WebPushSubscriptionError",
+    "endpoint_is_active",
     "endpoint_hash",
     "load_secret",
     "register",
