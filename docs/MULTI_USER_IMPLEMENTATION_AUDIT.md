@@ -137,6 +137,10 @@ a current validation result.
   derived from the subject-protected grant. The audit envelope contains no
   health-category list. Care and patient/admin support actions bind one exact
   subject before reaching PostgreSQL FORCE-RLS tables.
+- The care record uses a dedicated strict projection instead of assembling a
+  full digest and filtering its output. Only domains allowed by the live
+  relationship consent or support grant and enabled by the patient reach their
+  loaders; negative SQL tests cover withheld core and optional tables.
 - Repair, exceptional export, two-person break-glass approval, operational
   dashboards, and retention tooling remain deliberately refused or absent.
 - Active-grant expiry still renders as a date rather than an exact

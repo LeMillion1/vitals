@@ -8,6 +8,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — care records query only authorized sections
+
+The professional and support record screen no longer builds a full cross-domain
+digest and removes disallowed sections afterwards. A dedicated care projection
+selects each of its eleven visual summaries only after both the live policy and
+the patient's module setting allow that domain. Disabled or withheld weight,
+body composition, labs, Garmin, workouts, and optional-domain tables are not
+queried or materialized at all.
+
+The projection reports the domains it actually loaded back to the locked
+support-disclosure check, while the operational audit envelope remains free of
+health-category names and medical values. The full digest assembler keeps its
+existing behavior for weekly reports, proactive briefs, shares, and MCP.
+
 ### Fixed — support record reads are durable and visible
 
 A successful support-granted `/care/{subject}` response now commits one

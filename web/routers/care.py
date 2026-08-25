@@ -28,15 +28,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.access import PolicyAction, PolicyResourceType
 from vitals.enums import (
     CarePlanStatus,
-    Domain,
     ProfessionalKind,
     ProfessionalVerificationStatus,
     UserRoleName,
 )
 from vitals.models.identity import UserRole
 from vitals.models.professional import ProfessionalProfile
-from vitals.services import digest_service, modules_service, support_access_service
+from vitals.services import modules_service, support_access_service
 from vitals.services.care import invitations, professionals, records, relationships
+from vitals.services.care import record_projection
 from vitals.services.care import threads as care_threads
 from web.care_context import CareContext, principal_user_id, require_care_context
 from web.config import get_web_config
@@ -333,32 +333,9 @@ async def submit_professional_profile(
     )
 
 
-#: The record, section by section, and what each one needs to be shown.
-#:
-#: Three different keys, deliberately not collapsed into one. ``section`` is
-#: where the assembled context keeps it, ``domain`` is what the consent grants,
-#: and ``module`` is what the patient switched on. They coincide for most rows
-#: and disagree for ``hevy``/``workouts``, and pretending otherwise would hide
-#: exactly one row's worth of a real distinction: what a patient consented to
-#: share is not the same question as what they use.
-RECORD_SECTIONS: tuple[tuple[str, Domain, str], ...] = (
-    ("weight", Domain.WEIGHT, "weight"),
-    ("labs", Domain.LABS, "labs"),
-    ("body_comp", Domain.BODY_COMPOSITION, "body_comp"),
-    ("nutrition", Domain.NUTRITION, "nutrition"),
-    ("hrt", Domain.HRT, "hrt"),
-    ("glp1", Domain.GLP1, "glp1"),
-    ("supplements", Domain.SUPPLEMENTS, "supplements"),
-    ("skincare", Domain.SKINCARE, "skincare"),
-    ("genetics", Domain.GENETICS, "genetics"),
-    ("garmin", Domain.GARMIN, "garmin"),
-    ("hevy", Domain.WORKOUTS, "hevy"),
-)
-
-
 async def _visible_record(
     db: AsyncSession, care: CareContext
-) -> tuple[dict[str, dict], list[str], list[str]]:
+) -> record_projection.RecordProjection:
     """The patient's record as this professional may see it, and what is missing.
 
     A doctor and a trainer are granted the same domains — the kind decides who
@@ -373,59 +350,13 @@ async def _visible_record(
     professional and not theirs to be told about.
     """
 
-    permitted = {
-        module
-        for _section, domain, module in RECORD_SECTIONS
-        if care.may(resource_key=domain.value)
-    }
     enabled = await modules_service.get_enabled_modules(
         db, subject_id=care.subject_id
     )
-    context = await digest_service.assemble_context(
+    return await record_projection.assemble_record_projection(
         db,
-        subject_id=care.subject_id,
-        enabled_modules={
-            key: bool(value) and key in permitted
-            for key, value in enabled.items()
-        },
-    )
-
-    # The module gate above is a narrowing, not the boundary. ``assemble_context``
-    # forces every *core* module on whatever it is handed — weight, labs and
-    # garmin among them — because a report of an installation that switched off
-    # its own core sections is not a thing. That is right for the report and
-    # wrong as an authorization, so consent is applied here instead, by building
-    # the view out of the permitted sections rather than by removing the others
-    # from a whole context. A whitelist cannot be defeated by a section this
-    # screen has not thought about yet.
-    record = {
-        section: context.get(section)
-        for section, _domain, module in RECORD_SECTIONS
-        if module in permitted
-    }
-    coverage = {
-        section: (context.get("coverage") or {}).get(section)
-        for section, _domain, module in RECORD_SECTIONS
-        if module in permitted and (context.get("coverage") or {}).get(section)
-    }
-    withheld = [
-        domain.value
-        for _section, domain, module in RECORD_SECTIONS
-        if module not in permitted and enabled.get(module, False)
-    ]
-    read_domains = [
-        domain.value
-        for _section, domain, module in RECORD_SECTIONS
-        if module in permitted and enabled.get(module, False)
-    ]
-    return (
-        {
-            "record": record,
-            "coverage": coverage,
-            "period": (context.get("report_meta") or {}),
-        },
-        withheld,
-        read_domains,
+        context=care.access,
+        enabled_modules=enabled,
     )
 
 
@@ -465,7 +396,7 @@ async def patient(
         db,
         {item.actor_user_id for item in (*notes, *plans)},
     )
-    visible, withheld, read_domains = await _visible_record(db, care)
+    visible = await _visible_record(db, care)
     response = templates.TemplateResponse(
         request,
         "care/patient.html",
@@ -479,10 +410,10 @@ async def patient(
             "notes": notes,
             "plans": plans,
             "author_names": author_names,
-            "record": visible["record"],
-            "coverage": visible["coverage"],
-            "period": visible["period"],
-            "withheld_domains": withheld,
+            "record": visible.record,
+            "coverage": visible.coverage,
+            "period": visible.period,
+            "withheld_domains": visible.withheld_domains,
             "may_read_messages": may_read_messages,
             "may_write_note": care.may(
                 resource_key=records.NOTE_ARTIFACT,
@@ -511,7 +442,7 @@ async def patient(
             await support_access_service.record_record_opened(
                 db,
                 context=care.access,
-                domain_keys=read_domains,
+                domain_keys=visible.loaded_domains,
                 artifact_keys=artifact_keys,
             )
             # Rendering has succeeded, but the response has not left this
