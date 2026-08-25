@@ -18,6 +18,7 @@ import uuid
 from datetime import timedelta
 
 import pytest
+from sqlalchemy import select
 
 from vitals.access import (
     AccessRequest,
@@ -331,6 +332,35 @@ async def test_a_doctor_cannot_be_taken_on_as_a_trainer(db_session):
         )
 
 
+async def test_a_care_invitation_never_promotes_an_ordinary_member(db_session):
+    """The token chooses a person; it is not a professional-role grant."""
+
+    owner, subject = await _patient(db_session, "care-member-invite")
+    member = await _user(
+        db_session,
+        "care-member-invite-acceptor",
+        roles=(UserRoleName.MEMBER,),
+    )
+    issued = await invitations.invite(
+        db_session,
+        subject_id=subject.id,
+        actor_user_id=owner.id,
+        kind=ProfessionalKind.DOCTOR,
+        email="care-member-invite@example.test",
+    )
+    await invitations.accept(
+        db_session,
+        token=issued.token,
+        accepting_user_id=member.id,
+        verified_email="care-member-invite@example.test",
+    )
+
+    with pytest.raises(relationships.KindMismatch):
+        await relationships.establish_from_invitation(
+            db_session, invitation=issued.invitation
+        )
+
+
 async def test_a_professional_with_no_profile_enters_as_invited(db_session):
     """Nothing to contradict, so nothing is contradicted.
 
@@ -344,6 +374,36 @@ async def test_a_professional_with_no_profile_enters_as_invited(db_session):
         db_session, "care-noprofile", kind=ProfessionalKind.TRAINER
     )
     assert relationship.kind == ProfessionalKind.TRAINER.value
+
+
+async def test_losing_the_exact_professional_role_closes_the_next_read(db_session):
+    """A different professional role is not a substitute for the invited one."""
+
+    owner, subject, professional, relationship = await _in_care(
+        db_session,
+        "care-role-revoked",
+        kind=ProfessionalKind.TRAINER,
+    )
+    await relationships.grant_consent(
+        db_session,
+        relationship_id=relationship.id,
+        actor_user_id=owner.id,
+    )
+    assert await _may(db_session, professional, subject)
+
+    trainer_role = await db_session.scalar(
+        select(UserRole).where(
+            UserRole.user_id == professional.id,
+            UserRole.role == UserRoleName.TRAINER.value,
+        )
+    )
+    await db_session.delete(trainer_role)
+    db_session.add(
+        UserRole(user_id=professional.id, role=UserRoleName.DOCTOR.value)
+    )
+    await db_session.flush()
+
+    assert not await _may(db_session, professional, subject)
 
 
 async def test_the_patient_can_narrow_what_was_offered(db_session):

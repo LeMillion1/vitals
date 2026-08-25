@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — care invitations require the exact professional role
+
+A patient invitation no longer acts as an accidental role-granting surface.
+Establishing doctor care requires the invited account to already hold the
+doctor role, and trainer care requires the trainer role. The exact role is
+rechecked while assembling every relationship grant, so revoking it closes the
+next web, API, MCP, or background access without deleting the historical care
+relationship; holding the other professional role is not a substitute.
+
 ### Fixed — OIDC verified email now unlocks only its exact care invitation
 
 Vitals now projects an email onto the local account only when the validated ID

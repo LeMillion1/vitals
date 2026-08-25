@@ -37,7 +37,7 @@ from vitals.enums import (
     ProfessionalInvitationStatus,
     ProfessionalKind,
 )
-from vitals.models.identity import HealthSubject
+from vitals.models.identity import HealthSubject, UserRole
 from vitals.models.care_thread import CareMessage, CareThreadParticipant
 from vitals.models.professional import (
     CareRelationship,
@@ -424,6 +424,20 @@ async def establish_from_invitation(
     if owner_user_id is None:
         raise CareValidationError("the invited record no longer exists")
 
+    exact_role = await session.scalar(
+        select(UserRole.id).where(
+            UserRole.user_id == invitation.accepted_by_user_id,
+            UserRole.role == invitation.kind,
+        )
+    )
+    if exact_role is None:
+        # The invitation describes whom the patient meant to invite; it is not
+        # a role-granting form.  A member holding the link cannot promote
+        # themselves, and a doctor invitation cannot be spent as a trainer.
+        raise KindMismatch(
+            "this account does not hold the invited professional role"
+        )
+
     # A doctor and a trainer are two different professionals, not two labels on
     # one. Without this the kind on the relationship is only what the patient
     # happened to type into the invitation, and "my trainer" and "my doctor"
@@ -711,6 +725,18 @@ async def load_relationship_grant(
         )
     )
     if relationship is None:
+        return None
+
+    exact_role = await session.scalar(
+        select(UserRole.id).where(
+            UserRole.user_id == professional_user_id,
+            UserRole.role == relationship.kind,
+        )
+    )
+    if exact_role is None:
+        # Role revocation or a kind correction takes effect on the very next
+        # access resolution.  The historical relationship stays intact; it is
+        # no longer an authorization fact.
         return None
 
     grant = await session.scalar(
