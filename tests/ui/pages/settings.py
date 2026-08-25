@@ -153,11 +153,31 @@ class SupportConsolePage(Page):
         self._act(self.SUBMIT)
         return self
 
-    def open_the_record(self):
+    def open_the_record(self, *, scope_label: str | None = None):
         from tests.ui.pages.care import CareRecordPage
 
-        self._act(self.OPEN_RECORD)
+        selector = self.OPEN_RECORD
+        if scope_label is not None:
+            links = self.page.locator(self.OPEN_RECORD)
+            matching = []
+            for index in range(links.count()):
+                link = links.nth(index)
+                card_text = link.locator(
+                    "xpath=ancestor::div[contains(@class, 'v-card-inset')][1]"
+                ).inner_text()
+                if scope_label in card_text:
+                    matching.append(index)
+            assert len(matching) == 1, (
+                f"expected one live grant naming {scope_label!r}, got {matching!r}"
+            )
+            selector = f"{self.OPEN_RECORD} >> nth={matching[0]}"
+        self._act(selector)
         return self._become(CareRecordPage)
+
+    @property
+    def record_hrefs(self) -> tuple[str, ...]:
+        links = self.page.locator(self.OPEN_RECORD)
+        return tuple(links.nth(index).get_attribute("href") or "" for index in range(links.count()))
 
     def hand_the_grant_back(self) -> "SupportConsolePage":
         self._act(self.HAND_BACK)

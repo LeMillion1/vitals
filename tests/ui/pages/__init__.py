@@ -5,7 +5,7 @@ A locator lives in exactly one place. That is the whole point — the selector
 button is renamed and eight silent passes when only some get made.
 
 Navigation returns the page it lands on, so a flow reads as the sentence it is:
-``console.ask_for(...).open_record().expect_withheld("Nutrition")``.
+``console.open_the_record(scope_label="Labs").shows_section("Labs")``.
 """
 from tests.ui.pages.base import Page, RefusalPage
 from tests.ui.pages.care import (

@@ -52,8 +52,8 @@ the others remain useful provenance for the remediations named below:
 | Web routers | 32 modules under `web/routers` | Verified |
 | Application services | 105 tracked non-`__init__` modules after the care, authentication, admission, analytics, persistence, and notification moves | Verified |
 | Flat service debt | 75 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
-| Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
-| Commercial Git history | 279 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
+| Browser scenarios | 38 scenarios selected by `pytest tests/ui -m ui` | Verified collection and run |
+| Commercial Git history | 290 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
 current commit. Only a command executed against the current tree is recorded as
@@ -522,6 +522,19 @@ Exact same-administrator grant selection then passed 102 focused access,
 relationship, support, and templating tests (three PostgreSQL-only skips), plus
 focused Ruff and diff checks. The new PostgreSQL RLS selector case is included
 in the combined controlled-support gate rather than reported as a local pass.
+
+The combined controlled-support gate completed the real PostgreSQL 15
+`head → 0034 → head` migration cycle and passed 124 selected RLS, support,
+projection, and relationship tests. The full fast suite passed 5,057 tests,
+skipped 187, and deselected 37; full Ruff and diff checks passed. The complete
+38-scenario browser suite exercised patient, doctor, trainer, support, and
+administrator journeys, including two disjoint grants held by the same
+administrator and opened through distinct exact links. Compose rebuilt the
+current image, PostgreSQL reported healthy, `/health` returned 200, and `/`
+redirected 303 to `/today`. The authenticated Compose browser inspected the
+patient access centre, Today, conversations, and care home at 1,280 px with no
+horizontal overflow or browser log errors; phone widths are covered by the live
+Playwright scenarios.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

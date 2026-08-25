@@ -85,6 +85,38 @@ def test_a_phone_shows_both_live_grants_and_stopping_one_keeps_the_other(sign_in
     assert not history.says("That access is closed.")
 
 
+def test_same_admin_grants_open_two_exact_non_merged_records(sign_in):
+    admin = sign_in("admin")
+    admin.support_console().ask_for(
+        record="Patient 01", reason=REASON, domains=("labs",), hours=1
+    )
+    sign_in("patient01").access_history().allow()
+
+    admin.support_console().ask_for(
+        record="Patient 01",
+        reason="Investigating a nutrition import, ticket SUP-4472.",
+        domains=("nutrition",),
+        hours=2,
+    )
+    sign_in("patient01").access_history().allow()
+
+    console = admin.support_console()
+    hrefs = console.record_hrefs
+    assert len(hrefs) == 2
+    assert len(set(hrefs)) == 2
+    assert all("?support_grant_id=" in href for href in hrefs)
+
+    labs = console.open_the_record(scope_label="Labs")
+    assert labs.shows_section("Labs")
+    assert not labs.shows_section("Nutrition")
+    assert labs.names_only_approved_sections
+
+    nutrition = admin.support_console().open_the_record(scope_label="Nutrition")
+    assert nutrition.shows_section("Nutrition")
+    assert not nutrition.shows_section("Labs")
+    assert nutrition.names_only_approved_sections
+
+
 def test_phone_history_puts_a_new_decision_before_openings_and_true_past(sign_in):
     admin = sign_in("admin")
     admin.support_console().ask_for(
@@ -144,9 +176,9 @@ def test_the_granted_record_opens_and_shows_only_what_was_granted(sign_in):
     record = admin.support_console().open_the_record()
     assert record.says("Platform support"), "the basis is not named"
     assert not record.says("(Doctor)"), "support is described as a doctor"
-    assert "Nutrition" in record.withheld_line, (
-        f"an ungranted domain is not withheld: {record.withheld_line!r}"
-    )
+    assert record.names_only_approved_sections
+    assert record.shows_section("Labs")
+    assert not record.shows_section("Nutrition")
     assert not record.offers_the_note_form, "a read grant is offered a write form"
 
 

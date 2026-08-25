@@ -23,7 +23,7 @@ class CareRecordPage(Page):
 
     CONVERSATIONS = 'a:has-text("Conversations")'
     NOTE_FORM = 'form[action$="/note"]'
-    WITHHELD = "Not shared with you"
+    RESTRICTED = "Sections approved for this opening"
 
     def open_conversations(self) -> "ConversationsPage":
         self._act(self.CONVERSATIONS)
@@ -34,17 +34,17 @@ class CareRecordPage(Page):
         return self.page.locator(self.NOTE_FORM).count() > 0
 
     @property
-    def withheld_line(self) -> str:
-        """What the page says is outside this reader's grant.
+    def names_only_approved_sections(self) -> bool:
+        return self.RESTRICTED in self.text
 
-        Empty when nothing is: a reader who may see everything gets no line, and
-        a test that wants one should say so rather than match an empty string.
-        """
+    def shows_section(self, label: str) -> bool:
+        """Whether an exact record-card heading is rendered."""
 
-        body = self.text
-        if self.WITHHELD not in body:
-            return ""
-        return body.split(self.WITHHELD, 1)[1].split("\n", 1)[0]
+        headings = {
+            heading.strip().casefold()
+            for heading in self.page.locator(".mh-eyebrow").all_inner_texts()
+        }
+        return label.strip().casefold() in headings
 
 
 class ConversationsPage(Page):
