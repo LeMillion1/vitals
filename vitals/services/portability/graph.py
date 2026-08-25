@@ -32,6 +32,14 @@ from vitals.ownership import (
     OwnershipSpec,
     TargetColumn,
 )
+from vitals.services.portability.schema import (
+    EXPLICIT_EXCLUDED_TABLES,
+    PORTABILITY_SCHEMA_DIGEST,
+    SUBJECT_GRAPH_CLASSES,
+    SchemaContractError,
+    expected_resource_purpose,
+    portable_tables,
+)
 
 
 FORMAT_NAME: Final = "vitals-portability-graph"
@@ -41,18 +49,9 @@ FORMAT_VERSION: Final = 2
 # portable facts.  The provider outbox is local delivery state; system alerts
 # are derived/control state.  Keep this explicit even if the registry is later
 # tightened so a regression cannot put either back into an archive.
-EXCLUDED_PORTABLE_TABLES: Final = frozenset(
-    {"garmin_weight_exports", "system_alerts"}
-)
+EXCLUDED_PORTABLE_TABLES: Final = EXPLICIT_EXCLUDED_TABLES
 
-_SUBJECT_GRAPH_CLASSES: Final = frozenset(
-    {
-        OwnershipClass.SUBJECT_DATA,
-        OwnershipClass.SUBJECT_CHILD,
-        OwnershipClass.MIXED_CATALOG,
-        OwnershipClass.MIXED_CATALOG_CHILD,
-    }
-)
+_SUBJECT_GRAPH_CLASSES: Final = SUBJECT_GRAPH_CLASSES
 
 _PRIVATE_IDENTITY_COLUMNS: Final = frozenset(
     {
@@ -150,39 +149,10 @@ def _error(code: str, detail: str) -> GraphBuildError:
 
 def _portable_tables() -> tuple[tuple[Table, OwnershipSpec], ...]:
     """Return the complete, reviewed v2 table set or fail on registry drift."""
-
-    metadata_names = set(Base.metadata.tables)
-    registry_names = set(OWNERSHIP_REGISTRY)
-    if metadata_names != registry_names:
-        missing_registry = sorted(metadata_names - registry_names)
-        missing_model = sorted(registry_names - metadata_names)
-        detail = (
-            "ownership registry/model metadata mismatch "
-            f"(unclassified={missing_registry!r}, missing_models={missing_model!r})"
-        )
-        raise _error("registry_incomplete", detail)
-
-    selected: list[tuple[Table, OwnershipSpec]] = []
-    for table_name, spec in sorted(OWNERSHIP_REGISTRY.items()):
-        if (
-            not spec.user_portable
-            or table_name in EXCLUDED_PORTABLE_TABLES
-            or spec.ownership not in _SUBJECT_GRAPH_CLASSES
-        ):
-            continue
-        table = Base.metadata.tables[table_name]
-        if "subject_id" not in table.c:
-            raise _error(
-                "portable_table_unscoped",
-                f"portable table {table_name!r} has no subject_id column",
-            )
-        if len(table.primary_key.columns) == 0:
-            raise _error(
-                "portable_table_without_primary_key",
-                f"portable table {table_name!r} has no primary key",
-            )
-        selected.append((table, spec))
-    return tuple(selected)
+    try:
+        return portable_tables(registry=OWNERSHIP_REGISTRY)
+    except SchemaContractError as exc:
+        raise _error(exc.code, str(exc)) from exc
 
 
 def _primary_key(row: Mapping[str, Any], table: Table) -> tuple[Any, ...]:
@@ -676,25 +646,13 @@ async def build_subject_graph(
                         f"table {table.name!r} has a non-UUID resource reference",
                     )
                 file_asset_ids.add(file_value)
-                if table.name == "progress_photos":
-                    expected_purpose = FileAssetPurpose.PROGRESS_PHOTO.value
-                elif table.name == "body_scans":
-                    expected_purpose = FileAssetPurpose.BODY_SCAN_DOCUMENT.value
-                elif table.name == "raw_payloads":
-                    expected_purpose = {
-                        "labs": FileAssetPurpose.LAB_DOCUMENT.value,
-                        "body_comp": FileAssetPurpose.BODY_SCAN_DOCUMENT.value,
-                    }.get(loaded.values["domain"])
-                    if expected_purpose is None:
-                        raise _error(
-                            "resource_purpose_unknown",
-                            "a file-backed raw payload has no portable purpose mapping",
-                        )
-                else:
-                    raise _error(
-                        "resource_owner_unknown",
-                        f"table {table.name!r} has an unclassified file reference",
+                try:
+                    expected_purpose = expected_resource_purpose(
+                        table.name,
+                        loaded.values,
                     )
+                except SchemaContractError as exc:
+                    raise _error(exc.code, str(exc)) from exc
                 expected_file_purposes.setdefault(file_value, set()).add(
                     expected_purpose
                 )
@@ -802,6 +760,7 @@ async def build_subject_graph(
     manifest: dict[str, Any] = {
         "format": FORMAT_NAME,
         "version": FORMAT_VERSION,
+        "schema_digest": PORTABILITY_SCHEMA_DIGEST,
         "tables": public_tables,
         "connections": public_connections,
         "resources": public_resources,

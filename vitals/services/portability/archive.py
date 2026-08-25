@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any, BinaryIO, Final, Protocol
 
 from vitals.services.portability import contract
+from vitals.services.portability.schema import PORTABILITY_SCHEMA_DIGEST
 from vitals.services.portability.resources import (
     DEFAULT_RESOURCE_LIMITS,
     ResourceArchiveError,
@@ -37,7 +38,15 @@ _CONNECTION_REF_RE: Final = re.compile(r"c[0-9]{8}\Z")
 _RECORD_REF_RE: Final = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _FIXED_ZIP_TIME: Final = (1980, 1, 1, 0, 0, 0)
 _GRAPH_KEYS: Final = frozenset(
-    {"format", "version", "tables", "connections", "resources", "totals"}
+    {
+        "format",
+        "version",
+        "schema_digest",
+        "tables",
+        "connections",
+        "resources",
+        "totals",
+    }
 )
 _GRAPH_FORMAT: Final = "vitals-portability-graph"
 _INNER_FORMAT: Final = "vitals-portability-archive"
@@ -285,6 +294,7 @@ def _inner_manifest(
     record_body = {
         "connections": connections,
         "resources": _resource_manifest(raw_resources, plan),
+        "schema_digest": graph_manifest["schema_digest"],
         "tables": [
             {
                 "name": table.name,
@@ -304,6 +314,7 @@ def _inner_manifest(
         "archive_id": str(archive_id),
         "graph_format": graph_manifest["format"],
         "graph_version": graph_manifest["version"],
+        "schema_digest": graph_manifest["schema_digest"],
         "records": [
             {
                 "ref": record_ref,
@@ -406,6 +417,18 @@ def write_inner_archive(
         or graph_manifest["version"] != _FORMAT_VERSION
     ):
         raise _error("archive_graph_version_invalid", "graph format is unsupported")
+    schema_digest = graph_manifest["schema_digest"]
+    if (
+        type(schema_digest) is not str
+        or len(schema_digest) != 64
+        or schema_digest != schema_digest.lower()
+        or any(character not in "0123456789abcdef" for character in schema_digest)
+        or schema_digest != PORTABILITY_SCHEMA_DIGEST
+    ):
+        raise _error(
+            "archive_schema_digest_invalid",
+            "graph schema digest is not the reviewed contract",
+        )
 
     tables = _prepare_tables(
         graph_manifest.get("tables"), record_ref=record_ref, limits=limits

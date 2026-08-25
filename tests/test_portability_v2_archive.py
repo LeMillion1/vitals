@@ -20,6 +20,7 @@ from vitals.services.portability.archive import (
 from vitals.services.portability.crypto import EncryptingWriter, decrypt_stream
 from vitals.services.portability.graph import build_subject_graph
 from vitals.services.portability.resources import ResourceLocations
+from vitals.services.portability.schema import PORTABILITY_SCHEMA_DIGEST
 
 
 _ARCHIVE_ID = uuid.UUID("12345678-1234-5678-9234-567812345678")
@@ -84,6 +85,7 @@ def _graph(*, resources=(), prepared=(), table_name="weight_logs"):
     manifest = {
         "format": "vitals-portability-graph",
         "version": 2,
+        "schema_digest": PORTABILITY_SCHEMA_DIGEST,
         "tables": [{"name": table_name, "rows": rows}],
         "connections": [],
         "resources": list(resources),
@@ -171,6 +173,8 @@ async def test_archive_consumes_the_real_prepared_subject_graph(
     with zipfile.ZipFile(io.BytesIO(output.getvalue())) as archive:
         manifest = json.loads(archive.read("manifest.json"))
         record = manifest["records"][0]
+        assert manifest["schema_digest"] == PORTABILITY_SCHEMA_DIGEST
+        assert record["schema_digest"] == PORTABILITY_SCHEMA_DIGEST
         assert record["totals"] == graph.manifest["totals"]
         assert len(record["tables"]) == len(graph.manifest["tables"])
 
@@ -198,7 +202,13 @@ def test_manifest_replaces_rows_with_digested_jsonl_and_never_leaks_locators(tmp
         record = manifest["records"][0]
         record_body = {
             key: record[key]
-            for key in ("connections", "resources", "tables", "totals")
+            for key in (
+                "connections",
+                "resources",
+                "schema_digest",
+                "tables",
+                "totals",
+            )
         }
         encoded_record = json.dumps(
             record_body,
@@ -332,6 +342,12 @@ def test_graph_format_version_and_connection_count_are_capped(tmp_path):
     with pytest.raises(ArchiveBuildError) as raised:
         _write_archive(graph, io.BytesIO(), locations=_locations(tmp_path))
     assert raised.value.code == "archive_graph_version_invalid"
+
+    graph = _graph()
+    graph.manifest["schema_digest"] = PORTABILITY_SCHEMA_DIGEST.upper()
+    with pytest.raises(ArchiveBuildError) as raised:
+        _write_archive(graph, io.BytesIO(), locations=_locations(tmp_path))
+    assert raised.value.code == "archive_schema_digest_invalid"
 
     graph = _graph()
     graph.manifest["connections"] = [

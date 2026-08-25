@@ -28,6 +28,7 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import ProgressPhoto, WeightLog
 from vitals.ownership import OWNERSHIP_REGISTRY, OwnershipSpec, TargetColumn
 from vitals.services.portability import graph
+from vitals.services.portability.schema import PORTABILITY_SCHEMA_DIGEST
 
 
 async def _subject(session, slug: str) -> HealthSubject:
@@ -226,6 +227,16 @@ async def test_graph_is_subject_scoped_opaque_connected_and_deterministic(db_ses
     first = await graph.build_subject_graph(db_session, subject_id=mine.id)
     second = await graph.build_subject_graph(db_session, subject_id=mine.id)
     assert first == second
+    assert set(first.manifest) == {
+        "format",
+        "version",
+        "schema_digest",
+        "tables",
+        "connections",
+        "resources",
+        "totals",
+    }
+    assert first.manifest["schema_digest"] == PORTABILITY_SCHEMA_DIGEST
     json_text = json.dumps(first.manifest, sort_keys=True)
 
     table_names = {item["name"] for item in first.manifest["tables"]}
