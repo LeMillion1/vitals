@@ -27,6 +27,7 @@ everybody provisioned after them.
 from __future__ import annotations
 
 import uuid
+import unicodedata
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -39,6 +40,7 @@ from vitals.services.identity_bootstrap import validate_timezone
 from vitals.services.identity_service import (
     IdentityValidationError,
     acquire_identity_governance_lock,
+    normalize_email,
     normalize_username,
 )
 from vitals.utils.timeutils import DEFAULT_TIMEZONE
@@ -92,6 +94,25 @@ _PROVISIONABLE_ROLES = frozenset(
 )
 
 
+def _display_name(raw: str | None, *, fallback: str) -> str:
+    """Normalize the bounded label shown for a newly created record."""
+
+    if raw is None:
+        return fallback
+    if not isinstance(raw, str):
+        raise AccountProvisioningValidationError("display name must be a string")
+    value = unicodedata.normalize("NFKC", raw).strip()
+    if not value:
+        return fallback
+    if any(unicodedata.category(char).startswith("C") for char in value):
+        raise AccountProvisioningValidationError(
+            "display name must not contain control characters"
+        )
+    if len(value) > 160:
+        raise AccountProvisioningValidationError("display name is too long")
+    return value
+
+
 async def provision_account(
     session: AsyncSession,
     *,
@@ -137,6 +158,18 @@ async def provision_account(
     except ValueError as exc:
         raise AccountProvisioningValidationError(str(exc)) from exc
 
+    if email is None or (isinstance(email, str) and not email.strip()):
+        normalized_email = None
+    else:
+        try:
+            normalized_email = normalize_email(email)
+        except IdentityValidationError as exc:
+            raise AccountProvisioningValidationError(str(exc)) from exc
+    subject_display_name = _display_name(
+        display_name,
+        fallback=normalized.display,
+    )
+
     # Serialized against the legacy bootstrap and against a concurrent
     # provisioning of the same name: the unique index would catch the second
     # one, but as an integrity error at flush rather than as this answer.
@@ -146,13 +179,23 @@ async def provision_account(
     )
     if taken is not None:
         raise AccountAlreadyExists(f"an account named {normalized.display!r} exists")
+    if normalized_email is not None:
+        email_taken = await session.scalar(
+            select(User.id).where(
+                User.normalized_email == normalized_email.lookup_key
+            )
+        )
+        if email_taken is not None:
+            # The operator gets a domain answer without echoing an address that
+            # may belong to somebody else.  Federated admission converts this
+            # to its uniform outward refusal.
+            raise AccountAlreadyExists("an account already uses that email address")
 
-    normalized_email = (email or "").strip().casefold() or None
     user = User(
         username=normalized.display,
         normalized_username=normalized.lookup_key,
-        email=(email or "").strip() or None,
-        normalized_email=normalized_email,
+        email=normalized_email.display if normalized_email else None,
+        normalized_email=normalized_email.lookup_key if normalized_email else None,
         password_hash=password_hash or LOCKED_PASSWORD_HASH,
         status=UserStatus.ACTIVE.value,
         session_version=1,
@@ -168,7 +211,7 @@ async def provision_account(
     if with_health_record:
         subject = HealthSubject(
             owner_user_id=user.id,
-            display_name=(display_name or "").strip() or normalized.display,
+            display_name=subject_display_name,
             timezone=subject_timezone,
         )
         session.add(subject)

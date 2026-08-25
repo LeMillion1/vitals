@@ -12,13 +12,15 @@ opened by accident.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from vitals.enums import UserRoleName
+from vitals.enums import AuditOutcome, UserRoleName
 from vitals.models.identity import (
+    AuditEvent,
     HealthSubject,
     User,
     UserFederatedIdentity,
@@ -84,6 +86,18 @@ async def test_a_provisioned_subject_is_not_one_row(db_session, legacy_owner_roo
         )
     )
     assert modules is not None
+
+
+async def test_compatibility_whitespace_display_name_uses_username_fallback(
+    db_session, legacy_owner_roots
+):
+    provisioned = await account_provisioning_service.provision_account(
+        db_session,
+        username="fallback-display",
+        display_name="\u3000\u3000",
+    )
+    subject = await db_session.get(HealthSubject, provisioned.subject_id)
+    assert subject.display_name == "fallback-display"
 
 
 async def test_a_new_subject_never_claims_the_environments_provider_accounts(
@@ -178,6 +192,76 @@ async def test_an_unknown_timezone_is_refused_before_it_is_stored(
         await account_provisioning_service.provision_account(
             db_session, username="traveller", timezone="Mars/Olympus_Mons"
         )
+
+
+async def test_provisioning_normalizes_email_and_record_display_name(
+    db_session, legacy_owner_roots
+):
+    provisioned = await account_provisioning_service.provision_account(
+        db_session,
+        username="normalized-member",
+        email="  Person@Example.TEST  ",
+        display_name="  Ｎｅｗ Ｐａｔｉｅｎｔ  ",
+    )
+    await db_session.flush()
+
+    user = await db_session.get(User, provisioned.user_id)
+    subject = await db_session.get(HealthSubject, provisioned.subject_id)
+    assert user.email == "Person@Example.TEST"
+    assert user.normalized_email == "person@example.test"
+    assert subject.display_name == "New Patient"
+
+
+@pytest.mark.parametrize(
+    ("email", "display_name"),
+    [
+        ("not-an-address", "Patient"),
+        ("person@example.test", "Patient\x00hidden"),
+        ("person@example.test", "x" * 161),
+    ],
+)
+async def test_invalid_account_labels_are_refused_before_identity_rows(
+    db_session, legacy_owner_roots, email, display_name
+):
+    with pytest.raises(
+        account_provisioning_service.AccountProvisioningValidationError
+    ):
+        await account_provisioning_service.provision_account(
+            db_session,
+            username="invalid-label-member",
+            email=email,
+            display_name=display_name,
+        )
+
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(User.normalized_username == "invalid-label-member")
+    ) == 0
+
+
+async def test_normalized_email_collision_is_a_domain_refusal_without_partial_rows(
+    db_session, legacy_owner_roots
+):
+    await account_provisioning_service.provision_account(
+        db_session,
+        username="first-email-owner",
+        email="Person@Example.test",
+    )
+    await db_session.commit()
+
+    with pytest.raises(account_provisioning_service.AccountAlreadyExists) as caught:
+        await account_provisioning_service.provision_account(
+            db_session,
+            username="second-email-owner",
+            email="  person@example.TEST ",
+        )
+    assert "Person@Example.test" not in str(caught.value)
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(User.normalized_username == "second-email-owner")
+    ) == 0
 
 
 # ── The decision ─────────────────────────────────────────────────────────────
@@ -302,6 +386,67 @@ async def test_changing_the_mode_takes_governance_before_the_setting_row_lock(
     assert observed.index("governance") < observed.index("setting-row")
 
 
+async def test_setting_registration_mode_writes_a_redacted_operational_audit(
+    db_session
+):
+    await registration_service.set_stored_mode(
+        db_session, registration_service.RegistrationMode.ADMIN_APPROVED
+    )
+    await db_session.flush()
+
+    recorded = await db_session.scalar(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "registration.mode.changed"
+        )
+    )
+    assert recorded is not None
+    assert recorded.actor_user_id is None
+    assert recorded.subject_id is None
+    assert recorded.outcome == AuditOutcome.SUCCESS.value
+    assert recorded.resource_type == "platform_setting"
+    assert recorded.resource_id == registration_service.REGISTRATION_MODE_KEY
+    assert recorded.metadata_json == {
+        "source_surface": "operator_cli",
+        "result_code": "disabled_to_admin_approved",
+        "resource_type": "platform_setting",
+        "resource_id": registration_service.REGISTRATION_MODE_KEY,
+        "changed_fields": ["mode"],
+    }
+
+    await registration_service.set_stored_mode(
+        db_session, registration_service.RegistrationMode.ADMIN_APPROVED
+    )
+    await db_session.flush()
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(AuditEvent)
+        .where(AuditEvent.event_type == "registration.mode.changed")
+    ) == 1
+
+
+async def test_noncanonical_but_equivalent_mode_does_not_claim_a_transition(
+    db_session
+):
+    from vitals.models.scoped_settings import PlatformSetting
+
+    db_session.add(
+        PlatformSetting(
+            key=registration_service.REGISTRATION_MODE_KEY,
+            value=" OPEN ",
+        )
+    )
+    await db_session.flush()
+
+    await registration_service.set_stored_mode(
+        db_session, registration_service.RegistrationMode.OPEN
+    )
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(AuditEvent)
+        .where(AuditEvent.event_type == "registration.mode.changed")
+    ) == 0
+
+
 # ── The two, together ────────────────────────────────────────────────────────
 
 
@@ -367,6 +512,71 @@ async def test_an_open_installation_provisions_and_links_in_one_go(
         select(HealthSubject.id).where(HealthSubject.owner_user_id == user.id)
     )
     assert subject_id is not None
+    audit = await db_session.scalar(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "registration.account.provisioned"
+        )
+    )
+    assert audit is not None
+    assert audit.actor_user_id is None
+    assert audit.subject_id == subject_id
+    assert audit.resource_id == str(user.id)
+    assert audit.metadata_json == {
+        "source_surface": "authentication.federation",
+        "result_code": "open_registration_admitted",
+        "resource_type": "user",
+        "resource_id": str(user.id),
+        "changed_fields": ["federated_identity", "roles", "subject"],
+    }
+    envelope = json.dumps(audit.metadata_json, sort_keys=True)
+    assert "newcomer@example.test" not in envelope
+    assert "opaque-newcomer" not in envelope
+    assert "newcomer" not in envelope
+
+    again = await federated_login_service.resolve_federated_user(
+        db_session,
+        issuer="https://idp.example.test",
+        subject="opaque-newcomer",
+        email="newcomer@example.test",
+        preferred_username="renamed-claim-is-not-an-identity-key",
+    )
+    assert again.id == user.id
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(AuditEvent)
+        .where(AuditEvent.event_type == "registration.account.provisioned")
+    ) == 1
+
+
+async def test_invalid_oidc_naming_claim_is_a_uniform_refusal_without_an_account(
+    db_session, legacy_owner_roots, monkeypatch
+):
+    from vitals.services.authentication import federation
+
+    monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
+    await registration_service.set_stored_mode(
+        db_session, registration_service.RegistrationMode.OPEN
+    )
+    await db_session.commit()
+
+    with pytest.raises(federation.UnknownFederatedIdentity):
+        await federation.resolve_federated_user(
+            db_session,
+            issuer="https://idp.example.test",
+            subject="hostile-naming-claim",
+            preferred_username="hostile\x00name",
+        )
+
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(UserFederatedIdentity)
+        .where(UserFederatedIdentity.subject == "hostile-naming-claim")
+    ) == 0
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(AuditEvent)
+        .where(AuditEvent.event_type == "registration.account.provisioned")
+    ) == 0
 
 
 async def test_an_open_installation_still_refuses_a_name_somebody_holds(
@@ -588,6 +798,12 @@ async def test_postgres_duplicate_unknown_oidc_callbacks_share_one_account_graph
                 )
             )
         )
+        admission_audits = await verify.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.event_type == "registration.account.provisioned")
+        )
 
     assert len(accounts) == len(links) == len(subjects) == 1
     assert links[0].user_id == accounts[0].id == subjects[0].owner_user_id
+    assert admission_audits == 1

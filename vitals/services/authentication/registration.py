@@ -40,6 +40,8 @@ from enum import StrEnum
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vitals.enums import AuditOutcome
+from vitals.models.identity import AuditEvent
 from vitals.models.scoped_settings import PlatformSetting
 from vitals.services.identity_service import acquire_identity_governance_lock
 
@@ -110,8 +112,13 @@ async def get_stored_mode(session: AsyncSession) -> RegistrationMode:
                 PlatformSetting.key == REGISTRATION_MODE_KEY
             )
         )
-    if raw is None:
-        return RegistrationMode.DISABLED
+    resolved = _stored_mode(raw)
+    return resolved or RegistrationMode.DISABLED
+
+
+def _stored_mode(raw: object) -> RegistrationMode | None:
+    """Decode stored policy while preserving whether it was malformed."""
+
     if isinstance(raw, dict):
         raw = raw.get("mode")
     try:
@@ -119,7 +126,7 @@ async def get_stored_mode(session: AsyncSession) -> RegistrationMode:
     except RegistrationValidationError:
         # A stored value this build does not understand is not permission to
         # guess. It reads as closed, which is the only safe reading.
-        return RegistrationMode.DISABLED
+        return None
 
 
 async def effective_mode(session: AsyncSession) -> RegistrationMode:
@@ -153,12 +160,39 @@ async def set_stored_mode(
         .where(PlatformSetting.key == REGISTRATION_MODE_KEY)
         .with_for_update()
     )
+    previous = (
+        _stored_mode(row.value) if row is not None else RegistrationMode.DISABLED
+    )
+    if previous is resolved:
+        # Reading the default disabled mode does not require materializing a
+        # setting row, and repeating or merely canonicalizing a command is not
+        # an effective policy transition.
+        return resolved
     if row is None:
         session.add(
             PlatformSetting(key=REGISTRATION_MODE_KEY, value={"mode": resolved.value})
         )
     else:
         row.value = {"mode": resolved.value}
+    session.add(
+        AuditEvent(
+            actor_user_id=None,
+            subject_id=None,
+            event_type="registration.mode.changed",
+            outcome=AuditOutcome.SUCCESS.value,
+            resource_type="platform_setting",
+            resource_id=REGISTRATION_MODE_KEY,
+            metadata_json={
+                "source_surface": "operator_cli",
+                "result_code": (
+                    f"{previous.value if previous else 'invalid'}_to_{resolved.value}"
+                ),
+                "resource_type": "platform_setting",
+                "resource_id": REGISTRATION_MODE_KEY,
+                "changed_fields": ["mode"],
+            },
+        )
+    )
     await session.flush()
     return resolved
 

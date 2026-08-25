@@ -34,8 +34,8 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import UserStatus
-from vitals.models.identity import User, UserFederatedIdentity
+from vitals.enums import AuditOutcome, UserStatus
+from vitals.models.identity import AuditEvent, User, UserFederatedIdentity
 from vitals.services.identity_service import (
     IdentityValidationError,
     acquire_identity_governance_lock,
@@ -326,11 +326,10 @@ async def _provision_if_registration_is_open(
             # remain a uniform login refusal.
             email=None,
         )
-    except provisioning.AccountAlreadyExists as exc:
-        # Somebody already holds this name and it is not this identity — the
-        # link lookup above would have found them otherwise. Refusing is right:
-        # picking ``candidate-2`` would hand a stranger an account whose name
-        # implies a relationship to an existing one.
+    except provisioning.AccountProvisioningError as exc:
+        # Invalid or colliding provider naming data is one uniform refusal.
+        # Picking a suffix would imply a relationship to an existing account;
+        # matching an existing email would turn a mutable claim into identity.
         raise UnknownFederatedIdentity(
             "this provider identity has no account on this installation"
         ) from exc
@@ -350,6 +349,23 @@ async def _provision_if_registration_is_open(
         email_verified=email_verified,
     )
     user.last_login_at = datetime.now(timezone.utc)
+    session.add(
+        AuditEvent(
+            actor_user_id=None,
+            subject_id=provisioned.subject_id,
+            event_type="registration.account.provisioned",
+            outcome=AuditOutcome.SUCCESS.value,
+            resource_type="user",
+            resource_id=str(user.id),
+            metadata_json={
+                "source_surface": "authentication.federation",
+                "result_code": "open_registration_admitted",
+                "resource_type": "user",
+                "resource_id": str(user.id),
+                "changed_fields": ["federated_identity", "roles", "subject"],
+            },
+        )
+    )
     await session.flush()
     return user
 

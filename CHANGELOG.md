@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — public account admission is validated and auditable
+
+Account provisioning now applies the shared Unicode/email normalization rules
+and a bounded control-character-free record display name before any identity row
+is written. Invalid or colliding OIDC naming claims produce the same uniform
+refusal as any unknown identity and roll back the graph instead of escaping as
+an internal error. Stored mode decisions and successful open-mode admissions
+write operational audit events containing only the selected mode and opaque
+resource identifiers—never provider claims, email addresses, or display names.
+
 ### Fixed — closing registration now fences in-flight admission
 
 Changing the stored registration mode and admitting an unknown OIDC identity
