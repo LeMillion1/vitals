@@ -71,7 +71,7 @@
     {% endif %}
 </div>
 {% endmacro %}
-<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
+<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6" x-data="protocolForm()">
 
     {% call masthead_header('consents', t('support.patient_heading'), []) %}{% endcall %}
     <p class="v-text-body max-w-2xl" style="color: var(--muted)">
@@ -176,7 +176,7 @@
                 <form action="/settings/access/repairs/{{ action.action_id }}/decline" method="POST"><button type="submit" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.decline") }}</button></form>
             </div>
             {% elif action.status == 'executed' %}
-            <form action="/settings/access/repairs/{{ action.action_id }}/revert" method="POST" class="flex justify-end"><button type="submit" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.repair_revert") }}</button></form>
+            <form action="/settings/access/repairs/{{ action.action_id }}/revert" method="POST" hx-boost="false" @submit.prevent="submitForm($event)" class="flex justify-end"><button type="submit" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.repair_revert") }}</button></form>
             {% endif %}
         </div>
         {% endfor %}
@@ -231,6 +231,7 @@
         <p class="v-text-micro" style="color: var(--faint)">{{ t("support.history_more") }}</p>
         {% endif %}
     </div>
+    {% include "partials/conflict_modal.html" %}
 
 </div>
 {% endblock %}

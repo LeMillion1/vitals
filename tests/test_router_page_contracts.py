@@ -20,6 +20,13 @@ TEMPLATES = ROOT / "web/templates"
 
 CONFLICT_MODAL = '{% include "partials/conflict_modal.html" %}'
 _TEMPLATE_REF = re.compile(r'"([\w/]+\.html)"')
+# This router owns three GET pages, but only its repair workspace and patient
+# access history can submit the two operations that catch ``ConflictBlocked``.
+# The console only asks for/revokes grants or links to those pages, so requiring
+# an inert modal there would conceal a route-level false positive.
+CONFLICT_MODAL_EXEMPTIONS = {
+    ("support_access.py", "settings/support_console.html"),
+}
 
 
 def _pages_that_can_409() -> dict[str, list[str]]:
@@ -47,9 +54,37 @@ def test_every_conflict_aware_page_renders_the_override_modal():
         f"{router} → {name}"
         for router, names in pages.items()
         for name in names
+        if (router, name) not in CONFLICT_MODAL_EXEMPTIONS
         if CONFLICT_MODAL not in (TEMPLATES / name).read_text(encoding="utf-8")
     ]
     assert not missing, f"409 with no violations modal: {missing}"
+
+
+def test_support_repair_conflict_pages_use_the_shared_override_controller():
+    workspace = (TEMPLATES / "settings/support_repair.html").read_text(
+        encoding="utf-8"
+    )
+    history = (TEMPLATES / "settings/access_history.html").read_text(
+        encoding="utf-8"
+    )
+    console = (TEMPLATES / "settings/support_console.html").read_text(
+        encoding="utf-8"
+    )
+
+    for page, action_fragment in (
+        (workspace, "/execute\""),
+        (history, "/revert\""),
+    ):
+        assert 'x-data="protocolForm()"' in page
+        assert CONFLICT_MODAL in page
+        action_index = page.index(action_fragment)
+        form = page[page.rfind("<form", 0, action_index) :]
+        form = form[: form.index("</form>")]
+        assert '@submit.prevent="submitForm($event)"' in form
+        assert 'hx-boost="false"' in form
+
+    assert 'x-data="protocolForm()"' not in console
+    assert CONFLICT_MODAL not in console
 
 
 def test_every_delete_route_has_a_button_somewhere():

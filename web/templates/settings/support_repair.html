@@ -3,7 +3,7 @@
 {% block content %}
 <div hx-history="false"></div>
 {% from "partials/masthead.html" import masthead_header, card_header with context %}
-<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
+<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6" x-data="protocolForm()">
     {% call masthead_header('settings', t('support.repair_workspace_heading'), []) %}{% endcall %}
     <p class="v-text-body max-w-2xl" style="color: var(--muted)">{{ t("support.repair_workspace_hint") }}</p>
     {% if saved %}<div class="v-alert info">{{ t("support.repair_saved_" ~ saved) }}</div>{% endif %}
@@ -49,7 +49,7 @@
                 {{ action.before_lbm_kg | format_number if action.before_lbm_kg is not none else '—' }} {{ t("common.kg") }} → — / —
             </p>
             {% if action.status == 'approved' %}
-            <form action="/settings/platform/support/{{ context.subject_id }}/grant/{{ context.support_grant.grant_id }}/repair/{{ action.action_id }}/execute" method="POST" class="flex justify-end">
+            <form action="/settings/platform/support/{{ context.subject_id }}/grant/{{ context.support_grant.grant_id }}/repair/{{ action.action_id }}/execute" method="POST" hx-boost="false" @submit.prevent="submitForm($event)" class="flex justify-end">
                 <button type="submit" class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.repair_execute") }}</button>
             </form>
             {% endif %}
@@ -58,5 +58,6 @@
         <p class="v-text-body" style="color: var(--muted)">{{ t("support.repair_actions_empty") }}</p>
         {% endfor %}
     </div>
+    {% include "partials/conflict_modal.html" %}
 </div>
 {% endblock %}

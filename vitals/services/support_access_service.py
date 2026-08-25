@@ -1526,8 +1526,14 @@ async def execute_repair(
     *,
     context: AccessContext,
     action_id: uuid.UUID,
+    override: bool = False,
 ) -> SupportRepairAction:
-    """Execute once, or durably close the approved proposal as stale."""
+    """Execute once, or durably close the approved proposal as stale.
+
+    ``override`` applies only after the live, exact repair grant and the
+    patient's approval of this fixed action have both been revalidated.  It is
+    the shared conflict-engine override, not a way to broaden a support grant.
+    """
 
     grant, now = await _lock_live_repair_grant(session, context=context)
     action = await session.scalar(
@@ -1601,7 +1607,7 @@ async def execute_repair(
         prepared=prepared,
         domain=Domain.WEIGHT,
         proposed_state={"measurement": True},
-        override=False,
+        override=override,
         entity_ref=f"body_measurement:{target.date.isoformat()}",
     )
     target.body_fat_pct = None
@@ -1628,6 +1634,7 @@ async def revert_repair(
     *,
     owner_user_id: uuid.UUID,
     action_id: uuid.UUID,
+    override: bool = False,
 ) -> SupportRepairAction:
     """Owner-safe inverse, allowed after the support grant itself has closed."""
 
@@ -1684,7 +1691,7 @@ async def revert_repair(
         prepared=prepared,
         domain=Domain.WEIGHT,
         proposed_state={"measurement": True},
-        override=False,
+        override=override,
         entity_ref=f"body_measurement:{target.date.isoformat()}",
     )
     target.body_fat_pct = action.before_body_fat_pct

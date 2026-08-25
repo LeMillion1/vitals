@@ -369,6 +369,7 @@ async def execute_repair(
     subject_selector: str,
     grant_selector: str,
     action_id: uuid.UUID,
+    override: bool = Form(False),
     _username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
@@ -383,7 +384,12 @@ async def execute_repair(
             subject_selector=subject_selector,
             grant_selector=grant_selector,
         )
-        action = await support.execute_repair(db, context=context, action_id=action_id)
+        action = await support.execute_repair(
+            db,
+            context=context,
+            action_id=action_id,
+            override=override,
+        )
         await db.commit()
     except ConflictBlocked as exc:
         await db.rollback()
@@ -635,12 +641,18 @@ async def decline_repair(
 async def revert_repair(
     request: Request,
     action_id: uuid.UUID,
+    override: bool = Form(False),
     _username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await support.revert_repair(db, owner_user_id=user_id, action_id=action_id)
+        await support.revert_repair(
+            db,
+            owner_user_id=user_id,
+            action_id=action_id,
+            override=override,
+        )
         await db.commit()
     except ConflictBlocked as exc:
         await db.rollback()

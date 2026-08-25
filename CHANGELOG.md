@@ -76,6 +76,11 @@ afterwards if the target has not changed. Audit events contain only opaque IDs,
 fixed outcome codes and the two changed field names; medical values remain in a
 FORCE-RLS subject-control row. No repair path performs network I/O.
 
+The repair workspace and patient access history now use the shared conflict
+warning flow when executing or reverting that reviewed action. A safety
+override repeats only the same exact operation, after its approval and authority
+checks, and retains the conflict alert's human attribution.
+
 ### Fixed — private health files excluded from Docker image layers
 
 The Docker build context now excludes legacy medical uploads, Garmin sessions,

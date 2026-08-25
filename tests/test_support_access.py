@@ -16,7 +16,7 @@ from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from vitals.access import (
     AccessRequest,
@@ -26,6 +26,8 @@ from vitals.access import (
 )
 from vitals.enums import (
     Domain,
+    RuleType,
+    Severity,
     Source,
     SupportAccessMode,
     SupportAccessRequestStatus,
@@ -41,8 +43,10 @@ from vitals.models.identity import (
     User,
     UserRole,
 )
+from vitals.models.conflict_rule import ConflictRule
+from vitals.models.system_alert import SystemAlert
 from vitals.models.weight import BodyMeasurement
-from vitals.services import support_access_service as support
+from vitals.services import conflict_engine, support_access_service as support
 from vitals.services.access_resolution import resolve_access_context
 
 
@@ -507,6 +511,65 @@ async def test_repair_review_and_execution_fail_closed_after_grant_expiry(db_ses
     await db_session.rollback()
     await db_session.refresh(measurement)
     assert (measurement.body_fat_pct, measurement.lbm_kg) == (17.5, 66.0)
+
+
+async def test_repair_override_cannot_bypass_review_or_platform_role(db_session):
+    owner, _subject, admin, measurement, _grant, context = (
+        await _approved_repair_grant(db_session, slug="sup-repair-override-scope")
+    )
+    proposal = await support.propose_clear_derived_estimates(
+        db_session,
+        context=context,
+        measurement_id=measurement.id,
+        idempotency_key=uuid.uuid4(),
+    )
+    proposal_id = proposal.id
+    owner_id = owner.id
+    admin_id = admin.id
+    await db_session.commit()
+
+    # The conflict override is not approval of the repair itself.
+    with pytest.raises(support.RepairStateError):
+        await support.execute_repair(
+            db_session,
+            context=context,
+            action_id=proposal_id,
+            override=True,
+        )
+    await db_session.rollback()
+
+    await support.review_repair(
+        db_session,
+        owner_user_id=owner_id,
+        action_id=proposal_id,
+        approve=True,
+    )
+    await db_session.commit()
+    await db_session.execute(
+        delete(UserRole).where(
+            UserRole.user_id == admin_id,
+            UserRole.role == UserRoleName.PLATFORM_SUPERADMIN.value,
+        )
+    )
+    await db_session.commit()
+
+    # Nor can an override preserve support authority after the operator loses
+    # the platform role that underpins the exact repair grant.
+    with pytest.raises(support.NotAPlatformAdmin):
+        await support.execute_repair(
+            db_session,
+            context=context,
+            action_id=proposal_id,
+            override=True,
+        )
+    await db_session.rollback()
+    await db_session.refresh(measurement)
+    assert (measurement.body_fat_pct, measurement.lbm_kg) == (17.5, 66.0)
+    assert await db_session.scalar(
+        select(AuditEvent).where(
+            AuditEvent.event_type == support.EVENT_REPAIR_EXECUTED
+        )
+    ) is None
 
 
 async def test_export_is_a_separate_exact_one_shot_grant(db_session, monkeypatch):
@@ -2576,41 +2639,170 @@ async def test_exact_repair_http_surfaces_complete_the_reviewed_flow(
         measurement_id=measurement.id,
         idempotency_key=uuid.uuid4(),
     )
+    execute_rule = ConflictRule(
+        subject_id=legacy_owner_roots.subject_id,
+        rule_type=RuleType.HARD_BLOCK.value,
+        domain_a=Domain.WEIGHT.value,
+        condition_a={"measurement": True},
+        domain_b=Domain.LABS.value,
+        condition_b={"present": True},
+        severity=Severity.BLOCK.value,
+        message="Synthetic support execute conflict",
+        active=True,
+    )
+    db_session.add(execute_rule)
     await db_session.commit()
+    action_id = action.id
+    admin_id = admin.id
+    admin_username = admin.username
+    grant_id = grant.id
+    execute_rule_id = execute_rule.id
+
+    async def current_weight(_session, *, scope):
+        assert scope.subject_id == legacy_owner_roots.subject_id
+        return []
+
+    async def current_labs(_session, *, scope):
+        assert scope.subject_id == legacy_owner_roots.subject_id
+        return [{"present": True}]
+
+    conflict_engine.register_domain_resolver(Domain.WEIGHT.value, current_weight)
+    conflict_engine.register_domain_resolver(Domain.LABS.value, current_labs)
 
     workspace_url = (
         f"/settings/platform/support/{legacy_owner_roots.subject_id}"
-        f"/grant/{grant.id}/repair"
+        f"/grant/{grant_id}/repair"
     )
-    _sign_in(client, admin.username)
+    _sign_in(client, admin_username)
     workspace = await client.get(workspace_url, headers={"Accept": "text/html"})
     assert workspace.status_code == 200
-    assert f"/repair/{action.id}/execute" not in workspace.text
+    assert f"/repair/{action_id}/execute" not in workspace.text
+    assert 'x-data="protocolForm()"' in workspace.text
+    assert '{% include "partials/conflict_modal.html" %}' not in workspace.text
+    assert 'x-show="showConfirm"' in workspace.text
 
     _sign_in(client, "tester")
     patient_page = await client.get(
         "/settings/access", headers={"Accept": "text/html"}
     )
     assert patient_page.status_code == 200
-    assert f"/repairs/{action.id}/approve" in patient_page.text
+    assert f"/repairs/{action_id}/approve" in patient_page.text
+    assert 'x-data="protocolForm()"' in patient_page.text
+    assert 'x-show="showConfirm"' in patient_page.text
     approved = await client.post(
-        f"/settings/access/repairs/{action.id}/approve", follow_redirects=False
+        f"/settings/access/repairs/{action_id}/approve", follow_redirects=False
     )
     assert approved.status_code == 303
 
-    _sign_in(client, admin.username)
+    _sign_in(client, admin_username)
+    workspace = await client.get(workspace_url, headers={"Accept": "text/html"})
+    assert workspace.status_code == 200
+    execute_fragment = f'/repair/{action_id}/execute"'
+    assert execute_fragment in workspace.text
+    execute_index = workspace.text.index(execute_fragment)
+    execute_form = workspace.text[workspace.text.rfind("<form", 0, execute_index) :]
+    execute_form = execute_form[: execute_form.index("</form>")]
+    assert '@submit.prevent="submitForm($event)"' in execute_form
+    assert 'hx-boost="false"' in execute_form
+
+    blocked = await client.post(
+        f"{workspace_url}/{action_id}/execute", follow_redirects=False
+    )
+    assert blocked.status_code == 409
+    assert [row["message"] for row in blocked.json()["violations"]] == [
+        "Synthetic support execute conflict"
+    ]
+    await db_session.refresh(measurement)
+    assert (measurement.body_fat_pct, measurement.lbm_kg) == (17.5, 66.0)
+
     executed = await client.post(
-        f"{workspace_url}/{action.id}/execute", follow_redirects=False
+        f"{workspace_url}/{action_id}/execute",
+        data={"override": "true"},
+        follow_redirects=False,
     )
     assert executed.status_code == 303
     await db_session.refresh(measurement)
     assert (measurement.body_fat_pct, measurement.lbm_kg) == (None, None)
+    execute_alert = await db_session.scalar(
+        select(SystemAlert).where(
+            SystemAlert.alert_key == f"conflict:{execute_rule_id}"
+        )
+    )
+    assert execute_alert is not None
+    assert execute_alert.override_at is not None
+    assert execute_alert.overridden_by_user_id == admin_id
+
+    persisted_execute_rule = await db_session.get(ConflictRule, execute_rule_id)
+    assert persisted_execute_rule is not None
+    persisted_execute_rule.active = False
+    revert_rule = ConflictRule(
+        subject_id=legacy_owner_roots.subject_id,
+        rule_type=RuleType.HARD_BLOCK.value,
+        domain_a=Domain.WEIGHT.value,
+        condition_a={"measurement": True},
+        domain_b=Domain.LABS.value,
+        condition_b={"present": True},
+        severity=Severity.BLOCK.value,
+        message="Synthetic owner revert conflict",
+        active=True,
+    )
+    db_session.add(revert_rule)
+    await db_session.commit()
+    revert_rule_id = revert_rule.id
 
     _sign_in(client, "tester")
     patient_page = await client.get(
         "/settings/access", headers={"Accept": "text/html"}
     )
-    assert f"/repairs/{action.id}/revert" in patient_page.text
+    revert_fragment = f'/repairs/{action_id}/revert"'
+    assert revert_fragment in patient_page.text
+    revert_index = patient_page.text.index(revert_fragment)
+    revert_form = patient_page.text[patient_page.text.rfind("<form", 0, revert_index) :]
+    revert_form = revert_form[: revert_form.index("</form>")]
+    assert '@submit.prevent="submitForm($event)"' in revert_form
+    assert 'hx-boost="false"' in revert_form
+
+    blocked = await client.post(
+        f"/settings/access/repairs/{action_id}/revert", follow_redirects=False
+    )
+    assert blocked.status_code == 409
+    assert [row["message"] for row in blocked.json()["violations"]] == [
+        "Synthetic owner revert conflict"
+    ]
+    await db_session.refresh(measurement)
+    assert (measurement.body_fat_pct, measurement.lbm_kg) == (None, None)
+
+    reverted = await client.post(
+        f"/settings/access/repairs/{action_id}/revert",
+        data={"override": "true"},
+        follow_redirects=False,
+    )
+    assert reverted.status_code == 303
+    await db_session.refresh(measurement)
+    assert (measurement.body_fat_pct, measurement.lbm_kg) == (17.5, 66.0)
+    revert_alert = await db_session.scalar(
+        select(SystemAlert).where(
+            SystemAlert.alert_key == f"conflict:{revert_rule_id}"
+        )
+    )
+    assert revert_alert is not None
+    assert revert_alert.override_at is not None
+    assert revert_alert.overridden_by_user_id == legacy_owner_roots.user_id
+
+    repair_events = list(
+        await db_session.scalars(
+            select(AuditEvent).where(
+                AuditEvent.event_type.in_(
+                    (support.EVENT_REPAIR_EXECUTED, support.EVENT_REPAIR_REVERTED)
+                )
+            )
+        )
+    )
+    assert {event.event_type for event in repair_events} == {
+        support.EVENT_REPAIR_EXECUTED,
+        support.EVENT_REPAIR_REVERTED,
+    }
+    assert all(event.support_access_grant_id == grant_id for event in repair_events)
 
 
 async def test_support_repair_invalid_selectors_never_reach_the_workspace(
