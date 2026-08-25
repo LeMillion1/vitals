@@ -153,6 +153,82 @@ async def test_a_linked_identity_resolves_to_its_user(db_session):
     assert stored == when
 
 
+async def test_a_verified_provider_email_becomes_the_current_invitation_proof(
+    db_session,
+):
+    """The provider verifies it; Vitals never uses it to find the account."""
+
+    owner = await _user(db_session, "verified-mailbox")
+    db_session.add(
+        UserFederatedIdentity(
+            user_id=owner.id, issuer=ISSUER, subject=OWNER_SUBJECT
+        )
+    )
+    await db_session.flush()
+
+    resolved = await resolve_federated_user(
+        db_session,
+        issuer=ISSUER,
+        subject=OWNER_SUBJECT,
+        email="  Doctor@Example.TEST ",
+        email_verified=True,
+    )
+
+    assert resolved.email == "Doctor@Example.TEST"
+    assert resolved.normalized_email == "doctor@example.test"
+    assert resolved.email_verified_at is not None
+
+
+async def test_a_later_unverified_claim_revokes_the_mailbox_proof(db_session):
+    owner = await _user(db_session, "revoked-mailbox")
+    owner.email = "doctor@example.test"
+    owner.normalized_email = "doctor@example.test"
+    owner.email_verified_at = datetime(2026, 8, 23, tzinfo=timezone.utc)
+    db_session.add(
+        UserFederatedIdentity(
+            user_id=owner.id, issuer=ISSUER, subject=OWNER_SUBJECT
+        )
+    )
+    await db_session.flush()
+
+    resolved = await resolve_federated_user(
+        db_session,
+        issuer=ISSUER,
+        subject=OWNER_SUBJECT,
+        email="doctor@example.test",
+        email_verified=False,
+    )
+
+    assert resolved.email == "doctor@example.test"
+    assert resolved.email_verified_at is None
+
+
+async def test_a_verified_email_collision_never_merges_accounts(db_session):
+    first = await _user(db_session, "mailbox-owner")
+    first.email = "shared@example.test"
+    first.normalized_email = "shared@example.test"
+    first.email_verified_at = datetime(2026, 8, 23, tzinfo=timezone.utc)
+    second = await _user(db_session, "linked-elsewhere")
+    db_session.add(
+        UserFederatedIdentity(
+            user_id=second.id, issuer=ISSUER, subject=OWNER_SUBJECT
+        )
+    )
+    await db_session.flush()
+
+    with pytest.raises(FederatedLoginError):
+        await resolve_federated_user(
+            db_session,
+            issuer=ISSUER,
+            subject=OWNER_SUBJECT,
+            email="SHARED@example.test",
+            email_verified=True,
+        )
+
+    assert second.email is None
+    assert second.email_verified_at is None
+
+
 async def test_a_suspended_account_cannot_log_in_through_the_provider(db_session):
     """Suspension is Vitals' decision and the provider does not know about it."""
 

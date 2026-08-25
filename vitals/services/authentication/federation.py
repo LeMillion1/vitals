@@ -39,8 +39,10 @@ from vitals.models.identity import User, UserFederatedIdentity
 from vitals.services.identity_service import (
     IdentityValidationError,
     acquire_identity_governance_lock,
+    normalize_email,
     normalize_username,
 )
+from vitals.utils.timeutils import now_utc
 
 
 class FederatedLoginError(RuntimeError):
@@ -92,6 +94,54 @@ class IdentityAlreadyLinked(FederatedLoginError):
 
 class NoSuchAccount(FederatedLoginError):
     """There is no local account by that name to link."""
+
+
+async def _synchronize_verified_email_claim(
+    session: AsyncSession,
+    *,
+    user: User,
+    email: str | None,
+    email_verified: bool,
+) -> None:
+    """Project the provider's current verified mailbox claim onto the account.
+
+    The immutable identity remains ``(issuer, subject)``.  This projection is
+    only the proof used by address-bound workflows such as care invitations.
+    A later token that no longer vouches for an address revokes that proof, so
+    a stale database value can never stand in for the current login.
+    """
+
+    await acquire_identity_governance_lock(session)
+    if not email_verified:
+        user.email_verified_at = None
+        await session.flush()
+        return
+
+    try:
+        normalized = normalize_email(email)
+    except IdentityValidationError as exc:
+        raise FederatedLoginError(
+            "the provider marked an unusable email claim as verified"
+        ) from exc
+
+    collision = await session.scalar(
+        select(User.id).where(
+            User.normalized_email == normalized.lookup_key,
+            User.id != user.id,
+        )
+    )
+    if collision is not None:
+        # Email is not used to find or merge accounts.  A provider claim that
+        # collides with another local account is therefore a refusal, not a
+        # reason to move either identity or silently keep an old proof.
+        raise FederatedLoginError(
+            "the provider's verified email belongs to another local account"
+        )
+
+    user.email = normalized.display
+    user.normalized_email = normalized.lookup_key
+    user.email_verified_at = now_utc()
+    await session.flush()
 
 
 async def link_identity(
@@ -214,6 +264,7 @@ async def _provision_if_registration_is_open(
     issuer: str,
     subject: str,
     email: str | None,
+    email_verified: bool,
     preferred_username: str | None,
     authenticated_at: datetime | None,
 ) -> User | None:
@@ -248,7 +299,11 @@ async def _provision_if_registration_is_open(
         provisioned = await account_provisioning_service.provision_account(
             session,
             username=candidate,
-            email=email,
+            # The provider's display claim may name the account, but only a
+            # verified claim may become an address-bound local fact.  Project
+            # it below after the account exists and collision handling can
+            # remain a uniform login refusal.
+            email=None,
         )
     except account_provisioning_service.AccountAlreadyExists as exc:
         # Somebody already holds this name and it is not this identity — the
@@ -267,6 +322,12 @@ async def _provision_if_registration_is_open(
         subject=subject,
         authenticated_at=authenticated_at,
     )
+    await _synchronize_verified_email_claim(
+        session,
+        user=user,
+        email=email,
+        email_verified=email_verified,
+    )
     user.last_login_at = datetime.now(timezone.utc)
     await session.flush()
     return user
@@ -280,6 +341,7 @@ async def resolve_federated_user(
     authenticated_at: datetime | None = None,
     bootstrap_subject: str = "",
     email: str | None = None,
+    email_verified: bool = False,
     preferred_username: str | None = None,
 ) -> User:
     """The local user this provider identity is, or a refusal.
@@ -314,6 +376,12 @@ async def resolve_federated_user(
                 authenticated_at=authenticated_at,
             )
             owner.last_login_at = datetime.now(timezone.utc)
+            await _synchronize_verified_email_claim(
+                session,
+                user=owner,
+                email=email,
+                email_verified=email_verified,
+            )
             await session.flush()
             return owner
         provisioned = await _provision_if_registration_is_open(
@@ -321,6 +389,7 @@ async def resolve_federated_user(
             issuer=issuer,
             subject=subject,
             email=email,
+            email_verified=email_verified,
             preferred_username=preferred_username,
             authenticated_at=authenticated_at,
         )
@@ -342,6 +411,12 @@ async def resolve_federated_user(
     if user.status != UserStatus.ACTIVE.value:
         raise InactiveAccount("the account behind this provider identity is not active")
 
+    await _synchronize_verified_email_claim(
+        session,
+        user=user,
+        email=email,
+        email_verified=email_verified,
+    )
     link.last_authenticated_at = authenticated_at
     user.last_login_at = datetime.now(timezone.utc)
     await session.flush()

@@ -256,6 +256,68 @@ async def test_a_complete_login_binds_the_existing_owner_and_issues_a_session(
     assert claims.subject_id == legacy_owner_roots.subject_id
 
 
+async def test_callback_persists_only_the_providers_verified_email_claim(
+    client, federated, db_session, legacy_owner_roots
+):
+    """Care invitations use the current validated claim, not profile input."""
+
+    from vitals.models.identity import User
+
+    federated.pending_claims.update(
+        {"email": "Doctor@Example.TEST", "email_verified": True}
+    )
+    state, _ = await _start(client, federated)
+    response = await client.get(
+        f"/auth/callback?code=the-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    db_session.expire_all()
+    user = await db_session.get(User, legacy_owner_roots.user_id)
+    assert user.email == "Doctor@Example.TEST"
+    assert user.normalized_email == "doctor@example.test"
+    assert user.email_verified_at is not None
+
+
+async def test_a_late_claim_refusal_rolls_back_the_bootstrap_link(
+    client, federated, db_session, legacy_owner_roots
+):
+    """A handled 401 must not commit identity mutations made before refusal."""
+
+    from sqlalchemy import select
+
+    from vitals.models.identity import User, UserFederatedIdentity
+    from vitals.utils.timeutils import now_utc
+
+    conflicting = User(
+        username="mailbox-holder",
+        normalized_username="mailbox-holder",
+        email="shared@example.test",
+        normalized_email="shared@example.test",
+        email_verified_at=now_utc(),
+        password_hash="!locked",
+        status="active",
+    )
+    db_session.add(conflicting)
+    await db_session.commit()
+
+    federated.pending_claims.update(
+        {"email": "SHARED@example.test", "email_verified": True}
+    )
+    state, _ = await _start(client, federated)
+    response = await client.get(
+        f"/auth/callback?code=the-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+    assert response.status_code == 401
+
+    db_session.expire_all()
+    assert await db_session.scalar(select(UserFederatedIdentity.id)) is None
+    owner = await db_session.get(User, legacy_owner_roots.user_id)
+    assert owner.email is None
+
+
 async def test_logout_ends_both_the_local_and_provider_sessions(
     client, federated, db_session, legacy_owner_roots
 ):

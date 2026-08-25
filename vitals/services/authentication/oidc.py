@@ -498,7 +498,10 @@ def _identity_from_claims(
         acr=claims.get("acr"),
         amr=amr,
         email=email if isinstance(email, str) and email.strip() else None,
-        email_verified=bool(claims.get("email_verified")),
+        # OIDC defines this claim as a JSON boolean.  Truthiness is not the
+        # contract: the malformed string ``"false"`` is truthy in Python and
+        # would otherwise turn an unverified mailbox into an invitation proof.
+        email_verified=claims.get("email_verified") is True,
         preferred_username=(
             preferred_username
             if isinstance(preferred_username, str) and preferred_username.strip()

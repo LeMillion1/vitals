@@ -639,9 +639,15 @@ async def federated_login_callback(
             # already decided to create; ``registration_service`` is what makes
             # that decision, and by default it does not.
             email=identity.email,
+            email_verified=identity.email_verified,
             preferred_username=identity.preferred_username,
         )
     except FederatedLoginError as exc:
+        # The dependency commits a normally returned response.  Resolution may
+        # already have linked a bootstrap identity or provisioned rows before a
+        # later claim (for example a verified-email collision) refuses the
+        # login, so make the uniform refusal an equally uniform rollback.
+        await db.rollback()
         return _login_failed(request, f"no session for this identity: {exc}")
 
     # Queried rather than reached through ``user.owned_subject``: that

@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — OIDC verified email now unlocks only its exact care invitation
+
+Vitals now projects an email onto the local account only when the validated ID
+token carries the literal JSON boolean `email_verified: true`; truthy strings
+and other malformed values do not count. A later login without that proof
+revokes the local verification timestamp. Email remains display and invitation
+matching data, never an identity lookup key: a collision with another account
+refuses and rolls back the whole login instead of merging identities or leaving
+a partial bootstrap link. This closes the production gap where an IdP-verified
+doctor or trainer could sign in but could never accept an address-bound care
+invitation.
+
 ### Added — care wakeups now become private, generic browser notifications
 
 The root-scoped service worker accepts only the exact versioned care-message

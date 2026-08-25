@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -38,7 +37,11 @@ from vitals.enums import (
 )
 from vitals.models.identity import HealthSubject, User
 from vitals.models.professional import ProfessionalInvitation
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity_service import (
+    IdentityValidationError,
+    acquire_identity_governance_lock,
+    normalize_email as normalize_identity_email,
+)
 from vitals.persistence.rls import enter_platform_scope
 
 #: How long an offer stands. Long enough to survive a weekend and a spam folder,
@@ -87,12 +90,10 @@ def normalize_email(raw: object) -> str:
     that the intended person cannot accept.
     """
 
-    if not isinstance(raw, str):
-        raise InvitationValidationError("email must be a string")
-    folded = unicodedata.normalize("NFKC", raw).strip().lower()
-    if not folded or "@" not in folded or len(folded) > 320:
-        raise InvitationValidationError("email is not a usable address")
-    return folded
+    try:
+        return normalize_identity_email(raw).lookup_key
+    except IdentityValidationError as exc:
+        raise InvitationValidationError(str(exc)) from exc
 
 
 def _hash(token: str) -> str:

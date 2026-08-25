@@ -268,6 +268,15 @@ async def test_a_valid_login_yields_the_issuer_and_subject_pair(provider):
     assert identity.authenticated_at is not None
 
 
+@pytest.mark.parametrize("claim", ["false", "true", 1, 0, None])
+async def test_only_json_true_verifies_an_email_claim(provider, claim):
+    """A truthy malformed claim must never become an invitation proof."""
+
+    subject, fake = provider
+    identity = await _login(subject, fake, email_verified=claim)
+    assert identity.email_verified is False
+
+
 async def test_a_token_signed_by_another_key_is_refused(provider):
     subject, fake = provider
     fake.sign_with_other_key = True
