@@ -152,6 +152,13 @@ class RegistrationInvitation(Base):
             "status",
             "expires_at",
         ),
+        Index(
+            "ix_registration_invitations_retention_scan",
+            "created_at",
+            "id",
+            postgresql_where=text("purged_at IS NULL AND status <> 'pending'"),
+            sqlite_where=text("purged_at IS NULL AND status <> 'pending'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -330,6 +337,13 @@ class RegistrationRequest(Base):
         Index(
             "ix_registration_requests_provisioned_user",
             "provisioned_user_id",
+        ),
+        Index(
+            "ix_registration_requests_retention_scan",
+            "created_at",
+            "id",
+            postgresql_where=text("purged_at IS NULL AND status <> 'pending'"),
+            sqlite_where=text("purged_at IS NULL AND status <> 'pending'"),
         ),
     )
 

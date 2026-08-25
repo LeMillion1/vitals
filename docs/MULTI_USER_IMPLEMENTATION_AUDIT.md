@@ -41,7 +41,7 @@ the others remain useful provenance for the remediations named below:
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0073 (head)`; 73 files in `migrations/versions` | Verified |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0074 (head)`; 74 files in `migrations/versions` | Verified |
 | SQLAlchemy tables | `len(Base.metadata.tables)` → 83 | Verified |
 | Ownership registry | `len(OWNERSHIP_REGISTRY)` → 83 | Verified and exhaustive in code |
 | Subject-scoped tables | 66 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
@@ -53,7 +53,7 @@ the others remain useful provenance for the remediations named below:
 | Application services | 105 tracked non-`__init__` modules after the care, authentication, admission, analytics, persistence, and notification moves | Verified |
 | Flat service debt | 75 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
 | Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
-| Commercial Git history | 276 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
+| Commercial Git history | 277 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
 current commit. Only a command executed against the current tree is recorded as
@@ -78,8 +78,9 @@ a current validation result.
   The `invite_only` recipient now has a fragment-scrubbing browser exchange and
   fresh OIDC callback that atomically consumes the exact invitation. A protected
   operator screen shows redacted live invitations, returns a configured-origin
-  link once, and revokes links even after closure. Scheduled retention and the
-  `admin_approved` browser/operator flow are still absent; `invite_only` is the
+  link once, and revokes links even after closure. Hourly maintenance expires
+  overdue proofs and scrubs terminal applicant PII after 90 days. The
+  `admin_approved` browser/operator flow is still absent; `invite_only` is the
   only non-closed mode with a complete interactive path.
 
 ### Data isolation
@@ -461,6 +462,16 @@ roles and invitations were removed, registration returned to `disabled`, and
 the original Compose configuration was restored. Phone-width behavior remains
 covered by the mobile contracts rather than a live viewport capture in this
 run.
+
+The scheduled account-admission retention slice on revision `0074` passed 178
+focused admission, model, migration, scheduler, RLS, and alert tests (17
+PostgreSQL-only skips). The full fast suite passed 4,981 tests (183 skipped, 35
+UI deselected), and full Ruff and diff checks passed. PostgreSQL 15 completed
+the real `head → 0034 → head` cycle and all 167 selected retention, admission,
+scheduler, and RLS tests. Compose rebuilt the current application, Alembic
+reported `0074 (head)`, `/health` reported the database, Redis, and scheduler
+healthy, and container introspection confirmed the hourly platform-classified
+job with the shared 300-second lock. The slice changes no browser UI.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

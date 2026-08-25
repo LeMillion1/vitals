@@ -8,6 +8,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — account-admission retention now runs automatically
+
+The shared scheduler now expires overdue invitations and administrator-approval
+requests every hour, then scrubs terminal applicant PII and user references
+after the 90-day retention window. Each proof type receives its own bounded
+batch so a sustained invitation backlog cannot starve approval requests. Expiry
+commits before purge begins, and the existing Redis scheduler lock prevents
+multiple workers from running the installation-wide sweep concurrently.
+
+Revision `0074` adds partial retention-scan indexes for unpurged terminal rows,
+keeping the work bounded as opaque tombstones accumulate. Purge retains the
+non-PII issue-form digest permanently: an old saved POST cannot become valid
+again after its invitation has been scrubbed. Scheduler failure reporting,
+health monitoring, RLS platform-scope inventory, reversible migrations, and
+SQLite/PostgreSQL model parity cover the new job.
+
 ### Added — operators can issue and revoke account invitations
 
 Platform superadmins now have one responsive Registration screen for the
@@ -47,7 +63,7 @@ doctor, or trainer account atomically, never falls through to open registration,
 and rolls back partial graphs on a uniform refusal. Existing linked and bootstrap
 identities sign in normally without spending somebody else's invitation.
 Supported operator issue, copy-delivery, and revoke controls now sit on the
-Registration screen; scheduled retention remains separate unfinished work.
+Registration screen, and terminal admission retention now runs hourly.
 
 ### Added — registration admission decisions are transactional
 

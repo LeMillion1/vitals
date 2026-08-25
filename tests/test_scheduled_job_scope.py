@@ -73,6 +73,7 @@ ACTS_FOR_THE_INSTALLATION = {
     "ai_invocation_reconcile": "stale provider reservations, across every subject",
     "notification_delivery_reconcile": "stalled deliveries, across every subject",
     "care_push_dispatch": "generic care wakeups, across every subject",
+    "registration_admission_retention": "account-admission lifecycle maintenance",
 }
 
 

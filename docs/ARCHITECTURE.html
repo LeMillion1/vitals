@@ -425,7 +425,7 @@ flowchart TB
 <section id="containers">
   <p class="eyebrow">C4 · Level 2</p>
   <h2>Containers</h2>
-  <p>One FastAPI process serves the web UI, the MCP endpoint and the external read API. An APScheduler loop inside it runs fifteen jobs. Everything durable is in PostgreSQL; Redis holds only what can be lost without consequence.</p>
+  <p>One FastAPI process serves the web UI, the MCP endpoint and the external read API. An APScheduler loop inside it runs sixteen jobs. Everything durable is in PostgreSQL; Redis holds only what can be lost without consequence.</p>
 
   <figure>
     <div class="diagram">
@@ -438,7 +438,7 @@ flowchart LR
     mcpsrv["<b>MCP server</b><br/><span style='font-size:11px'>tools, resources, prompts</span>"]
     api["<b>External read API</b><br/><span style='font-size:11px'>summary for other surfaces</span>"]
     svc["<b>Application services</b><br/><span style='font-size:11px'>105 tracked modules · bounded-context migration active</span>"]
-    sched["<b>Scheduler</b><br/><span style='font-size:11px'>15 jobs: sync, digest, nudge,<br/>dispatch, reconcile, sweep</span>"]
+    sched["<b>Scheduler</b><br/><span style='font-size:11px'>16 jobs: sync, digest, nudge,<br/>dispatch, reconcile, retention, sweep</span>"]
   end
 
   pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>83 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]

@@ -21,7 +21,7 @@ def _named_model_constraints(model, constraint_type: str) -> set[str]:
     }
 
 
-def test_0072_to_0073_upgrade_downgrade_and_model_parity(monkeypatch):
+def test_0072_to_0074_upgrade_downgrade_and_model_parity(monkeypatch):
     """Exercise the real reversible DDL and pin its complete public shape."""
 
     foundation = importlib.import_module(
@@ -29,6 +29,9 @@ def test_0072_to_0073_upgrade_downgrade_and_model_parity(monkeypatch):
     )
     idempotency = importlib.import_module(
         "migrations.versions.0073_registration_invitation_idempotency"
+    )
+    retention_indexes = importlib.import_module(
+        "migrations.versions.0074_registration_retention_indexes"
     )
     engine = create_engine("sqlite://")
     models = (RegistrationInvitation, RegistrationRequest)
@@ -47,9 +50,11 @@ def test_0072_to_0073_upgrade_downgrade_and_model_parity(monkeypatch):
             operations = Operations(context)
             monkeypatch.setattr(foundation, "op", operations)
             monkeypatch.setattr(idempotency, "op", operations)
+            monkeypatch.setattr(retention_indexes, "op", operations)
 
             foundation.upgrade()
             idempotency.upgrade()
+            retention_indexes.upgrade()
             inspector = inspect(connection)
 
             for model in models:
@@ -115,6 +120,7 @@ def test_0072_to_0073_upgrade_downgrade_and_model_parity(monkeypatch):
                 }
                 assert migrated_fks == model_fks
 
+            retention_indexes.downgrade()
             idempotency.downgrade()
             foundation.downgrade()
             assert set(inspect(connection).get_table_names()) == {"users"}

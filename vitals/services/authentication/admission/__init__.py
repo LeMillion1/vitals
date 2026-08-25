@@ -52,6 +52,7 @@ from vitals.services.authentication.admission.requests import (
 )
 from vitals.services.authentication.admission.retention import (
     expire_due,
+    maintenance_job,
     purge_terminal,
 )
 
@@ -82,6 +83,7 @@ __all__ = [
     "expire_due",
     "get_request",
     "issue_invitation",
+    "maintenance_job",
     "purge_terminal",
     "reject_request",
     "registration_console",

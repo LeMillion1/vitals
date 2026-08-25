@@ -27,11 +27,11 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0073` — 73 revisions |
+| Alembic head | `0074` — 74 revisions |
 | Schema | 83 tables; 66 carry `subject_id` and are covered by an RLS policy; 55 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,978 fast passed / 183 skipped / 35 UI deselected; 683 focused admission/OIDC/operator-UI/design/web tests; migration cycle plus 74 final PostgreSQL invitation-console/admission tests |
-| Domains / scheduled jobs | 14 and 15, of which 11 fan out per record |
+| Suites | 4,981 fast passed / 183 skipped / 35 UI deselected; 178 focused retention/scheduler/RLS tests; migration cycle plus 167 focused PostgreSQL retention/admission/RLS tests |
+| Domains / scheduled jobs | 14 and 16, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
 expansion and backfill, PR-04 scoped services + policy engine + FORCE RLS,
@@ -957,8 +957,9 @@ a property of there being nowhere for an account to come from.
   commit on behalf of the caller. The `invite_only` path now connects this
   boundary to a fragment-scrubbing OIDC handoff and a recent-auth operator
   screen that issues, copies, lists in redacted form, and revokes invitations.
-  The `admin_approved` browser flow and scheduled retention still need to be
-  connected before those parts of the release are complete.
+  Hourly scheduler maintenance now expires overdue proofs and scrubs terminal
+  applicant PII after 90 days without starving either admission table. The
+  `admin_approved` browser flow remains the unfinished registration path.
 - `authentication.provisioning` is the one place a `HealthSubject` is born
   besides the legacy bootstrap. A subject needs four things — an owning account,
   a role, the integration roots every provider path resolves through, and a

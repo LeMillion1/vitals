@@ -147,7 +147,7 @@ def test_every_job_about_a_record_runs_once_per_record():
     and a job that quietly stops being fanned out is a job that silently serves
     one person on an installation holding ten.
 
-    The five platform jobs are the exception and are named, not defaulted: they
+    The six platform jobs are the exception and are named, not defaulted: they
     are about the installation's own state — sweeping unprocessed payloads,
     purging expired links, reconciling provider invocations and delivery state,
     and dispatching generic care wakeups — and have no subject to run for.
@@ -173,6 +173,7 @@ def test_every_job_about_a_record_runs_once_per_record():
         "ai_invocation_reconcile",
         "notification_delivery_reconcile",
         "care_push_dispatch",
+        "registration_admission_retention",
     }
     assert about_the_installation <= registered
     assert not (fanned & about_the_installation)

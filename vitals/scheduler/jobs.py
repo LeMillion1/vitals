@@ -65,6 +65,9 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.proactive.nudges import nudges_job
     from vitals.services.proactive.delivery import delivery_reconciliation_job
     from vitals.services.notifications.care_push_dispatcher import dispatch_job
+    from vitals.services.authentication.admission.retention import (
+        maintenance_job as registration_admission_retention_job,
+    )
     from vitals.services.raw_payload_service import sweep_pending_job as raw_payload_sweep_job
     from vitals.services.share_service import purge_job as share_purge_job
     from vitals.services.ai_gateway_service import (
@@ -163,6 +166,17 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         failure_family=JobFailureFamily.PLATFORM,
         seconds=15,
         lock_ttl=180,
+    )
+
+    # Account-admission proofs are short-lived and applicant PII is retained
+    # only for the bounded audit window. The primitives process finite batches;
+    # an hourly tick catches up safely after downtime without one long lock.
+    register_job(
+        "registration_admission_retention",
+        registration_admission_retention_job,
+        trigger="interval",
+        failure_family=JobFailureFamily.PLATFORM,
+        hours=1,
     )
 
     # Hevy sync — every 6h. No-ops when Hevy isn't configured.

@@ -488,6 +488,7 @@ PLATFORM_ALERT_KEYS: Mapping[
                 "scheduler.job_failed:ai_invocation_reconcile",
                 "scheduler.job_failed:notification_delivery_reconcile",
                 "scheduler.job_failed:care_push_dispatch",
+                "scheduler.job_failed:registration_admission_retention",
             }
         )
     }

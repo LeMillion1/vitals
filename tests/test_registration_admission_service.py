@@ -35,6 +35,7 @@ from vitals.models.registration import RegistrationInvitation, RegistrationReque
 from vitals.persistence.rls import in_platform_scope
 from vitals.services.authentication import admission
 from vitals.services.authentication import registration as registration_policy
+from vitals.services.authentication.admission import retention as retention_service
 
 
 ISSUER = "https://idp.example.test"
@@ -1028,17 +1029,18 @@ async def test_review_audits_are_value_free(db_session, monkeypatch):
         assert private not in envelope
 
 
-async def test_expire_and_purge_scrub_every_admission_identifier(
+async def test_purge_scrubs_applicant_identifiers_and_keeps_replay_tombstone(
     db_session, monkeypatch
 ):
     actor, issued = await _issued(db_session, monkeypatch, slug="retention-invite")
+    issued.invitation.issuance_request_digest = "a" * 64
     _age_invitation(issued.invitation, days=100)
     request = await _request(db_session, monkeypatch, suffix="retention-request")
     _age_request(request, days=100)
     await db_session.flush()
 
     maintenance_time = datetime.now(timezone.utc) - timedelta(days=60)
-    expired = await admission.expire_due(db_session, now=maintenance_time)
+    expired = await admission.expire_due(db_session, now=maintenance_time, limit=1)
     assert expired.invitations == expired.requests == 1
     assert issued.invitation.status == RegistrationInvitationStatus.EXPIRED.value
     assert request.status == RegistrationRequestStatus.EXPIRED.value
@@ -1049,9 +1051,11 @@ async def test_expire_and_purge_scrub_every_admission_identifier(
         db_session,
         before=cutoff,
         now=retention_time,
+        limit=1,
     )
     assert purged.invitations == purged.requests == 1
     assert issued.invitation.token_digest is None
+    assert issued.invitation.issuance_request_digest == "a" * 64
     assert issued.invitation.normalized_email is None
     assert issued.invitation.invited_by_user_id is None
     assert request.issuer is request.subject is None
@@ -1077,12 +1081,136 @@ async def test_purge_requires_a_past_cutoff_and_never_scrubs_pending_rows(
     assert issued.invitation.normalized_email is not None
 
 
+async def test_default_retention_scrubs_at_ninety_days_not_before(
+    db_session, monkeypatch
+):
+    _older_actor, older = await _issued(
+        db_session,
+        monkeypatch,
+        slug="retention-boundary-older",
+    )
+    _newer_actor, newer = await _issued(
+        db_session,
+        monkeypatch,
+        slug="retention-boundary-newer",
+    )
+    _age_invitation(older.invitation, days=200)
+    _age_invitation(newer.invitation, days=200)
+    now = datetime.now(timezone.utc)
+    older.invitation.status = RegistrationInvitationStatus.EXPIRED.value
+    older.invitation.expired_at = now - admission.DEFAULT_RETENTION
+    newer.invitation.status = RegistrationInvitationStatus.EXPIRED.value
+    newer.invitation.expired_at = now - admission.DEFAULT_RETENTION + timedelta(
+        seconds=1
+    )
+    await db_session.flush()
+
+    result = await admission.purge_terminal(db_session, now=now)
+
+    assert result.invitations == 1
+    assert older.invitation.purged_at == now
+    assert newer.invitation.purged_at is None
+
+
 def _factory(db_session) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(
         db_session.bind,
         expire_on_commit=False,
         class_=AsyncSession,
     )
+
+
+async def test_scheduled_maintenance_commits_expiry_and_retention(
+    db_session, monkeypatch
+):
+    _old_actor, old_invitation = await _issued(
+        db_session,
+        monkeypatch,
+        slug="scheduled-old-invitation",
+    )
+    old_invitation.invitation.issuance_request_digest = "b" * 64
+    _age_invitation(old_invitation.invitation, days=200)
+    old_request = await _request(
+        db_session,
+        monkeypatch,
+        suffix="scheduled-old-request",
+    )
+    _age_request(old_request, days=200)
+    old_invitation_id = old_invitation.invitation.id
+    old_request_id = old_request.id
+
+    historical_run = datetime.now(timezone.utc) - timedelta(days=100)
+    historical = await admission.expire_due(
+        db_session,
+        now=historical_run,
+        limit=1,
+    )
+    assert historical.invitations == historical.requests == 1
+
+    _due_actor, due_invitation = await _issued(
+        db_session,
+        monkeypatch,
+        slug="scheduled-due-invitation",
+    )
+    _age_invitation(due_invitation.invitation, days=40)
+    due_request = await _request(
+        db_session,
+        monkeypatch,
+        suffix="scheduled-due-request",
+    )
+    _age_request(due_request, days=50)
+    due_invitation_id = due_invitation.invitation.id
+    due_request_id = due_request.id
+    await db_session.commit()
+
+    await admission.maintenance_job(_factory(db_session))
+
+    db_session.expire_all()
+    purged_invitation = await db_session.get(
+        RegistrationInvitation,
+        old_invitation_id,
+    )
+    purged_request = await db_session.get(RegistrationRequest, old_request_id)
+    expired_invitation = await db_session.get(
+        RegistrationInvitation,
+        due_invitation_id,
+    )
+    expired_request = await db_session.get(RegistrationRequest, due_request_id)
+    assert purged_invitation is not None
+    assert purged_invitation.purged_at is not None
+    assert purged_invitation.token_digest is None
+    assert purged_invitation.normalized_email is None
+    assert purged_invitation.issuance_request_digest == "b" * 64
+    assert purged_request is not None and purged_request.purged_at is not None
+    assert expired_invitation is not None
+    assert expired_invitation.status == RegistrationInvitationStatus.EXPIRED.value
+    assert expired_request is not None
+    assert expired_request.status == RegistrationRequestStatus.EXPIRED.value
+
+
+async def test_scheduled_maintenance_keeps_expiry_when_purge_fails(
+    db_session, monkeypatch
+):
+    _actor, issued = await _issued(
+        db_session,
+        monkeypatch,
+        slug="scheduled-expiry-before-purge-error",
+    )
+    _age_invitation(issued.invitation, days=40)
+    invitation_id = issued.invitation.id
+    await db_session.commit()
+
+    async def fail_purge(*_args, **_kwargs):
+        raise RuntimeError("synthetic purge failure")
+
+    monkeypatch.setattr(retention_service, "purge_terminal", fail_purge)
+    with pytest.raises(RuntimeError, match="synthetic purge failure"):
+        await admission.maintenance_job(_factory(db_session))
+
+    db_session.expire_all()
+    row = await db_session.get(RegistrationInvitation, invitation_id)
+    assert row is not None
+    assert row.status == RegistrationInvitationStatus.EXPIRED.value
 
 
 @pytest.mark.integration

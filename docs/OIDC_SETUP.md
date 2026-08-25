@@ -165,9 +165,9 @@ strand the invite; final consumption is single-winner. Account creation still
 requires the invitation to remain pending in `invite_only` mode and the provider
 to return the exact invited address with `email_verified: true`. Neither the
 bearer nor an email address belongs in a path, query parameter, application log,
-audit payload, or OIDC handoff cookie. Automated terminal-row retention is not
-yet scheduled, so review that remaining release item before sustained production
-enrollment.
+audit payload, or OIDC handoff cookie. The shared scheduler expires overdue
+proofs hourly and scrubs terminal applicant PII after 90 days. Its platform
+failure alert and `/health` heartbeat make a stopped retention loop visible.
 
 Creating a local account and deciding which provider identity may enter it are
 two explicit operator actions. Run both from a shell with

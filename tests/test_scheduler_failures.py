@@ -291,6 +291,7 @@ def test_job_failure_family_registry_is_complete_and_matches_alert_keys():
         "ai_invocation_reconcile",
         "notification_delivery_reconcile",
         "care_push_dispatch",
+        "registration_admission_retention",
     }
     for job_id in (
         "ai_invocation_reconcile",
@@ -308,6 +309,10 @@ def test_job_failure_family_registry_is_complete_and_matches_alert_keys():
     assert care_push.trigger_kwargs == {"seconds": 15}
     assert care_push.lock_ttl == 180
     assert care_push.failure_family is scheduler_mod.JobFailureFamily.PLATFORM
+    retention = scheduler_mod._registry["registration_admission_retention"]
+    assert retention.trigger == "interval"
+    assert retention.trigger_kwargs == {"hours": 1}
+    assert retention.failure_family is scheduler_mod.JobFailureFamily.PLATFORM
 
 
 # ── The keepalive itself ─────────────────────────────────────────────────────
