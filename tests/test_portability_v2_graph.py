@@ -430,7 +430,9 @@ async def test_required_connection_and_file_references_fail_closed(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["dangling", "cross_subject"])
-async def test_portable_foreign_keys_cannot_leave_the_subject_graph(db_session, mode):
+async def test_portable_foreign_keys_cannot_leave_the_subject_graph(
+    db_session, unenforced_legacy_write, mode
+):
     mine = await _subject(db_session, f"fk-mine-{mode}")
     theirs = await _subject(db_session, f"fk-theirs-{mode}")
     other_raw = RawPayload(
@@ -442,18 +444,21 @@ async def test_portable_foreign_keys_cannot_leave_the_subject_graph(db_session, 
     )
     db_session.add(other_raw)
     await db_session.flush()
-    db_session.add(
-        WeightLog(
-            subject_id=mine.id,
-            raw_payload_id=(other_raw.id if mode == "cross_subject" else 987_654),
-            weight_kg=80,
-            superseded=False,
-            date=date(2026, 3, 1),
-            domain=Domain.WEIGHT.value,
-            source=Source.GARMIN_API.value,
-        )
+    weight = WeightLog(
+        subject_id=mine.id,
+        raw_payload_id=(other_raw.id if mode == "cross_subject" else 987_654),
+        weight_kg=80,
+        superseded=False,
+        date=date(2026, 3, 1),
+        domain=Domain.WEIGHT.value,
+        source=Source.GARMIN_API.value,
     )
-    await db_session.flush()
+    if mode == "dangling":
+        async with unenforced_legacy_write(db_session):
+            db_session.add(weight)
+    else:
+        db_session.add(weight)
+        await db_session.flush()
 
     with pytest.raises(graph.GraphBuildError) as raised:
         await graph.build_subject_graph(db_session, subject_id=mine.id)
@@ -469,7 +474,7 @@ async def test_portable_foreign_keys_cannot_leave_the_subject_graph(db_session, 
     ],
 )
 async def test_inherited_child_subject_stamp_must_match_its_reachable_parent(
-    db_session, mode, expected_code
+    db_session, unenforced_legacy_write, mode, expected_code
 ):
     mine = await _subject(db_session, f"child-mine-{mode}")
     theirs = await _subject(db_session, f"child-theirs-{mode}")
@@ -483,17 +488,17 @@ async def test_inherited_child_subject_stamp_must_match_its_reachable_parent(
     )
     db_session.add(scan)
     await db_session.flush()
-    db_session.add(
-        BodyScanMetric(
-            scan_id=scan.id,
-            subject_id=child_subject.id,
-            metric_key="cross_subject_metric",
-            label="Cross subject metric",
-            value=1.0,
-            category="other",
+    async with unenforced_legacy_write(db_session):
+        db_session.add(
+            BodyScanMetric(
+                scan_id=scan.id,
+                subject_id=child_subject.id,
+                metric_key="cross_subject_metric",
+                label="Cross subject metric",
+                value=1.0,
+                category="other",
+            )
         )
-    )
-    await db_session.flush()
 
     with pytest.raises(graph.GraphBuildError) as raised:
         await graph.build_subject_graph(db_session, subject_id=mine.id)
@@ -527,7 +532,9 @@ async def test_cross_subject_connection_is_refused(db_session):
     "mode",
     ["dangling", "cross_subject", "not_live", "corrupt_hash", "wrong_purpose"],
 )
-async def test_file_asset_must_be_reachable_same_subject_and_coherent(db_session, mode):
+async def test_file_asset_must_be_reachable_same_subject_and_coherent(
+    db_session, unenforced_legacy_write, mode
+):
     mine = await _subject(db_session, f"asset-mine-{mode}")
     theirs = await _subject(db_session, f"asset-theirs-{mode}")
     owner_id = theirs.id if mode == "cross_subject" else mine.id
@@ -556,17 +563,20 @@ async def test_file_asset_must_be_reachable_same_subject_and_coherent(db_session
             .values(sha256_hex="z" * 64)
         )
     target_id = uuid.uuid4() if mode == "dangling" else asset.id
-    db_session.add(
-        ProgressPhoto(
-            subject_id=mine.id,
-            file_asset_id=target_id,
-            file_key="legacy-key-never-exported",
-            date=date(2026, 3, 3),
-            domain=Domain.WEIGHT.value,
-            source=Source.MANUAL.value,
-        )
+    photo = ProgressPhoto(
+        subject_id=mine.id,
+        file_asset_id=target_id,
+        file_key="legacy-key-never-exported",
+        date=date(2026, 3, 3),
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
     )
-    await db_session.flush()
+    if mode == "dangling":
+        async with unenforced_legacy_write(db_session):
+            db_session.add(photo)
+    else:
+        db_session.add(photo)
+        await db_session.flush()
 
     with pytest.raises(graph.GraphBuildError) as raised:
         await graph.build_subject_graph(db_session, subject_id=mine.id)
