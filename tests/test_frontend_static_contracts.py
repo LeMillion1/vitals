@@ -38,6 +38,18 @@ def test_service_worker_never_caches_uploads():
     assert "!url.pathname.startsWith('/static/uploads/')" in caching_rule
 
 
+def test_service_worker_is_registered_at_the_origin_root():
+    """Offline navigation and notification clicks must control app routes."""
+
+    registration = BASE_HTML[BASE_HTML.index("navigator.serviceWorker.getRegistrations") :]
+    registration = registration[: registration.index("</script>")]
+    assert "registration.unregister()" in registration
+    assert "'/static/sw.js'" in registration
+    assert "navigator.serviceWorker.register('/sw.js'" in registration
+    assert "scope: '/'" in registration
+    assert "updateViaCache: 'none'" in registration
+
+
 def test_response_error_handler_reads_every_error_shape():
     """Routers answer with ``error``/``message``, not only FastAPI's ``detail``."""
     handler = BASE_HTML[BASE_HTML.index("addEventListener('htmx:responseError'"):]

@@ -14,6 +14,7 @@ from urllib.parse import urlencode, urlsplit
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import (
+    FileResponse,
     JSONResponse,
     RedirectResponse,
 )
@@ -360,6 +361,33 @@ add_security_headers(app)
 # mount would otherwise swallow the prefix and hand out medical records to
 # whoever guessed a filename. That ordering is pinned by a test.
 UPLOADS_DIR = os.path.realpath(os.path.join(STATIC_DIR, "uploads"))
+
+
+async def service_worker(request: Request) -> FileResponse:
+    """Serve the PWA worker at the origin root so its scope can be ``/``.
+
+    A worker fetched from ``/static/sw.js`` is confined to ``/static/`` unless
+    the response explicitly widens it. That left ordinary page navigation
+    outside the worker despite the offline handler claiming otherwise. The root
+    URL makes the scope structural; the header pins the intent for browsers and
+    reverse proxies, and revalidation keeps deploys from pinning an old worker.
+    """
+
+    del request
+    return FileResponse(
+        os.path.join(STATIC_DIR, "sw.js"),
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "no-cache",
+            "Service-Worker-Allowed": "/",
+        },
+    )
+
+
+# A plain Starlette route is intentional: application-level FastAPI dependencies
+# resolve subject chrome from the database, while this is public application
+# code and must still update when the database is unavailable.
+app.add_route("/sw.js", service_worker, methods=["GET"], name="service_worker")
 
 
 @app.get("/static/uploads/{key:path}")

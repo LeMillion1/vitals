@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — the PWA worker controls the application, not only static files
+
+The service worker is now served and registered at `/sw.js` with root scope,
+explicit revalidation, and `Service-Worker-Allowed: /`. Existing registrations
+of `/static/sw.js` are removed during the next page load. Previously the worker
+was confined to `/static/`, so its offline navigation handler never controlled
+ordinary pages and a future notification click could not reliably return to the
+app.
+
 ### Added — browser notification endpoints belong to accounts and devices
 
 Revision `0068` adds the storage boundary for web push subscriptions. A browser

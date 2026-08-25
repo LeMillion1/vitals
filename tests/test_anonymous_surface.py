@@ -65,7 +65,13 @@ ANONYMOUS_BY_DESIGN = {
 # ``/static`` is site furniture the login page needs before anyone has a session;
 # the uploaded medical files that used to sit inside it are carved out by a real
 # guarded route above the mount — see ``serve_upload`` below.
-NON_API_BY_DESIGN = {"/static", "/mcp"}
+NON_API_BY_DESIGN = {
+    "/static",
+    "/mcp",
+    # Public application code, deliberately a plain Starlette route so serving
+    # it does not require the subject/chrome database dependencies.
+    "/sw.js",
+}
 
 
 def _dependencies(dependant):
@@ -105,6 +111,16 @@ async def test_the_schema_is_not_published(client):
     assert app.openapi_url is None
     for path in ("/openapi.json", "/docs", "/redoc"):
         assert (await client.get(path)).status_code == 404, path
+
+
+async def test_the_service_worker_is_public_but_root_scoped_and_revalidated(client):
+    response = await client.get("/sw.js")
+
+    assert response.status_code == 200
+    assert "javascript" in response.headers["content-type"]
+    assert response.headers["service-worker-allowed"] == "/"
+    assert response.headers["cache-control"] == "no-cache"
+    assert b"self.addEventListener('fetch'" in response.content
 
 
 # ── Uploaded files ────────────────────────────────────────────────────────────

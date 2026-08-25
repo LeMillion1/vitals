@@ -30,7 +30,7 @@ than trusting them if this date has gone stale.
 | Alembic head | `0068` — 68 revisions |
 | Schema | 79 tables; 65 carry `subject_id` and are covered by an RLS policy; 54 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,670 fast passed / 168 skipped; 548 focused care/UI/static/design tests; migration plus 74 current PostgreSQL push/identity/RLS/schema tests |
+| Suites | 4,672 fast passed / 168 skipped; 114 focused anonymous/static/web tests; migration plus 74 current PostgreSQL push/identity/RLS/schema tests |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -104,6 +104,8 @@ one-line fix.
    `channels.resolve_legacy_bound_notifier` returns `None`. Its historical
    delivery rows still require a Telegram connection; web push is account-scoped
    and therefore does not pretend that one browser belongs to one subject.
+   The PWA worker itself is already served at `/sw.js` with root scope; the old
+   `/static/` registration is removed on the next load.
 2. **A new subject has no body on file, and that is the correct state.** The
    profile moved out of `.env` into `health_profile_service`, so the report has
    its five fields back for whoever filled them in — and a subject who has not
