@@ -13,41 +13,28 @@ contact internal services.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import uuid
-from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
 
-from cryptography.hazmat.primitives.asymmetric import ec
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import UserStatus
+from vitals.integrations.web_push import (
+    MAX_ENDPOINT_LENGTH,
+    MAX_KEY_LENGTH,
+    InvalidWebPushTarget,
+    WebPushTarget,
+    canonical_endpoint,
+    validate_target,
+)
 from vitals.models.identity import User
 from vitals.models.web_push import WebPushSubscription
 from vitals.services import credential_vault_service
 from vitals.utils.timeutils import now_utc
 
-MAX_ENDPOINT_LENGTH = 4096
-MAX_KEY_LENGTH = 256
 MAX_ACTIVE_SUBSCRIPTIONS_PER_USER = 10
-
-# Reviewed browser push services.  Subdomains are accepted only for the two
-# providers that allocate region-specific delivery hosts.
-_EXACT_PUSH_HOSTS = frozenset(
-    {
-        "fcm.googleapis.com",
-        "updates.push.services.mozilla.com",
-        "push.services.mozilla.com",
-        "web.push.apple.com",
-    }
-)
-_PUSH_HOST_SUFFIXES = (
-    ".notify.windows.com",
-    ".push.apple.com",
-)
 
 
 class WebPushSubscriptionError(RuntimeError):
@@ -70,17 +57,7 @@ class CorruptWebPushSubscription(WebPushSubscriptionError):
     """Stored subscription ciphertext is not the authenticated value written."""
 
 
-@dataclass(frozen=True, slots=True)
-class SubscriptionSecret:
-    endpoint: str
-    p256dh: str
-    auth: str
-
-    def as_webpush_dict(self) -> dict[str, object]:
-        return {
-            "endpoint": self.endpoint,
-            "keys": {"p256dh": self.p256dh, "auth": self.auth},
-        }
+SubscriptionSecret = WebPushTarget
 
 
 def _require_uuid(value: Any, *, field: str) -> uuid.UUID:
@@ -89,80 +66,24 @@ def _require_uuid(value: Any, *, field: str) -> uuid.UUID:
     return value
 
 
-def _decode_base64url(value: Any, *, field: str, expected_bytes: int) -> str:
-    if not isinstance(value, str) or not value or len(value) > MAX_KEY_LENGTH:
-        raise InvalidWebPushSubscription(f"{field} is invalid")
-    if "=" in value.rstrip("="):
-        raise InvalidWebPushSubscription(f"{field} is invalid")
-    try:
-        padded = value + "=" * (-len(value) % 4)
-        decoded = base64.b64decode(
-            padded.encode("ascii"), altchars=b"-_", validate=True
-        )
-    except (UnicodeEncodeError, ValueError) as exc:
-        raise InvalidWebPushSubscription(f"{field} is invalid") from exc
-    if len(decoded) != expected_bytes:
-        raise InvalidWebPushSubscription(f"{field} is invalid")
-    return value.rstrip("=")
-
-
 def _canonical_endpoint(value: Any) -> str:
-    if not isinstance(value, str):
-        raise InvalidWebPushSubscription("endpoint must be a string")
-    endpoint = value.strip()
-    if not endpoint or len(endpoint) > MAX_ENDPOINT_LENGTH:
-        raise InvalidWebPushSubscription("endpoint is invalid")
-    parsed = urlsplit(endpoint)
     try:
-        port = parsed.port
-    except ValueError as exc:
-        raise InvalidWebPushSubscription("endpoint is invalid") from exc
-    if (
-        parsed.scheme != "https"
-        or parsed.username is not None
-        or parsed.password is not None
-        or port not in (None, 443)
-        or not parsed.hostname
-        or not parsed.path.startswith("/")
-        or parsed.fragment
-    ):
-        raise InvalidWebPushSubscription("endpoint is invalid")
-    try:
-        hostname = parsed.hostname.encode("idna").decode("ascii").lower()
-    except UnicodeError as exc:
-        raise InvalidWebPushSubscription("endpoint host is invalid") from exc
-    if hostname not in _EXACT_PUSH_HOSTS and not any(
-        hostname.endswith(suffix) and hostname != suffix[1:]
-        for suffix in _PUSH_HOST_SUFFIXES
-    ):
-        raise InvalidWebPushSubscription("endpoint host is not an approved push service")
-    return endpoint
+        return canonical_endpoint(value)
+    except InvalidWebPushTarget as exc:
+        raise InvalidWebPushSubscription(str(exc)) from exc
 
 
 def validate_subscription(
     *, endpoint: Any, p256dh: Any, auth: Any
 ) -> SubscriptionSecret:
-    clean_endpoint = _canonical_endpoint(endpoint)
-    clean_p256dh = _decode_base64url(
-        p256dh, field="p256dh", expected_bytes=65
-    )
-    decoded_public_key = base64.urlsafe_b64decode(
-        clean_p256dh + "=" * (-len(clean_p256dh) % 4)
-    )
-    if decoded_public_key[0] != 4:
-        raise InvalidWebPushSubscription("p256dh is not an uncompressed P-256 key")
     try:
-        ec.EllipticCurvePublicKey.from_encoded_point(
-            ec.SECP256R1(), decoded_public_key
+        return validate_target(
+            endpoint=endpoint,
+            p256dh=p256dh,
+            auth=auth,
         )
-    except ValueError as exc:
-        raise InvalidWebPushSubscription("p256dh is not a valid P-256 point") from exc
-    clean_auth = _decode_base64url(auth, field="auth", expected_bytes=16)
-    return SubscriptionSecret(
-        endpoint=clean_endpoint,
-        p256dh=clean_p256dh,
-        auth=clean_auth,
-    )
+    except InvalidWebPushTarget as exc:
+        raise InvalidWebPushSubscription(str(exc)) from exc
 
 
 def endpoint_hash(endpoint: str) -> str:
@@ -370,6 +291,8 @@ async def revoke_all(session: AsyncSession, *, user_id: uuid.UUID) -> int:
 __all__ = [
     "CorruptWebPushSubscription",
     "InvalidWebPushSubscription",
+    "MAX_ENDPOINT_LENGTH",
+    "MAX_KEY_LENGTH",
     "SubscriptionBelongsToAnotherAccount",
     "SubscriptionSecret",
     "TooManyWebPushSubscriptions",

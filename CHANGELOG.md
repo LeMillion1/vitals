@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — Web Push transport has one PHI-free operation
+
+Vitals now pins and verifies the async `pywebpush` protocol boundary for care
+message wakeups. The integration accepts no caller-supplied title, body, name,
+filename, URL, or identifier: its only payload is the versioned generic
+`{"kind":"care_message","v":1}` envelope, encrypted for the browser before it
+leaves the process. Provider response bodies and dependency exception strings
+are discarded; trustworthy provider responses normalize to accepted, gone,
+rejected, or ambiguous plus the HTTP status, while a missing trustworthy
+response becomes a sanitized transport exception. The client never retries,
+while disabled configuration still exposes no enrollment or call path. No
+scheduler or dispatcher calls this transport yet.
+
 ### Added — care messages create a subject-isolated push outbox
 
 Revision `0069` adds one PHI-free delivery claim for each currently enrolled
@@ -18,8 +31,8 @@ and devices enrolled later receive no historical claim. Composite foreign keys,
 a unique message/recipient/device triple, and FORCE RLS prevent cross-subject,
 cross-account, and duplicate rows. The outbox deliberately stores no rendered
 notification, message text, name, filename, endpoint, or provider response.
-Transport and server-side dispatch remain disabled until their separate,
-consent-rechecking implementation lands.
+Server-side dispatch remains disabled until its separate, consent-rechecking
+implementation lands; the transport has no call site yet.
 
 ### Added — care notifications are an explicit per-device choice
 
@@ -30,7 +43,7 @@ and never lists device endpoints or account/patient identifiers. The control
 detects unsupported and denied browsers, shared-browser ownership conflicts,
 device limits, and VAPID key rotation; an existing subscription remains
 removable even after browser permission is denied. Notification content and
-server-side delivery remain disabled until the separate transport lands.
+server-side delivery remain disabled until the separate dispatcher lands.
 
 ### Fixed — the PWA worker controls the application, not only static files
 
@@ -777,10 +790,10 @@ metadata repeats `subject_id` and uses composite foreign keys to both the
 message and `FileAsset`; bytes live in a dedicated private volume outside the
 static mount. The download hangs from the subject/thread path and rechecks live
 read consent and participation on every request, so pausing consent stops the
-next professional download while the patient keeps their record. There is still
-no outbound notification transport: revision `0068` stores device subscriptions
-but has not yet added the care outbox/sender, so new work is
-signalled by the in-app unread count.
+next professional download while the patient keeps their record. Revision
+`0068` stores device subscriptions, `0069` adds the subject-isolated outbox, and
+the PHI-free transport boundary is ready. No dispatcher calls it yet, so new
+work is still signalled by the in-app unread count.
 
 
 ### Fixed — six defects a browser found and the suites could not

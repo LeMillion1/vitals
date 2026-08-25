@@ -48,6 +48,7 @@ the others remain useful provenance for the remediations named below:
 | Required subject columns | 55 of the 66 `subject_id` columns are non-null | Verified |
 | Ownership cutover | 18 ordered backfill phases and 18 matching scripts | Verified |
 | Domain enum | 14 health domains | Verified |
+| External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
 | Web routers | 29 modules under `web/routers` | Verified |
 | Application services | 99 tracked non-`__init__` modules after the care, authentication, analytics, persistence, and notification moves | Verified |
 | Flat service debt | 77 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
@@ -164,10 +165,10 @@ verifiable GitHub pull request: the commercial history has only one merge
 commit. Keep this document as target/decision history and use this audit for the
 current state.
 
-The following roadmap targets are not shipped: consent-rechecked care delivery,
-its transport/dispatcher and service-worker notification content (encrypted
-account/device subscriptions landed in `0068`; explicit enrollment and the
-subject-isolated outbox landed with `0069`),
+The following roadmap targets are not shipped: the consent-rechecked care
+dispatcher and service-worker notification content (encrypted account/device
+subscriptions landed in `0068`; explicit enrollment, the subject-isolated
+outbox, and a fixed PHI-free transport boundary have since landed),
 invitation inbox, multi-subject full backup, support repair/export
 and break-glass, registration modes, lab
 marker collision migration, private-byte relocation outside static storage, and
@@ -387,6 +388,16 @@ foreign keys. The full fast suite passed 4,696 tests (170 skipped, 35 UI
 deselected); focused and full Ruff plus diff checks passed. No sender, network
 transport, scheduler job, or service-worker notification content was enabled by
 this revision.
+
+The generic Web Push transport then passed 71 focused push, architecture, and
+anonymous-surface tests and the full fast suite passed 4,727 tests (170 skipped,
+35 UI deselected). Full Ruff and diff checks passed. A clean Python 3.13 Docker
+image installed the exact `pywebpush 2.4.0` dependency, imported the adapter,
+and completed real ECE encryption plus VAPID signing against a fake in-container
+session; the captured request contained no plaintext and had redirects disabled,
+while the raw provider body remained unread and its response was closed. The
+temporary verification image was removed. The transport still has no dispatcher
+or scheduler call site and made no real provider request.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

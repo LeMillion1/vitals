@@ -30,14 +30,14 @@ than trusting them if this date has gone stale.
 | Alembic head | `0069` — 69 revisions |
 | Schema | 80 tables; 66 carry `subject_id` and are covered by an RLS policy; 55 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,696 fast passed / 170 skipped / 35 UI deselected; 28 focused outbox/ownership/RLS fast tests; migration plus 36 current PostgreSQL outbox/ownership/RLS tests |
+| Suites | 4,727 fast passed / 170 skipped / 35 UI deselected; 71 focused push/architecture/security tests; migration plus 36 current PostgreSQL outbox/ownership/RLS tests |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
 expansion and backfill, PR-04 scoped services + policy engine + FORCE RLS,
 PR-05 OIDC, provisioning and the registration decision, PR-06
 files/portability/settings, PR-07 professionals/relationships/consent, PR-08
-professional UX, PR-09 minus its notification transport,
+professional UX, PR-09 minus its notification dispatcher,
 PR-11 care-team messaging, PR-12's read-only support
 access, PR-10.
 
@@ -99,8 +99,9 @@ one-line fix.
 1. **There is no notification sender yet.** Telegram was removed outright (see the
    decision log); revision `0068` stores encrypted account/device subscriptions,
    the explicit permission UI is live, and revision `0069` writes a PHI-free,
-   subject-isolated care outbox in the message transaction. The transport,
-   dispatcher, and service-worker notification content have not landed. The proactive layer composes a brief
+   subject-isolated care outbox in the message transaction. The fixed PHI-free
+   transport boundary is ready, but the consent-rechecking dispatcher and
+   service-worker notification content have not landed. The proactive layer composes a brief
    on schedule and stores it in `/reports`, and every send resolves to "no
    endpoint", which every caller already handles as an ordinary answer.
    `channels.resolve_legacy_bound_notifier` returns `None`. Its historical
@@ -1377,11 +1378,11 @@ at all while `/health` stayed green. `record_subject_job_outcome` takes a
 mandatory subject and is called once per record by the fan-out; the runner keeps
 only the platform-family jobs, which are about the installation's own state.
 
-What is left in PR-09 is the notification sender. Telegram was removed;
+What is left in PR-09 is the notification dispatcher. Telegram was removed;
 revision `0068` holds the encrypted account/device endpoint and revision `0069`
-holds a separate subject-owned care outbox. No job claims those rows and no
-network transport sends them yet, so proactive sends still resolve to "no
-endpoint".
+holds a separate subject-owned care outbox. A fixed PHI-free Web Push transport
+now encrypts and signs only a generic wakeup, but no job claims those rows or
+calls it yet, so proactive sends still resolve to "no endpoint".
 
 **The shape of the rest.** `.env` should hold only what belongs to the
 installation: the database and Redis, the session secret, the identity provider,
@@ -1731,12 +1732,12 @@ Additional gates:
   it through `scripts/provision_account.py`.
 - [x] Isolate files, settings, portability — PR-06.
 - [~] Isolate connectors, scheduler, and messaging — PR-09, all but the
-  transport. Every job about a record runs once per record and on that record's
+  dispatcher. Every job about a record runs once per record and on that record's
   own clock; the four provider jobs fan out per connection, and each account has
   its own credential, token store, session cache and login breaker. Messaging
-  still has no transport: Telegram was removed and only encrypted web-push
-  subscriptions have landed, so
-  every send resolves to "no endpoint".
+  still has no active sender: Telegram was removed; encrypted web-push
+  subscriptions, a subject outbox, and the fixed transport boundary have
+  landed, so every send resolves to "no endpoint".
 - [x] Add verified professionals, relationships, and consent — PR-07, with the
   professional UX in PR-08 (minus the inbox).
 - [x] Replace MCP/external auth with subject-scoped revocable grants — the

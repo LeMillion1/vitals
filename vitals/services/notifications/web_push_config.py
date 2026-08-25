@@ -12,7 +12,7 @@ from __future__ import annotations
 import base64
 import hmac
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives import serialization
@@ -35,7 +35,7 @@ class WebPushConfigurationError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class WebPushConfig:
     public_key: str
-    private_key: str
+    private_key: str = field(repr=False)
     subject: str
 
 

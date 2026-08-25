@@ -78,6 +78,7 @@ page needs the same edit:
 | mandatory-subject table count | `subject_id` NOT NULL in `Base.metadata` | 55 |
 | the backfill phases | `OWNERSHIP_BACKFILL_SEQUENCE` in `vitals/ownership_deploy.py` | 18 |
 | the domains | `vitals.enums.Domain` | 14 |
+| external integration modules | tracked non-`__init__` modules in `vitals/integrations/` | 5 |
 | the scheduled jobs | `vitals/scheduler/jobs.py` | 14, of which 11 fan out per record |
 | migration count | `migrations/versions/` | 69, head `0069` |
 | RLS table count | revisions `0050` + `0051` + `0055` + `0056` + `0057` + `0060` + `0061` + `0062` + `0063` + `0065` + `0067` + `0069`, asserted in `tests/test_row_level_security.py` | 66 |

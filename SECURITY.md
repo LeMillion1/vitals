@@ -106,7 +106,11 @@ The endpoint and browser encryption keys are encrypted under the installation's
 credential key, never listed back to the browser, and erased on revocation or
 account suspension. The separate care-message outbox is subject-scoped, stores
 no rendered payload or medical text, and must revalidate live relationship and
-consent before delivery.
+consent before delivery. The Web Push transport exposes only a fixed,
+versioned care-message wakeup: it has no API for message text, names, filenames,
+record identifiers, or caller-supplied URLs. Provider bodies and raw dependency
+exceptions are discarded rather than logged or stored, and the transport never
+retries an uncertain send.
 
 ## Revoking Claude.ai Access
 

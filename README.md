@@ -49,7 +49,7 @@
 
 Главное отличие от фитнес-трекеров — **принцип максимального сохранения сырых данных**. Vitals — умный навигатор здоровья, который подсвечивает неочевидные взаимосвязи между сном, тренировками, медикаментами и весом, помогая принимать взвешенные решения. Не надзиратель — штурман.
 
-У Vitals есть **голос**: проактивный слой сам собирает утренний бриф и подсказки по условию, вместо того чтобы ждать, пока в дашборд зайдут. Транспорт сейчас один — сама страница `/reports`; пуши в PWA — следующий.
+У Vitals есть **голос**: проактивный слой сам собирает утренний бриф и подсказки по условию, вместо того чтобы ждать, пока в дашборд зайдут. Единственная активная поверхность доставки пока — `/reports`. В PWA уже есть зашифрованная регистрация устройств, subject-isolated outbox и PHI-free Web Push client, но dispatcher и показ уведомлений ещё выключены.
 
 ### Зачем я это сделал
 
@@ -311,7 +311,7 @@ Vitals написан с Claude в качестве основного инст�
 - Единые ворота отправки: дедуп, тихие часы (только для нуджей) и дневной бюджет сообщений
 - Настройки (время брифа, тихие часы, бюджет, категории нуджей, частота опроса Garmin, интервал и окно свежести экспорта веса) — на карточке в `/settings`, сохранение перевешивает задачи на живом планировщике **без перезапуска**
 
-> **Чего здесь больше нет.** Телеграм-бот, домен сигналов (свободный текст, разобранный моделью в строки) и `day_context` (какой это был день) удалены целиком: один токен бота и один chat id в окружении — это форма на одного пользователя, а установка на нескольких так не умеет. Ушёл вместе с ними и единственный источник **входящего** текста — того, что человек сказал о себе своими словами. Ни один прибор не производит предложение, так что раздел симптомов во врачебном отчёте сейчас пуст. Старый журнал доставки сохранён как исторический Telegram-контур; схема всё ещё требует Telegram connection и не является честной основой для account-scoped браузерного endpoint. Ревизия `0068` добавила отдельные зашифрованные подписки устройств, а `0069` — subject-isolated care-outbox без PHI. Отправка появится отдельно.
+> **Чего здесь больше нет.** Телеграм-бот, домен сигналов (свободный текст, разобранный моделью в строки) и `day_context` (какой это был день) удалены целиком: один токен бота и один chat id в окружении — это форма на одного пользователя, а установка на нескольких так не умеет. Ушёл вместе с ними и единственный источник **входящего** текста — того, что человек сказал о себе своими словами. Ни один прибор не производит предложение, так что раздел симптомов во врачебном отчёте сейчас пуст. Старый журнал доставки сохранён как исторический Telegram-контур; схема всё ещё требует Telegram connection и не является честной основой для account-scoped браузерного endpoint. Ревизия `0068` добавила отдельные зашифрованные подписки устройств, а `0069` — subject-isolated care-outbox без PHI. PHI-free Web Push transport уже готов, но consent-rechecking dispatcher, планировщик и показ уведомления в service worker появятся отдельно.
 </details>
 
 ---
@@ -560,7 +560,7 @@ curl -s http://127.0.0.1:8000/health
 
 Настраивается целиком в приложении: карточка «Проактивный слой» в `/settings` задаёт время брифа, тихие часы, дневной бюджет и категории нуджей, а сохранение перевешивает задачи на живом планировщике без перезапуска. Переменных окружения для этого нет — и по замыслу не будет: расписание принадлежит человеку, а не установке.
 
-Отправлять брифы пока некуда: телеграм-бота больше нет, пуши в PWA — следующий канал. До тех пор бриф собирается по расписанию и лежит в `/reports`.
+Отправлять брифы пока некуда: телеграм-бота больше нет, а новый Web Push client принимает только generic care-message wakeup и специально не переносит проактивный текст. Бриф по-прежнему собирается по расписанию и лежит в `/reports`.
 
 ---
 
@@ -799,7 +799,7 @@ remaining boundaries are recorded in
 
 Unlike typical fitness trackers, Vitals prioritizes **preserving raw historical data**. It serves as a smart wellness navigator — uncovering correlations between sleep, workouts, supplements, and body composition. Not a watchdog — a co-pilot.
 
-Vitals has a **voice**: a proactive layer builds a morning brief and condition-driven nudges by itself rather than waiting for the dashboard to be opened. There is one transport today — the `/reports` page itself; web push in the PWA is next.
+Vitals has a **voice**: a proactive layer builds a morning brief and condition-driven nudges by itself rather than waiting for the dashboard to be opened. `/reports` remains the only active delivery surface. The PWA now has encrypted device enrollment, a subject-isolated outbox, and a PHI-free Web Push client, but dispatch and notification rendering are not enabled yet.
 
 ### Why I built this
 
@@ -1065,7 +1065,7 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 - One set of gates on the way out: dedupe, quiet hours (nudges only) and a daily message budget
 - Settings (brief time, quiet hours, budget, nudge categories, Garmin poll frequency, weight-export interval and freshness window) live on a card in `/settings`; saving reschedules the jobs on the live scheduler **without a restart**
 
-> **What is no longer here.** The Telegram bot, the signals domain (free text parsed by a model into typed rows) and `day_context` (what a given day was made of) were removed outright: one bot token and one chat id in the environment is a single-user shape, and a shared installation cannot have it. Removing it also removed the only source of **inbound** text — what a person says about themselves in their own words. No device produces a sentence, so the symptoms section of the doctor's report is empty for now. The retained delivery journal is historical Telegram state: its schema still requires a Telegram connection and is not an honest home for an account-scoped browser endpoint. Revision `0068` adds separately encrypted device subscriptions, and `0069` adds the subject-isolated, PHI-free care outbox. Delivery follows separately.
+> **What is no longer here.** The Telegram bot, the signals domain (free text parsed by a model into typed rows) and `day_context` (what a given day was made of) were removed outright: one bot token and one chat id in the environment is a single-user shape, and a shared installation cannot have it. Removing it also removed the only source of **inbound** text — what a person says about themselves in their own words. No device produces a sentence, so the symptoms section of the doctor's report is empty for now. The retained delivery journal is historical Telegram state: its schema still requires a Telegram connection and is not an honest home for an account-scoped browser endpoint. Revision `0068` adds separately encrypted device subscriptions, and `0069` adds the subject-isolated, PHI-free care outbox. The PHI-free Web Push transport is ready, while the consent-rechecking dispatcher, scheduler, and service-worker notification rendering follow separately.
 </details>
 
 ---
@@ -1314,7 +1314,7 @@ curl -s http://127.0.0.1:8000/health
 
 Configured entirely inside the app: the "Proactive layer" card in `/settings` sets the brief time, quiet hours, the daily budget and the nudge categories, and saving reschedules the jobs on the live scheduler without a restart. There are no environment variables for any of it, by design — a schedule belongs to a person, not to an installation.
 
-There is nowhere to send a brief yet: the Telegram bot is gone and web push is the next channel. Until then the brief is built on schedule and kept in `/reports`.
+There is nowhere to send a brief yet: the Telegram bot is gone, while the new Web Push client accepts only a generic care-message wakeup and deliberately cannot carry proactive text. The brief is still built on schedule and kept in `/reports`.
 
 ---
 
