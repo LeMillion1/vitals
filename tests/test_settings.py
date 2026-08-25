@@ -121,6 +121,8 @@ async def test_settings_page_renders(auth_client):
     assert "fetch('/settings/portability-v2/inspect'" not in r.text
     assert 'x-data="portabilityV2()"' in r.text
     assert 'name="archive_file" accept=".vitals"' in r.text
+    assert 'data-fallback="Запись Vitals (.vitals)"' in r.text
+    assert ": $el.dataset.fallback; inspection = null" in r.text
     assert 'href="/settings/export-subject"' not in r.text
     assert 'hx-post="/settings/import-subject"' not in r.text
     # Non-restorable AI digest remains a clearly separate secondary download.

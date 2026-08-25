@@ -519,7 +519,8 @@
                        x-data='{ hint: {{ t("settings.portability_v2_file_hint")|tojson }} }'>
                     <input type="file" name="archive_file" accept=".vitals" required
                            class="sr-only"
-                           @change="hint = $el.files[0] ? $el.files[0].name : {{ t('settings.portability_v2_file_hint')|tojson }}; inspection = null; result = null">
+                           data-fallback="{{ t('settings.portability_v2_file_hint') }}"
+                           @change="hint = $el.files[0] ? $el.files[0].name : $el.dataset.fallback; inspection = null; result = null">
                     <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                     </svg>
