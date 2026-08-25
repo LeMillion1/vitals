@@ -61,6 +61,30 @@ def test_an_approved_grant_is_visible_everywhere_and_endable_from_anywhere(sign_
     assert not after.offers("/settings/access/grant/"), "the banner survived the revoke"
 
 
+def test_a_phone_shows_both_live_grants_and_stopping_one_keeps_the_other(sign_in):
+    admin = sign_in("admin")
+    admin.support_console().ask_for(
+        record="Patient 01", reason=REASON, domains=("labs",), hours=1
+    )
+    patient = sign_in("patient01", phone=True)
+    patient.access_history().allow()
+
+    admin.support_console().ask_for(
+        record="Patient 01",
+        reason="Investigating a nutrition import, ticket SUP-4472.",
+        domains=("nutrition",),
+        hours=2,
+    )
+    history = patient.access_history().allow()
+
+    assert history.live_grant_count == 2
+    assert history.page.locator("[data-support-live-grant] time[datetime]").count() == 2
+    history.stop_the_live_grant()
+    assert history.live_grant_count == 1
+    assert history.says("That access was stopped.")
+    assert not history.says("That access is closed.")
+
+
 def test_the_granted_record_opens_and_shows_only_what_was_granted(sign_in):
     """The link the console offers, followed.
 

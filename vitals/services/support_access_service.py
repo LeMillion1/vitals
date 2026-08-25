@@ -614,27 +614,62 @@ async def load_support_grant(
     )
 
 
-async def live_grant_for(
-    session: AsyncSession, *, context: AccessContext
-) -> SupportAccessGrant | None:
-    """The grant a banner is drawn from, or ``None``.
+@dataclass(frozen=True, slots=True)
+class PatientLiveGrant:
+    """One live support door as the record owner is entitled to see it."""
 
-    Separate from :func:`load_support_grant`, which answers the policy's
-    question and returns a frozen snapshot. This one answers the *screen's*
-    question — "is somebody from support in here right now, and until when" —
-    and the patient is entitled to that answer whether or not they are the one
-    holding the grant.
+    grant_id: uuid.UUID
+    grantee_username: str
+    expires_at: datetime
+    scope_keys: tuple[str, ...]
+
+
+async def live_grants_for(
+    session: AsyncSession, *, context: AccessContext
+) -> tuple[PatientLiveGrant, ...]:
+    """Every currently effective support grant for the owner's record.
+
+    This is deliberately a patient-only projection. A professional or support
+    holder may know the grant that authorizes *their* access, but must not use
+    this function to enumerate which other operators can reach the record.
     """
 
-    return await session.scalar(
-        select(SupportAccessGrant)
-        .where(
-            SupportAccessGrant.subject_id == context.subject_id,
-            SupportAccessGrant.status == SupportAccessStatus.ACTIVE.value,
-            SupportAccessGrant.expires_at > context.evaluated_at,
+    if context.subject_owner_user_id != context.principal.user_id:
+        raise NotTheSubjectOwner(
+            "only the person whose record it is may list every live support grant"
         )
-        .order_by(SupportAccessGrant.expires_at.desc())
-        .limit(1)
+
+    rows = (
+        await session.execute(
+            select(SupportAccessGrant, User.username)
+            .options(selectinload(SupportAccessGrant.scopes))
+            .join(User, User.id == SupportAccessGrant.granted_to_user_id)
+            .where(
+                SupportAccessGrant.subject_id == context.subject_id,
+                SupportAccessGrant.status == SupportAccessStatus.ACTIVE.value,
+                SupportAccessGrant.expires_at > context.evaluated_at,
+            )
+            .order_by(
+                SupportAccessGrant.expires_at,
+                SupportAccessGrant.approved_at,
+                SupportAccessGrant.id,
+            )
+        )
+    ).all()
+    return tuple(
+        PatientLiveGrant(
+            grant_id=grant.id,
+            grantee_username=username,
+            expires_at=_as_utc(grant.expires_at),
+            scope_keys=tuple(
+                sorted(
+                    f"{scope.resource_type}:{scope.resource_key}"
+                    for scope in grant.scopes
+                    if scope.action == SupportAccessMode.READ.value
+                )
+            ),
+        )
+        for grant, username in rows
     )
 
 
@@ -860,6 +895,7 @@ class ConsoleGrant:
     mode: str
     approved_at: datetime
     expires_at: datetime
+    scope_keys: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -911,6 +947,7 @@ async def console_for_admin(
     grant_rows = (
         await session.execute(
             select(SupportAccessGrant, HealthSubject.display_name)
+            .options(selectinload(SupportAccessGrant.scopes))
             .join(HealthSubject, HealthSubject.id == SupportAccessGrant.subject_id)
             .where(
                 SupportAccessGrant.granted_to_user_id == admin_user_id,
@@ -944,6 +981,13 @@ async def console_for_admin(
                 mode=grant.mode,
                 approved_at=_as_utc(grant.approved_at),
                 expires_at=_as_utc(grant.expires_at),
+                scope_keys=tuple(
+                    sorted(
+                        f"{scope.resource_type}:{scope.resource_key}"
+                        for scope in grant.scopes
+                        if scope.action == SupportAccessMode.READ.value
+                    )
+                ),
             )
             for grant, display_name in grant_rows
         ),
@@ -1075,12 +1119,13 @@ __all__ = [
     "Console",
     "ConsoleGrant",
     "ConsoleRequest",
+    "PatientLiveGrant",
     "approve_request",
     "console_for_admin",
     "decline_request",
     "expire_stale",
     "list_for_subject",
-    "live_grant_for",
+    "live_grants_for",
     "load_support_grant",
     "open_request",
     "read_scopes_for",

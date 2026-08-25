@@ -22,6 +22,21 @@ support-disclosure check, while the operational audit envelope remains free of
 health-category names and medical values. The full digest assembler keeps its
 existing behavior for weekly reports, proactive briefs, shares, and MCP.
 
+### Fixed — every live support grant is visible
+
+The patient's access centre now lists every simultaneous live support grant
+instead of whichever one happened to expire last. Each entry names the
+operator, shows the approved sections from the subject-protected grant, renders
+an exact local expiry in a semantic `time` element, and revokes only that one
+grant. Ending one door no longer claims all support access is closed while
+another operator still holds a live grant.
+
+The persistent banner stays visible on ordinary pages but carries only the
+number of active grants and a neutral link to review them; it no longer claims
+that following the link itself stops access, and it is not duplicated on the
+management page. The operator console also shows exact expiries and approved
+sections for every grant it holds.
+
 ### Fixed — support record reads are durable and visible
 
 A successful support-granted `/care/{subject}` response now commits one

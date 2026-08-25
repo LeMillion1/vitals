@@ -143,9 +143,13 @@ a current validation result.
   loaders; negative SQL tests cover withheld core and optional tables.
 - Repair, exceptional export, two-person break-glass approval, operational
   dashboards, and retention tooling remain deliberately refused or absent.
-- Active-grant expiry still renders as a date rather than an exact
-  time/countdown, multiple simultaneous live grants collapse to one banner, and
-  the UI does not clearly show who ended a grant. These are current UX defects.
+- Every simultaneous live support grant is now visible and independently
+  revocable on the patient's access page, with the holder, approved sections,
+  and exact local expiry. Shared chrome exposes only the active count and a
+  neutral management link. Historical rows still do not clearly distinguish
+  who ended a grant, and naturally lapsed pending requests can remain styled as
+  answerable until the maintenance job persists their expiry; these are current
+  UX defects.
 
 ### OIDC
 

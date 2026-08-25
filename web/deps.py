@@ -430,13 +430,13 @@ async def load_support_banner(
         context = await resolve_access_context(
             db, user_id=scope.user_id, subject_id=scope.subject_id
         )
-        grant = await support_access_service.live_grant_for(db, context=context)
-        if grant is not None:
-            # Only the two facts the banner shows. A live ORM row on
-            # ``request.state`` is one a template could lazy-load from.
+        grants = await support_access_service.live_grants_for(db, context=context)
+        if grants:
+            # Shared chrome says only that access exists and how many doors are
+            # open. Operator names and approved health categories stay on the
+            # subject-protected management page rather than entering every page.
             request.state.support_banner = {
-                "grant_id": str(grant.id),
-                "expires_at": grant.expires_at,
+                "active_count": len(grants),
             }
     except Exception:
         logger.exception("support banner load failed; hiding the banner")

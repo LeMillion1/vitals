@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -420,6 +421,55 @@ async def test_a_stranger_cannot_revoke_somebody_elses_grant(db_session):
         )
 
 
+async def test_the_owner_sees_every_live_support_grant_as_frozen_details(db_session):
+    owner, subject = await _patient(db_session, "sup-all-live")
+    first_admin = await _admin(db_session, "sup-all-live-first")
+    second_admin = await _admin(db_session, "sup-all-live-second")
+
+    first_request = await _ask(
+        db_session,
+        admin=first_admin,
+        subject=subject,
+        domains=(Domain.LABS,),
+        ttl=timedelta(hours=1),
+    )
+    second_request = await _ask(
+        db_session,
+        admin=second_admin,
+        subject=subject,
+        domains=(Domain.NUTRITION,),
+        ttl=timedelta(hours=2),
+    )
+    await support.approve_request(
+        db_session, owner_user_id=owner.id, request_id=first_request.id
+    )
+    await support.approve_request(
+        db_session, owner_user_id=owner.id, request_id=second_request.id
+    )
+    await db_session.commit()
+
+    owner_context = await resolve_access_context(
+        db_session, user_id=owner.id, subject_id=None
+    )
+    live = await support.live_grants_for(db_session, context=owner_context)
+
+    assert [grant.grantee_username for grant in live] == [
+        first_admin.username,
+        second_admin.username,
+    ]
+    assert [grant.scope_keys for grant in live] == [
+        (f"domain:{Domain.LABS.value}",),
+        (f"domain:{Domain.NUTRITION.value}",),
+    ]
+    assert live[0].expires_at < live[1].expires_at
+
+    holder_context = await resolve_access_context(
+        db_session, user_id=first_admin.id, subject_id=subject.id
+    )
+    with pytest.raises(support.NotTheSubjectOwner):
+        await support.live_grants_for(db_session, context=holder_context)
+
+
 async def test_only_the_asker_may_withdraw_the_ask(db_session):
     owner, subject = await _patient(db_session, "sup-withdraw")
     admin = await _admin(db_session, "sup-withdraw-admin")
@@ -713,6 +763,80 @@ async def test_the_patient_can_answer_from_the_page_and_the_banner_appears(
     page = await client.get("/weight", headers={"Accept": "text/html"})
     assert page.status_code == 200
     assert "/settings/access" in page.text
+
+
+async def test_every_live_grant_is_visible_and_one_revoke_leaves_the_other(
+    client, db_session, legacy_owner_roots
+):
+    first_admin = await _admin(db_session, "web-live-first-admin")
+    second_admin = await _admin(db_session, "web-live-second-admin")
+    first_request = await support.open_request(
+        db_session,
+        admin_user_id=first_admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Investigating the laboratory import.",
+        scopes=support.read_scopes_for((Domain.LABS,)),
+        ttl=timedelta(hours=1),
+    )
+    second_request = await support.open_request(
+        db_session,
+        admin_user_id=second_admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Investigating the nutrition import.",
+        scopes=support.read_scopes_for((Domain.NUTRITION,)),
+        ttl=timedelta(hours=2),
+    )
+    first_grant = await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=first_request.id,
+    )
+    second_grant = await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=second_request.id,
+    )
+    subject = await db_session.get(HealthSubject, legacy_owner_roots.subject_id)
+    await db_session.commit()
+
+    expected_expiries = {
+        grant.expires_at.astimezone(ZoneInfo(subject.timezone)).strftime(
+            "%d-%m-%Y %H:%M"
+        )
+        for grant in (first_grant, second_grant)
+    }
+
+    _sign_in(client, "tester")
+    management = await client.get(
+        "/settings/access", headers={"Accept": "text/html"}
+    )
+    assert management.status_code == 200
+    assert management.text.count("data-support-live-grant") == 2
+    assert "data-support-banner" not in management.text
+    assert first_admin.username in management.text
+    assert second_admin.username in management.text
+    assert management.text.count("<time datetime=") == 2
+    assert all(value in management.text for value in expected_expiries)
+    assert f'datetime="{first_grant.expires_at.isoformat()}"' in management.text
+    assert f'datetime="{second_grant.expires_at.isoformat()}"' in management.text
+
+    ordinary = await client.get("/weight", headers={"Accept": "text/html"})
+    assert ordinary.status_code == 200
+    assert ordinary.text.count("data-support-banner") == 1
+    assert "Активных доступов поддержки к этой записи: 2" in ordinary.text
+    assert "Проверить доступ" in ordinary.text
+    assert "Прекратить этот доступ" not in ordinary.text
+
+    stopped = await client.post(
+        f"/settings/access/grant/{first_grant.id}/revoke",
+        follow_redirects=True,
+    )
+    assert stopped.status_code == 200
+    assert stopped.text.count("data-support-live-grant") == 1
+    assert second_admin.username in stopped.text
+    assert first_admin.username in stopped.text  # Kept in the request history.
+    assert "Этот доступ прекращён." in stopped.text
+    assert "Доступ закрыт" not in stopped.text
 
 
 async def test_a_stale_login_must_reauthenticate_before_support_changes(

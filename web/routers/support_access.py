@@ -231,7 +231,7 @@ async def access_history(
     context = await resolve_access_context(db, user_id=_user_id, subject_id=None)
     history = await support.list_for_subject(db, subject_id=subject_id)
     opened = await support.record_opened_history(db, subject_id=subject_id)
-    live = await support.live_grant_for(db, context=context)
+    live_grants = await support.live_grants_for(db, context=context)
     return templates.TemplateResponse(
         request,
         "settings/access_history.html",
@@ -240,7 +240,7 @@ async def access_history(
             "history": history,
             "opened": opened.events,
             "opened_has_more": opened.has_more,
-            "live": live,
+            "live_grants": live_grants,
             "decided": decided,
             "error": error,
         },

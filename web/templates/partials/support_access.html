@@ -1,0 +1,16 @@
+{% macro scope_labels(scope_keys) -%}
+    {% for key in scope_keys %}
+        {% if key.startswith("domain:") %}
+            {{ t("enum.domain." ~ key[7:]) }}
+        {% elif key == "artifact:professional_note" %}
+            {{ t("support.scope_notes") }}
+        {% elif key == "artifact:care_plan" %}
+            {{ t("support.scope_plans") }}
+        {% else %}
+            {{ t("support.scope_other") }}
+        {% endif %}
+        {% if not loop.last %}, {% endif %}
+    {% else %}
+        {{ t("support.scope_none") }}
+    {% endfor %}
+{%- endmacro %}

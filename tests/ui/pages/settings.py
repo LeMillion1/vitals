@@ -83,7 +83,8 @@ class AccessHistoryPage(Page):
 
     ALLOW = 'button:has-text("Allow")'
     REFUSE = 'button:has-text("Refuse")'
-    STOP_NOW = 'button:has-text("Stop it now")'
+    STOP_NOW = 'button:has-text("Stop this access")'
+    LIVE_GRANT = "[data-support-live-grant]"
 
     #: The banner the chrome draws on *every* page while a grant is live. Read
     #: from here because that is where its link points, and the point of the
@@ -99,12 +100,16 @@ class AccessHistoryPage(Page):
         return self
 
     def stop_the_live_grant(self) -> "AccessHistoryPage":
-        self._act(self.STOP_NOW)
+        self._act(f"{self.STOP_NOW} >> nth=0")
         return self
 
     @property
     def has_a_pending_ask(self) -> bool:
         return self.page.locator(self.ALLOW).count() > 0
+
+    @property
+    def live_grant_count(self) -> int:
+        return self.page.locator(self.LIVE_GRANT).count()
 
 
 class SupportConsolePage(Page):

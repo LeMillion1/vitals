@@ -475,12 +475,11 @@
            on every page for as long as that lasts, and gone by itself when it
            does: a grant the person whose record it is has to go hunting through
            settings to discover is not meaningfully consented to. #}
-        {% if request.state.support_banner %}
-        <div class="flex-none px-6 pt-5 max-w-6xl mx-auto w-full">
+        {% if request.state.support_banner and request.url.path != '/settings/access' %}
+        <div class="flex-none px-6 pt-5 max-w-6xl mx-auto w-full" data-support-banner>
             <div class="v-alert warn flex flex-wrap items-center justify-between gap-3">
-                <span>{{ t("support.live_now") }} · {{ t("support.until") }}
-                    {{ request.state.support_banner.expires_at | format_date }}</span>
-                <a href="/settings/access" class="v-btn-ghost text-xs">{{ t("support.revoke") }}</a>
+                <span>{{ t("support.live_banner", count=request.state.support_banner.active_count) }}</span>
+                <a href="/settings/access" class="v-btn-ghost text-xs">{{ t("support.manage_access") }}</a>
             </div>
         </div>
         {% endif %}
