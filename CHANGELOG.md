@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — new-account proactive jobs remain quiet before opt-in
+
+Daily briefs and nudges now treat a completely absent notification preference
+bundle as an ordinary pre-configuration state. They skip without network work
+or dashboard failure alerts, while malformed and partially stored bundles still
+fail closed.
+
 ### Fixed — parallel Compose projects stay isolated
 
 Compose no longer assigns global container names, so project names once again
