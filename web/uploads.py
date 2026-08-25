@@ -18,14 +18,18 @@ from __future__ import annotations
 
 import codecs
 import hashlib
+import hmac
 import os
+import stat
 import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import PurePath
-from typing import AsyncIterator
+from typing import AsyncIterator, BinaryIO, Iterator
 
 from fastapi import HTTPException, UploadFile, status
+
+from vitals.enums import FileStorageBackend
 
 # Per-kind extension allowlists (lower-case, with the leading dot).
 IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"})
@@ -48,6 +52,7 @@ _DOCUMENT_MEDIA_TYPES = {
     ".heic": "image/heic",
     ".heif": "image/heif",
 }
+SAFE_MEDICAL_MEDIA_TYPES = frozenset(_DOCUMENT_MEDIA_TYPES.values())
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +68,22 @@ class PreparedMedicalDocument:
     @property
     def byte_size(self) -> int:
         return len(self.body)
+
+
+@dataclass(slots=True)
+class VerifiedPrivateFile:
+    """One integrity-checked descriptor, ready to stream without reopening."""
+
+    stream: BinaryIO
+    byte_size: int
+
+
+def safe_medical_media_type(media_type: str | None) -> str:
+    """Return only a content type that cannot turn a stored upload into HTML/SVG."""
+
+    if media_type in SAFE_MEDICAL_MEDIA_TYPES:
+        return media_type
+    return "application/octet-stream"
 
 
 def legacy_upload_disk_path(static_dir: str, storage_ref: str) -> str:
@@ -112,6 +133,95 @@ def private_file_disk_path(private_root: str, storage_ref: str) -> str:
     return path
 
 
+def stored_file_disk_path(
+    *,
+    storage_backend: str,
+    storage_ref: str,
+    static_dir: str,
+    private_root: str,
+) -> str:
+    """Resolve one supported backend without exposing its locator to a route."""
+
+    if storage_backend == FileStorageBackend.LEGACY_LOCAL.value:
+        return legacy_upload_disk_path(static_dir, storage_ref)
+    if storage_backend == FileStorageBackend.PRIVATE_LOCAL.value:
+        return private_file_disk_path(private_root, storage_ref)
+    raise ValueError("unsupported private-file storage backend")
+
+
+def open_verified_file(
+    *,
+    storage_backend: str,
+    storage_ref: str,
+    static_dir: str,
+    private_root: str,
+    expected_size: int | None,
+    expected_sha256: str | None,
+) -> VerifiedPrivateFile:
+    """Open, verify and return the same descriptor that delivery will stream.
+
+    Verification and response delivery must use one descriptor. Hashing a path
+    and then handing that path to ``FileResponse`` would allow a replacement in
+    between those operations. Legacy placeholders without complete metadata
+    remain readable during the compatibility window, but every active private
+    object is required by the schema to have both values.
+    """
+
+    if expected_size is not None and (
+        not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 0
+    ):
+        raise ValueError("stored file has invalid size metadata")
+    if expected_sha256 is not None and (
+        not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha256)
+    ):
+        raise ValueError("stored file has invalid digest metadata")
+
+    path = stored_file_disk_path(
+        storage_backend=storage_backend,
+        storage_ref=storage_ref,
+        static_dir=static_dir,
+        private_root=private_root,
+    )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    stream = os.fdopen(descriptor, "rb")
+    try:
+        file_stat = os.fstat(stream.fileno())
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError("stored object is not a regular file")
+        if expected_size is not None and file_stat.st_size != expected_size:
+            raise ValueError("stored file size does not match metadata")
+        if expected_sha256 is not None:
+            digest = hashlib.sha256()
+            while chunk := stream.read(_CHUNK):
+                digest.update(chunk)
+            if not hmac.compare_digest(digest.hexdigest(), expected_sha256):
+                raise ValueError("stored file digest does not match metadata")
+            stream.seek(0)
+        return VerifiedPrivateFile(stream=stream, byte_size=file_stat.st_size)
+    except BaseException:
+        stream.close()
+        raise
+
+
+def iter_verified_file(
+    verified: VerifiedPrivateFile,
+    *,
+    chunk_size: int = _CHUNK,
+) -> Iterator[bytes]:
+    """Stream a verified descriptor in bounded chunks and always close it."""
+
+    try:
+        while chunk := verified.stream.read(chunk_size):
+            yield chunk
+    finally:
+        verified.stream.close()
+
+
 def care_attachment_storage_ref(extension: str) -> str:
     """Mint a locator unrelated to patient, thread, filename, or download URL."""
 
@@ -152,16 +262,6 @@ def write_private_file(private_root: str, storage_ref: str, body: bytes) -> str:
             pass
         raise
     return path
-
-
-def file_sha256_hex(path: str) -> str:
-    """Hash a private file in bounded chunks before serving it."""
-
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        while chunk := stream.read(_CHUNK):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def file_ext(filename: str | None) -> str:
@@ -253,13 +353,14 @@ async def prepare_medical_document(
     file: UploadFile | None,
     *,
     max_bytes: int = DEFAULT_MAX_BYTES,
+    allowed_extensions: frozenset[str] = DOC_EXTS,
 ) -> PreparedMedicalDocument | None:
     """Validate one optional image/PDF without trusting its declared MIME type."""
 
     if file is None or not file.filename:
         return None
     original_filename = _safe_original_filename(file.filename)
-    extension = validate_extension(original_filename, DOC_EXTS)
+    extension = validate_extension(original_filename, allowed_extensions)
     body = await read_capped(file, max_bytes=max_bytes)
     if not _has_expected_signature(body, extension):
         raise HTTPException(

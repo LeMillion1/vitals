@@ -7,6 +7,7 @@ anything else joins it — which is how ``GET /openapi.json`` (122 paths, includ
 ``/glp1/injection`` and ``/hrt/*``, served to anyone who asked) stayed open for
 months while ``/docs`` and ``/redoc`` were shut.
 """
+import hashlib
 import json
 import os
 
@@ -175,7 +176,7 @@ async def an_owned_asset(db_session, owner_write, an_uploaded_file):
         storage_ref=file_key,
         media_type="image/png",
         size_bytes=15,
-        content_sha256="8" * 64,
+        content_sha256=hashlib.sha256(b"lab sheet bytes").hexdigest(),
     )
     await weight_service.add_progress_photo(
         db_session,
@@ -195,6 +196,75 @@ async def test_the_owner_gets_the_file_by_its_opaque_key(auth_client, an_owned_a
     assert r.content == b"lab sheet bytes"
     # Nothing left in the disk cache for the next person holding the device.
     assert "no-store" in r.headers["cache-control"]
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_a_same_size_replacement_fails_the_generic_download(
+    auth_client,
+    an_owned_asset,
+    an_uploaded_file,
+):
+    path = os.path.join(UPLOADS_DIR, an_uploaded_file)
+    with open(path, "wb") as stream:
+        stream.write(b"x" * len(b"lab sheet bytes"))
+
+    response = await auth_client.get(f"/files/{an_owned_asset.opaque_key}")
+
+    assert response.status_code == 404
+    assert b"lab sheet bytes" not in response.content
+
+
+async def test_a_historical_dangerous_mime_is_served_as_safe_binary(
+    auth_client,
+    db_session,
+    an_owned_asset,
+):
+    an_owned_asset.media_type = "image/svg+xml"
+    await db_session.commit()
+
+    response = await auth_client.get(f"/files/{an_owned_asset.opaque_key}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/octet-stream")
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_the_generic_download_supports_private_local_assets(
+    auth_client,
+    db_session,
+    owner_write,
+    monkeypatch,
+    tmp_path,
+):
+    import uuid
+
+    from vitals.enums import FileAssetPurpose
+    from vitals.services import file_asset_service
+    from web.uploads import write_private_file
+
+    private_root = tmp_path / "private-medical-files"
+    monkeypatch.setenv("VITALS_PRIVATE_FILE_ROOT", str(private_root))
+    payload = b"\x89PNG\r\n\x1a\nprivate-photo"
+    storage_ref = f"uploads/{uuid.uuid4().hex}.png"
+    write_private_file(str(private_root), storage_ref, payload)
+    asset = await file_asset_service.register_private_local(
+        db_session,
+        subject_id=owner_write.subject_id,
+        uploaded_by_user_id=owner_write.identity.actor_user_id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO,
+        storage_ref=storage_ref,
+        media_type="image/png",
+        size_bytes=len(payload),
+        content_sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    await db_session.commit()
+
+    response = await auth_client.get(f"/files/{asset.opaque_key}")
+
+    assert response.status_code == 200
+    assert response.content == payload
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
 
 
 async def test_a_download_needs_a_session(client, an_owned_asset):

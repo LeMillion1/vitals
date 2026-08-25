@@ -274,6 +274,14 @@ a stranger and 404 to the owner, and that difference tells the stranger the path
 was real. It exists only so the static mount can never reach the private tree,
 and a test pins that it is registered ahead of the mount.
 
+Upload boundaries now ignore browser-provided MIME claims. A canonical media
+type comes from the permitted PDF/image signature, and mismatched bytes are
+rejected before a file or metadata row is retained. Delivery resolves either
+the legacy-local or private-local backend, opens a regular non-symlink file,
+checks its recorded size and SHA-256, and streams the same descriptor instead of
+reopening a path after verification. Every private response is `no-store` and
+`nosniff`; all storage and integrity failures retain the same 404 surface.
+
 Remaining work: the bytes still live under `web/static/uploads` on the same bind
 mount as the site assets. Nothing serves from there any more, so the seal is
 sufficient, but moving the tree to a private root would make the guarantee

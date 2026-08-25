@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — verified medical-file upload and delivery
+
+Labs, body scans, progress photos, and care attachments now derive a canonical
+media type from a small allowed set of byte signatures instead of trusting the
+browser's MIME claim. Disguised SVG and other mismatched active content is
+rejected before persistence. Both legacy-local and private-local downloads open
+only regular, non-symlink files, verify their recorded size and SHA-256, and
+stream the same open descriptor that was checked, closing the former
+verify-then-reopen race. Private responses consistently use `no-store`,
+`nosniff`, bounded content length, and indistinguishable not-found errors.
+
 ### Added — separately reviewed, reversible support repair
 
 Platform support can now request one exact repair capability: clearing the

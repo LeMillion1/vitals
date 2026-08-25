@@ -3,7 +3,6 @@
 defer-retest, delete."""
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import uuid
@@ -33,10 +32,8 @@ from web.deps import get_session, require_auth
 from web.ratelimit import rate_limit
 from web.templating import STATIC_DIR, templates
 from web.uploads import (
-    DOC_EXTS,
     legacy_upload_disk_path,
-    read_capped,
-    validate_extension,
+    prepare_medical_document,
 )
 
 logger = logging.getLogger(__name__)
@@ -240,17 +237,10 @@ async def upload_document(
     # Validate/cap and persist private bytes before taking governance locks. The
     # first database phase either durably attaches these bytes to F/raw or rolls
     # back and removes them; no provider call happens until that phase commits.
-    ext = validate_extension(file.filename, DOC_EXTS)
-    contents = await read_capped(file)
-    media_type = (
-        "application/pdf"
-        if ext == ".pdf"
-        else (
-            file.content_type
-            if (file.content_type or "").lower().startswith("image/")
-            else "image/jpeg"
-        )
-    )
+    document = await prepare_medical_document(file)
+    assert document is not None  # FastAPI requires this upload field.
+    ext = document.extension
+    contents = document.body
     file_key = f"labs/{uuid.uuid4().hex}{ext}"
     file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
     prepared = None
@@ -262,9 +252,9 @@ async def upload_document(
             db,
             actor_username=username,
             storage_ref=file_key,
-            media_type=media_type,
-            byte_size=len(contents),
-            sha256_hex=hashlib.sha256(contents).hexdigest(),
+            media_type=document.media_type,
+            byte_size=document.byte_size,
+            sha256_hex=document.sha256_hex,
         )
     except (
         ai_gateway_service.AIGatewayConfigurationError,

@@ -3,7 +3,6 @@ body-composition scans (InBody / МедАсс — the optional ``body_comp`` mod
 from __future__ import annotations
 
 from datetime import date as date_type
-import hashlib
 import logging
 import os
 import uuid
@@ -40,11 +39,10 @@ from web.deps import get_session, require_auth, require_module
 from web.ratelimit import rate_limit
 from web.templating import STATIC_DIR, templates
 from web.uploads import (
-    DOC_EXTS,
     IMAGE_EXTS,
+    PreparedMedicalDocument,
     legacy_upload_disk_path,
-    read_capped,
-    validate_extension,
+    prepare_medical_document,
 )
 
 logger = logging.getLogger(__name__)
@@ -579,21 +577,24 @@ async def add_photo_entry(
         )
 
     written_paths: list[str] = []
-    prepared_files: list[tuple[str, str | None, bytes]] = []
+    prepared_files: list[tuple[str, PreparedMedicalDocument]] = []
     try:
         for f in uploaded_files:
-            file_extension = validate_extension(f.filename, IMAGE_EXTS)
-            contents = await read_capped(f)
-            unique_filename = f"{uuid.uuid4().hex}{file_extension}"
+            document = await prepare_medical_document(
+                f,
+                allowed_extensions=IMAGE_EXTS,
+            )
+            assert document is not None  # The collection excludes blank fields.
+            unique_filename = f"{uuid.uuid4().hex}{document.extension}"
             file_key = f"uploads/{unique_filename}"
             file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             written_paths.append(file_path)
 
             with open(file_path, "wb") as buffer:
-                buffer.write(contents)
+                buffer.write(document.body)
 
-            prepared_files.append((file_key, f.content_type or None, contents))
+            prepared_files.append((file_key, document))
 
         conflict_context, prepared = await _prepare_aux_write(
             db,
@@ -601,16 +602,16 @@ async def add_photo_entry(
             on_date=on_date,
         )
         identity = conflict_context.identity
-        for file_key, content_type, contents in prepared_files:
+        for file_key, document in prepared_files:
             asset = await file_asset_service.register_legacy_local(
                 db,
                 subject_id=identity.subject_id,
                 uploaded_by_user_id=identity.actor_user_id,
                 purpose=FileAssetPurpose.PROGRESS_PHOTO,
                 storage_ref=file_key,
-                media_type=content_type,
-                size_bytes=len(contents),
-                content_sha256=hashlib.sha256(contents).hexdigest(),
+                media_type=document.media_type,
+                size_bytes=document.byte_size,
+                content_sha256=document.sha256_hex,
             )
             await weight_service.add_progress_photo(
                 db,
@@ -715,17 +716,10 @@ async def body_scan_upload(
     from vitals.utils.timeutils import today_local
 
     # 415/413 surface as HTTP errors (handled by the client's error branch).
-    ext = validate_extension(file.filename, DOC_EXTS)
-    contents = await read_capped(file)
-    media_type = (
-        "application/pdf"
-        if ext == ".pdf"
-        else (
-            file.content_type
-            if (file.content_type or "").lower().startswith("image/")
-            else "image/jpeg"
-        )
-    )
+    document = await prepare_medical_document(file)
+    assert document is not None  # FastAPI requires this upload field.
+    ext = document.extension
+    contents = document.body
     file_key = f"body/{uuid.uuid4().hex}{ext}"
     file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
     prepared = None
@@ -737,9 +731,9 @@ async def body_scan_upload(
             db,
             actor_username=username,
             storage_ref=file_key,
-            media_type=media_type,
-            byte_size=len(contents),
-            sha256_hex=hashlib.sha256(contents).hexdigest(),
+            media_type=document.media_type,
+            byte_size=document.byte_size,
+            sha256_hex=document.sha256_hex,
         )
     except (
         ai_gateway_service.AIGatewayConfigurationError,

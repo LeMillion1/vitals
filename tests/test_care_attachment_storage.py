@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import os
 from pathlib import Path
 
@@ -10,7 +11,10 @@ import pytest
 from fastapi import HTTPException, UploadFile
 
 from web.uploads import (
+    IMAGE_EXTS,
     care_attachment_storage_ref,
+    iter_verified_file,
+    open_verified_file,
     prepare_medical_document,
     private_file_disk_path,
     write_private_file,
@@ -69,6 +73,57 @@ async def test_upload_metadata_comes_from_verified_bytes_not_the_browser():
     assert prepared.media_type == "application/pdf"
     assert prepared.original_filename == "result.pdf"
     assert prepared.body == payload
+
+
+async def test_image_mime_is_canonical_even_when_the_browser_claims_svg():
+    payload = b"\xff\xd8\xffsynthetic-jpeg"
+    upload = UploadFile(
+        filename="progress.jpg",
+        file=io.BytesIO(payload),
+        headers={"content-type": "image/svg+xml"},
+    )
+
+    prepared = await prepare_medical_document(
+        upload,
+        allowed_extensions=IMAGE_EXTS,
+    )
+
+    assert prepared is not None
+    assert prepared.media_type == "image/jpeg"
+    assert prepared.body == payload
+
+
+async def test_svg_bytes_disguised_as_a_jpeg_are_rejected():
+    upload = UploadFile(
+        filename="progress.jpg",
+        file=io.BytesIO(b"<svg><script>alert(1)</script></svg>"),
+        headers={"content-type": "image/svg+xml"},
+    )
+
+    with pytest.raises(HTTPException) as rejected:
+        await prepare_medical_document(upload, allowed_extensions=IMAGE_EXTS)
+    assert rejected.value.status_code == 415
+
+
+def test_verified_reader_streams_the_descriptor_it_hashed(tmp_path):
+    storage_ref = care_attachment_storage_ref(".pdf")
+    original = b"%PDF-1.7\noriginal\n%%EOF\n"
+    replacement = b"%PDF-1.7\nreplaced\n%%EOF\n"
+    assert len(original) == len(replacement)
+    path = write_private_file(str(tmp_path), storage_ref, original)
+    verified = open_verified_file(
+        storage_backend="private_local",
+        storage_ref=storage_ref,
+        static_dir=str(tmp_path / "static"),
+        private_root=str(tmp_path),
+        expected_size=len(original),
+        expected_sha256=hashlib.sha256(original).hexdigest(),
+    )
+
+    os.unlink(path)
+    write_private_file(str(tmp_path), storage_ref, replacement)
+
+    assert b"".join(iter_verified_file(verified, chunk_size=5)) == original
 
 
 async def test_client_paths_are_removed_from_the_display_filename():

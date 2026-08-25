@@ -1321,6 +1321,33 @@ async def test_upload_extension_allowlist_rejected(auth_client):
     assert r.status_code == 415
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "data"),
+    (
+        ("/labs/upload", None),
+        ("/weight/body-scan/upload", None),
+        ("/weight/photo", {"date": "2026-08-25"}),
+    ),
+)
+async def test_medical_upload_rejects_svg_bytes_disguised_as_jpeg(
+    auth_client,
+    endpoint,
+    data,
+):
+    response = await auth_client.post(
+        endpoint,
+        data=data,
+        files={
+            "file": (
+                "medical.jpg",
+                b"<svg><script>alert(1)</script></svg>",
+                "image/svg+xml",
+            )
+        },
+    )
+
+    assert response.status_code == 415
+
 async def test_upload_read_capped_enforces_size_limit():
     """read_capped aborts with HTTP 413 once the body exceeds the cap."""
     from fastapi import HTTPException
@@ -1564,7 +1591,7 @@ async def test_progress_photo_upload_and_delete(auth_client, db_session):
     from vitals.models.weight import ProgressPhoto
     from web.templating import STATIC_DIR
 
-    photo_data = b"fake-jpeg-image-bytes"
+    photo_data = b"\xff\xd8\xfffake-jpeg-image-bytes"
     file_path = None
 
     try:
@@ -1619,9 +1646,9 @@ async def test_progress_photo_multiple_upload_success(auth_client, db_session):
     from vitals.models.weight import ProgressPhoto
     from web.templating import STATIC_DIR
 
-    photo_data_1 = b"fake-jpeg-image-bytes-1"
-    photo_data_2 = b"fake-jpeg-image-bytes-2"
-    photo_data_3 = b"fake-jpeg-image-bytes-3"
+    photo_data_1 = b"\xff\xd8\xfffake-jpeg-image-bytes-1"
+    photo_data_2 = b"\xff\xd8\xfffake-jpeg-image-bytes-2"
+    photo_data_3 = b"\xff\xd8\xfffake-jpeg-image-bytes-3"
     file_paths = []
 
     try:
@@ -1669,7 +1696,7 @@ async def test_progress_photo_multiple_upload_limit_exceeded(auth_client, db_ses
     """Test that uploading more than 5 progress photos is blocked with a 400 response."""
     from vitals.models.weight import ProgressPhoto
 
-    photo_data = b"fake-jpeg-image-bytes"
+    photo_data = b"\xff\xd8\xfffake-jpeg-image-bytes"
 
     # Upload 6 photos via /weight/photo
     response = await auth_client.post(

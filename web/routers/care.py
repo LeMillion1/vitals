@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import date as date_type
+from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
@@ -20,7 +21,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,13 +42,14 @@ from vitals.services.care import threads as care_threads
 from web.care_context import CareContext, principal_user_id, require_care_context
 from web.config import get_web_config
 from web.deps import get_session, require_auth
-from web.templating import templates
+from web.templating import STATIC_DIR, templates
 from web.uploads import (
     PreparedMedicalDocument,
     care_attachment_storage_ref,
-    file_sha256_hex,
+    iter_verified_file,
+    open_verified_file,
     prepare_medical_document,
-    private_file_disk_path,
+    safe_medical_media_type,
     write_private_file,
 )
 
@@ -708,7 +710,7 @@ async def download_message_attachment(
     attachment_id: uuid.UUID,
     care: CareContext = Depends(require_care_context),
     db: AsyncSession = Depends(get_session),
-) -> FileResponse:
+) -> StreamingResponse:
     """Download one attachment after re-checking live thread access."""
 
     try:
@@ -718,26 +720,30 @@ async def download_message_attachment(
             thread_id=thread_id,
             attachment_id=attachment_id,
         )
-        path = private_file_disk_path(
-            get_web_config().private_file_root,
-            resolved.file_asset.storage_ref,
+        verified = await run_in_threadpool(
+            open_verified_file,
+            storage_backend=resolved.file_asset.storage_backend,
+            storage_ref=resolved.file_asset.storage_ref,
+            static_dir=STATIC_DIR,
+            private_root=get_web_config().private_file_root,
+            expected_size=resolved.file_asset.byte_size,
+            expected_sha256=resolved.file_asset.sha256_hex,
         )
-    except (care_threads.CareThreadError, ValueError):
+    except (care_threads.CareThreadError, OSError, ValueError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
-    if (
-        not os.path.isfile(path)
-        or os.path.getsize(path) != resolved.file_asset.byte_size
-    ):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    if await run_in_threadpool(file_sha256_hex, path) != resolved.file_asset.sha256_hex:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-    return FileResponse(
-        path,
-        media_type=resolved.file_asset.media_type or "application/octet-stream",
-        filename=resolved.attachment.original_filename,
-        content_disposition_type="attachment",
-        headers={"Cache-Control": "private, no-store"},
+    encoded_filename = quote(resolved.attachment.original_filename, safe="")
+    return StreamingResponse(
+        iter_verified_file(verified),
+        media_type=safe_medical_media_type(resolved.file_asset.media_type),
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": (
+                "attachment; filename*=utf-8''" + encoded_filename
+            ),
+            "Content-Length": str(verified.byte_size),
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

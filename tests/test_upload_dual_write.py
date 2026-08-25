@@ -586,7 +586,7 @@ async def test_lab_precommit_failure_rolls_back_metadata_and_removes_bytes(
     with pytest.raises(RuntimeError, match="pre-commit"):
         await auth_client.post(
             "/labs/upload",
-            files={"file": ("panel.png", b"synthetic-lab", "image/png")},
+            files={"file": ("panel.png", b"\x89PNG\r\n\x1a\nsynthetic-lab", "image/png")},
         )
 
     assert _directory_snapshot("labs") == before
@@ -631,7 +631,7 @@ async def test_lab_partial_file_write_failure_removes_sensitive_bytes(
     with pytest.raises(OSError, match="partial lab write"):
         await auth_client.post(
             "/labs/upload",
-            files={"file": ("panel.png", b"synthetic-private-lab", "image/png")},
+            files={"file": ("panel.png", b"\x89PNG\r\n\x1a\nsynthetic-private-lab", "image/png")},
         )
 
     assert _directory_snapshot("labs") == before
@@ -671,7 +671,7 @@ async def test_lab_local_pdf_failure_releases_unpaid_invocation(
 
     response = await auth_client.post(
         "/labs/upload",
-        files={"file": ("broken.pdf", b"not-a-valid-pdf", "application/pdf")},
+        files={"file": ("broken.pdf", b"%PDF-not-a-valid-pdf", "application/pdf")},
     )
 
     assert response.status_code == 200
@@ -738,7 +738,7 @@ async def test_lab_t3_transient_failure_reuses_completion_without_second_call(
 
     response = await auth_client.post(
         "/labs/upload",
-        files={"file": ("panel.png", b"synthetic-lab", "image/png")},
+        files={"file": ("panel.png", b"\x89PNG\r\n\x1a\nsynthetic-lab", "image/png")},
     )
 
     assert response.status_code == 200
@@ -762,7 +762,7 @@ async def test_progress_precommit_failure_rolls_back_metadata_and_removes_bytes(
         await auth_client.post(
             "/weight/photo",
             data={"date": "2026-08-19"},
-            files={"file": ("progress.png", b"synthetic-photo", "image/png")},
+            files={"file": ("progress.png", b"\x89PNG\r\n\x1a\nsynthetic-photo", "image/png")},
         )
 
     assert _directory_snapshot("") == before
@@ -807,7 +807,7 @@ async def test_document_commit_ambiguity_preserves_committed_metadata_and_bytes(
     with pytest.raises(RuntimeError, match="lost commit"):
         await auth_client.post(
             endpoint,
-            files={"file": (file_name, b"synthetic-document", "image/png")},
+            files={"file": (file_name, b"\x89PNG\r\n\x1a\nsynthetic-document", "image/png")},
         )
 
     added = _directory_snapshot(relative_dir) - before
@@ -834,7 +834,7 @@ async def test_progress_commit_ambiguity_preserves_committed_metadata_and_bytes(
         await auth_client.post(
             "/weight/photo",
             data={"date": "2026-08-19"},
-            files={"file": ("progress.png", b"synthetic-photo", "image/png")},
+            files={"file": ("progress.png", b"\x89PNG\r\n\x1a\nsynthetic-photo", "image/png")},
         )
 
     photo = await db_session.scalar(select(ProgressPhoto))
@@ -863,7 +863,7 @@ async def test_web_document_upload_stamps_openrouter_connection(
     )
     response = await auth_client.post(
         "/labs/upload",
-        files={"file": ("panel.png", b"synthetic-lab", "image/png")},
+        files={"file": ("panel.png", b"\x89PNG\r\n\x1a\nsynthetic-lab", "image/png")},
     )
     assert response.status_code == 200
     payload = response.json()["lab"]

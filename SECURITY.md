@@ -79,6 +79,13 @@ token files, environment variants, private keys/certificates, local databases,
 and backups. A runtime bind mount can hide a path in a running container but
 cannot remove bytes already captured by an earlier `COPY` image layer.
 
+Medical image/PDF uploads are accepted only when their bytes match the permitted
+extension, and the stored media type is derived from that signature rather than
+from a browser header. Private downloads verify recorded length and SHA-256 on a
+regular non-symlink file and stream that same open descriptor, so a path cannot
+be replaced between verification and delivery. Responses use private
+`no-store`, `nosniff`, and one indistinguishable not-found boundary.
+
 Browser cookies are signed, not encrypted. New compatibility cookies carry only
 a format version, token type, legacy auth source, and username; roles, subjects,
 grants, credentials, and PHI are deliberately excluded. Existing signed

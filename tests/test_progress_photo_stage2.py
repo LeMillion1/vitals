@@ -1220,7 +1220,7 @@ async def test_the_asset_is_the_download_authority_not_the_fact_that_points_at_i
             storage_ref=file_key,
             media_type="image/png",
             size_bytes=len(contents),
-            content_sha256="b" * 64,
+            content_sha256=hashlib.sha256(contents).hexdigest(),
         )
         photo = await weight_service.add_progress_photo(
             db_session,
@@ -1304,7 +1304,7 @@ async def test_a_migrated_photo_with_no_uploader_still_downloads(
         storage_ref=f"uploads/{route_key}",
         media_type="image/png",
         size_bytes=len(contents),
-        content_sha256="d" * 64,
+        content_sha256=hashlib.sha256(contents).hexdigest(),
     )
     photo = ProgressPhoto(
         subject_id=identity.subject_id,
@@ -1375,7 +1375,7 @@ async def test_what_withdraws_a_download_and_what_only_looks_like_it_should(
         storage_ref=file_key,
         media_type="image/png",
         size_bytes=len(contents),
-        content_sha256="d" * 64,
+        content_sha256=hashlib.sha256(contents).hexdigest(),
     )
     photo = await weight_service.add_progress_photo(
         db_session,
@@ -1409,7 +1409,7 @@ async def test_what_withdraws_a_download_and_what_only_looks_like_it_should(
             storage_ref=route_key,
             media_type="image/png",
             size_bytes=len(contents),
-            content_sha256="e" * 64,
+            content_sha256=hashlib.sha256(contents).hexdigest(),
         )
     await db_session.commit()
 
