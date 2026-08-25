@@ -8,6 +8,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — encrypted personal portability v2
+
+An owner can now download one password-protected `.vitals` record containing
+portable health facts and verified private medical files without exporting
+accounts, credentials, care conversations, access history, or installation
+settings. Restore first authenticates and inspects the same browser-held file,
+then asks for explicit local integration matches before replacing only that
+owner's record. The replacement, provenance rebuild, control-state preflight,
+resource registration, old-file retirement, and idempotency receipt commit as
+one operation; physical file deletion happens only after the commit is proven.
+
+Settings presents this as one protected download and one check-then-confirm
+restore flow. Legacy single-record JSON tools remain collapsed and
+operator-only instead of competing with normal personal portability.
+
 ### Changed — ownership cutover programs leave the service layer
 
 The eighteen subject-ownership backfills plus their validation and audit tools

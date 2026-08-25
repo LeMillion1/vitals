@@ -63,6 +63,13 @@ _USABLE_CONNECTION_STATUSES = (
     IntegrationConnectionStatus.ACTIVE.value,
 )
 _MAX_MAPPING_JSON_BYTES = 64 * 1024
+_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+_PROVIDER_LABELS = {
+    "garmin": "Garmin",
+    "hevy": "Hevy",
+    "openrouter": "OpenRouter",
+    "telegram": "Telegram",
+}
 
 
 async def _authorize_personal_portability(db: AsyncSession, username: str):
@@ -128,6 +135,19 @@ def _connection_mapping(value: str) -> dict[str, uuid.UUID]:
     return result
 
 
+def _iter_download(source):
+    while chunk := source.read(_DOWNLOAD_CHUNK_BYTES):
+        yield chunk
+
+
+def _connection_label(provider: str, connection_type: str) -> str:
+    return t(
+        "portability.v2.connection_descriptor",
+        provider=_PROVIDER_LABELS.get(provider, provider),
+        connection_type=t(f"portability.v2.connection_type.{connection_type}"),
+    )
+
+
 @router.post("/export")
 async def export_personal_record_v2(
     passphrase: str = Form(...),
@@ -164,7 +184,7 @@ async def export_personal_record_v2(
 
     filename = f"vitals_record_{uuid.uuid4().hex[:12]}.vitals"
     return StreamingResponse(
-        destination,
+        _iter_download(destination),
         media_type="application/vnd.vitals.portability",
         headers={
             **PRIVATE_DOWNLOAD_HEADERS,
@@ -218,6 +238,10 @@ async def inspect_personal_record_v2(
     )
     connections: list[dict[str, object]] = []
     for descriptor in descriptors:
+        descriptor_label = _connection_label(
+            descriptor.provider,
+            descriptor.connection_type,
+        )
         matching = tuple(
             candidate
             for candidate in candidates
@@ -229,12 +253,14 @@ async def inspect_personal_record_v2(
                 "ref": descriptor.ref,
                 "provider": descriptor.provider,
                 "connection_type": descriptor.connection_type,
+                "label": descriptor_label,
                 "candidates": [
                     {
                         "id": str(candidate.id),
-                        "label": (
-                            f"{candidate.provider} · {candidate.connection_type} · "
-                            f"{str(candidate.id)[:8]}"
+                        "label": t(
+                            "portability.v2.connection_candidate",
+                            connection=descriptor_label,
+                            suffix=str(candidate.id)[:8],
                         ),
                     }
                     for candidate in matching

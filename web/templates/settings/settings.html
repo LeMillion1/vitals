@@ -464,72 +464,141 @@
     </div>
 
     <!-- ─── DATA PORTABILITY ───────────────────────────────────────────────── -->
-    <div class="v-card v-setting-row p-6 space-y-5">
+    <div class="v-card v-setting-row p-6 space-y-5" x-data="portabilityV2()">
         {{ card_header(t("settings.data_title")) }}
         <p class="v-text-body" style="color: var(--muted)">
-            {{ t("settings.data_description") }}
+            {{ t("settings.portability_v2_description") }}
         </p>
 
-        <!-- Export -->
-        <div class="space-y-2.5">
-            <span class="v-label">{{ t("settings.export_label") }}</span>
-            <div class="flex flex-col sm:flex-row gap-3">
-                <a href="/settings/export" class="v-btn text-xs text-center" download hx-boost="false"
-                    data-export-toast="{{ t('settings.export_started') }}"
-                    onclick="window.vitalsToast(this.dataset.exportToast, 'success')">
-                    ⬇️ {{ t("settings.export_full") }}
-                </a>
-                <a href="/settings/export-subject" class="v-btn-ghost text-xs text-center" download hx-boost="false"
-                    data-export-toast="{{ t('settings.export_started') }}"
-                    onclick="window.vitalsToast(this.dataset.exportToast, 'success')">
-                    {{ t("settings.export_subject") }}
-                </a>
-                <a href="/settings/export-llm" class="v-btn-ghost text-xs text-center" download hx-boost="false"
-                    data-export-toast="{{ t('settings.export_started') }}"
-                    onclick="window.vitalsToast(this.dataset.exportToast, 'success')">
-                    {{ t("settings.export_llm") }}
-                </a>
+        <div class="v-card-inset p-4 space-y-4">
+            <div class="space-y-1">
+                <h3 class="v-text-card">{{ t("settings.portability_v2_export_title") }}</h3>
+                <p class="v-text-micro" style="color: var(--muted)">
+                    {{ t("settings.portability_v2_export_hint") }}
+                </p>
             </div>
-            <p class="v-text-micro" style="color: var(--muted)">
-                {{ t("settings.export_hint") }}
-            </p>
+            <form action="/settings/portability-v2/export" method="POST" hx-boost="false"
+                  class="grid grid-cols-1 sm:grid-cols-2 gap-3"
+                  @submit="prepareExport($event)">
+                <label class="space-y-1.5">
+                    <span class="v-label">{{ t("settings.portability_v2_passphrase") }}</span>
+                    <input x-ref="exportPassphrase" name="passphrase" type="password"
+                           class="v-input" minlength="12" maxlength="1024" required
+                           autocomplete="new-password">
+                </label>
+                <label class="space-y-1.5">
+                    <span class="v-label">{{ t("settings.portability_v2_passphrase_confirm") }}</span>
+                    <input x-ref="exportPassphraseConfirmation" type="password"
+                           class="v-input" minlength="12" maxlength="1024" required
+                           autocomplete="new-password">
+                </label>
+                <div class="sm:col-span-2 flex flex-col sm:flex-row sm:items-center gap-3">
+                    <button type="submit" class="v-btn text-xs">
+                        {{ t("settings.portability_v2_download") }}
+                    </button>
+                    <a href="/settings/export-llm" class="v-btn-ghost text-xs text-center"
+                       download hx-boost="false">
+                        {{ t("settings.export_llm") }}
+                    </a>
+                </div>
+            </form>
         </div>
 
-        <!-- Import -->
-        <div class="space-y-3 pt-4" style="border-top: 1px solid var(--line)">
-            <span class="v-label">{{ t("settings.import_label") }}</span>
-            <div class="v-alert warn">
-                {{ t("settings.import_warning") }}
+        <div class="space-y-4 pt-4" style="border-top: 1px solid var(--line)">
+            <div class="space-y-1">
+                <h3 class="v-text-card">{{ t("settings.portability_v2_restore_title") }}</h3>
+                <p class="v-text-micro" style="color: var(--muted)">
+                    {{ t("settings.portability_v2_restore_hint") }}
+                </p>
             </div>
-            <form hx-post="/settings/import-subject" hx-encoding="multipart/form-data"
-                  hx-confirm="{{ t('settings.import_subject_confirm') }}"
-                  hx-target="#import-result" hx-swap="innerHTML" class="space-y-3">
-                <label class="v-input flex items-center gap-3 cursor-pointer">
-                    <input type="file" name="backup_file" accept=".json" required
-                           class="text-xs" style="color: var(--muted)">
-                </label>
-                <button type="submit" class="v-btn text-xs">{{ t("settings.import_subject_submit") }}</button>
-            </form>
-            <div id="import-result-subject"></div>
-
-            <span class="v-label pt-2">{{ t("settings.import_full_label") }}</span>
-            <form hx-post="/settings/import" hx-encoding="multipart/form-data"
-                  hx-confirm="{{ t('settings.import_confirm') }}"
-                  hx-target="#import-result" hx-swap="innerHTML" class="space-y-3">
-                <label class="v-file-drop cursor-pointer" x-data='{ hint: "{{ t("settings.import_drop_hint") }}" }'>
-                    <input type="file" name="backup_file" accept=".json,application/json" required
+            <div class="v-alert warn">
+                {{ t("settings.portability_v2_restore_warning") }}
+            </div>
+            <form x-ref="importForm" class="space-y-3" @submit.prevent="inspect()">
+                <label class="v-file-drop cursor-pointer"
+                       x-data='{ hint: {{ t("settings.portability_v2_file_hint")|tojson }} }'>
+                    <input type="file" name="archive_file" accept=".vitals" required
                            class="sr-only"
-                           @change="hint = $el.files[0] ? $el.files[0].name : '{{ t("settings.import_drop_hint") }}'">
+                           @change="hint = $el.files[0] ? $el.files[0].name : {{ t('settings.portability_v2_file_hint')|tojson }}; inspection = null; result = null">
                     <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                     </svg>
-                    <span class="v-file-drop__text">{{ t("settings.import_drop_text") }}</span>
+                    <span class="v-file-drop__text">{{ t("settings.portability_v2_choose_file") }}</span>
                     <span class="v-file-drop__hint" x-text="hint"></span>
                 </label>
-                <button type="submit" class="v-btn text-xs">{{ t("settings.import_submit") }}</button>
+                <label class="space-y-1.5 block">
+                    <span class="v-label">{{ t("settings.portability_v2_passphrase") }}</span>
+                    <input name="passphrase" type="password" class="v-input"
+                           minlength="12" maxlength="1024" required autocomplete="current-password"
+                           @input="inspection = null; result = null">
+                </label>
+                <button type="submit" class="v-btn-ghost text-xs" :disabled="busy">
+                    <span x-show="busy !== 'inspect'">{{ t("settings.portability_v2_inspect") }}</span>
+                    <span x-show="busy === 'inspect'">{{ t("settings.portability_v2_inspecting") }}</span>
+                </button>
+            </form>
+
+            <div class="v-alert block" x-show="error" x-cloak x-text="error"></div>
+            <div class="v-card-inset p-4 space-y-4" x-show="inspection" x-cloak>
+                <p class="v-text-body">
+                    {{ t("settings.portability_v2_summary") }}
+                    <strong x-text="inspection ? inspection.row_count : 0"></strong>
+                    {{ t("settings.portability_v2_rows") }} ·
+                    <strong x-text="inspection ? inspection.resource_count : 0"></strong>
+                    {{ t("settings.portability_v2_files") }}
+                </p>
+                <template x-for="connection in (inspection ? inspection.connections : [])"
+                          :key="connection.ref">
+                    <label class="space-y-1.5 block">
+                        <span class="v-label" x-text="connection.label"></span>
+                        <select class="v-input" x-model="mapping[connection.ref]"
+                                :required="connection.candidates.length > 0"
+                                :disabled="connection.candidates.length === 0">
+                            <option value="">{{ t("settings.portability_v2_choose_connection") }}</option>
+                            <template x-for="candidate in connection.candidates" :key="candidate.id">
+                                <option :value="candidate.id" x-text="candidate.label"></option>
+                            </template>
+                        </select>
+                        <span class="v-text-micro" style="color: var(--bad)"
+                              x-show="connection.candidates.length === 0">
+                            {{ t("settings.portability_v2_connection_missing") }}
+                        </span>
+                    </label>
+                </template>
+                <button type="button" class="v-btn-danger text-xs" @click="apply()"
+                        :disabled="!canApply()">
+                    <span x-show="busy !== 'apply'">{{ t("settings.portability_v2_apply") }}</span>
+                    <span x-show="busy === 'apply'">{{ t("settings.portability_v2_applying") }}</span>
+                </button>
+            </div>
+            <div class="v-alert good" x-show="result" x-cloak>
+                <span>{{ t("settings.portability_v2_success") }}</span>
+                <span x-show="result && result.cleanup_pending">
+                    {{ t("settings.portability_v2_cleanup_pending") }}
+                </span>
+            </div>
+        </div>
+
+        {% if can_manage_openrouter %}
+        <details class="v-card-inset p-4">
+            <summary class="v-text-card cursor-pointer">{{ t("settings.portability_legacy_title") }}</summary>
+            <p class="v-text-micro mt-2" style="color: var(--muted)">
+                {{ t("settings.portability_legacy_hint") }}
+            </p>
+            <div class="flex flex-col sm:flex-row gap-3 mt-3">
+                <a href="/settings/export" class="v-btn-ghost text-xs text-center" download hx-boost="false">
+                    {{ t("settings.export_full") }}
+                </a>
+            </div>
+            <form hx-post="/settings/import" hx-encoding="multipart/form-data"
+                  hx-confirm="{{ t('settings.import_confirm') }}"
+                  hx-target="#import-result" hx-swap="innerHTML" class="space-y-3 mt-3">
+                <input type="file" name="backup_file" accept=".json,application/json" required class="v-input">
+                <button type="submit" class="v-btn-ghost text-xs">{{ t("settings.import_submit") }}</button>
             </form>
             <div id="import-result"></div>
-        </div>
+        </details>
+        {% endif %}
     </div>
 
     <!-- ─── SIGNING IN: password + two-factor ──────────────────────────────── -->

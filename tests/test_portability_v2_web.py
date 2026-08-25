@@ -93,10 +93,11 @@ async def test_inspection_exposes_only_usable_same_subject_mapping_candidates(
     descriptors = response.json()["connections"]
     garmin = next(item for item in descriptors if item["provider"] == "garmin")
     assert garmin["connection_type"] == "account"
+    assert garmin["label"] == "Garmin · аккаунт"
     assert garmin["candidates"] == [
         {
             "id": str(garmin_connection_id),
-            "label": f"garmin · account · {str(garmin_connection_id)[:8]}",
+            "label": f"Garmin · аккаунт · {str(garmin_connection_id)[:8]}",
         }
     ]
     serialized = response.text

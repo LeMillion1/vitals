@@ -115,9 +115,17 @@ async def test_settings_page_renders(auth_client):
     assert "Двухфакторная защита" in r.text
     assert 'name="garmin_weight_export_minutes"' in r.text
     assert 'name="garmin_weight_max_age_days"' in r.text
-    # Verify download links have hx-boost="false" to bypass HTMX boosting
-    assert 'href="/settings/export" class="v-btn text-xs text-center" download hx-boost="false"' in r.text
-    assert 'href="/settings/export-llm" class="v-btn-ghost text-xs text-center" download hx-boost="false"' in r.text
+    # Personal portability is one password-protected flow; legacy JSON remains
+    # tucked away for installation operators instead of competing with it.
+    assert 'action="/settings/portability-v2/export" method="POST"' in r.text
+    assert "fetch('/settings/portability-v2/inspect'" not in r.text
+    assert 'x-data="portabilityV2()"' in r.text
+    assert 'name="archive_file" accept=".vitals"' in r.text
+    assert 'href="/settings/export-subject"' not in r.text
+    assert 'hx-post="/settings/import-subject"' not in r.text
+    # Non-restorable AI digest remains a clearly separate secondary download.
+    assert 'href="/settings/export-llm"' in r.text
+    assert 'download hx-boost="false"' in r.text
 
 
 async def test_settings_page_has_gear_icon(auth_client):
@@ -877,5 +885,4 @@ async def test_settings_save_proactive_no_adjusted_flag_in_range(auth_client):
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/settings?saved=proactive"
-
 
