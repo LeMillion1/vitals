@@ -2,7 +2,7 @@
 
 Status: active design and implementation plan
 
-Last reviewed: 2026-08-25
+Last reviewed: 2026-08-26
 
 Current implementation branch: `commercial/main`
 
@@ -19,7 +19,7 @@ already exist upstream. New commercial work therefore starts from the current
 upstream head. The fork's `master` branch is not force-updated or otherwise
 rewritten.
 
-## Where this stands today (2026-08-25)
+## Where this stands today (2026-08-26)
 
 The numbers and states below are measured, not remembered. Re-derive them rather
 than trusting them if this date has gone stale.
@@ -30,7 +30,7 @@ than trusting them if this date has gone stale.
 | Alembic head | `0080` — 80 revisions |
 | Schema | 88 tables; 71 carry `subject_id` and are covered by an RLS policy; 60 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 39 UI scenarios collect at this revision; historical pass counts below are not a current validation result and must be rerun for release |
+| Suites | Final gate: 5,425 fast tests and all 39 live UI scenarios passed; 5,613 PostgreSQL-selected tests passed in three isolated shards with the full migration cycle |
 | Domains / scheduled jobs | 14 and 16, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership

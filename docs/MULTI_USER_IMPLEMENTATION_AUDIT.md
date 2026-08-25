@@ -1,6 +1,6 @@
 # Multi-user implementation audit
 
-Last verified: 2026-08-25, branch `commercial/main`.
+Last verified: 2026-08-26, branch `commercial/main`.
 
 This is the current-state companion to the commercial roadmap and ownership
 cutover history. It separates shipped behavior from target design and records
@@ -10,11 +10,18 @@ read during the audit.
 
 ## Executive verdict
 
-The conversion is substantial and real, but not finished. Vitals now has local
-users and additive roles, one owned health subject per patient account,
-subject-scoped facts, 71 PostgreSQL RLS tables, professional relationships and
-consent, care-team conversations, OIDC login, revocable browser sessions,
-per-subject integrations, and controlled read-only support access.
+The audited code transition is complete for the current release boundary.
+Vitals now has local users and additive roles, one owned health subject per
+patient account, subject-scoped facts, 71 PostgreSQL RLS tables, professional
+relationships and consent, care-team conversations, OIDC login, revocable
+browser sessions, per-subject integrations, and controlled read-only support
+access.
+
+This does not by itself authorize a public commercial launch. Registration
+remains closed until the operator completes the external security, legal, and
+operations review. Multi-subject installation backup, a professional invitation
+inbox, and broader support repair and operations dashboards remain explicit
+future roadmap items rather than hidden release claims.
 
 The earlier documentation overstated completion in important areas. Those
 findings remain useful provenance, but this document now records the later
@@ -54,11 +61,12 @@ verdict:
 | Web routers | 34 tracked non-`__init__` modules under `web/routers` | Verified |
 | Application services | 101 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
 | Flat service debt | 54 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 20 |
-| Browser scenarios | 39 scenarios selected by `pytest tests/ui -m ui` | Verified collection; historical runs are not a current pass claim |
+| Browser scenarios | `pytest tests/ui -m ui -q` → 39 passed in 150.04s | Verified on the final runtime tree |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
-current commit. Only a command executed against the current tree is recorded as
-a current validation result.
+current commit. The final gate below records commands executed against the
+final runtime tree; later commit `19e67f4` changes only a PostgreSQL corruption
+test and was rerun in its complete shard.
 
 ## Delivered product boundaries
 
@@ -387,6 +395,38 @@ the 2,000–4,000-line monoliths under characterization tests. Delivery adapters
 application-service APIs stabilize.
 
 ## Evidence executed during the audit
+
+### Final release-boundary verification (2026-08-26)
+
+The final runtime tree at `619c99b`, followed by the test-only PostgreSQL
+fixture correction at `19e67f4`, passed the release gate:
+
+- the full fast suite passed 5,425 tests, skipped 188, and deselected 39 in
+  540.06 seconds;
+- the complete live browser suite passed all 39 scenarios in 150.04 seconds;
+- the PostgreSQL 15 suite passed all 5,613 selected tests across three isolated
+  shards: 1,655 on shard 0, 2,197 on shard 1, and 1,761 on shard 2. Every shard
+  started from an empty database and completed
+  `base → 0080 → 0034 → 0080`. Shard 0 was repeated in full on `19e67f4` after
+  PostgreSQL exposed four invalid historical-corruption fixtures; the corrected
+  run had zero failures or errors;
+- `ruff check .` passed on the runtime tree, focused Ruff passed after the
+  test-only correction, and `git diff --check` passed;
+- Compose rebuilt successfully with PostgreSQL and Redis healthy, exactly one
+  loopback application mapping (`127.0.0.1:8100→8000`), `/health` reporting the
+  database, Redis, and scheduler healthy, and Alembic at `0080 (head)`;
+- live authenticated browser checks covered patient, doctor, trainer, and
+  owner/operator journeys at desktop and 390 px phone width. Patient and
+  professional conversations used role-relative sender labels and clear
+  audience-specific composers; doctor and trainer record/conversation flows
+  had no horizontal overflow; registration administration stayed closed; and
+  the fresh-auth break-glass console accepted only an exact opaque subject ID,
+  short TTL, and explicit read-only domains without enumerating patients or
+  creating an emergency session.
+
+The Compose/browser checks used only synthetic local accounts and a disposable
+test identity bridge. No production data, credential, provider API, or message
+transport was used.
 
 Post-audit credential cutover validation on `7523d26`:
 
