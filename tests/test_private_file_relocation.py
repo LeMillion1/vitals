@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import stat
 from datetime import date
@@ -337,6 +338,65 @@ def test_publish_directory_fsync_failure_leaves_no_final_or_temp_file(
         )
     assert not [path for path in private_root.rglob("*") if path.is_file()]
     assert failed
+
+
+@pytest.mark.parametrize("failure", ["short", "long", "digest", "nonbinary"])
+def test_import_stream_copy_fails_closed_without_publishing(tmp_path, failure):
+    body = b"synthetic-portability-health-document"
+    expected_size = len(body)
+    expected_sha256 = hashlib.sha256(body).hexdigest()
+    source_body = body
+    source = io.BytesIO(source_body)
+    if failure == "short":
+        source = io.BytesIO(body[:-1])
+    elif failure == "long":
+        source = io.BytesIO(body + b"x")
+    elif failure == "digest":
+        source = io.BytesIO(b"x" * len(body))
+    elif failure == "nonbinary":
+        source = io.StringIO(body.decode())
+
+    private_root = tmp_path / "private"
+    with pytest.raises((TypeError, ValueError)):
+        file_storage.copy_stream_to_private(
+            source=source,
+            private_root=str(private_root),
+            private_storage_ref="labs/aa/import.pdf",
+            expected_size=expected_size,
+            expected_sha256=expected_sha256,
+        )
+
+    assert not [path for path in private_root.rglob("*") if path.is_file()]
+    assert not source.closed
+
+
+def test_import_stream_copy_is_bounded_durable_and_never_overwrites(tmp_path):
+    body = b"synthetic-portability-health-document"
+    source = io.BytesIO(body)
+    private_root = tmp_path / "private"
+    copied = file_storage.copy_stream_to_private(
+        source=source,
+        private_root=str(private_root),
+        private_storage_ref="labs/aa/import.pdf",
+        expected_size=len(body),
+        expected_sha256=hashlib.sha256(body).hexdigest(),
+    )
+
+    assert Path(copied.path).read_bytes() == body
+    assert copied.byte_size == len(body)
+    assert copied.sha256_hex == hashlib.sha256(body).hexdigest()
+    assert stat.S_IMODE(os.stat(copied.path).st_mode) == 0o600
+    assert not source.closed
+
+    with pytest.raises(FileExistsError):
+        file_storage.copy_stream_to_private(
+            source=io.BytesIO(b"replacement"),
+            private_root=str(private_root),
+            private_storage_ref="labs/aa/import.pdf",
+            expected_size=len(b"replacement"),
+            expected_sha256=hashlib.sha256(b"replacement").hexdigest(),
+        )
+    assert Path(copied.path).read_bytes() == body
 
 
 def test_operator_cli_defaults_to_read_only_and_cannot_delete_legacy_bytes():

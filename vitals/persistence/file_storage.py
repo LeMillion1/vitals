@@ -477,6 +477,79 @@ def write_private_file(private_root: str, storage_ref: str, body: bytes) -> str:
     return path
 
 
+def copy_stream_to_private(
+    *,
+    source: BinaryIO,
+    private_root: str,
+    private_storage_ref: str,
+    expected_size: int,
+    expected_sha256: str,
+) -> CopiedPrivateFile:
+    """Copy one verified import stream into private storage atomically.
+
+    The caller owns and closes ``source``.  This boundary independently hashes
+    and counts the bytes it receives even when an archive reader already did
+    so during inspection: import application must not trust a stale descriptor
+    or a stream that changed between those two phases.  A final name is only
+    published after the exact expected identity matches, and an existing name
+    is never replaced.
+    """
+
+    _validated_expected_metadata(expected_size, expected_sha256)
+    if expected_size is None or expected_sha256 is None:  # pragma: no cover
+        raise ValueError("stream copy requires complete integrity metadata")
+    if not hasattr(source, "read"):
+        raise TypeError("source must be a binary stream")
+
+    parent_fd, destination_name, destination = _secure_private_parent(
+        private_root, private_storage_ref, create=True
+    )
+    temporary_fd = -1
+    temporary = ""
+    try:
+        temporary_fd, temporary = _new_private_temp(parent_fd, "importing")
+        os.fchmod(temporary_fd, 0o600)
+        digest = hashlib.sha256()
+        copied = 0
+        with os.fdopen(temporary_fd, "wb") as target:
+            temporary_fd = -1
+            while True:
+                chunk = source.read(min(CHUNK_SIZE, expected_size - copied + 1))
+                if chunk is None:
+                    raise OSError("import source returned no data")
+                if not isinstance(chunk, bytes | bytearray | memoryview):
+                    raise TypeError("import source is not binary")
+                if not chunk:
+                    break
+                copied += len(chunk)
+                if copied > expected_size:
+                    raise ValueError("imported file exceeds expected size")
+                digest.update(chunk)
+                target.write(chunk)
+            if copied != expected_size:
+                raise ValueError("imported file size does not match metadata")
+            sha256_hex = digest.hexdigest()
+            if not hmac.compare_digest(sha256_hex, expected_sha256):
+                raise ValueError("imported file digest does not match metadata")
+            target.flush()
+            os.fsync(target.fileno())
+        _publish_temporary(parent_fd, temporary, destination_name)
+        temporary = ""
+        return CopiedPrivateFile(destination, copied, sha256_hex)
+    finally:
+        if temporary_fd >= 0:
+            try:
+                os.close(temporary_fd)
+            except OSError:
+                pass
+        if temporary:
+            try:
+                os.unlink(temporary, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        os.close(parent_fd)
+
+
 def copy_legacy_file_to_private(
     *,
     static_dir: str,
@@ -569,6 +642,7 @@ def extension_for_relocation(storage_ref: str) -> str:
 __all__ = [
     "CHUNK_SIZE",
     "CopiedPrivateFile",
+    "copy_stream_to_private",
     "VerifiedPrivateFile",
     "copy_legacy_file_to_private",
     "extension_for_relocation",
