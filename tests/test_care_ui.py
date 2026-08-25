@@ -683,6 +683,7 @@ async def test_the_patient_sees_new_until_the_conversation_is_opened(
         'class="v-chip v-chip-sm">New</span>',
     )
     assert any(badge in inbox.text for badge in unread_badges)
+    assert 'data-care-unread-count class="v-chip v-chip-sm">1</span>' in inbox.text
 
     conversation = await client.get(
         f"/care/{subject_a.id}/messages/{thread_id}",
@@ -693,6 +694,7 @@ async def test_the_patient_sees_new_until_the_conversation_is_opened(
         f"/care/{subject_a.id}/messages", headers={"Accept": "text/html"}
     )
     assert all(badge not in inbox.text for badge in unread_badges)
+    assert "data-care-unread-count" not in inbox.text
 
 
 async def test_another_patients_thread_is_not_reachable_by_its_id(

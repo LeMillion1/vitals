@@ -103,7 +103,9 @@ a current validation result.
   somebody else count as unread. The professional roster is the cross-patient
   inbox: unread records come first with a direct conversation action and recent
   message date. An accepted invitation now becomes a persistent patient task
-  until the first consent decision. Message attachments remain unbuilt.
+  until the first consent decision. Patient desktop and phone navigation expose
+  only the unread count and a direct conversation door; no sender, title or body
+  reaches shared chrome. Message attachments remain unbuilt.
 
 ### Controlled support
 
@@ -339,6 +341,11 @@ The accepted-invitation patient task passed 168 focused care/i18n/auth tests,
 cycle, and the full 4,641-test fast suite (168 skipped, 35 deselected). Its
 global banner was inspected at desktop and 390 px phone widths; the phone action
 is 44 px high, with no horizontal overflow or browser console errors.
+
+The patient unread-navigation wiring passed 310 focused care/nav/mobile tests,
+411 care/nav/UI/design contracts, and the unchanged full 4,641-test fast suite.
+Desktop rail and phone More states were inspected at 390 px with no horizontal
+overflow or browser console errors; shared chrome contained only the count.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

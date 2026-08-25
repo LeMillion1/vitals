@@ -41,6 +41,13 @@
 
     <section class="mh-more-group">
         <div class="mh-more-group-label">{{ t("more.account") }}</div>
+        <a href="/messages" class="mh-more-row">
+            <span class="mh-more-ico">{{ mh_icon('messages') }}</span>
+            <span class="mh-more-name">{{ t('care.messages_title') }}</span>
+            {% if request.state.care_unread_count %}
+            <span data-care-unread-count class="mh-more-meta">{{ t('care.roster_unread', count=request.state.care_unread_count) }}</span>
+            {% endif %}
+        </a>
         {# Deliberately here and not under Health with /reports: that section
            holds goals and AI digests, which are the app talking to its owner.
            This is the one door data leaves through, and it should stand alone. #}

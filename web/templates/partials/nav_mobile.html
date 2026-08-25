@@ -40,7 +40,7 @@
     {% set in_more = current_path.startswith(more_routes(request.state.enabled_modules or {})) %}
     <a href="/more" class="v-bnav-link {% if in_more %}is-active{% endif %}"{% if in_more %} aria-current="page"{% endif %}>
         <span class="v-nav-ico">{{ mh_icon('more') }}</span>
-        <span class="mh-bnav-label">{{ t("nav.more") }}</span>
+        <span class="mh-bnav-label">{{ t("nav.more") }}{% if request.state.care_unread_count %} · {{ request.state.care_unread_count }}{% endif %}</span>
     </a>
 </nav>
 {% endmacro %}

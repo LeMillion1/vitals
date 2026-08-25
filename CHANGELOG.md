@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — unread conversations are visible from patient navigation
+
+The desktop rail and phone More destination now show a PHI-free unread count,
+and the phone More page has a direct Conversation row. No title, sender, or
+message preview is exposed in shared chrome.
+
 ### Added — accepted care invitations become a patient task
 
 Once a professional accepts an invitation, the patient sees a persistent,

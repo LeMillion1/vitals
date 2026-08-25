@@ -305,6 +305,9 @@ body.ui-masthead .mh-rail-foot-links {
 }
 
 body.ui-masthead .mh-rail-foot-link {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
     font: 500 var(--text-label) 'Inter', sans-serif;
     color: var(--muted);
     text-decoration: none;

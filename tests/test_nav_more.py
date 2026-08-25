@@ -29,6 +29,7 @@ async def test_more_screen_lists_every_visible_section(auth_client):
     enabled = {"labs": True, "weight": True, "garmin": True, "reports": True, "charts": True}
     for spec in nav_modules(enabled):
         assert f'href="{spec.route}"' in response.text, spec.key
+    assert 'href="/messages"' in response.text
     assert 'href="/settings"' in response.text
     # It is a page, not an overlay — nothing to close, and Back leaves it.
     assert "mobileMenuOpen" not in response.text

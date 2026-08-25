@@ -55,6 +55,7 @@ from web.deps import (
     get_redis,
     load_enabled_modules,
     load_care_consent_task,
+    load_care_unread_count,
     load_language,
     load_nav_status,
     load_support_banner,
@@ -334,6 +335,9 @@ app = FastAPI(
         # the patient's first sharing decision. Derived from that relationship,
         # so it clears without a notification cleanup job.
         Depends(load_care_consent_task),
+        # PHI-free message notification: only a count, never title, author or
+        # body, and only in the chrome of the patient who owns this record.
+        Depends(load_care_unread_count),
     ],
 )
 

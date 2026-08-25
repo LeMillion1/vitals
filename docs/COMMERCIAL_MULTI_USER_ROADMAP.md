@@ -1082,7 +1082,9 @@ Delivered:
 - The roster is also the professional's cross-patient inbox: unread records are
   first, show recent conversation activity and link directly to messages. On the
   patient side, an accepted invitation becomes a persistent one-click consent
-  task until that patient makes the first sharing decision.
+  task until that patient makes the first sharing decision. Patient desktop and
+  phone navigation show only an unread count; the phone More screen now contains
+  the conversation door that was previously missing.
 - **The selected patient travels in the URL, never in the session.** That is the
   design rather than a URL style — a stale tab submitting an old form must land
   on the patient it was rendered for, not on whoever is selected now. Driven by

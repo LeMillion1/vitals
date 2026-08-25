@@ -458,6 +458,37 @@ async def load_care_consent_task(
         logger.exception("care consent task load failed; hiding the task")
 
 
+async def load_care_unread_count(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    """Expose only the patient's unread conversation count to app chrome."""
+
+    request.state.care_unread_count = 0
+    accept = request.headers.get("accept", "")
+    if request.method != "GET":
+        return
+    if accept and "text/html" not in accept and "*/*" not in accept:
+        return
+    try:
+        scope = await get_request_chrome_scope(request, db)
+        if scope is None:
+            return
+        from vitals.services.access_resolution import resolve_access_context
+        from vitals.services.care import threads
+
+        context = await resolve_access_context(
+            db,
+            user_id=scope.user_id,
+            subject_id=scope.subject_id,
+        )
+        request.state.care_unread_count = await threads.unread_marker(
+            db, context=context
+        )
+    except Exception:
+        logger.exception("care unread count load failed; hiding the marker")
+
+
 async def load_language(
     request: Request,
     db: AsyncSession = Depends(get_session),
