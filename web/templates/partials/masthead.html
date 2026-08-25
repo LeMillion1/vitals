@@ -150,10 +150,10 @@
     <div class="mh-rail-foot">
         {# Stacked destinations: the rail has no "More" screen to hide them
            behind, and each is otherwise reachable only by typing the URL.
-           ``/care`` is shown only to somebody who actually holds a record —
-           a link that answers an empty page is worse than no link. #}
+           ``/care`` is the professional home, including before the first
+           invitation; onboarding must remain reachable at zero patients. #}
         <div class="mh-rail-foot-links">
-            {% if request.state.holds_patients %}
+            {% if request.state.is_professional %}
             <a href="/care" class="mh-rail-foot-link {% if current_path.startswith('/care') %}is-active{% endif %}">{{ t('care.roster_heading') }}</a>
             {% endif %}
             {% if request.state.is_platform_admin %}

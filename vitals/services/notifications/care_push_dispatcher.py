@@ -28,6 +28,7 @@ from vitals.enums import (
     CarePushDeliveryErrorCode,
     CarePushDeliveryStatus,
     ProfessionalKind,
+    ProfessionalVerificationStatus,
     UserRoleName,
     UserStatus,
 )
@@ -42,7 +43,7 @@ from vitals.integrations.web_push import (
 )
 from vitals.models.care_thread import CareMessage, CareThreadParticipant
 from vitals.models.identity import User
-from vitals.models.professional import CareRelationship
+from vitals.models.professional import CareRelationship, ProfessionalProfile
 from vitals.models.web_push import CarePushDelivery
 from vitals.persistence.rls import enter_platform_scope
 from vitals.services.access_resolution import (
@@ -304,7 +305,17 @@ async def _participation_matches_context(
     if grant is None or participation.relationship_id != grant.relationship_id:
         return False
     kind = await session.scalar(
-        select(CareRelationship.kind).where(
+        select(CareRelationship.kind)
+        .join(
+            ProfessionalProfile,
+            (ProfessionalProfile.user_id == context.principal.user_id)
+            & (ProfessionalProfile.kind == CareRelationship.kind)
+            & (
+                ProfessionalProfile.verification_status
+                == ProfessionalVerificationStatus.VERIFIED.value
+            ),
+        )
+        .where(
             CareRelationship.id == grant.relationship_id,
             CareRelationship.subject_id == context.subject_id,
             CareRelationship.professional_user_id == context.principal.user_id,

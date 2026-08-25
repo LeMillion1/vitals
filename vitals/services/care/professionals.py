@@ -30,6 +30,7 @@ from vitals.enums import (
 )
 from vitals.models.identity import User, UserRole
 from vitals.models.professional import ProfessionalProfile
+from vitals.services.identity_service import acquire_identity_governance_lock
 
 #: Statuses a professional may put their own profile into. Everything else is an
 #: operator's verdict, and a profile that could set its own verdict would make
@@ -97,6 +98,22 @@ async def _active_user(session: AsyncSession, user_id: uuid.UUID) -> uuid.UUID:
     return user_id
 
 
+async def _require_kind_role(
+    session: AsyncSession, *, user_id: uuid.UUID, kind: ProfessionalKind
+) -> None:
+    role = ROLE_FOR_KIND[kind]
+    holds_role = await session.scalar(
+        select(UserRole.id).where(
+            UserRole.user_id == user_id,
+            UserRole.role == role.value,
+        )
+    )
+    if holds_role is None:
+        raise ProfessionalValidationError(
+            "a professional profile must match an assigned account role"
+        )
+
+
 async def submit_profile(
     session: AsyncSession,
     *,
@@ -116,6 +133,7 @@ async def submit_profile(
     resolved_kind = (
         kind if isinstance(kind, ProfessionalKind) else ProfessionalKind(str(kind))
     )
+    await _require_kind_role(session, user_id=user_id, kind=resolved_kind)
     profile = ProfessionalProfile(
         user_id=user_id,
         kind=resolved_kind.value,
@@ -132,6 +150,55 @@ async def submit_profile(
         raise ProfessionalConflictError(
             "this account already has a professional profile"
         ) from exc
+    return profile
+
+
+async def resubmit_profile(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    display_name: str,
+    credential_reference: str | None = None,
+) -> ProfessionalProfile:
+    """Correct a rejected claim and return it to the review queue.
+
+    Kind is deliberately immutable here and comes from the existing profile.
+    A professional may correct what they submitted after a rejection, but a
+    suspension is an operator action and cannot be self-cleared.
+    """
+
+    await _active_user(session, user_id)
+    profile = await session.scalar(
+        select(ProfessionalProfile)
+        .where(ProfessionalProfile.user_id == user_id)
+        .with_for_update()
+    )
+    if profile is None:
+        raise ProfessionalNotFoundError("no such professional profile")
+    if (
+        profile.verification_status
+        != ProfessionalVerificationStatus.REJECTED.value
+    ):
+        raise ProfessionalConflictError(
+            "only a rejected profile may be corrected and resubmitted"
+        )
+
+    kind = ProfessionalKind(profile.kind)
+    await _require_kind_role(session, user_id=user_id, kind=kind)
+    profile.display_name = _clean(
+        display_name, "display_name", limit=200, required=True
+    )
+    profile.credential_reference = _clean(
+        credential_reference,
+        "credential_reference",
+        limit=200,
+        required=False,
+    )
+    profile.verification_status = ProfessionalVerificationStatus.PENDING.value
+    profile.review_note = None
+    profile.verified_at = None
+    profile.verified_by_user_id = None
+    await session.flush()
     return profile
 
 
@@ -182,6 +249,10 @@ async def decide(
         raise ProfessionalValidationError(
             "a review records a verdict, not a return to the queue"
         )
+    # Verification is a live authorization fact.  Take the same transaction
+    # fence as relationship, consent, role and push-claim mutations before any
+    # row lock so a claim cannot race a suspension (or an approval).
+    await acquire_identity_governance_lock(session)
     await _require_reviewer(session, reviewer_user_id)
 
     profile = await session.scalar(
@@ -261,5 +332,6 @@ __all__ = [
     "decide",
     "is_verified",
     "pending_queue",
+    "resubmit_profile",
     "submit_profile",
 ]

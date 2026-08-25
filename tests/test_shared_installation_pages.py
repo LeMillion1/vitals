@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import pytest
 
-from vitals.enums import UserStatus
-from vitals.models.identity import HealthSubject, User
+from vitals.enums import UserRoleName, UserStatus
+from vitals.models.identity import HealthSubject, User, UserRole
 
 
 #: What still refuses in a shared installation. One entry left, and it is not a
@@ -171,6 +171,10 @@ async def professional_client(client, db_session, legacy_owner_roots):
         status=UserStatus.ACTIVE.value,
     )
     db_session.add(doctor)
+    await db_session.flush()
+    db_session.add(
+        UserRole(user_id=doctor.id, role=UserRoleName.DOCTOR.value)
+    )
     await db_session.commit()
 
     client.cookies.set(SESSION_COOKIE, create_session("dr-no-record"))

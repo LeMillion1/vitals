@@ -25,8 +25,8 @@ from sqlalchemy import func, select
 
 from vitals.enums import ProfessionalKind, UserRoleName, UserStatus
 from vitals.models.identity import HealthSubject, User, UserRole
-from vitals.models.professional import ProfessionalNote
-from vitals.services.care import invitations, relationships
+from vitals.models.professional import ProfessionalNote, ProfessionalProfile
+from vitals.services.care import invitations, professionals, relationships
 
 
 async def _user(session, slug: str, *, roles=()) -> User:
@@ -57,6 +57,29 @@ async def _patient(session, slug: str) -> tuple[User, HealthSubject]:
 
 
 async def _take_into_care(session, *, owner, subject, professional, consent=True):
+    profile = await session.scalar(
+        select(ProfessionalProfile).where(
+            ProfessionalProfile.user_id == professional.id
+        )
+    )
+    if profile is None:
+        operator = await _user(
+            session,
+            f"{professional.username}-reviewer",
+            roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+        )
+        profile = await professionals.submit_profile(
+            session,
+            user_id=professional.id,
+            kind=ProfessionalKind.DOCTOR,
+            display_name=f"Dr {professional.username}",
+        )
+        await professionals.decide(
+            session,
+            profile_id=profile.id,
+            reviewer_user_id=operator.id,
+            status="verified",
+        )
     email = f"{professional.username}@example.test"
     issued = await invitations.invite(
         session,
@@ -97,6 +120,23 @@ async def doctor_client(client, db_session, legacy_owner_roots):
     doctor = await db_session.get(User, doctor_id)
     db_session.add(UserRole(user_id=doctor.id, role=UserRoleName.DOCTOR.value))
     await db_session.flush()
+    operator = await _user(
+        db_session,
+        "care-ui-operator",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    profile = await professionals.submit_profile(
+        db_session,
+        user_id=doctor.id,
+        kind=ProfessionalKind.DOCTOR,
+        display_name="Dr Human Name",
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status="verified",
+    )
 
     owner_a, subject_a = await _patient(db_session, "care-ui-a")
     owner_b, subject_b = await _patient(db_session, "care-ui-b")
@@ -111,6 +151,122 @@ async def doctor_client(client, db_session, legacy_owner_roots):
     client.cookies.set(SESSION_COOKIE, create_session(doctor.username))
     del set_session_cookie
     return client, doctor, (owner_a, subject_a), (owner_b, subject_b)
+
+
+@pytest.fixture
+async def new_trainer_client(client, db_session, legacy_owner_roots):
+    """A professional-only account at the first useful screen after login."""
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    trainer = await _user(
+        db_session,
+        "care-onboarding-trainer",
+        roles=(UserRoleName.TRAINER,),
+    )
+    await db_session.commit()
+    client.cookies.set(SESSION_COOKIE, create_session(trainer.username))
+    return client, trainer
+
+
+async def test_a_new_professional_lands_on_one_onboarding_action(
+    new_trainer_client,
+):
+    client, _trainer = new_trainer_client
+
+    landing = await client.get("/", follow_redirects=False)
+    assert landing.status_code == 303
+    assert landing.headers["location"] == "/care"
+
+    page = await client.get("/care", headers={"Accept": "text/html"})
+    assert page.status_code == 200
+    assert 'action="/care/profile"' in page.text
+    assert "Trainer" in page.text or "Тренер" in page.text
+    assert 'name="kind"' not in page.text
+    # Navigation and sign-out stay reachable before the first patient exists.
+    assert 'href="/care"' in page.text
+    assert 'action="/logout"' in page.text
+    # Device setup is secondary and appears only after professional review.
+    assert "/settings/notifications/web-push/subscription" not in page.text
+
+
+async def test_the_account_role_not_the_form_chooses_profile_kind(
+    new_trainer_client, db_session
+):
+    client, trainer = new_trainer_client
+    trainer_id = trainer.id
+    response = await client.post(
+        "/care/profile",
+        data={
+            "display_name": "Coach Synthetic",
+            "credential_reference": "CERT-42",
+            "kind": "doctor",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/care?submitted=1"
+
+    db_session.expire_all()
+    from vitals.models.professional import ProfessionalProfile
+
+    profile = await db_session.scalar(
+        select(ProfessionalProfile).where(ProfessionalProfile.user_id == trainer_id)
+    )
+    assert profile.kind == ProfessionalKind.TRAINER.value
+    assert profile.verification_status == "pending"
+
+    page = await client.get(response.headers["location"])
+    assert "under review" in page.text.lower() or "на проверке" in page.text.lower()
+
+
+async def test_a_rejected_professional_can_correct_the_same_profile(
+    new_trainer_client, db_session
+):
+    client, trainer = new_trainer_client
+    trainer_id = trainer.id
+    await client.post(
+        "/care/profile",
+        data={"display_name": "Coach First", "credential_reference": "WRONG"},
+    )
+    operator = await _user(
+        db_session,
+        "care-onboarding-operator",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    from vitals.models.professional import ProfessionalProfile
+
+    profile = await db_session.scalar(
+        select(ProfessionalProfile).where(ProfessionalProfile.user_id == trainer_id)
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status="rejected",
+        note="Use the public register number",
+    )
+    await db_session.commit()
+
+    rejected = await client.get("/care", headers={"Accept": "text/html"})
+    assert "Use the public register number" in rejected.text
+    corrected = await client.post(
+        "/care/profile",
+        data={"display_name": "Coach Corrected", "credential_reference": "CERT-7"},
+        follow_redirects=False,
+    )
+    assert corrected.status_code == 303
+
+    db_session.expire_all()
+    profile = await db_session.scalar(
+        select(ProfessionalProfile).where(ProfessionalProfile.user_id == trainer_id)
+    )
+    assert profile.id is not None
+    assert profile.display_name == "Coach Corrected"
+    assert profile.kind == ProfessionalKind.TRAINER.value
+    assert profile.verification_status == "pending"
+    assert profile.review_note is None
 
 
 # ── The property everything else protects ────────────────────────────────────
@@ -173,16 +329,6 @@ async def test_notes_and_plans_name_their_author(doctor_client, db_session):
     """A shared record must say who wrote professional guidance."""
 
     client, doctor, (_owner_a, subject_a), _b = doctor_client
-    from vitals.models.professional import ProfessionalProfile
-
-    db_session.add(
-        ProfessionalProfile(
-            user_id=doctor.id,
-            kind=ProfessionalKind.DOCTOR.value,
-            display_name="Dr Human Name",
-        )
-    )
-    await db_session.commit()
     await client.post(
         f"/care/{subject_a.id}/note",
         data={"body": "Watch the recovery trend."},
@@ -490,6 +636,65 @@ async def test_the_page_says_why_it_is_open(doctor_client):
     assert "Открыта вам" in response.text or "Shared with you" in response.text
 
 
+async def test_a_suspension_closes_the_roster_record_and_direct_routes(
+    doctor_client, db_session
+):
+    client, doctor, (_owner_a, subject_a), _b = doctor_client
+    profile = await db_session.scalar(
+        select(ProfessionalProfile).where(ProfessionalProfile.user_id == doctor.id)
+    )
+    operator = await _user(
+        db_session,
+        "care-ui-suspension-operator",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status="suspended",
+        note="Synthetic licence withdrawal",
+    )
+    await db_session.commit()
+
+    roster = await client.get("/care", headers={"Accept": "text/html"})
+    assert roster.status_code == 200
+    assert "Synthetic licence withdrawal" in roster.text
+    assert f'href="/care/{subject_a.id}"' not in roster.text
+    assert (
+        await client.get(
+            f"/care/{subject_a.id}", headers={"Accept": "text/html"}
+        )
+    ).status_code == 404
+    assert (
+        await client.post(
+            f"/care/{subject_a.id}/note",
+            data={"body": "must not persist after suspension"},
+        )
+    ).status_code == 404
+
+
+async def test_role_revocation_hides_patient_names_from_the_roster(
+    doctor_client, db_session
+):
+    client, doctor, (_owner_a, subject_a), (_owner_b, subject_b) = doctor_client
+    role = await db_session.scalar(
+        select(UserRole).where(
+            UserRole.user_id == doctor.id,
+            UserRole.role == UserRoleName.DOCTOR.value,
+        )
+    )
+    await db_session.delete(role)
+    await db_session.commit()
+
+    roster = await client.get("/care", headers={"Accept": "text/html"})
+    assert roster.status_code == 200
+    assert str(subject_a.id) not in roster.text
+    assert str(subject_b.id) not in roster.text
+    assert subject_a.display_name not in roster.text
+    assert subject_b.display_name not in roster.text
+
+
 # ── The record itself ────────────────────────────────────────────────────────
 
 
@@ -770,13 +975,10 @@ async def test_the_conversation_page_renders_what_was_said(
 
     from vitals.models.professional import ProfessionalProfile
 
-    db_session.add(
-        ProfessionalProfile(
-            user_id=doctor.id,
-            kind=ProfessionalKind.DOCTOR.value,
-            display_name="Dr Conversation Name",
-        )
+    profile = await db_session.scalar(
+        select(ProfessionalProfile).where(ProfessionalProfile.user_id == doctor.id)
     )
+    profile.display_name = "Dr Conversation Name"
     await db_session.commit()
 
     opened = await client.post(

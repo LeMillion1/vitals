@@ -26,10 +26,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.access import PolicyAction, PolicyResourceType
-from vitals.enums import CarePlanStatus, Domain
+from vitals.enums import (
+    CarePlanStatus,
+    Domain,
+    ProfessionalKind,
+    ProfessionalVerificationStatus,
+    UserRoleName,
+)
+from vitals.models.identity import UserRole
 from vitals.models.professional import ProfessionalProfile
 from vitals.services import digest_service, modules_service
-from vitals.services.care import invitations, records, relationships
+from vitals.services.care import invitations, professionals, records, relationships
 from vitals.services.care import threads as care_threads
 from web.care_context import CareContext, principal_user_id, require_care_context
 from web.config import get_web_config
@@ -195,6 +202,7 @@ async def _verified_email(
 async def roster(
     request: Request,
     accepted: bool = False,
+    submitted: bool = False,
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
@@ -206,13 +214,122 @@ async def roster(
     """
 
     user_id = await principal_user_id(request, db)
+    professional_roles = set(
+        await db.scalars(
+            select(UserRole.role).where(
+                UserRole.user_id == user_id,
+                UserRole.role.in_(
+                    (UserRoleName.DOCTOR.value, UserRoleName.TRAINER.value)
+                ),
+            )
+        )
+    )
+    profile = await db.scalar(
+        select(ProfessionalProfile).where(ProfessionalProfile.user_id == user_id)
+    )
+    available_kinds = [
+        kind
+        for kind in ProfessionalKind
+        if professionals.ROLE_FOR_KIND[kind].value in professional_roles
+    ]
+    onboarding_kind = (
+        ProfessionalKind(profile.kind)
+        if profile is not None
+        else available_kinds[0]
+        if len(available_kinds) == 1
+        else None
+    )
+    profile_verified = (
+        profile is not None
+        and profile.verification_status
+        == ProfessionalVerificationStatus.VERIFIED.value
+    )
     patients = await relationships.list_professional_roster(
         db, professional_user_id=user_id
     )
     return templates.TemplateResponse(
         request,
         "care/roster.html",
-        {"patients": patients, "username": username, "accepted": accepted},
+        {
+            "patients": patients,
+            "username": username,
+            "accepted": accepted,
+            "submitted": submitted,
+            "professional_profile": profile,
+            "onboarding_kind": (
+                onboarding_kind.value if onboarding_kind is not None else None
+            ),
+            "profile_verified": profile_verified,
+            "is_professional_account": bool(professional_roles),
+        },
+    )
+
+
+@router.post("/profile")
+async def submit_professional_profile(
+    request: Request,
+    display_name: str = Form(""),
+    credential_reference: str = Form(""),
+    db: AsyncSession = Depends(get_session),
+    _username: str = Depends(require_auth),
+):
+    """Submit or correct this account's professional claim.
+
+    Kind comes only from an assigned role. No form value can turn a member into
+    a doctor or let one professional relabel themselves as the other kind.
+    """
+
+    user_id = await principal_user_id(request, db)
+    roles = set(
+        await db.scalars(
+            select(UserRole.role).where(
+                UserRole.user_id == user_id,
+                UserRole.role.in_(
+                    (UserRoleName.DOCTOR.value, UserRoleName.TRAINER.value)
+                ),
+            )
+        )
+    )
+    profile = await db.scalar(
+        select(ProfessionalProfile).where(ProfessionalProfile.user_id == user_id)
+    )
+    try:
+        if profile is None:
+            kinds = [
+                kind
+                for kind in ProfessionalKind
+                if professionals.ROLE_FOR_KIND[kind].value in roles
+            ]
+            if len(kinds) != 1:
+                raise professionals.ProfessionalValidationError(
+                    "professional onboarding requires one assigned kind"
+                )
+            await professionals.submit_profile(
+                db,
+                user_id=user_id,
+                kind=kinds[0],
+                display_name=display_name,
+                credential_reference=credential_reference,
+            )
+        else:
+            await professionals.resubmit_profile(
+                db,
+                user_id=user_id,
+                display_name=display_name,
+                credential_reference=credential_reference,
+            )
+    except professionals.ProfessionalValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except professionals.ProfessionalConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    await db.commit()
+    return RedirectResponse(
+        url="/care?submitted=1",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

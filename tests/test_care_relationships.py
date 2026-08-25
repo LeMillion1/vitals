@@ -32,6 +32,7 @@ from vitals.enums import (
     ConsentStatus,
     Domain,
     ProfessionalKind,
+    ProfessionalVerificationStatus,
     UserRoleName,
     UserStatus,
 )
@@ -77,6 +78,25 @@ async def _in_care(session, slug: str, *, kind=ProfessionalKind.DOCTOR):
         else UserRoleName.TRAINER
     )
     professional = await _user(session, f"{slug}-pro", roles=(role,))
+    operator = await _user(
+        session,
+        f"{slug}-operator",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    from vitals.services.care import professionals
+
+    profile = await professionals.submit_profile(
+        session,
+        user_id=professional.id,
+        kind=kind,
+        display_name=f"Verified {slug}",
+    )
+    await professionals.decide(
+        session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status="verified",
+    )
     issued = await invitations.invite(
         session,
         subject_id=subject.id,
@@ -361,19 +381,87 @@ async def test_a_care_invitation_never_promotes_an_ordinary_member(db_session):
         )
 
 
-async def test_a_professional_with_no_profile_enters_as_invited(db_session):
-    """Nothing to contradict, so nothing is contradicted.
+async def test_a_professional_with_no_profile_cannot_establish_care(db_session):
+    """The cross-subject relationship starts only after operator verification."""
 
-    Requiring a profile — or a verified one — before care can start is the
-    natural next step and a decision about onboarding order rather than a
-    technical one: it would hold every new professional at the door until an
-    operator reached them.
-    """
-
-    _owner, _subject, _pro, relationship = await _in_care(
-        db_session, "care-noprofile", kind=ProfessionalKind.TRAINER
+    owner, subject = await _patient(db_session, "care-noprofile")
+    professional = await _user(
+        db_session,
+        "care-noprofile-pro",
+        roles=(UserRoleName.TRAINER,),
     )
-    assert relationship.kind == ProfessionalKind.TRAINER.value
+    issued = await invitations.invite(
+        db_session,
+        subject_id=subject.id,
+        actor_user_id=owner.id,
+        kind=ProfessionalKind.TRAINER,
+        email="care-noprofile@example.test",
+    )
+    await invitations.accept(
+        db_session,
+        token=issued.token,
+        accepting_user_id=professional.id,
+        verified_email="care-noprofile@example.test",
+    )
+    with pytest.raises(relationships.ProfessionalNotVerified):
+        await relationships.establish_from_invitation(
+            db_session, invitation=issued.invitation
+        )
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        ProfessionalVerificationStatus.PENDING,
+        ProfessionalVerificationStatus.REJECTED,
+        ProfessionalVerificationStatus.SUSPENDED,
+    ],
+)
+async def test_only_a_verified_profile_can_establish_care(db_session, status):
+    from vitals.services.care import professionals
+
+    slug = f"care-unverified-{status.value}"
+    owner, subject = await _patient(db_session, slug)
+    professional = await _user(
+        db_session, f"{slug}-pro", roles=(UserRoleName.DOCTOR,)
+    )
+    operator = await _user(
+        db_session,
+        f"{slug}-operator",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    profile = await professionals.submit_profile(
+        db_session,
+        user_id=professional.id,
+        kind=ProfessionalKind.DOCTOR,
+        display_name=f"Dr {slug}",
+    )
+    if status is not ProfessionalVerificationStatus.PENDING:
+        await professionals.decide(
+            db_session,
+            profile_id=profile.id,
+            reviewer_user_id=operator.id,
+            status=status,
+            note="synthetic review refusal",
+        )
+    issued = await invitations.invite(
+        db_session,
+        subject_id=subject.id,
+        actor_user_id=owner.id,
+        kind=ProfessionalKind.DOCTOR,
+        email=f"{slug}@example.test",
+    )
+    await invitations.accept(
+        db_session,
+        token=issued.token,
+        accepting_user_id=professional.id,
+        verified_email=f"{slug}@example.test",
+    )
+
+    with pytest.raises(relationships.ProfessionalNotVerified):
+        await relationships.establish_from_invitation(
+            db_session, invitation=issued.invitation
+        )
 
 
 async def test_losing_the_exact_professional_role_closes_the_next_read(db_session):
@@ -404,6 +492,85 @@ async def test_losing_the_exact_professional_role_closes_the_next_read(db_sessio
     await db_session.flush()
 
     assert not await _may(db_session, professional, subject)
+    assert await relationships.list_professional_roster(
+        db_session, professional_user_id=professional.id
+    ) == []
+
+
+async def test_suspending_a_profile_closes_the_next_read(db_session):
+    from vitals.models.professional import ProfessionalProfile
+    from vitals.services.care import professionals
+
+    owner, subject, professional, relationship = await _in_care(
+        db_session, "care-profile-suspended"
+    )
+    await relationships.grant_consent(
+        db_session,
+        relationship_id=relationship.id,
+        actor_user_id=owner.id,
+    )
+    assert await _may(db_session, professional, subject)
+
+    profile = await db_session.scalar(
+        select(ProfessionalProfile).where(
+            ProfessionalProfile.user_id == professional.id
+        )
+    )
+    operator = await _user(
+        db_session,
+        "care-profile-suspended-operator-2",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status=ProfessionalVerificationStatus.SUSPENDED,
+        note="synthetic licence withdrawal",
+    )
+
+    assert not await _may(db_session, professional, subject)
+
+
+async def test_a_suspended_profile_disappears_from_the_cross_subject_roster(
+    db_session,
+):
+    from vitals.models.professional import ProfessionalProfile
+    from vitals.services.care import professionals
+
+    owner, subject, professional, relationship = await _in_care(
+        db_session, "care-profile-roster-suspended"
+    )
+    await relationships.grant_consent(
+        db_session,
+        relationship_id=relationship.id,
+        actor_user_id=owner.id,
+    )
+    assert [row.subject_id for row in await relationships.list_professional_roster(
+        db_session, professional_user_id=professional.id
+    )] == [subject.id]
+
+    profile = await db_session.scalar(
+        select(ProfessionalProfile).where(
+            ProfessionalProfile.user_id == professional.id
+        )
+    )
+    operator = await _user(
+        db_session,
+        "care-profile-roster-suspended-operator-2",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status=ProfessionalVerificationStatus.SUSPENDED,
+        note="synthetic licence withdrawal",
+    )
+
+    assert await relationships.list_professional_roster(
+        db_session, professional_user_id=professional.id
+    ) == []
 
 
 async def test_the_patient_can_narrow_what_was_offered(db_session):

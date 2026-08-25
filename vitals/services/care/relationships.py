@@ -36,6 +36,7 @@ from vitals.enums import (
     Domain,
     ProfessionalInvitationStatus,
     ProfessionalKind,
+    ProfessionalVerificationStatus,
 )
 from vitals.models.identity import HealthSubject, UserRole
 from vitals.models.care_thread import CareMessage, CareThreadParticipant
@@ -131,6 +132,10 @@ class NotTheSubjectOwner(CareError):
 
 class KindMismatch(CareError):
     """This professional is not the kind of professional they were invited as."""
+
+
+class ProfessionalNotVerified(CareError):
+    """The invited account has no current verified profile of the exact kind."""
 
 
 class RelationshipNotFound(CareError):
@@ -283,6 +288,20 @@ async def list_professional_roster(
                 last_message_at.label("last_message_at"),
             )
             .join(HealthSubject, HealthSubject.id == CareRelationship.subject_id)
+            .join(
+                ProfessionalProfile,
+                (ProfessionalProfile.user_id == professional_user_id)
+                & (ProfessionalProfile.kind == CareRelationship.kind)
+                & (
+                    ProfessionalProfile.verification_status
+                    == ProfessionalVerificationStatus.VERIFIED.value
+                ),
+            )
+            .join(
+                UserRole,
+                (UserRole.user_id == professional_user_id)
+                & (UserRole.role == CareRelationship.kind),
+            )
             .outerjoin(
                 ConsentGrant,
                 (ConsentGrant.relationship_id == CareRelationship.id)
@@ -438,25 +457,20 @@ async def establish_from_invitation(
             "this account does not hold the invited professional role"
         )
 
-    # A doctor and a trainer are two different professionals, not two labels on
-    # one. Without this the kind on the relationship is only what the patient
-    # happened to type into the invitation, and "my trainer" and "my doctor"
-    # stop being facts about who these people are.
-    #
-    # Only checked where there is something to check against. A professional who
-    # has never filled in a profile has claimed no kind, so there is nothing for
-    # the invitation to contradict. Requiring a profile — or a *verified* one —
-    # before care can start is the natural next step, and it is a decision about
-    # onboarding order rather than a technical one: it would hold every new
-    # professional at the door until an operator reached them.
-    claimed_kind = await session.scalar(
-        select(ProfessionalProfile.kind).where(
-            ProfessionalProfile.user_id == invitation.accepted_by_user_id
+    verified_profile = await session.scalar(
+        select(ProfessionalProfile.id).where(
+            ProfessionalProfile.user_id == invitation.accepted_by_user_id,
+            ProfessionalProfile.kind == invitation.kind,
+            ProfessionalProfile.verification_status
+            == ProfessionalVerificationStatus.VERIFIED.value,
         )
     )
-    if claimed_kind is not None and claimed_kind != invitation.kind:
-        raise KindMismatch(
-            "this professional is not the kind of professional they were invited as"
+    if verified_profile is None:
+        # Establishment is the first cross-subject index.  Keeping an invitation
+        # pending until verification avoids exposing even the patient's name to
+        # an unreviewed, rejected or suspended account.
+        raise ProfessionalNotVerified(
+            "this account is not a verified professional of the invited kind"
         )
 
     relationship = CareRelationship(
@@ -739,6 +753,20 @@ async def load_relationship_grant(
         # no longer an authorization fact.
         return None
 
+    verified_profile = await session.scalar(
+        select(ProfessionalProfile.id).where(
+            ProfessionalProfile.user_id == professional_user_id,
+            ProfessionalProfile.kind == relationship.kind,
+            ProfessionalProfile.verification_status
+            == ProfessionalVerificationStatus.VERIFIED.value,
+        )
+    )
+    if verified_profile is None:
+        # Verification is a live authorization precondition, not a badge. A
+        # missing, pending, rejected, suspended, or wrong-kind profile closes
+        # web, MCP/API and background access on their next common resolution.
+        return None
+
     grant = await session.scalar(
         select(ConsentGrant)
         .options(selectinload(ConsentGrant.scopes))
@@ -788,6 +816,7 @@ __all__ = [
     "ConsentNotFound",
     "KindMismatch",
     "NotTheSubjectOwner",
+    "ProfessionalNotVerified",
     "RelationshipNotFound",
     "default_scopes",
     "end_relationship",

@@ -21,6 +21,7 @@ from vitals.enums import (
     CarePushDeliveryStatus,
     ConsentStatus,
     ProfessionalKind,
+    ProfessionalVerificationStatus,
     UserRoleName,
     UserStatus,
 )
@@ -32,10 +33,16 @@ from vitals.integrations.web_push import (
 )
 from vitals.models.care_thread import CareMessage, CareThread, CareThreadParticipant
 from vitals.models.identity import User, UserRole
-from vitals.models.professional import CareRelationship, ConsentGrant, ConsentScope
+from vitals.models.professional import (
+    CareRelationship,
+    ConsentGrant,
+    ConsentScope,
+    ProfessionalProfile,
+)
 from vitals.models.web_push import CarePushDelivery
 from vitals.persistence.rls import enter_platform_scope
 from vitals.services import credential_vault_service
+from vitals.services.care import professionals
 from vitals.services.notifications import care_push_dispatcher as dispatcher
 from vitals.services.notifications import web_push_subscriptions
 from vitals.utils.timeutils import now_utc
@@ -113,6 +120,35 @@ async def _queued_for_professional(db_session, roots, *, token: str):
     db_session.add(doctor)
     await db_session.flush()
     role = UserRole(user_id=doctor.id, role=UserRoleName.DOCTOR.value)
+    operator = User(
+        username=f"operator-{token}",
+        normalized_username=f"operator-{token}",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(operator)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            role,
+            UserRole(
+                user_id=operator.id,
+                role=UserRoleName.PLATFORM_SUPERADMIN.value,
+            ),
+        ]
+    )
+    await db_session.flush()
+    profile = await professionals.submit_profile(
+        db_session,
+        user_id=doctor.id,
+        kind=ProfessionalKind.DOCTOR,
+        display_name=f"Dr {token}",
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status="verified",
+    )
     relationship = CareRelationship(
         subject_id=roots.subject_id,
         subject_owner_user_id=roots.user_id,
@@ -120,7 +156,7 @@ async def _queued_for_professional(db_session, roots, *, token: str):
         kind=ProfessionalKind.DOCTOR.value,
         status=CareRelationshipStatus.ACTIVE.value,
     )
-    db_session.add_all([role, relationship])
+    db_session.add(relationship)
     await db_session.flush()
     current = now_utc()
     grant = ConsentGrant(
@@ -442,6 +478,40 @@ async def test_revoked_professional_role_stops_background_push(
         )
     )
     await db_session.delete(role)
+    await db_session.commit()
+
+    await enter_platform_scope(db_session)
+    assert await dispatcher.claim_batch(db_session) == ()
+    await db_session.commit()
+
+    await db_session.refresh(delivery)
+    assert delivery.status == CarePushDeliveryStatus.CANCELLED.value
+    assert delivery.error_code == CarePushDeliveryErrorCode.ACCESS_REVOKED.value
+
+
+async def test_suspended_professional_profile_stops_background_push(
+    db_session, legacy_owner_roots
+):
+    delivery, doctor, _role, _relationship, _grant = (
+        await _queued_for_professional(
+            db_session, legacy_owner_roots, token="suspended-profile"
+        )
+    )
+    profile = await db_session.scalar(
+        select(ProfessionalProfile).where(ProfessionalProfile.user_id == doctor.id)
+    )
+    reviewer_id = await db_session.scalar(
+        select(UserRole.user_id).where(
+            UserRole.role == UserRoleName.PLATFORM_SUPERADMIN.value
+        )
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=reviewer_id,
+        status=ProfessionalVerificationStatus.SUSPENDED,
+        note="synthetic licence withdrawal",
+    )
     await db_session.commit()
 
     await enter_platform_scope(db_session)
@@ -778,3 +848,65 @@ async def test_postgres_claimers_serialize_without_duplicate_leases(
 
     assert {claim_one.delivery_id, claim_two.delivery_id} == {first.id, second.id}
     assert claim_one.lease_token != claim_two.lease_token
+
+
+@pytest.mark.integration
+async def test_postgres_claim_fences_a_concurrent_profile_suspension(
+    db_session, legacy_owner_roots, monkeypatch
+):
+    if db_session.bind.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL advisory-lock semantics")
+    _delivery, doctor, _role, _relationship, _grant = (
+        await _queued_for_professional(
+            db_session, legacy_owner_roots, token="profile-fence"
+        )
+    )
+    profile_id = await db_session.scalar(
+        select(ProfessionalProfile.id).where(
+            ProfessionalProfile.user_id == doctor.id
+        )
+    )
+    reviewer_id = await db_session.scalar(
+        select(UserRole.user_id).where(
+            UserRole.role == UserRoleName.PLATFORM_SUPERADMIN.value
+        )
+    )
+    factory = _factory(db_session)
+
+    async with factory() as claim_session, factory() as review_session:
+        await enter_platform_scope(claim_session)
+        (claim,) = await dispatcher.claim_batch(claim_session)
+        attempted = asyncio.Event()
+        original_lock = professionals.acquire_identity_governance_lock
+
+        async def observed_lock(session):
+            attempted.set()
+            return await original_lock(session)
+
+        monkeypatch.setattr(
+            professionals, "acquire_identity_governance_lock", observed_lock
+        )
+        suspension = asyncio.create_task(
+            professionals.decide(
+                review_session,
+                profile_id=profile_id,
+                reviewer_user_id=reviewer_id,
+                status=ProfessionalVerificationStatus.SUSPENDED,
+                note="synthetic concurrent suspension",
+            )
+        )
+        await asyncio.wait_for(attempted.wait(), timeout=2)
+        assert not suspension.done()
+
+        # The committed authorization claim wins this ordering.  Its payload is
+        # generic and sealed for one attempt; the suspension fences every later
+        # claim rather than rewriting a decision already committed.
+        await claim_session.commit()
+        await asyncio.wait_for(suspension, timeout=2)
+        await review_session.commit()
+
+    completion = await dispatcher.dispatch_claim(
+        _FakeClient(WebPushProviderResult(WebPushProviderOutcome.ACCEPTED, 201)),
+        claim,
+    )
+    assert completion.outcome.status is CarePushDeliveryStatus.SENT

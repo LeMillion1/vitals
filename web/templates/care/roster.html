@@ -16,12 +16,77 @@
         {{ t("care.roster_description") }}
     </p>
 
-    {% if accepted %}
+    {% if submitted %}
+    <div class="v-alert info">
+        {{ t("care.onboarding.submitted") }}
+    </div>
+    {% elif accepted %}
     <div class="v-alert info">
         {{ t("care.accepted_waiting") }}
     </div>
     {% endif %}
 
+    {% if is_professional_account and (not professional_profile or professional_profile.verification_status == 'rejected') %}
+    <section class="v-card p-6 space-y-5" aria-labelledby="professional-onboarding-title">
+        <div class="space-y-2">
+            <span class="v-kicker">{{ t("care.onboarding.kicker") }}</span>
+            <h2 id="professional-onboarding-title" class="v-heading-2">
+                {% if professional_profile %}{{ t("care.onboarding.correct_heading") }}{% else %}{{ t("care.onboarding.heading") }}{% endif %}
+            </h2>
+            <p class="v-text-body" style="color: var(--muted)">
+                {% if professional_profile %}{{ t("care.onboarding.correct_description") }}{% else %}{{ t("care.onboarding.description") }}{% endif %}
+            </p>
+        </div>
+        {% if professional_profile and professional_profile.review_note %}
+        <div class="v-alert error">
+            <strong>{{ t("care.onboarding.rejected") }}</strong>
+            <p>{{ professional_profile.review_note }}</p>
+        </div>
+        {% endif %}
+        {% if onboarding_kind %}
+        <form action="/care/profile" method="POST" class="space-y-4">
+            <div>
+                <span class="v-label">{{ t("care.onboarding.kind_label") }}</span>
+                <div class="mt-2"><span class="v-chip">{{ t("care.kind." ~ onboarding_kind) }}</span></div>
+            </div>
+            <div>
+                <label for="professional-display-name" class="v-label">{{ t("care.onboarding.name_label") }}</label>
+                <input id="professional-display-name" name="display_name" type="text" maxlength="200" required
+                       class="v-input mt-2" value="{{ professional_profile.display_name if professional_profile else '' }}"
+                       autocomplete="name">
+            </div>
+            <div>
+                <label for="professional-credential" class="v-label">{{ t("care.onboarding.credential_label") }}</label>
+                <input id="professional-credential" name="credential_reference" type="text" maxlength="200"
+                       class="v-input mt-2" value="{{ professional_profile.credential_reference if professional_profile and professional_profile.credential_reference else '' }}">
+                <p class="v-text-micro mt-2" style="color: var(--muted)">{{ t("care.onboarding.credential_help") }}</p>
+            </div>
+            <button type="submit" class="v-btn">{{ t("care.onboarding.submit") }}</button>
+        </form>
+        {% else %}
+        <div class="v-alert info">{{ t("care.onboarding.kind_ambiguous") }}</div>
+        {% endif %}
+    </section>
+    {% elif is_professional_account and professional_profile.verification_status in ['pending', 'unverified'] %}
+    <section class="v-card p-6 space-y-3">
+        <span class="v-chip">{{ t("care.onboarding.pending") }}</span>
+        <h2 class="v-heading-2">{{ t("care.onboarding.pending_heading") }}</h2>
+        <p class="v-text-body" style="color: var(--muted)">{{ t("care.onboarding.pending_description") }}</p>
+    </section>
+    {% elif is_professional_account and professional_profile.verification_status == 'suspended' %}
+    <section class="v-card p-6 space-y-3">
+        <span class="v-chip">{{ t("care.onboarding.suspended") }}</span>
+        <h2 class="v-heading-2">{{ t("care.onboarding.suspended_heading") }}</h2>
+        {% if professional_profile.review_note %}<p class="v-text-body">{{ professional_profile.review_note }}</p>{% endif %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("care.onboarding.suspended_description") }}</p>
+    </section>
+    {% elif is_professional_account and profile_verified %}
+    <div class="v-alert good">
+        {{ t("care.onboarding.verified", name=professional_profile.display_name) }}
+    </div>
+    {% endif %}
+
+    {% if profile_verified or not is_professional_account %}
     {% include "partials/web_push_card.html" %}
 
     {% if not patients %}
@@ -76,6 +141,7 @@
         {% endif %}
         {% endfor %}
     </div>
+    {% endif %}
     {% endif %}
 </div>
 {% endblock %}

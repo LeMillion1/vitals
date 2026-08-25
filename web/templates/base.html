@@ -536,7 +536,7 @@
        the personal bar must not also hide Patients, Support, and Sign out. #}
     {% if username and request.state.has_own_record %}
     {{ mobile_bottom_nav() }}
-    {% elif username and (request.state.holds_patients or request.state.is_platform_admin) %}
+    {% elif username and (request.state.is_professional or request.state.is_platform_admin) %}
     {{ mobile_role_nav() }}
     {% endif %}
 

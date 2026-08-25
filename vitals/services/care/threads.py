@@ -51,6 +51,7 @@ from vitals.enums import (
     FileAssetPurpose,
     FileAssetStatus,
     FileStorageBackend,
+    ProfessionalVerificationStatus,
 )
 from vitals.models.care_thread import (
     CareMessage,
@@ -58,9 +59,9 @@ from vitals.models.care_thread import (
     CareThread,
     CareThreadParticipant,
 )
-from vitals.models.identity import HealthSubject
+from vitals.models.identity import HealthSubject, UserRole
 from vitals.models.tenancy import FileAsset
-from vitals.models.professional import CareRelationship
+from vitals.models.professional import CareRelationship, ProfessionalProfile
 from vitals.services import file_asset_service
 from vitals.services.notifications import care_push_outbox
 
@@ -362,7 +363,22 @@ async def add_participant(
         )
 
     relationship = await session.scalar(
-        select(CareRelationship).where(
+        select(CareRelationship)
+        .join(
+            ProfessionalProfile,
+            (ProfessionalProfile.user_id == user_id)
+            & (ProfessionalProfile.kind == CareRelationship.kind)
+            & (
+                ProfessionalProfile.verification_status
+                == ProfessionalVerificationStatus.VERIFIED.value
+            ),
+        )
+        .join(
+            UserRole,
+            (UserRole.user_id == user_id)
+            & (UserRole.role == CareRelationship.kind),
+        )
+        .where(
             CareRelationship.subject_id == context.subject_id,
             CareRelationship.professional_user_id == user_id,
             CareRelationship.status == CareRelationshipStatus.ACTIVE.value,

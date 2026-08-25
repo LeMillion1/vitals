@@ -683,10 +683,10 @@ async def no_personal_record_handler(request: Request, exc: NoPersonalRecordErro
     """
 
     del exc
-    holds_patients = bool(getattr(request.state, "holds_patients", False))
+    is_professional = bool(getattr(request.state, "is_professional", False))
     accept = request.headers.get("accept", "")
     wants_html = request.method == "GET" and "text/html" in accept
-    if holds_patients and wants_html:
+    if is_professional and wants_html:
         return RedirectResponse(url="/care", status_code=status.HTTP_303_SEE_OTHER)
     detail = (
         "У этого аккаунта нет собственной медицинской записи. "
@@ -898,8 +898,14 @@ async def health(
 
 
 @app.get("/")
-async def root():
-    return RedirectResponse(url="/today", status_code=status.HTTP_303_SEE_OTHER)
+async def root(request: Request):
+    destination = (
+        "/care"
+        if not bool(getattr(request.state, "has_own_record", False))
+        and bool(getattr(request.state, "is_professional", False))
+        else "/today"
+    )
+    return RedirectResponse(url=destination, status_code=status.HTTP_303_SEE_OTHER)
 
 
 # ── Include Routers ───────────────────────────────────────────────────────────

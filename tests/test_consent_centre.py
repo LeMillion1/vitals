@@ -18,7 +18,12 @@ from contextlib import asynccontextmanager
 import pytest
 from sqlalchemy import func, select
 
-from vitals.enums import ProfessionalKind, UserRoleName, UserStatus
+from vitals.enums import (
+    ProfessionalKind,
+    ProfessionalVerificationStatus,
+    UserRoleName,
+    UserStatus,
+)
 from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.models.professional import ProfessionalInvitation, ProfessionalNote
 
@@ -79,6 +84,28 @@ async def _user(session, slug: str, *, roles=(), email=None) -> User:
         session.add(UserRole(user_id=user.id, role=role.value))
     await session.flush()
     return user
+
+
+async def _verify_professional(session, user: User, *, slug: str) -> None:
+    from vitals.services.care import professionals
+
+    operator = await _user(
+        session,
+        f"{slug}-operator",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    profile = await professionals.submit_profile(
+        session,
+        user_id=user.id,
+        kind=ProfessionalKind.DOCTOR,
+        display_name=f"Dr {slug}",
+    )
+    await professionals.decide(
+        session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status=ProfessionalVerificationStatus.VERIFIED,
+    )
 
 
 @pytest.fixture
@@ -199,6 +226,7 @@ async def test_accepting_establishes_care_and_opens_nothing(
         db_session, "cc-doctor", roles=(UserRoleName.DOCTOR,), email="doc@example.test"
     )
     doctor.email_verified_at = now_utc()
+    await _verify_professional(db_session, doctor, slug="cc-doctor")
     doctor_id = doctor.id
     await db_session.commit()
 
@@ -264,6 +292,7 @@ async def test_the_patient_selects_exact_consent_scopes(patient_client, db_sessi
         email="scoped@example.test",
     )
     doctor.email_verified_at = now_utc()
+    await _verify_professional(db_session, doctor, slug="cc-scoped")
     await db_session.commit()
 
     async with _client_for("cc-scoped") as doctor_client:
@@ -336,6 +365,7 @@ async def in_care(patient_client, db_session):
         email="incare@example.test",
     )
     doctor.email_verified_at = now_utc()
+    await _verify_professional(db_session, doctor, slug="cc-incare")
     await db_session.commit()
 
     async with _client_for("cc-incare") as doctor_client:

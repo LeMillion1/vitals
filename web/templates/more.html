@@ -41,6 +41,12 @@
 
     <section class="mh-more-group">
         <div class="mh-more-group-label">{{ t("more.account") }}</div>
+        {% if request.state.is_professional %}
+        <a href="/care" class="mh-more-row">
+            <span class="mh-more-ico">{{ mh_icon('patients') }}</span>
+            <span class="mh-more-name">{{ t('care.roster_heading') }}</span>
+        </a>
+        {% endif %}
         <a href="/messages" class="mh-more-row">
             <span class="mh-more-ico">{{ mh_icon('messages') }}</span>
             <span class="mh-more-name">{{ t('care.messages_title') }}</span>

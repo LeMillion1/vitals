@@ -14,9 +14,18 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import CareRelationshipStatus, ConsentStatus, UserStatus
-from vitals.models.identity import HealthSubject, User
-from vitals.models.professional import CareRelationship, ConsentGrant
+from vitals.enums import (
+    CareRelationshipStatus,
+    ConsentStatus,
+    ProfessionalVerificationStatus,
+    UserStatus,
+)
+from vitals.models.identity import HealthSubject, User, UserRole
+from vitals.models.professional import (
+    CareRelationship,
+    ConsentGrant,
+    ProfessionalProfile,
+)
 from vitals.services.identity_service import normalize_username
 from vitals.utils.timeutils import now_utc
 
@@ -69,6 +78,20 @@ async def list_subjects(
                 HealthSubject.display_name,
             )
             .join(HealthSubject, HealthSubject.id == CareRelationship.subject_id)
+            .join(
+                UserRole,
+                (UserRole.user_id == user.id)
+                & (UserRole.role == CareRelationship.kind),
+            )
+            .join(
+                ProfessionalProfile,
+                (ProfessionalProfile.user_id == user.id)
+                & (ProfessionalProfile.kind == CareRelationship.kind)
+                & (
+                    ProfessionalProfile.verification_status
+                    == ProfessionalVerificationStatus.VERIFIED.value
+                ),
+            )
             .join(
                 ConsentGrant,
                 ConsentGrant.relationship_id == CareRelationship.id,

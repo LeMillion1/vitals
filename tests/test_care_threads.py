@@ -20,12 +20,13 @@ from vitals.access import AccessScope, PolicyAction, PolicyResourceType
 from vitals.enums import (
     CareThreadStatus,
     ProfessionalKind,
+    ProfessionalVerificationStatus,
     UserRoleName,
     UserStatus,
 )
 from vitals.models.care_thread import CareThreadParticipant
 from vitals.models.identity import HealthSubject, User, UserRole
-from vitals.services.care import invitations, relationships, threads
+from vitals.services.care import invitations, professionals, relationships, threads
 from vitals.services.access_resolution import resolve_access_context
 
 
@@ -55,6 +56,23 @@ async def _take_into_care(
             if kind is ProfessionalKind.DOCTOR
             else UserRoleName.TRAINER,
         ),
+    )
+    operator = await _user(
+        session,
+        f"{slug}-operator",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    profile = await professionals.submit_profile(
+        session,
+        user_id=professional.id,
+        kind=kind,
+        display_name=f"Verified {slug}",
+    )
+    await professionals.decide(
+        session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status="verified",
     )
     issued = await invitations.invite(
         session,
@@ -204,6 +222,56 @@ async def test_a_second_professional_joins_only_through_live_care(db_session):
         db_session, context=context, thread_id=thread.id
     )
     assert {p.user_id for p in participants} == {owner.id, doctor.id, trainer.id}
+
+
+async def test_a_suspended_professional_cannot_be_added_to_a_conversation(
+    db_session,
+):
+    from sqlalchemy import select
+
+    from vitals.models.professional import ProfessionalProfile
+
+    owner, subject = await _patient(db_session, "thread-suspended-join")
+    doctor, _rel, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-suspended-join-doc",
+    )
+    trainer, _trel, _tgrant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-suspended-join-coach",
+        kind=ProfessionalKind.TRAINER,
+    )
+    profile = await db_session.scalar(
+        select(ProfessionalProfile).where(
+            ProfessionalProfile.user_id == trainer.id
+        )
+    )
+    operator = await _user(
+        db_session,
+        "thread-suspended-join-operator",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status=ProfessionalVerificationStatus.SUSPENDED,
+        note="synthetic licence withdrawal",
+    )
+
+    context = await _context(db_session, doctor, subject)
+    thread = await threads.open_thread(db_session, context=context, title="Plan")
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.add_participant(
+            db_session,
+            context=context,
+            thread_id=thread.id,
+            user_id=trainer.id,
+        )
 
 
 # ── Being in the room is not permission ──────────────────────────────────────

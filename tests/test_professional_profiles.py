@@ -27,7 +27,13 @@ from vitals.models.identity import User, UserRole
 from vitals.services.care import professionals
 
 
-async def _user(session, slug: str, *, roles=(), status=UserStatus.ACTIVE) -> User:
+async def _user(
+    session,
+    slug: str,
+    *,
+    roles=(UserRoleName.DOCTOR,),
+    status=UserStatus.ACTIVE,
+) -> User:
     user = User(
         username=slug,
         normalized_username=slug,
@@ -44,7 +50,9 @@ async def _user(session, slug: str, *, roles=(), status=UserStatus.ACTIVE) -> Us
 
 async def _operator(session, slug: str) -> User:
     return await _user(
-        session, slug, roles=(UserRoleName.PLATFORM_SUPERADMIN,)
+        session,
+        slug,
+        roles=(UserRoleName.PLATFORM_SUPERADMIN, UserRoleName.DOCTOR),
     )
 
 
@@ -92,8 +100,8 @@ async def test_one_profile_per_account(db_session):
         await professionals.submit_profile(
             db_session,
             user_id=doctor.id,
-            kind=ProfessionalKind.TRAINER,
-            display_name="Also a trainer",
+            kind=ProfessionalKind.DOCTOR,
+            display_name="The same doctor again",
         )
 
 
@@ -117,6 +125,79 @@ async def test_a_suspended_account_cannot_submit(db_session):
             user_id=doctor.id,
             kind=ProfessionalKind.DOCTOR,
             display_name="Dr Suspended",
+        )
+
+
+async def test_a_profile_kind_must_match_an_assigned_role(db_session):
+    doctor = await _user(
+        db_session,
+        "prof-wrong-kind",
+        roles=(UserRoleName.DOCTOR,),
+    )
+
+    with pytest.raises(professionals.ProfessionalValidationError):
+        await professionals.submit_profile(
+            db_session,
+            user_id=doctor.id,
+            kind=ProfessionalKind.TRAINER,
+            display_name="Not a trainer",
+        )
+
+
+async def test_a_rejected_profile_can_be_corrected_without_changing_kind(db_session):
+    doctor = await _user(db_session, "prof-resubmit")
+    operator = await _operator(db_session, "prof-resubmit-op")
+    profile = await professionals.submit_profile(
+        db_session,
+        user_id=doctor.id,
+        kind=ProfessionalKind.DOCTOR,
+        display_name="Dr First",
+        credential_reference="WRONG",
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status=ProfessionalVerificationStatus.REJECTED,
+        note="credential does not match the register",
+    )
+
+    corrected = await professionals.resubmit_profile(
+        db_session,
+        user_id=doctor.id,
+        display_name="Dr Corrected",
+        credential_reference="LIC-42",
+    )
+
+    assert corrected.kind == ProfessionalKind.DOCTOR.value
+    assert corrected.display_name == "Dr Corrected"
+    assert corrected.credential_reference == "LIC-42"
+    assert corrected.verification_status == ProfessionalVerificationStatus.PENDING.value
+    assert corrected.review_note is None
+
+
+async def test_a_professional_cannot_self_clear_a_suspension(db_session):
+    doctor = await _user(db_session, "prof-no-self-unsuspend")
+    operator = await _operator(db_session, "prof-no-self-unsuspend-op")
+    profile = await professionals.submit_profile(
+        db_session,
+        user_id=doctor.id,
+        kind=ProfessionalKind.DOCTOR,
+        display_name="Dr Suspended",
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status=ProfessionalVerificationStatus.SUSPENDED,
+        note="licence suspended",
+    )
+
+    with pytest.raises(professionals.ProfessionalConflictError):
+        await professionals.resubmit_profile(
+            db_session,
+            user_id=doctor.id,
+            display_name="Dr Self Cleared",
         )
 
 
@@ -145,6 +226,36 @@ async def test_verifying_records_who_decided_and_when(db_session):
     assert decided.verified_by_user_id == operator.id
     assert decided.verified_at is not None
     assert await professionals.is_verified(db_session, user_id=doctor.id)
+
+
+async def test_a_review_takes_the_identity_governance_fence(
+    db_session, monkeypatch
+):
+    doctor = await _user(db_session, "prof-governance")
+    operator = await _operator(db_session, "prof-governance-op")
+    profile = await professionals.submit_profile(
+        db_session,
+        user_id=doctor.id,
+        kind=ProfessionalKind.DOCTOR,
+        display_name="Dr Governed",
+    )
+    observed = False
+    original = professionals.acquire_identity_governance_lock
+
+    async def guarded(session):
+        nonlocal observed
+        observed = True
+        return await original(session)
+
+    monkeypatch.setattr(professionals, "acquire_identity_governance_lock", guarded)
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status=ProfessionalVerificationStatus.VERIFIED,
+    )
+
+    assert observed
 
 
 @pytest.mark.parametrize(

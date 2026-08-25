@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — professionals have one clear onboarding home
+
+Doctor- and trainer-only accounts now land on `/care` instead of bouncing
+through a personal dashboard they do not own. The same responsive page keeps a
+persistent “People in your care / Подопечные” destination at zero patients and
+guides the professional through one role-derived profile form, independent
+review, correction after rejection, verified roster, and suspension state.
+Professional kind cannot be selected or escalated by form input, a rejected
+claim keeps one identity and kind when resubmitted, and a suspended claim cannot
+self-clear. Browser notification setup and the roster stay secondary until the
+profile is verified.
+
 ### Fixed — care invitations require the exact professional role
 
 A patient invitation no longer acts as an accidental role-granting surface.

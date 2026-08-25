@@ -232,9 +232,10 @@ async def get_request_chrome_scope(
     # one — so the navigation has to know, or it offers a shelf of links that
     # each bounce straight back.
     request.state.has_own_record = scope is not None
-    # Whether to offer the roster at all. Asked here because the nav is chrome
-    # and must not raise; a link that answers an empty page is worse than no
-    # link, and a professional who holds nobody has no roster to visit.
+    # Whether this account has professional work and whether any relationship
+    # exists are separate chrome facts. ``is_professional`` keeps onboarding
+    # reachable before the first patient; ``holds_patients`` still drives
+    # unread/work summaries that genuinely need a relationship.
     #
     # Asked about the signed-in account rather than about ``scope``, which is
     # None for anybody who owns no record of their own. That is most doctors and
@@ -242,10 +243,28 @@ async def get_request_chrome_scope(
     # the people who have one — they signed in and saw no way to reach their
     # patients at all.
     request.state.holds_patients = False
+    request.state.is_professional = False
     if signed_in_user_id is not None:
         try:
-            from vitals.enums import CareRelationshipStatus
+            from vitals.enums import CareRelationshipStatus, UserRoleName
+            from vitals.models.identity import UserRole
             from vitals.models.professional import CareRelationship
+
+            request.state.is_professional = bool(
+                await session.scalar(
+                    select(UserRole.id)
+                    .where(
+                        UserRole.user_id == signed_in_user_id,
+                        UserRole.role.in_(
+                            (
+                                UserRoleName.DOCTOR.value,
+                                UserRoleName.TRAINER.value,
+                            )
+                        ),
+                    )
+                    .limit(1)
+                )
+            )
 
             request.state.holds_patients = bool(
                 await session.scalar(

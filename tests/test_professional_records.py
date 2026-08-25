@@ -26,7 +26,7 @@ from vitals.enums import (
     UserStatus,
 )
 from vitals.models.identity import HealthSubject, User, UserRole
-from vitals.services.care import invitations, records, relationships
+from vitals.services.care import invitations, professionals, records, relationships
 from vitals.services.access_resolution import resolve_access_context
 
 
@@ -58,6 +58,23 @@ async def _in_care_with_consent(session, slug: str, *, scopes=None):
     await session.flush()
 
     doctor = await _user(session, f"{slug}-doc", roles=(UserRoleName.DOCTOR,))
+    operator = await _user(
+        session,
+        f"{slug}-operator",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    profile = await professionals.submit_profile(
+        session,
+        user_id=doctor.id,
+        kind=ProfessionalKind.DOCTOR,
+        display_name=f"Dr {slug}",
+    )
+    await professionals.decide(
+        session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status="verified",
+    )
     issued = await invitations.invite(
         session,
         subject_id=subject.id,
@@ -224,6 +241,23 @@ async def test_a_second_professional_cannot_edit_the_first_ones_note(db_session)
     )
 
     second = await _user(db_session, "rec-second-trainer", roles=(UserRoleName.TRAINER,))
+    second_operator = await _user(
+        db_session,
+        "rec-second-trainer-operator",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    second_profile = await professionals.submit_profile(
+        db_session,
+        user_id=second.id,
+        kind=ProfessionalKind.TRAINER,
+        display_name="Verified second trainer",
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=second_profile.id,
+        reviewer_user_id=second_operator.id,
+        status="verified",
+    )
     issued = await invitations.invite(
         db_session,
         subject_id=subject.id,

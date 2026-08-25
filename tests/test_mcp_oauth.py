@@ -7,11 +7,18 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 import pytest
+from sqlalchemy import select
 
-from vitals.enums import Source, UserRoleName, UserStatus
+from vitals.enums import ProfessionalKind, Source, UserRoleName, UserStatus
 from vitals.models import GarminActivity, GarminDaily, HevyWorkout, LabResult, WeightLog
 from vitals.models.identity import HealthSubject, User, UserRole
-from vitals.models.professional import CareRelationship, ConsentGrant, ConsentScope
+from vitals.models.professional import (
+    CareRelationship,
+    ConsentGrant,
+    ConsentScope,
+    ProfessionalProfile,
+)
+from vitals.services.care import professionals
 from web.auth import create_session, _get_mcp_serializer, _get_serializer
 from web.config import SESSION_COOKIE
 
@@ -31,6 +38,33 @@ async def _professional_in_care(db_session, legacy_owner_roots):
     await db_session.flush()
     db_session.add(
         UserRole(user_id=professional.id, role=UserRoleName.DOCTOR.value)
+    )
+    operator = User(
+        username="oauth-professional-reviewer",
+        normalized_username="oauth-professional-reviewer",
+        password_hash="synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(operator)
+    await db_session.flush()
+    db_session.add(
+        UserRole(
+            user_id=operator.id,
+            role=UserRoleName.PLATFORM_SUPERADMIN.value,
+        )
+    )
+    await db_session.flush()
+    profile = await professionals.submit_profile(
+        db_session,
+        user_id=professional.id,
+        kind=ProfessionalKind.DOCTOR,
+        display_name="Verified OAuth doctor",
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status="verified",
     )
     relationship = CareRelationship(
         subject_id=legacy_owner_roots.subject_id,
@@ -391,6 +425,55 @@ async def test_a_professional_authorizes_one_patient_and_consent_version(
     assert payload["consent_grant"] == str(grant.id)
     assert payload["consent_version"] == 1
     assert payload["scopes"] == ["domain:weight:list"]
+
+
+async def test_a_suspended_profile_cannot_list_a_patient_for_oauth(
+    client, db_session, legacy_owner_roots
+):
+    professional, _relationship, _grant = await _professional_in_care(
+        db_session, legacy_owner_roots
+    )
+    profile = await db_session.scalar(
+        select(ProfessionalProfile).where(
+            ProfessionalProfile.user_id == professional.id
+        )
+    )
+    reviewer_id = await db_session.scalar(
+        select(UserRole.user_id).where(
+            UserRole.role == UserRoleName.PLATFORM_SUPERADMIN.value
+        )
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=reviewer_id,
+        status="suspended",
+        note="synthetic licence withdrawal",
+    )
+    await db_session.commit()
+
+    client.cookies.set(SESSION_COOKIE, create_session(professional.username))
+    response = await client.get(
+        "/oauth/authorize?response_type=code"
+        "&client_id=vitals-claude-connector"
+        "&redirect_uri=https://claude.ai/callback"
+        f"&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
+    )
+
+    assert response.status_code == 200
+    assert str(legacy_owner_roots.subject_id) not in response.text
+
+    approved = await client.post(
+        "/oauth/authorize/approve",
+        data={
+            "client_id": "vitals-claude-connector",
+            "redirect_uri": "https://claude.ai/callback",
+            "code_challenge": CODE_CHALLENGE,
+            "code_challenge_method": "S256",
+            "subject_id": str(legacy_owner_roots.subject_id),
+        },
+    )
+    assert approved.status_code == 400
 
 
 async def test_oauth_approval_cannot_substitute_an_unrelated_patient(

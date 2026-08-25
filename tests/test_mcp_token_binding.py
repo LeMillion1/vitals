@@ -22,10 +22,16 @@ import pytest
 from sqlalchemy import select
 
 from vitals.access import AccessScope, PolicyAction, PolicyResourceType
-from vitals.enums import UserRoleName, UserStatus
+from vitals.enums import ProfessionalKind, UserRoleName, UserStatus
 from vitals.models.identity import HealthSubject, McpAccessToken, User, UserRole
-from vitals.models.professional import CareRelationship, ConsentGrant, ConsentScope
+from vitals.models.professional import (
+    CareRelationship,
+    ConsentGrant,
+    ConsentScope,
+    ProfessionalProfile,
+)
 from vitals.services.authentication import mcp_tokens as tokens
+from vitals.services.care import professionals
 
 CLIENT = "vitals-claude-connector"
 AUDIENCE = "http://test/mcp"
@@ -76,6 +82,33 @@ async def _professional_grant(session, legacy_owner_roots):
     session.add(professional)
     await session.flush()
     session.add(UserRole(user_id=professional.id, role=UserRoleName.DOCTOR.value))
+    operator = User(
+        username="scoped-doctor-reviewer",
+        normalized_username="scoped-doctor-reviewer",
+        password_hash="$synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    session.add(operator)
+    await session.flush()
+    session.add(
+        UserRole(
+            user_id=operator.id,
+            role=UserRoleName.PLATFORM_SUPERADMIN.value,
+        )
+    )
+    await session.flush()
+    profile = await professionals.submit_profile(
+        session,
+        user_id=professional.id,
+        kind=ProfessionalKind.DOCTOR,
+        display_name="Verified scoped doctor",
+    )
+    await professionals.decide(
+        session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        status="verified",
+    )
     relationship = CareRelationship(
         subject_id=legacy_owner_roots.subject_id,
         subject_owner_user_id=legacy_owner_roots.user_id,
@@ -206,6 +239,41 @@ async def test_consent_change_invalidates_a_professional_token_immediately(
     grant.status = "revoked"
     grant.revoked_at = datetime.now(timezone.utc)
     await db_session.commit()
+    assert await _verify(db_session, payload) is None
+
+
+async def test_profile_suspension_invalidates_a_professional_token_immediately(
+    db_session, legacy_owner_roots
+):
+    professional, _relationship, _grant = await _professional_grant(
+        db_session, legacy_owner_roots
+    )
+    payload, _record = await _issue(
+        db_session,
+        username=professional.username,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    assert await _verify(db_session, payload) is not None
+
+    profile = await db_session.scalar(
+        select(ProfessionalProfile).where(
+            ProfessionalProfile.user_id == professional.id
+        )
+    )
+    reviewer_id = await db_session.scalar(
+        select(UserRole.user_id).where(
+            UserRole.role == UserRoleName.PLATFORM_SUPERADMIN.value
+        )
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=reviewer_id,
+        status="suspended",
+        note="synthetic licence withdrawal",
+    )
+    await db_session.commit()
+
     assert await _verify(db_session, payload) is None
 
 
