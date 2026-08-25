@@ -4,6 +4,14 @@ Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / S
 
 Last reviewed: 2026-08-24
 
+> **Historical snapshot.** Every present-tense statement below describes the
+> PR-03 compatibility window before the later authorization, scheduler, private
+> storage, and portability cutovers. It is not current runtime guidance. Today
+> MCP credentials are subject-scoped and revocable, record jobs fan out per
+> subject or provider connection, private medical bytes use opaque private
+> storage, and personal portability v2 carries verified resources. Use
+> `MULTI_USER_IMPLEMENTATION_AUDIT.md` and `ARCHITECTURE.md` for current state.
+
 This document records every compatibility write boundary that must populate the
 nullable ownership columns introduced by revisions `0037` and `0038`. It is the
 runtime companion to `COMMERCIAL_OWNERSHIP_INVENTORY.md`; that inventory owns the
@@ -38,8 +46,8 @@ these boundaries, in this order.
   but never turns their lifecycle state back into permission for new activity.
 - `Source` remains ingestion provenance and never substitutes for subject, actor,
   connection, file, relationship, or consent identity.
-- MCP v1 remains a legacy installation-wide capability. Its direct Timeline,
-  Supplements and provider-sync tools resolve the
+- At this stage MCP v1 remained a legacy installation-wide capability. Its
+  direct Timeline, Supplements and provider-sync tools resolve the
   configured owner at the database boundary so writes are attributed and a
   second subject fails closed. Whole-lake MCP composition/export stays blocked
   for the later AccessContext cutover. This mapping is not subject authorization
@@ -131,9 +139,10 @@ or drifted state, and only that exact-one bridge may mirror a normalized save to
 actor and writes never touch the global row. Redis keys must include the
 corresponding user/S/C UUID before a second subject exists.
 
-The startup scheduler still consumes the exact-one aggregate. Replacing its
-global cron registry with per-subject, timezone-aware due dispatchers remains a
-PR-09 gate; the storage split does not claim that dispatcher cutover.
+At this stage the startup scheduler still consumed the exact-one aggregate.
+Replacing its global cron registry with per-subject, timezone-aware due
+dispatchers remained a PR-09 gate; the storage split did not claim that
+dispatcher cutover.
 
 The language, module-toggle, custom-chart, week-template, and Garmin Weight export
 product paths now

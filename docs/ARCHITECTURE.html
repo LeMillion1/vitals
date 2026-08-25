@@ -345,13 +345,13 @@ tbody tr:hover td { background: var(--surface-2); }
 
 <header class="masthead">
   <h1>Vitals Architecture</h1>
-  <p class="standfirst">A self-hosted health-data service — fourteen domains, five external integration modules and one data lake — where every medical fact belongs to a named health subject and cross-subject access requires an explicit consent or support grant.</p>
+  <p class="standfirst">A self-hosted health-data service — fourteen domains, five external integration modules and one data lake — where every medical fact belongs to a named health subject and cross-subject access requires relationship consent, an exact support grant, or an independently approved read-only break-glass session.</p>
   <div class="meta">
-    <span><b>83</b> tables</span>
-    <span><b>73</b> migrations</span>
+    <span><b>88</b> tables</span>
+    <span><b>80</b> migrations</span>
     <span><b>14</b> domains</span>
-    <span><b>105</b> application services</span>
-    <span><b>66</b> RLS tables</span>
+    <span><b>101</b> application services</span>
+    <span><b>71</b> RLS tables</span>
     <span>Reviewed <b>2026-08-25</b></span>
   </div>
 </header>
@@ -417,7 +417,7 @@ flowchart TB
   style platform fill:none,stroke:none
 </pre>
     </div>
-    <figcaption><b>System context.</b> Patient ownership, professional relationship/consent and short-lived support grants are separate authorization bases. Roles alone never grant access to a medical record.</figcaption>
+    <figcaption><b>System context.</b> Patient ownership, professional relationship/consent, short-lived support grants, and independently approved, time-limited read-only break-glass sessions are separate authorization bases. Roles alone never grant access to a medical record.</figcaption>
   </figure>
 </section>
 
@@ -425,7 +425,7 @@ flowchart TB
 <section id="containers">
   <p class="eyebrow">C4 · Level 2</p>
   <h2>Containers</h2>
-  <p>One FastAPI process serves the web UI, the MCP endpoint and the external read API. An APScheduler loop inside it runs sixteen jobs. Everything durable is in PostgreSQL; Redis holds only what can be lost without consequence.</p>
+  <p>One FastAPI process serves the web UI, the MCP endpoint and the external read API. An APScheduler loop inside it runs sixteen jobs. Durable relational and control metadata is in PostgreSQL; medical file bytes live in private storage; Redis holds only what can be lost without consequence.</p>
 
   <figure>
     <div class="diagram">
@@ -434,14 +434,14 @@ flowchart TB
 flowchart LR
   subgraph proc ["FastAPI process"]
     direction TB
-    web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>32 routers, server-rendered</span>"]
+    web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>34 routers, server-rendered</span>"]
     mcpsrv["<b>MCP server</b><br/><span style='font-size:11px'>tools, resources, prompts</span>"]
     api["<b>External read API</b><br/><span style='font-size:11px'>summary for other surfaces</span>"]
-    svc["<b>Application services</b><br/><span style='font-size:11px'>105 tracked modules · bounded-context migration active</span>"]
+    svc["<b>Application services</b><br/><span style='font-size:11px'>101 tracked modules · bounded-context migration active</span>"]
     sched["<b>Scheduler</b><br/><span style='font-size:11px'>16 jobs: sync, digest, nudge,<br/>dispatch, reconcile, retention, sweep</span>"]
   end
 
-  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>83 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
+  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>88 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
   redis[("<b>Redis</b><br/><span style='font-size:11px'>cache, rate limits,<br/>Garmin token, breaker</span>")]
   files[/"<b>Private files</b><br/><span style='font-size:11px'>photos, scans, PDFs<br/>opaque keys</span>"/]
 
@@ -462,8 +462,9 @@ flowchart LR
   style proc fill:#f7f8f7,stroke:#ccd6d8
 </pre>
     </div>
-    <figcaption><b>Containers.</b> Every surface goes through the domain services; none of them reaches the database directly. That funnel is what made the ownership conversion tractable — there was one layer to make scope-aware, not four.</figcaption>
+    <figcaption><b>Containers.</b> Business mutations and reusable authorization behavior go through domain services. Delivery adapters may retain narrow subject-scoped presentation queries, but they do not invent a second business-policy layer.</figcaption>
   </figure>
+  <p>Personal portability v2 is an owner-only encrypted archive boundary over this graph: it authenticates the archive, maps credential-free connection descriptors explicitly, stages verified private resources, and commits replacement plus an exact replay receipt atomically. It is not a multi-subject installation backup; that separate format remains unimplemented.</p>
 </section>
 
 <!-- ══════════════════════════════════════════════════════════════ -->
@@ -476,7 +477,7 @@ flowchart LR
     <table>
       <thead><tr><th>Root</th><th>Question it answers</th><th>Absent means</th></tr></thead>
       <tbody>
-        <tr><td><code>subject_id</code></td><td>Whose health is this about?</td><td>Nothing — now mandatory on 52 tables</td></tr>
+        <tr><td><code>subject_id</code></td><td>Whose health is this about?</td><td>Nothing — now mandatory on 60 tables</td></tr>
         <tr><td><code>actor_user_id</code></td><td>Which human entered it?</td><td>A system or scheduled job did</td></tr>
         <tr><td><code>integration_connection_id</code></td><td>Which account did it arrive through?</td><td>Nobody's device — typed in by hand</td></tr>
         <tr><td><code>file_asset_id</code></td><td>Which private file is it a pointer to?</td><td>Not backed by a file</td></tr>
@@ -549,10 +550,10 @@ erDiagram
       <thead><tr><th>Class</th><th>Count</th><th>Meaning</th></tr></thead>
       <tbody>
         <tr><td><code>subject_data</code></td><td>32</td><td>The record itself. Subject mandatory.</td></tr>
-        <tr><td><code>subject_control</code></td><td>19</td><td>Subject-owned settings, grants and integration roots.</td></tr>
+        <tr><td><code>subject_control</code></td><td>22</td><td>Subject-owned settings, grants and integration roots.</td></tr>
         <tr><td><code>account_control</code></td><td>10</td><td>Users, roles and account credentials.</td></tr>
         <tr><td><code>subject_child</code></td><td>5</td><td>Inherits its subject from a parent row.</td></tr>
-        <tr><td><code>subject_control_child</code></td><td>6</td><td>Control-plane child rows with explicit subject ownership.</td></tr>
+        <tr><td><code>subject_control_child</code></td><td>8</td><td>Control-plane child rows with explicit subject ownership.</td></tr>
         <tr><td><code>mixed_catalog</code></td><td>2</td><td>Curated rows belong to nobody; custom rows to one subject.</td></tr>
         <tr><td><code>platform_control</code></td><td>3</td><td>The installation's own configuration and controls.</td></tr>
         <tr><td><code>mixed_catalog_child</code></td><td>1</td><td>Child rows under a mixed curated/custom catalog.</td></tr>
@@ -693,7 +694,7 @@ flowchart TB
   ctx["<b>1 · AccessContext</b><br/><span style='font-size:11px'>principal · subject · owner<br/>roles · live grants</span>"]
   pol{"<b>2 · Policy</b><br/><span style='font-size:11px'>is_allowed(context, request)</span>"}
   svc["<b>3 · Scoped service</b><br/><span style='font-size:11px'>subject_id is mandatory<br/>in every signature</span>"]
-  rls["<b>4 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 66 tables<br/>every one with a subject</span>"]
+  rls["<b>4 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 71 tables<br/>every one with a subject</span>"]
   rows[("rows")]
   deny["403<br/><span style='font-size:11px'>says nothing about<br/>whose record, or whether<br/>it exists</span>"]
 
@@ -713,6 +714,8 @@ flowchart TB
     <figcaption><b>Four gates, three of them independent.</b> Application scoping is a property of the code that happens to be running. A policy is a property of the data, and it survives a query written in a hurry, a report assembled by hand, and a console session opened during an incident.</figcaption>
   </figure>
 
+  <p>Break-glass is intentionally not unioned into this ordinary policy context. Its dedicated service verifies one exact session, holder, subject, two independent approvals, read-only domain scopes and TTL, then its own fixed projection binds that subject for RLS. No care consent, support grant, role, MCP capability, note, plan, conversation or file surface is inherited into the emergency decision.</p>
+
   <div class="invariant">
     <span class="tag">Fails closed</span>
     <p>An unbound session sees <em>nothing</em>, not everything. <code>current_setting</code> returns NULL when the application forgot to say whose request it is serving, the policy comparison is NULL, and no row qualifies. Getting the boundary wrong shows up as an empty page, never as somebody else's data.</p>
@@ -721,12 +724,12 @@ flowchart TB
   <p><code>FORCE</code> is the operative word: PostgreSQL exempts a table's owner from its own policies, and the application connects as the owner. Roles that must see across subjects — the migration runner, the ownership backfill jobs, the platform control plane — are exempt by role attribute. That is deliberate: a backfill that could not see an unstamped row could not stamp it.</p>
 
   <h3>Work that belongs to nobody in particular</h3>
-  <p>Not every transaction is somebody's. A doctor opening a shared report has no account here and is not meant to need one — the token in the URL is the authorization, and the application checks it before reading anything. Four scheduled jobs are the same shape: the share purge, the AI invocation reconciler, the historical delivery reconciler, and the care-push dispatcher each sweep across every subject with no person to act as.</p>
+  <p>Not every transaction is somebody's. A doctor opening a shared report has no account here and is not meant to need one — the token in the URL is the authorization, and the application checks it before reading anything. Five scheduled jobs are the same shape: the share purge, AI invocation reconciler, historical delivery reconciler, care-push dispatcher, and registration-admission retention job each sweep across subjects with no person to act as.</p>
   <p>Under the subject comparison alone, installation-wide jobs see nothing and report success. The RLS contract therefore admits a second explicit scope, <code>vitals.platform_scope</code>, alongside the subject policies. A contract test enumerates every application caller allowed to enter it.</p>
 
   <div class="invariant">
     <span class="tag">Narrow by construction</span>
-    <p>Transaction-local like the subject binding, so a scope that reads across everybody cannot ride a pooled connection into the next request. Asked for by name through <code>enter_platform_scope</code>, never drifted into. Opened only by the exact string <code>on</code>, so a stray or truncated value closes. And all nine call sites are enumerated by a contract test — a tenth is something a reviewer reads, not something that accumulates.</p>
+    <p>Transaction-local like the subject binding, so a scope that reads across everybody cannot ride a pooled connection into the next request. Asked for by name through <code>enter_platform_scope</code>, never drifted into. Opened only by the exact string <code>on</code>, so a stray or truncated value closes. And all thirteen call sites are enumerated by a contract test — a fourteenth is something a reviewer reads, not something that accumulates.</p>
   </div>
 
   <p>The line that keeps it honest: this is for work that <em>has</em> no subject, not work that failed to find one. A path that merely forgot to resolve its subject should see nothing — that is the boundary working — and its fix is to bind, never to declare itself the installation.</p>

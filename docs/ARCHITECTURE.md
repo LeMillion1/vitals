@@ -1,7 +1,7 @@
 # Architecture
 
-The visual architecture reference lives in [`ARCHITECTURE.html`](ARCHITECTURE.html) — a
-single self-contained page with eight diagrams: C4 context and containers, the
+The visual architecture reference lives in [`ARCHITECTURE.html`](ARCHITECTURE.html) — an
+artifact-body reference with eight diagrams: C4 context and containers, the
 ownership graph, the data lake's raw/fact/artifact lifecycle, the write and read
 paths, the conflict engine, the conversion timeline, and the cutover sequence.
 
@@ -24,7 +24,8 @@ vitals/services/care/
 ├── invitations.py     # patient offer and token lifecycle
 ├── professionals.py   # professional claim and verification
 ├── relationships.py   # relationship and consent lifecycle
-├── records.py         # professional projection and authored artifacts
+├── record_projection.py # consent-first bounded record summaries
+├── records.py         # authored notes and care plans
 └── threads.py         # patient-visible care-team conversation
 
 vitals/services/authentication/
@@ -48,6 +49,17 @@ vitals/operations/ownership/
 ├── validate.py       # cross-table ownership cutover validation
 ├── audit.py          # scoped-key collision operator audit
 └── <phase>.py        # 18 resumable ownership backfill programs
+
+vitals/operations/portability/
+├── export_v2.py      # encrypted personal archive coordinator
+└── import_v2.py      # receipt-backed atomic replacement coordinator
+
+vitals/services/portability/
+├── archive.py / archive_reader.py # authenticated archive boundaries
+├── connection_mapping.py          # explicit credential-free C mapping
+├── resource_staging.py            # verified private-byte staging
+├── replacement_preflight.py / replacement_apply.py
+└── receipts.py / file_retirement.py
 
 vitals/ownership_transition/
 ├── bridges.py        # read-only historical checkpoint projections
@@ -95,16 +107,16 @@ page needs the same edit:
 
 | The page says | Comes from | Today |
 | --- | --- | --- |
-| table count, ownership classes | `vitals/ownership.py` | 83 tables, 32 of them `subject_data` |
-| mandatory-subject table count | `subject_id` NOT NULL in `Base.metadata` | 55 |
+| table count, ownership classes | `vitals/ownership.py` | 88 tables, 32 of them `subject_data` |
+| mandatory-subject table count | `subject_id` NOT NULL in `Base.metadata` | 60 |
 | the backfill phases | `OWNERSHIP_BACKFILL_SEQUENCE` in `vitals/ownership_deploy.py` | 18 |
 | the domains | `vitals.enums.Domain` | 14 |
 | external integration modules | tracked non-`__init__` modules in `vitals/integrations/` | 5 |
 | the scheduled jobs | `vitals/scheduler/jobs.py` | 16, of which 11 fan out per record |
-| migration count | `migrations/versions/` | 74, head `0074` |
-| RLS table count | revisions `0050` + `0051` + `0055` + `0056` + `0057` + `0060` + `0061` + `0062` + `0063` + `0065` + `0067` + `0069`, asserted in `tests/test_row_level_security.py` | 66 |
-| platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 11 |
-| routers, tracked application-service modules | `web/routers/`, `vitals/services/` | 32 and 105 |
+| migration count | `migrations/versions/` | 80, head `0080` |
+| RLS table count | revisions `0050` + `0051` + `0055` + `0056` + `0057` + `0060` + `0061` + `0062` + `0063` + `0065` + `0067` + `0069` + `0076` + `0078` + `0079`, asserted in `tests/test_row_level_security.py` | 71 |
+| platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 13 |
+| routers, tracked application-service modules | tracked non-`__init__` files in `web/routers/`, `vitals/services/` | 34 and 101 |
 
 The **39 columns** the timeline attributes to revision `0049` is deliberately
 *not* in that table: it is the length of that revision's own

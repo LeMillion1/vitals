@@ -108,7 +108,7 @@ VITALS_OIDC_ISSUER=https://idp.example.com          # no trailing slash
 VITALS_OIDC_CLIENT_ID=...
 VITALS_OIDC_CLIENT_SECRET=...
 VITALS_OIDC_REDIRECT_URL=https://vitals.example.com/auth/callback
-VITALS_OIDC_BOOTSTRAP_SUBJECT=...                   # the ID from step 2
+VITALS_OIDC_BOOTSTRAP_SUBJECT=...                   # the ID from step 3
 ```
 
 Restart the app. From this point:
@@ -194,9 +194,10 @@ remain visible only so an operator can reject them with a private decision
 note. Rejection is also available after closure, so stale applicant PII need
 not remain pending until expiry.
 
-Creating a local account and deciding which provider identity may enter it are
-two explicit operator actions. Run both from a shell with
-`VITALS_DATABASE_URL` set:
+For a professional account provisioned directly by an operator, creating the
+local account and deciding which provider identity may enter it are two explicit
+actions. This is separate from the invite-only and admin-approved browser flows
+above. Run both from a shell with `VITALS_DATABASE_URL` set:
 
 ```bash
 python scripts/provision_account.py --username dr-ivanova --role doctor

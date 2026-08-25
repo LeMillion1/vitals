@@ -27,10 +27,10 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0074` — 74 revisions |
-| Schema | 83 tables; 66 carry `subject_id` and are covered by an RLS policy; 55 have it `NOT NULL` |
+| Alembic head | `0080` — 80 revisions |
+| Schema | 88 tables; 71 carry `subject_id` and are covered by an RLS policy; 60 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,981 fast passed / 183 skipped / 35 UI deselected; 178 focused retention/scheduler/RLS tests; migration cycle plus 167 focused PostgreSQL retention/admission/RLS tests |
+| Suites | 39 UI scenarios collect at this revision; historical pass counts below are not a current validation result and must be rerun for release |
 | Domains / scheduled jobs | 14 and 16, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -38,8 +38,8 @@ expansion and backfill, PR-04 scoped services + policy engine + FORCE RLS,
 PR-05 OIDC, provisioning and the registration decision, PR-06
 files/portability/settings, PR-07 professionals/relationships/consent, PR-08
 professional UX, PR-09 server-side notification dispatch,
-PR-11 care-team messaging, PR-12's read-only support
-access, PR-10.
+PR-11 care-team messaging, PR-12's controlled read, exceptional export, first
+fixed repair and break-glass paths, PR-10.
 
 **PR-10 is complete.** Its external API authenticates against per-subject
 credentials rather than one installation-wide string that resolved to the `.env`
@@ -72,10 +72,10 @@ support-granted record responses now commit one PHI-free, grant-correlated read
 event before medical HTML is returned, and the patient sees those actual
 openings with the operator, local timestamp, and approved scopes derived from
 the protected grant rather than copied into audit metadata. The web paths bind
-that exact subject before PostgreSQL FORCE-RLS access. `repair`, `export`,
-operational dashboards, retention controls and the break-glass path are named
-and not built; each needs its own review and the roadmap already sequences them
-after the read path.
+that exact subject before PostgreSQL FORCE-RLS access. Exceptional export, one
+fixed patient-reviewed reversible repair, and the independent two-reviewer
+read-only break-glass path are now built. Broader repair, operational dashboards,
+and incident-retention controls remain later reviewed work.
 
 **Two gaps are decisions rather than unbuilt scope**, and each is named
 where it lives: the professional invitation inbox from PR-08 (finding an
@@ -85,6 +85,16 @@ matters: both it and `export_full` refuse a database holding more than one
 subject, so the unqualified delete only ever runs where there is exactly one
 record for it to replace. What is missing is the multi-subject backup format,
 not a guard.
+
+**Personal portability v2 is also live, and is not that missing installation
+backup.** Its encrypted authenticated archive carries one owner's portable graph,
+private resources, and credential-free connection descriptors. Import requires
+an explicit mapping to usable same-subject connections, validates and stages
+private bytes, replaces the record and writes an exact replay receipt in one
+transaction, and reconciles an uncertain commit only through that receipt. It
+does not transport credentials, identity/control-plane state, or a plaintext
+spool. A multi-subject full installation backup and restore format is still
+unimplemented.
 
 **The lab-marker collision is migrated, not hidden on read.** Revision `0077`
 adds a conservative subject-scoped identity key, retains every colliding catalog
@@ -130,8 +140,10 @@ reads, so changing it did nothing), the proactive schedule, (3) the profile,
 goals and nutrition targets, and (4) per-subject Garmin and Hevy credentials in
 `integration_credentials`, encrypted under `VITALS_CREDENTIAL_KEY`.
 
-What is left in `.env` about a person is the authentication that is still one
-username and one password hash, and that is PR-05's.
+No per-person provider credential or current authentication identity remains an
+installation-wide `.env` setting. Local accounts, additive roles, federated
+bindings, and per-subject integration credentials are database state; the OIDC
+issuer/client and credential-vault key remain installation configuration.
 
 ## Outcome
 
@@ -1147,8 +1159,10 @@ Delivered:
   always granted it — `default_scopes` returns every domain for both kinds,
   because the kind decides who is writing and not what may be read — but the
   screen showed notes and plans and nothing else. It now assembles the patient's
-  record through `digest_service.assemble_context`, which is already the
-  doctor's-report assembler, and renders it as per-domain summaries.
+  record through the dedicated `care.record_projection` boundary and renders it
+  as per-domain summaries. Unlike the full digest assembler, that boundary does
+  not query a domain until live consent or support scope and the patient's module
+  setting both allow it.
 
   Consent is applied as a **whitelist**, not through the module gate. The first
   attempt filtered by passing `enabled_modules`, which would not have shown up in
@@ -1341,9 +1355,9 @@ the bridge two layers down never asked. The strong one carries a body each route
 accepts: twenty-one domain write paths, asserted to work for the record's own
 owner with somebody else in the database.
 
-### PR 09 — Subject integrations, platform AI gateway, scheduler, and notifications — **partly landed**
+### PR 09 — Subject integrations, platform AI gateway, scheduler, and notifications — **landed**
 
-Landed already, because the scheduler could not wait:
+Delivered in the order forced by the scheduler:
 
 - **A scheduled job says whose record it runs for.** Every job arrived at the
   ownership resolver with neither an actor nor a subject, which means "the sole
@@ -1445,8 +1459,9 @@ that **absent is not a default** — the estimate is skipped rather than compute
 from half a profile, and the settings form renders empty boxes rather than
 pre-filling somebody else's numbers.
 
-What is left is integration credentials, and the authentication that is still
-one username and one password hash.
+The integration-credential and authentication cutovers described by the original
+scope below are complete. The remaining deployment settings are installation
+configuration, not one person's identity or provider account.
 
 Scope:
 
@@ -1647,7 +1662,12 @@ Tests:
 Rollback: disable sending, retain messages and audit history, and preserve
 subject access to the existing record.
 
-### PR 12 — Support console and repair workflow
+### PR 12 — Support console and repair workflow — **partly landed**
+
+Delivered: exact patient-approved read grants, patient-visible access history,
+one separately approved one-shot personal export, one fixed reversible repair,
+and an independent two-reviewer read-only break-glass flow. Broader repair,
+operational dashboards, and incident-retention tooling remain in scope below.
 
 Scope:
 
@@ -1789,10 +1809,10 @@ Additional gates:
 - [x] Replace MCP/external auth with subject-scoped revocable grants — the
   external dashboard remains owner-issued by design; MCP professional grants
   bind one patient, relationship, consent version, and exact capabilities.
-- [x] Add the patient-visible care-team thread — PR-11, minus private
-  attachments: the file download route resolves its subject through the
-  sole-owner adapter, so a professional opening a patient's attachment gets a
-  404 that is not about permission.
+- [x] Add the patient-visible care-team thread — PR-11, including validated
+  PDF/image attachments in private storage. Downloads re-check exact subject,
+  thread participation, live care and consent; pausing consent closes the next
+  professional download while the patient retains access.
 - [x] Ship the controlled support console and audit UX — exact read grants, a
       separately patient-approved one-shot personal export, and the first
       separately reviewed reversible repair are live. The independent
@@ -1801,7 +1821,9 @@ Additional gates:
       broader repair and operational dashboards remain unbuilt.
 - [ ] Complete commercial security/legal/operations review.
 - [ ] Open registration.
-- [ ] Run the final contract migration.
+- [ ] Define and run any remaining commercial contract migration; ownership
+      `NOT NULL` and FORCE-RLS contracts already shipped in revisions `0049` and
+      `0050`.
 
 ## Decision log
 

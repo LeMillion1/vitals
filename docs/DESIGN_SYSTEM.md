@@ -313,9 +313,10 @@ pinned «Сегодня»), and the section's own glyph **only on the active row
 other row carries a 5px `.mh-rail-dot` in the icon's column, so the labels stay
 aligned and the eye has exactly one glyph to find. The active row keeps its icon,
 an `--accent-soft` fill, an `--accent-line` border and the 3px amber `::before`
-bar, and hover never restyles it. All sixteen sections plus three headings come
-to ~660px of a ~860px rail; `.mh-rail-nav` still carries `overflow-y: auto` as a
-safety net only.
+bar, and hover never restyles it. The registry-driven rows plus their three
+headings fit in the intended rail; `.mh-rail-nav` still carries `overflow-y: auto`
+as a safety net only. Avoid hard-coded row counts here: the registry is the source
+of truth and `body_comp` is a toggle inside Weight rather than a rail row.
 
 Above the rubrics sits one pinned row, `.mh-rail-pinned` → «Сегодня» (`/today`).
 It is deliberately **not** in `MODULE_REGISTRY`: it is the entry point, not a

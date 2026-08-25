@@ -17,7 +17,7 @@ The original table-by-table inventory contains the 55 tables present at the
 Stage-0 expansion. The post-foundation and later identity/care tables below keep
 the prose inventory aligned with the machine-readable registry.
 
-**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 80 live tables today.** Revision
+**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 88 live tables today.** Revision
 `0058` also dropped two historical tables: `signals` and `day_context`. Their rows below are
 kept, struck through, at their original numbers — the numbering is referenced
 from the Stage-3 narrative further down, and renumbering would silently
@@ -198,7 +198,7 @@ silently reassigned or deleted.
 
 These live tables arrived after the earlier prose additions. Together
 with the sections above they make this hand-reviewed inventory exhaustive for
-the same 83 live tables as `OWNERSHIP_REGISTRY`.
+the same 88 live tables as `OWNERSHIP_REGISTRY`.
 
 | Table | Ownership | Contract |
 | --- | --- | --- |
@@ -218,7 +218,12 @@ the same 83 live tables as `OWNERSHIP_REGISTRY`.
 | `mcp_access_token_scopes` / `McpAccessTokenScope` | Required S child of a connector credential | Frozen exact `(resource_type, resource_key, action)` capabilities for one token. Wildcards are forbidden, S is repeated for RLS and protected by a composite FK to the parent token, and adding a tool or domain never silently widens an issued credential. |
 | `support_access_requests` / `SupportAccessRequest` | Required S control state | A reasoned, expiring ask is distinct from a grant. The requesting admin cannot approve it; decision actor/time and the optional resulting grant are constrained and retained. |
 | `support_access_request_scopes` / `SupportAccessRequestScope` | Required S child of request | Exact non-wildcard resource/action rows shown to the patient before a decision. A composite FK prevents the child S from drifting from its request. |
+| `support_repair_actions` / `SupportRepairAction` | Required S control state | One schema-fixed repair may clear only the two derived body-measurement estimates under an exact repair grant. Proposal, patient review, execution, stale detection, before values, and patient revert remain subject-isolated history; revision `0080` lets that history survive later replacement of the target fact. It is not ordinary-user portable control state. |
+| `break_glass_sessions` / `BreakGlassSession` | Required S control state | One independently governed emergency request names the holder, exact subject, bounded reason, reviewed TTL, and lifecycle. Initiation grants nothing; two other active platform superadmins must approve before a short read-only window activates, and the patient may revoke it immediately. |
+| `break_glass_scopes` / `BreakGlassScope` | Required S child of break-glass session | Exact domain/read rows only; wildcards and write actions are forbidden, and a composite FK prevents S from drifting from the session. |
+| `break_glass_approvals` / `BreakGlassApproval` | Required S child of break-glass session | One immutable approval per independent reviewer. Exact composite keys prevent the holder from approving their own session or an approval from being attached to another holder/subject graph. |
 | `care_message_attachments` / `CareMessageAttachment` | Required S, message, and F | One optional private file per patient-visible message. Composite foreign keys force the repeated S to agree with both `care_messages` and `file_assets`; original filenames stay presentation metadata while random `care/…` locators remain private. The row is not ordinary-user portable because its message contains third-party authored clinical communication. |
+| `portability_import_receipts` / `PortabilityImportReceipt` | Required S and actor A control state | PHI-free idempotency evidence for one completed v2 replacement. Exact subject/operation uniqueness plus manifest, record, and connection-mapping digests distinguish replay from mismatch; payloads, filenames, paths, credentials, and free text are forbidden. Receipts are excluded from their own archive graph. |
 
 ## Critical cross-surface dependencies
 
@@ -456,9 +461,12 @@ logical subject envelope and these rules:
    checkpoint is operational state, never authorization: consumers continue to
    reject S-only restored history.
 
-Medical file bytes are not currently part of the JSON backup. FileAsset metadata
-must not imply that the file itself was backed up. A later archive format needs
-separate encryption, size limits, checksums, and private restore handling.
+Medical file bytes are not part of the v1 JSON backup, and its FileAsset metadata
+must not imply that the file itself was backed up. Personal portability v2 now
+provides the separate encrypted authenticated archive: it validates bounded
+resources and checksums, stages them into private storage, and binds them to the
+replacement transaction. That is still a one-subject personal record, not the
+multi-subject operator disaster-recovery backup described below.
 
 An operator disaster-recovery backup, if introduced, is a separate encrypted
 and access-controlled product. It must not weaken the ordinary user contract.
@@ -467,7 +475,8 @@ and access-controlled product. It must not weaken the ordinary user contract.
 
 ### Stage 0 — Registry and roots
 
-- keep the static ownership registry exhaustive across all 62 current tables;
+- keep the static ownership registry exhaustive across all 62 tables current at
+  that stage;
 - add minimal IntegrationConnection and FileAsset roots;
 - add scoped setting/preference tables;
 - keep provider clients, credentials, and files untouched;

@@ -12,13 +12,14 @@ read during the audit.
 
 The conversion is substantial and real, but not finished. Vitals now has local
 users and additive roles, one owned health subject per patient account,
-subject-scoped facts, 66 PostgreSQL RLS tables, professional relationships and
+subject-scoped facts, 71 PostgreSQL RLS tables, professional relationships and
 consent, care-team conversations, OIDC login, revocable browser sessions,
 per-subject integrations, and controlled read-only support access.
 
-The earlier documentation overstated completion in four important areas. The
-first finding was closed after the audit by commits `f2ea770` and `7523d26`;
-the others remain useful provenance for the remediations named below:
+The earlier documentation overstated completion in important areas. Those
+findings remain useful provenance, but this document now records the later
+remediations as shipped rather than leaving their former gaps in the current
+verdict:
 
 1. PR-10 protocol compatibility originally shipped without its target
    authorization model. Revision `0065` now binds connector credentials to one
@@ -31,29 +32,29 @@ the others remain useful provenance for the remediations named below:
    audit. Commits `b6e3e91`, `7ff5271`, `c159b5d`, and `84a0631` close those
    specific gaps.
 3. The ownership inventory called itself exhaustive but originally omitted 12
-   of 76 live tables. It now includes the subsequently added MCP scope table and
-   matches all 83 machine-registry entries.
+   of 76 live tables. It later reached 83 entries; five newer support,
+   break-glass, and portability-receipt tables bring the live registry to 88 and
+   are included in the inventory now.
 4. `ARCHITECTURE.html` was a historical snapshot presented as a live reference.
-   Its schema, migration, router, service, RLS, ownership-class, and roadmap
-   counters were synchronized during this audit.
+   Its live counters and authorization bases have been resynchronized at 88
+   tables, 71 RLS policies, revision `0080`, and the shipped break-glass path.
 
 ## Reproducible current facts
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0075 (head)`; 75 files in `migrations/versions` | Verified |
-| SQLAlchemy tables | `len(Base.metadata.tables)` → 83 | Verified |
-| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 83 | Verified and exhaustive in code |
-| Subject-scoped tables | 66 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
-| Required subject columns | 55 of the 66 `subject_id` columns are non-null | Verified |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0080 (head)`; 80 files in `migrations/versions` | Verified |
+| SQLAlchemy tables | `len(Base.metadata.tables)` → 88 | Verified |
+| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 88 | Verified and exhaustive in code |
+| Subject-scoped tables | 71 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
+| Required subject columns | 60 of the 71 `subject_id` columns are non-null | Verified |
 | Ownership cutover | 18 ordered backfill phases and 18 matching scripts | Verified |
 | Domain enum | 14 health domains | Verified |
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
-| Web routers | 32 modules under `web/routers` | Verified |
-| Application services | 87 non-`__init__` modules after the care, authentication, analytics, persistence, notification, and ownership-operation moves | Verified |
-| Flat service debt | 54 root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 20 |
-| Browser scenarios | 39 scenarios selected by `pytest tests/ui -m ui` | Verified collection and run |
-| Commercial Git history | 293 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
+| Web routers | 34 tracked non-`__init__` modules under `web/routers` | Verified |
+| Application services | 101 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
+| Flat service debt | 54 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 20 |
+| Browser scenarios | 39 scenarios selected by `pytest tests/ui -m ui` | Verified collection; historical runs are not a current pass claim |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
 current commit. Only a command executed against the current tree is recorded as
@@ -87,7 +88,7 @@ a current validation result.
 
 ### Data isolation
 
-- 66 tables are subject-scoped and covered by FORCE RLS in PostgreSQL.
+- 71 tables are subject-scoped and covered by FORCE RLS in PostgreSQL.
 - The application binds `vitals.subject_id` transaction-locally; unbound or
   wrong-subject sessions fail closed in PostgreSQL tests.
 - Natural keys, raw payloads, normalized facts, integrations, settings, files,
@@ -162,8 +163,12 @@ a current validation result.
   download; the exact grant is locked and consumed with a PHI-free audit event
   before bytes leave, and no export artifact is stored. Invalid, widened,
   expired, revoked, consumed, or ambiguous grants fail before portability reads.
-- Repair, two-person break-glass approval, operational dashboards, and retention
-  tooling remain deliberately refused or absent.
+- One fixed reversible repair and an independent break-glass path are shipped.
+  The repair requires a patient-approved exact grant, a separate patient review,
+  stale-state checks, and retains its history; break-glass requires two active
+  administrators other than the holder, exact read-only domains, a short TTL,
+  patient transparency, and immediate patient revocation. Broader repair,
+  operational dashboards, and retention tooling remain absent.
 - Every simultaneous live support grant is now visible and independently
   revocable on the patient's access page, with the holder, approved sections,
   and exact local expiry. Shared chrome exposes only the active count and a
@@ -199,7 +204,7 @@ a current validation result.
 - MCP access tokens now validate both `aud` and `iss`; registry-backed tokens
   cannot omit either installation-binding claim.
 
-### Portability v1
+### Portability
 
 - The personal JSON export and import are subject-bound and exclude identity,
   roles, consent, support/audit state, credentials, and file bytes.
@@ -209,9 +214,16 @@ a current validation result.
   but not restored. The schema-derived boundary now refuses those rows on
   export and rejects crafted/older files before deleting any existing data;
   both self-service HTTP paths return controlled errors instead of a late 500.
-- This is fail-closed containment, not complete portability. Provider provenance
-  and private resources require the versioned archive graph planned for v2;
-  multi-subject full backup remains unimplemented.
+- V1 remains fail-closed containment rather than complete portability.
+- Personal portability v2 is shipped as an owner-only encrypted and authenticated
+  archive. It carries private resources and validated connection descriptors,
+  requires an explicit mapping to live same-subject connections, stages private
+  files with byte validation, replaces the record and writes an exact replay
+  receipt in one coordinator-owned transaction, and reconciles an uncertain
+  commit through that authoritative receipt. It transports neither credentials
+  nor a plaintext spool.
+- Multi-subject full installation backup and restore remain unimplemented; v2 is
+  a personal-record format, not an installation backup.
 
 ## Documentation file verdicts
 
@@ -226,10 +238,11 @@ verifiable GitHub pull request: the commercial history has only one merge
 commit. Keep this document as target/decision history and use this audit for the
 current state.
 
-The following roadmap targets are not shipped: invitation inbox,
-multi-subject full backup, support repair and break-glass, lab marker
-collision migration, private-byte relocation outside static storage, and final
-legacy configuration contraction.
+The following roadmap targets are not shipped: the deliberately deferred
+professional invitation inbox, multi-subject full backup, broader support repair
+and operational dashboards, commercial registration opening, and final
+security/legal/operations readiness. The first repair, break-glass, canonical lab
+marker migration, private-byte relocation, and personal portability v2 are live.
 
 ### `COMMERCIAL_OWNERSHIP_INVENTORY.md` — strong rationale, now exhaustive
 
@@ -239,9 +252,9 @@ machine registry is the source of truth and is complete.
 
 The prose inventory previously listed only 64 live and two dropped tables. It
 now includes the missing identity, professional-care, support-request, and
-credential rows, the MCP scope child, the care attachment row, and the web-push
-subscription, care-push-delivery, and professional-review rows and matches all
-83 live tables in the
+credential rows, the MCP scope child, the care attachment row, the web-push
+subscription, care-push-delivery, professional-review rows, support repair,
+break-glass, and portability receipts and matches all 88 live tables in the
 machine registry.
 
 The historical Stage 3/4/5 narrative should be archived separately from a
@@ -278,23 +291,24 @@ operator work that local tests cannot prove.
 ### `ARCHITECTURE.md` — mostly current method, incomplete generated sources
 
 Its reproducible-counter idea is right. The RLS source list and HTML counters
-were synchronized during this audit. It now documents the first bounded-context
+are synchronized through revision `0080`. It documents the first bounded-context
 moves, but the live flat-service debt is still substantial.
 
 ### `ARCHITECTURE.html` — synchronized during this audit
 
 The displayed schema, migration, domain, router, application-service, RLS,
-ownership-class, PR-05, and PR-07 facts now match the current registries. They
-remain hand-maintained duplicates; generating them from code is still safer
-than relying on future reviewers to update every copy.
+ownership-class, authorization-basis, PR-05, and PR-07 facts now match the
+current registries. They remain hand-maintained duplicates; generating them from
+code is still safer than relying on future reviewers to update every copy.
 
 ### `DESIGN_SYSTEM.md` — strongest live document
 
 The Masthead shell, tokens, responsive rules, no-raw-hex/no-monospace policy,
 touch targets, focus treatment, and mobile-table contracts have direct tests.
-The document is too long and does not define professional, patient-consent,
-messaging, or controlled-support interaction patterns. Split normative rules
-from historical rationale and add those role journeys as first-class patterns.
+The document is too long. It defines the shared patient/professional care
+conversation and attachment pattern, but controlled support, registration, and
+break-glass interaction patterns are still absent. Split normative rules from
+historical rationale and add those role journeys as first-class patterns.
 
 ### `known-good-deps.txt` — correctly scoped snapshot
 
@@ -334,13 +348,15 @@ the patient's five-slot record navigation had no role-specific replacement.
 Professionals without their own record now keep a compact Patients/Support and
 Sign out bar, matching the destinations the desktop rail already exposed.
 
-The first shared UI run reported 25 passed and 10 failures after a revoked
-support-record navigation timed out; the remaining nine were cascading server
-timeouts. The product flow passed in isolation. The deterministic full-run cause
-was the UI fixture piping Uvicorn access logs without draining the pipe: once
-the OS buffer filled, the server blocked while handling a request. The fixture
-now writes its synthetic server log to the run's temporary directory, and the
-complete suite passes: 35 scenarios in 93.49 seconds.
+At that historical UI checkpoint, the first shared run reported 25 passed and
+10 failures after a revoked support-record navigation timed out; the remaining
+nine were cascading server timeouts. The product flow passed in isolation. The
+deterministic full-run cause was the UI fixture piping Uvicorn access logs without
+draining the pipe: once the OS buffer filled, the server blocked while handling
+a request. The fixture
+now writes its synthetic server log to the run's temporary directory, and that
+checkpoint's complete suite passed 35 scenarios in 93.49 seconds. The current
+collection contains 39 scenarios; this historical timing is not a current gate.
 
 The largest remaining confirmed UX gaps are low-contrast `--faint` microcopy
 outside the touched care screens and roster states beyond conversation urgency.
@@ -348,9 +364,10 @@ outside the touched care screens and roster states beyond conversation urgency.
 ## Architecture status and next moves
 
 The core does not import FastAPI or `web`, and the import-time graph is acyclic.
-The care domain now owns five related services, authentication owns six protocol
-and credential boundaries, analytics moved out of the application-service
-layer, and RLS/transaction primitives moved to `vitals.persistence`. Static
+The care domain now owns six related services, authentication owns its protocol,
+admission, session, provisioning, and credential boundaries, analytics moved out
+of the application-service layer, and RLS/transaction primitives moved to
+`vitals.persistence`. Static
 tests prevent core→web, services→operations, pure-analytics→I/O, flat-service
 growth, and import-time cycles.
 
