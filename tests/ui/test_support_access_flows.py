@@ -85,6 +85,48 @@ def test_a_phone_shows_both_live_grants_and_stopping_one_keeps_the_other(sign_in
     assert not history.says("That access is closed.")
 
 
+def test_phone_history_puts_a_new_decision_before_openings_and_true_past(sign_in):
+    admin = sign_in("admin")
+    admin.support_console().ask_for(
+        record="Patient 01", reason=REASON, domains=("labs",), hours=1
+    )
+    sign_in("patient01").access_history().allow()
+
+    admin.support_console().open_the_record()
+    admin.support_console().hand_the_grant_back()
+    admin.support_console().ask_for(
+        record="Patient 01",
+        reason="A fresh nutrition question still needs an answer.",
+        domains=("nutrition",),
+        hours=2,
+    )
+
+    history = sign_in("patient01", phone=True).access_history()
+    pending = history.page.locator("[data-support-pending-requests]")
+    openings = history.page.locator("[data-support-openings]")
+    past = history.page.locator("[data-support-past-requests]")
+
+    assert pending.count() == openings.count() == past.count() == 1
+    assert pending.locator('time[datetime]').count() >= 2
+    assert past.locator(
+        '[data-support-grant-lifecycle="handed_back_by_holder"] time[datetime]'
+    ).count() == 1
+    assert history.says("admin handed this access back at")
+    assert pending.evaluate(
+        "node => Boolean(node.compareDocumentPosition("
+        "document.querySelector('[data-support-openings]')) "
+        "& Node.DOCUMENT_POSITION_FOLLOWING)"
+    )
+    assert openings.evaluate(
+        "node => Boolean(node.compareDocumentPosition("
+        "document.querySelector('[data-support-past-requests]')) "
+        "& Node.DOCUMENT_POSITION_FOLLOWING)"
+    )
+    assert history.page.evaluate(
+        "document.documentElement.scrollWidth <= window.innerWidth"
+    )
+
+
 def test_the_granted_record_opens_and_shows_only_what_was_granted(sign_in):
     """The link the console offers, followed.
 

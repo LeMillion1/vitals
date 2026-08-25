@@ -9,6 +9,63 @@
 <div hx-history="false"></div>
 {% from "partials/masthead.html" import masthead_header, card_header with context %}
 {% from "partials/support_access.html" import scope_labels with context %}
+{% macro request_card(row, actionable=false) %}
+<div class="v-card-inset p-4 space-y-3" data-support-request="{{ row.effective_status }}" data-support-request-id="{{ row.request_id }}">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+        <span class="v-text-body">
+            <strong>{{ row.requested_by_username }}</strong>
+            · {{ t("support.status_" ~ row.effective_status) }}
+        </span>
+        <span class="v-text-micro" style="color: var(--faint)">
+            <time datetime="{{ row.created_at.isoformat() }}">{{ row.created_at | format_datetime }}</time>
+        </span>
+    </div>
+
+    {# The administrator's own sentence, verbatim. An approval asked for
+       without a reason the patient can read is not informed. #}
+    <p class="v-text-body" style="white-space: pre-wrap">{{ row.reason }}</p>
+
+    <p class="v-text-micro" style="color: var(--muted)">
+        {{ t("support.request_deadline") }}
+        <time datetime="{{ row.expires_at.isoformat() }}">{{ row.expires_at | format_datetime }}</time>
+    </p>
+    <p class="v-text-micro" style="color: var(--faint)">
+        {{ t("support.asked_for") }}: {{ scope_labels(row.scope_keys) }}
+        · {{ t("support.for_hours", hours=(row.requested_ttl_seconds // 3600)) }}
+        {% if row.ticket_reference %} · {{ row.ticket_reference }}{% endif %}
+    </p>
+
+    {% if row.grant_lifecycle %}
+    <p class="v-text-micro" data-support-grant-lifecycle="{{ row.grant_lifecycle }}" style="color: var(--muted)">
+        {% if row.grant_lifecycle == 'live' %}
+            {{ t("support.grant_live") }}
+        {% elif row.grant_lifecycle == 'expired' %}
+            {{ t("support.grant_expired") }}
+        {% elif row.grant_lifecycle == 'revoked_by_owner' %}
+            {{ t("support.grant_revoked_by_owner") }}
+        {% elif row.grant_lifecycle == 'handed_back_by_holder' %}
+            {{ t("support.grant_handed_back", actor=(row.grant_end_actor_username or row.requested_by_username)) }}
+        {% else %}
+            {{ t("support.grant_revoked", actor=(row.grant_end_actor_username or row.requested_by_username)) }}
+        {% endif %}
+        {% if row.grant_ends_at %}
+            <time datetime="{{ row.grant_ends_at.isoformat() }}">{{ row.grant_ends_at | format_datetime }}</time>
+        {% endif %}
+    </p>
+    {% endif %}
+
+    {% if actionable %}
+    <div class="flex flex-wrap gap-3">
+        <form action="/settings/access/{{ row.request_id }}/approve" method="POST">
+            <button type="submit" class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.approve") }}</button>
+        </form>
+        <form action="/settings/access/{{ row.request_id }}/decline" method="POST">
+            <button type="submit" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.decline") }}</button>
+        </form>
+    </div>
+    {% endif %}
+</div>
+{% endmacro %}
 <div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
 
     {% call masthead_header('consents', t('support.patient_heading'), []) %}{% endcall %}
@@ -46,8 +103,20 @@
     </div>
     {% endif %}
 
+    <!-- ─── ACTIONABLE REQUESTS ──────────────────────────────────────────── -->
+    {% if pending_requests %}
+    <div class="v-card p-6 space-y-4" data-support-pending-requests>
+        {{ card_header(t("support.pending_title")) }}
+        <div class="space-y-3">
+            {% for row in pending_requests %}
+                {{ request_card(row, true) }}
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
     <!-- ─── ACTUAL SUPPORT OPENINGS ───────────────────────────────────────── -->
-    <div class="v-card p-6 space-y-4">
+    <div class="v-card p-6 space-y-4" data-support-openings>
         {{ card_header(t("support.opened_title")) }}
 
         {% if not opened %}
@@ -75,50 +144,23 @@
         {% endif %}
     </div>
 
-    <!-- ─── REQUEST HISTORY ───────────────────────────────────────── -->
-    <div class="v-card p-6 space-y-4">
-        {{ card_header(t("support.history_title")) }}
+    <!-- ─── PAST REQUEST HISTORY ─────────────────────────────────────────── -->
+    <div class="v-card p-6 space-y-4" data-support-past-requests>
+        {{ card_header(t("support.past_title")) }}
 
-        {% if not history %}
-        {# The empty state is the answer, not a placeholder: "nobody has asked"
-           is what a patient came here hoping to read. #}
-        <p class="v-text-body" style="color: var(--muted)">{{ t("support.history_empty") }}</p>
+        {% if not past_requests %}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("support.past_empty" if pending_requests else "support.history_empty") }}
+        </p>
         {% else %}
-        {% for row in history %}
-        <div class="v-card-inset p-4 space-y-3">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-                <span class="v-text-body">
-                    <strong>{{ row.requested_by.username }}</strong>
-                    · {{ t("support.status_" ~ row.status) }}
-                </span>
-                <span class="v-text-micro" style="color: var(--faint)">
-                    {{ row.created_at | format_date }}
-                </span>
-            </div>
-
-            {# The administrator's own sentence, verbatim. An approval asked for
-               without a reason the patient can read is not informed. #}
-            <p class="v-text-body" style="white-space: pre-wrap">{{ row.reason }}</p>
-
-            <p class="v-text-micro" style="color: var(--faint)">
-                {{ t("support.asked_for") }}:
-                {% for scope in row.scopes %}{{ t("enum.domain." ~ scope.resource_key) }}{% if not loop.last %}, {% endif %}{% endfor %}
-                · {{ t("support.for_hours", hours=(row.requested_ttl_seconds // 3600)) }}
-                {% if row.ticket_reference %} · {{ row.ticket_reference }}{% endif %}
-            </p>
-
-            {% if row.status == 'pending' %}
-            <div class="flex flex-wrap gap-3">
-                <form action="/settings/access/{{ row.id }}/approve" method="POST">
-                    <button type="submit" class="v-btn text-xs">{{ t("support.approve") }}</button>
-                </form>
-                <form action="/settings/access/{{ row.id }}/decline" method="POST">
-                    <button type="submit" class="v-btn-ghost text-xs">{{ t("support.decline") }}</button>
-                </form>
-            </div>
-            {% endif %}
+        <div class="space-y-3">
+            {% for row in past_requests %}
+                {{ request_card(row) }}
+            {% endfor %}
         </div>
-        {% endfor %}
+        {% endif %}
+        {% if request_history_has_more %}
+        <p class="v-text-micro" style="color: var(--faint)">{{ t("support.history_more") }}</p>
         {% endif %}
     </div>
 

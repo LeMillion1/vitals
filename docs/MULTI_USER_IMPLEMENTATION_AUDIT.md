@@ -146,10 +146,13 @@ a current validation result.
 - Every simultaneous live support grant is now visible and independently
   revocable on the patient's access page, with the holder, approved sections,
   and exact local expiry. Shared chrome exposes only the active count and a
-  neutral management link. Historical rows still do not clearly distinguish
-  who ended a grant, and naturally lapsed pending requests can remain styled as
-  answerable until the maintenance job persists their expiry; these are current
-  UX defects.
+  neutral management link. Patient request history derives effective expiry
+  directly from the database clock without writing on GET, prioritizes requests
+  that still need an answer, and attributes live, natural-expiry, owner-revoked,
+  and holder-returned grant lifecycles with exact local timestamps.
+- One administrator holding multiple disjoint live grants for the same subject
+  is still resolved by an implicit expiry ordering when opening `/care`; an
+  exact grant selector and fail-closed ambiguous direct URL remain required.
 
 ### OIDC
 

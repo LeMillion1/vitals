@@ -533,14 +533,105 @@ async def test_the_access_history_keeps_the_noes_as_well_as_the_yeses(db_session
     )
     await db_session.commit()
 
-    history = await support.list_for_subject(db_session, subject_id=subject.id)
-    assert {row.status for row in history} == {
+    context = await resolve_access_context(
+        db_session, user_id=owner.id, subject_id=subject.id
+    )
+    history = await support.list_for_subject(db_session, context=context)
+    assert {row.effective_status for row in history.past} == {
         SupportAccessRequestStatus.DECLINED.value,
         SupportAccessRequestStatus.WITHDRAWN.value,
         SupportAccessRequestStatus.APPROVED.value,
     }
-    assert all(row.decided_by_user_id is not None for row in history)
-    assert all(row.reason for row in history)
+    assert not history.pending
+    assert all(row.reason for row in history.past)
+
+
+async def test_patient_history_uses_db_time_without_writing_lapsed_state(db_session):
+    owner, subject = await _patient(db_session, "sup-effective-history")
+    admin = await _admin(db_session, "sup-effective-history-admin")
+    lapsed = await _ask(db_session, admin=admin, subject=subject)
+    lapsed.created_at -= timedelta(days=30)
+    lapsed.expires_at = lapsed.created_at + support.REQUEST_WINDOW
+
+    actionable = await _ask(db_session, admin=admin, subject=subject)
+    for number in range(3):
+        declined = await _ask(db_session, admin=admin, subject=subject)
+        declined.reason = f"Synthetic past request {number}."
+        await support.decline_request(
+            db_session, owner_user_id=owner.id, request_id=declined.id
+        )
+    await db_session.commit()
+
+    context = await resolve_access_context(
+        db_session, user_id=owner.id, subject_id=subject.id
+    )
+    history = await support.list_for_subject(db_session, context=context, limit=2)
+
+    assert [row.request_id for row in history.pending] == [actionable.id]
+    assert len(history.past) == 1
+    assert history.has_more
+
+    full = await support.list_for_subject(db_session, context=context)
+    effective_lapsed = next(row for row in full.past if row.request_id == lapsed.id)
+    assert effective_lapsed.effective_status == SupportAccessRequestStatus.EXPIRED.value
+    assert effective_lapsed.expires_at == lapsed.expires_at
+    await db_session.refresh(lapsed)
+    assert lapsed.status == SupportAccessRequestStatus.PENDING.value
+    assert lapsed.decided_at is None
+
+
+async def test_patient_history_derives_every_approved_grant_lifecycle(db_session):
+    owner, subject = await _patient(db_session, "sup-grant-history")
+    admin = await _admin(db_session, "sup-grant-history-admin")
+
+    requests = {}
+    grants = {}
+    for name in ("live", "expired", "owner", "holder"):
+        request = await _ask(db_session, admin=admin, subject=subject)
+        request.reason = f"Synthetic {name} lifecycle request."
+        grant = await support.approve_request(
+            db_session, owner_user_id=owner.id, request_id=request.id
+        )
+        requests[name] = request
+        grants[name] = grant
+
+    past_approval = grants["expired"].approved_at - timedelta(hours=3)
+    grants["expired"].approved_at = past_approval
+    grants["expired"].expires_at = past_approval + timedelta(hours=1)
+    await support.revoke_grant(
+        db_session,
+        actor_user_id=owner.id,
+        grant_id=grants["owner"].id,
+        reason="Owner ended synthetic access.",
+    )
+    await support.revoke_grant(
+        db_session,
+        actor_user_id=admin.id,
+        grant_id=grants["holder"].id,
+        reason="Holder handed synthetic access back.",
+    )
+    await db_session.commit()
+
+    context = await resolve_access_context(
+        db_session, user_id=owner.id, subject_id=subject.id
+    )
+    history = await support.list_for_subject(db_session, context=context)
+    by_id = {row.request_id: row for row in history.past}
+
+    assert by_id[requests["live"].id].grant_lifecycle == "live"
+    assert by_id[requests["live"].id].grant_ends_at == grants["live"].expires_at
+    assert by_id[requests["expired"].id].grant_lifecycle == "expired"
+    assert by_id[requests["expired"].id].grant_ends_at == grants["expired"].expires_at
+    assert by_id[requests["owner"].id].grant_lifecycle == "revoked_by_owner"
+    assert by_id[requests["owner"].id].grant_end_actor_username == owner.username
+    assert by_id[requests["holder"].id].grant_lifecycle == "handed_back_by_holder"
+    assert by_id[requests["holder"].id].grant_end_actor_username == admin.username
+
+    holder_context = await resolve_access_context(
+        db_session, user_id=admin.id, subject_id=subject.id
+    )
+    with pytest.raises(support.NotTheSubjectOwner):
+        await support.list_for_subject(db_session, context=holder_context)
 
 
 async def test_every_state_change_leaves_one_audit_event_without_the_reason_text(
@@ -815,7 +906,7 @@ async def test_every_live_grant_is_visible_and_one_revoke_leaves_the_other(
     assert "data-support-banner" not in management.text
     assert first_admin.username in management.text
     assert second_admin.username in management.text
-    assert management.text.count("<time datetime=") == 2
+    assert management.text.count("<time datetime=") >= 2
     assert all(value in management.text for value in expected_expiries)
     assert f'datetime="{first_grant.expires_at.isoformat()}"' in management.text
     assert f'datetime="{second_grant.expires_at.isoformat()}"' in management.text
@@ -837,6 +928,85 @@ async def test_every_live_grant_is_visible_and_one_revoke_leaves_the_other(
     assert first_admin.username in stopped.text  # Kept in the request history.
     assert "Этот доступ прекращён." in stopped.text
     assert "Доступ закрыт" not in stopped.text
+
+
+async def test_patient_page_orders_pending_before_openings_and_shows_true_endings(
+    client, db_session, legacy_owner_roots
+):
+    admin = await _admin(db_session, "web-history-truth-admin")
+    handed_back_request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Investigating a completed support read.",
+        scopes=support.read_scopes_for((Domain.LABS,)),
+    )
+    handed_back_grant = await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=handed_back_request.id,
+    )
+    await db_session.commit()
+
+    admin_context = await resolve_access_context(
+        db_session,
+        user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    await support.record_record_opened(
+        db_session, context=admin_context, domain_keys=(Domain.LABS.value,)
+    )
+    await db_session.commit()
+    await support.revoke_grant(
+        db_session,
+        actor_user_id=admin.id,
+        grant_id=handed_back_grant.id,
+        reason="The synthetic support read is complete.",
+    )
+
+    pending = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="This question still needs an answer.",
+        scopes=support.read_scopes_for((Domain.NUTRITION,)),
+    )
+    lapsed = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="This old question is no longer answerable.",
+        scopes=support.read_scopes_for((Domain.WEIGHT,)),
+    )
+    lapsed.created_at -= timedelta(days=30)
+    lapsed.expires_at = lapsed.created_at + support.REQUEST_WINDOW
+    await db_session.commit()
+
+    subject = await db_session.get(HealthSubject, legacy_owner_roots.subject_id)
+    expected_pending_deadline = pending.expires_at.astimezone(
+        ZoneInfo(subject.timezone)
+    ).strftime("%d-%m-%Y %H:%M")
+
+    _sign_in(client, "tester")
+    page = await client.get("/settings/access", headers={"Accept": "text/html"})
+    assert page.status_code == 200
+
+    pending_position = page.text.index("data-support-pending-requests")
+    openings_position = page.text.index("Фактические открытия поддержкой")
+    past_position = page.text.index("Прошлые просьбы")
+    assert pending_position < openings_position < past_position
+    assert expected_pending_deadline in page.text
+    assert f'datetime="{pending.expires_at.isoformat()}"' in page.text
+    assert f'data-support-request-id="{lapsed.id}"' in page.text
+    assert f"/settings/access/{lapsed.id}/approve" not in page.text
+    assert f"/settings/access/{lapsed.id}/decline" not in page.text
+    assert 'data-support-grant-lifecycle="handed_back_by_holder"' in page.text
+    assert admin.username in page.text
+    assert f'datetime="{handed_back_grant.revoked_at.isoformat()}"' in page.text
+
+    await db_session.refresh(lapsed)
+    assert lapsed.status == SupportAccessRequestStatus.PENDING.value
+    assert lapsed.decided_at is None
 
 
 async def test_a_stale_login_must_reauthenticate_before_support_changes(

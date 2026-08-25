@@ -37,6 +37,22 @@ that following the link itself stops access, and it is not duplicated on the
 management page. The operator console also shows exact expiries and approved
 sections for every grant it holds.
 
+### Fixed — support history tells the current truth
+
+The patient access page no longer trusts delayed maintenance to decide whether
+an unanswered request is still actionable. A bounded, owner-only projection
+uses the database clock on every read, places requests that still need a
+decision before actual support openings, removes controls from requests that
+have already lapsed, and keeps the newest past requests below the opening log.
+The GET remains read-only; the scheduler may persist expiry later without being
+part of the authorization or display boundary.
+
+Approved requests now distinguish access that is live, expired naturally, was
+stopped by the patient, or was handed back by its holder. Request deadlines and
+grant end times are exact local semantic timestamps, and holder-ended access
+names the holder from the protected identity relation. The operational audit
+envelope remains PHI-free.
+
 ### Fixed — support record reads are durable and visible
 
 A successful support-granted `/care/{subject}` response now commits one

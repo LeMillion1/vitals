@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -673,27 +673,162 @@ async def live_grants_for(
     )
 
 
-async def list_for_subject(
-    session: AsyncSession, *, subject_id: uuid.UUID
-) -> list[SupportAccessRequest]:
-    """Every ask ever made about this record, newest first.
+@dataclass(frozen=True, slots=True)
+class PatientAccessRequest:
+    """One request as the record owner may safely render it."""
 
-    Declined and withdrawn included, deliberately. The question a patient asks
-    an access history is "has anybody been looking at me", and a list of only
-    the times they said yes cannot answer it.
+    request_id: uuid.UUID
+    requested_by_username: str
+    effective_status: str
+    reason: str
+    ticket_reference: str | None
+    requested_ttl_seconds: int
+    created_at: datetime
+    expires_at: datetime
+    scope_keys: tuple[str, ...]
+    grant_lifecycle: str | None
+    grant_ends_at: datetime | None
+    grant_end_actor_username: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PatientAccessRequestHistory:
+    """A bounded patient history, with actionable requests kept first."""
+
+    pending: tuple[PatientAccessRequest, ...]
+    past: tuple[PatientAccessRequest, ...]
+    has_more: bool
+
+
+def _grant_lifecycle(
+    request: SupportAccessRequest, *, now: datetime
+) -> tuple[str | None, datetime | None, str | None]:
+    """Derive grant truth without relying on the expiry maintenance job."""
+
+    grant = request.granted
+    if request.status != SupportAccessRequestStatus.APPROVED.value or grant is None:
+        return None, None, None
+    if grant.status == SupportAccessStatus.REVOKED.value or grant.revoked_at is not None:
+        if grant.revoked_by_user_id == grant.approved_by_user_id:
+            lifecycle = "revoked_by_owner"
+        elif grant.revoked_by_user_id == grant.granted_to_user_id:
+            lifecycle = "handed_back_by_holder"
+        else:
+            lifecycle = "revoked"
+        return (
+            lifecycle,
+            _as_utc(grant.revoked_at) if grant.revoked_at is not None else None,
+            grant.revoked_by.username if grant.revoked_by is not None else None,
+        )
+    if grant.status == SupportAccessStatus.EXPIRED.value or now >= _as_utc(
+        grant.expires_at
+    ):
+        return "expired", _as_utc(grant.expires_at), None
+    if grant.status == SupportAccessStatus.ACTIVE.value:
+        return "live", _as_utc(grant.expires_at), None
+    return None, None, None
+
+
+async def list_for_subject(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    limit: int = 50,
+) -> PatientAccessRequestHistory:
+    """Return at most ``limit`` requests for the owner-protected access page.
+
+    Effective pending/expired state comes from the database clock on every
+    read; this projection never depends on ``expire_stale`` and never performs
+    maintenance writes. Actionable requests are selected before recent past
+    requests so a busy history cannot hide a decision the owner still needs to
+    make. Declined, withdrawn, approved, and lapsed requests remain visible.
     """
 
-    result = await session.execute(
-        select(SupportAccessRequest)
-        .options(
-            selectinload(SupportAccessRequest.scopes),
-            selectinload(SupportAccessRequest.requested_by),
-            selectinload(SupportAccessRequest.granted),
+    if limit < 1 or limit > 100:
+        raise ValueError("support request history limit must be between 1 and 100")
+    if context.subject_owner_user_id != context.principal.user_id:
+        raise NotTheSubjectOwner(
+            "only the person whose record it is may read its support request history"
         )
-        .where(SupportAccessRequest.subject_id == subject_id)
-        .order_by(SupportAccessRequest.created_at.desc())
+
+    now = await _now(session)
+    effectively_pending = (
+        (SupportAccessRequest.status == _LIVE_REQUEST)
+        & (SupportAccessRequest.expires_at > now)
     )
-    return list(result.scalars().all())
+    rows = list(
+        (
+            await session.execute(
+                select(SupportAccessRequest)
+                .options(
+                    selectinload(SupportAccessRequest.scopes),
+                    selectinload(SupportAccessRequest.requested_by),
+                    selectinload(SupportAccessRequest.granted).selectinload(
+                        SupportAccessGrant.revoked_by
+                    ),
+                )
+                .where(SupportAccessRequest.subject_id == context.subject_id)
+                .order_by(
+                    case((effectively_pending, 0), else_=1),
+                    SupportAccessRequest.created_at.desc(),
+                    SupportAccessRequest.id.desc(),
+                )
+                .limit(limit + 1)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    projected: list[PatientAccessRequest] = []
+    for request in rows[:limit]:
+        effective_status = request.status
+        if (
+            effective_status == _LIVE_REQUEST
+            and now >= _as_utc(request.expires_at)
+        ):
+            effective_status = SupportAccessRequestStatus.EXPIRED.value
+        lifecycle, grant_ends_at, actor_username = _grant_lifecycle(
+            request, now=now
+        )
+        projected.append(
+            PatientAccessRequest(
+                request_id=request.id,
+                requested_by_username=request.requested_by.username,
+                effective_status=effective_status,
+                reason=request.reason,
+                ticket_reference=request.ticket_reference,
+                requested_ttl_seconds=request.requested_ttl_seconds,
+                created_at=_as_utc(request.created_at),
+                expires_at=_as_utc(request.expires_at),
+                scope_keys=tuple(
+                    sorted(
+                        f"{scope.resource_type}:{scope.resource_key}"
+                        for scope in request.scopes
+                        if scope.action == SupportAccessMode.READ.value
+                    )
+                ),
+                grant_lifecycle=lifecycle,
+                grant_ends_at=grant_ends_at,
+                grant_end_actor_username=actor_username,
+            )
+        )
+
+    pending = tuple(
+        request
+        for request in projected
+        if request.effective_status == SupportAccessRequestStatus.PENDING.value
+    )
+    past = tuple(
+        request
+        for request in projected
+        if request.effective_status != SupportAccessRequestStatus.PENDING.value
+    )
+    return PatientAccessRequestHistory(
+        pending=pending,
+        past=past,
+        has_more=len(rows) > limit,
+    )
 
 
 async def record_record_opened(
@@ -1119,6 +1254,8 @@ __all__ = [
     "Console",
     "ConsoleGrant",
     "ConsoleRequest",
+    "PatientAccessRequest",
+    "PatientAccessRequestHistory",
     "PatientLiveGrant",
     "approve_request",
     "console_for_admin",

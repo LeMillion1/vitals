@@ -229,7 +229,7 @@ async def access_history(
 
     _user_id, subject_id = await _own_subject(request, db)
     context = await resolve_access_context(db, user_id=_user_id, subject_id=None)
-    history = await support.list_for_subject(db, subject_id=subject_id)
+    history = await support.list_for_subject(db, context=context)
     opened = await support.record_opened_history(db, subject_id=subject_id)
     live_grants = await support.live_grants_for(db, context=context)
     return templates.TemplateResponse(
@@ -237,7 +237,9 @@ async def access_history(
         "settings/access_history.html",
         {
             "username": username,
-            "history": history,
+            "pending_requests": history.pending,
+            "past_requests": history.past,
+            "request_history_has_more": history.has_more,
             "opened": opened.events,
             "opened_has_more": opened.has_more,
             "live_grants": live_grants,
