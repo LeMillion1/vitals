@@ -34,15 +34,16 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vitals.access import PolicyAction, PolicyResourceType
 from vitals.config import load_config
 from vitals.i18n import t
-from vitals.models.identity import HealthSubject
 from vitals.integrations.garmin_client import login_breaker_state
+from vitals.models.identity import HealthSubject
 from vitals.services import (
     ai_gateway_service,
     credential_vault_service,
@@ -51,24 +52,24 @@ from vitals.services import (
     health_profile_service,
     language_service,
     modules_service,
-    platform_ai_control_service,
     platform_admin_service,
+    platform_ai_control_service,
     provider_credentials_service,
 )
-from vitals.services.authentication import legacy_two_factor as twofa_service
-from vitals.services.modules_service import ModuleToggleError
-from vitals.access import PolicyAction, PolicyResourceType
-from web.config import get_web_config
 from vitals.services.access_resolution import AccessDeniedError, require_access
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.authentication import legacy_two_factor as twofa_service
 from vitals.services.installation_operator import (
     NotAnOperator,
     require_installation_operator_user,
 )
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.modules_service import ModuleToggleError
 from vitals.services.proactive import prefs
 from vitals.utils.timeutils import today_local
 from web.care_context import principal_user_id
+from web.config import get_web_config
 from web.deps import get_redis, get_session, require_auth, require_recent_auth
+from web.downloads import private_json_download
 from web.ratelimit import rate_limit
 from web.services.env_writer import read_key, write_keys
 from web.templating import templates
@@ -636,7 +637,8 @@ async def _external_token_rows(db: AsyncSession, *, subject_id) -> list[dict]:
     a dozen other things.
     """
 
-    from datetime import datetime, timezone as _timezone
+    from datetime import datetime
+    from datetime import timezone as _timezone
 
     from vitals.enums import ExternalApiTokenStatus
     from vitals.services import external_api_token_service as external_tokens
@@ -671,11 +673,12 @@ async def _connector_rows(db: AsyncSession, *, actor_username: str) -> list[dict
     settings page is one a template can lazy-load from.
     """
 
-    from datetime import datetime, timezone as _timezone
+    from datetime import datetime
+    from datetime import timezone as _timezone
 
+    from vitals.models.identity import User
     from vitals.services.authentication import mcp_tokens
     from vitals.services.identity_service import normalize_username
-    from vitals.models.identity import User
 
     lookup = normalize_username(actor_username).lookup_key
     user_id = await db.scalar(
@@ -1586,25 +1589,6 @@ async def change_password(
 
 # ── Data portability (backup / restore / LLM export) ──────────────────────────
 
-_PRIVATE_EXPORT_HEADERS = {
-    "Cache-Control": "private, no-store",
-    "Pragma": "no-cache",
-}
-
-
-def _private_json_download(*, body: str, filename: str) -> Response:
-    """Return sensitive JSON without leaving a reusable browser/proxy copy."""
-
-    return Response(
-        content=body,
-        media_type="application/json",
-        headers={
-            **_PRIVATE_EXPORT_HEADERS,
-            "Content-Disposition": f'attachment; filename="{filename}"',
-        },
-    )
-
-
 async def _authorize_export(db: AsyncSession, username: str):
     """Decide the export, rather than infer it from being logged in.
 
@@ -1686,7 +1670,7 @@ async def export_backup(
         ) from exc
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_backup_{today_local().strftime('%Y%m%d')}.json"
-    return _private_json_download(body=body, filename=filename)
+    return private_json_download(body=body, filename=filename)
 
 
 @router.get("/export-subject")
@@ -1709,7 +1693,7 @@ async def export_subject_backup(
     )
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_record_{today_local().strftime('%Y%m%d')}.json"
-    return _private_json_download(body=body, filename=filename)
+    return private_json_download(body=body, filename=filename)
 
 
 @router.get("/export-llm")
@@ -1729,7 +1713,7 @@ async def export_llm(
     )
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_llm_{today_local().strftime('%Y%m%d')}.json"
-    return _private_json_download(body=body, filename=filename)
+    return private_json_download(body=body, filename=filename)
 
 
 @router.post("/import")
@@ -1829,9 +1813,10 @@ async def restart_container(
     username: str = Depends(require_auth),
     db: AsyncSession = Depends(get_session),
 ):
+    import asyncio
     import os
     import signal
-    import asyncio
+
     from fastapi.responses import JSONResponse
 
     await _authorize_installation_operation(

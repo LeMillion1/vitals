@@ -118,11 +118,18 @@ class SupportConsolePage(Page):
     PATH = "/settings/platform/support"
     NAME = "support console"
 
-    SUBJECT = 'select[name="subject_id"]'
-    REASON = 'textarea[name="reason"]'
-    HOURS = 'input[name="hours"]'
-    TICKET = 'input[name="ticket_reference"]'
-    SUBMIT = 'button:has-text("Ask")'
+    READ_FORM = 'form[action="/settings/platform/support/request"]'
+    EXPORT_FORM = 'form[action="/settings/platform/support/export/request"]'
+    SUBJECT = f'{READ_FORM} select[name="subject_id"]'
+    REASON = f'{READ_FORM} textarea[name="reason"]'
+    HOURS = f'{READ_FORM} input[name="hours"]'
+    TICKET = f'{READ_FORM} input[name="ticket_reference"]'
+    SUBMIT = f'{READ_FORM} button[type="submit"]'
+    EXPORT_SUBJECT = f'{EXPORT_FORM} select[name="subject_id"]'
+    EXPORT_REASON = f'{EXPORT_FORM} textarea[name="reason"]'
+    EXPORT_TICKET = f'{EXPORT_FORM} input[name="ticket_reference"]'
+    EXPORT_SUBMIT = f'{EXPORT_FORM} button[type="submit"]'
+    DOWNLOAD_ONCE = 'button:has-text("Download once")'
     OPEN_RECORD = 'a:has-text("Open the record")'
     HAND_BACK = 'button:has-text("Hand it back")'
     WITHDRAW = 'button:has-text("Take it back")'
@@ -151,6 +158,22 @@ class SupportConsolePage(Page):
         for key in domains:
             self.page.check(self.domain(key))
         self._act(self.SUBMIT)
+        return self
+
+    def ask_for_export(
+        self,
+        *,
+        record: str,
+        reason: str,
+        ticket: str | None = None,
+    ) -> "SupportConsolePage":
+        """Ask for the separately approved, one-shot portability export."""
+
+        self.page.select_option(self.EXPORT_SUBJECT, label=record)
+        self.page.fill(self.EXPORT_REASON, reason)
+        if ticket is not None:
+            self.page.fill(self.EXPORT_TICKET, ticket)
+        self._act(self.EXPORT_SUBMIT)
         return self
 
     def open_the_record(self, *, scope_label: str | None = None):

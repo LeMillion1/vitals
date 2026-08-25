@@ -41,7 +41,7 @@ the others remain useful provenance for the remediations named below:
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0074 (head)`; 74 files in `migrations/versions` | Verified |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0075 (head)`; 75 files in `migrations/versions` | Verified |
 | SQLAlchemy tables | `len(Base.metadata.tables)` → 83 | Verified |
 | Ownership registry | `len(OWNERSHIP_REGISTRY)` → 83 | Verified and exhaustive in code |
 | Subject-scoped tables | 66 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
@@ -51,9 +51,9 @@ the others remain useful provenance for the remediations named below:
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
 | Web routers | 32 modules under `web/routers` | Verified |
 | Application services | 105 tracked non-`__init__` modules after the care, authentication, admission, analytics, persistence, and notification moves | Verified |
-| Flat service debt | 75 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
-| Browser scenarios | 38 scenarios selected by `pytest tests/ui -m ui` | Verified collection and run |
-| Commercial Git history | 290 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
+| Flat service debt | 74 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
+| Browser scenarios | 39 scenarios selected by `pytest tests/ui -m ui` | Verified collection and run |
+| Commercial Git history | 293 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
 current commit. Only a command executed against the current tree is recorded as
@@ -157,8 +157,13 @@ a current validation result.
   prove the normalized fact, although the projection renders only a bounded
   summary and genetics caches each shared VCF parse. Metadata-only validators
   remain a worthwhile performance hardening, not an authorization gap.
-- Repair, exceptional export, two-person break-glass approval, operational
-  dashboards, and retention tooling remain deliberately refused or absent.
+- Exceptional export is now a separate fixed operation rather than a widened
+  read grant. The patient approves a two-hour, one-use personal portability
+  download; the exact grant is locked and consumed with a PHI-free audit event
+  before bytes leave, and no export artifact is stored. Invalid, widened,
+  expired, revoked, consumed, or ambiguous grants fail before portability reads.
+- Repair, two-person break-glass approval, operational dashboards, and retention
+  tooling remain deliberately refused or absent.
 - Every simultaneous live support grant is now visible and independently
   revocable on the patient's access page, with the holder, approved sections,
   and exact local expiry. Shared chrome exposes only the active count and a
@@ -208,7 +213,7 @@ commit. Keep this document as target/decision history and use this audit for the
 current state.
 
 The following roadmap targets are not shipped: invitation inbox,
-multi-subject full backup, support repair/export and break-glass, lab marker
+multi-subject full backup, support repair and break-glass, lab marker
 collision migration, private-byte relocation outside static storage, and final
 legacy configuration contraction.
 
@@ -535,6 +540,15 @@ redirected 303 to `/today`. The authenticated Compose browser inspected the
 patient access centre, Today, conversations, and care home at 1,280 px with no
 horizontal overflow or browser log errors; phone widths are covered by the live
 Playwright scenarios.
+
+The exceptional support-export slice then passed 127 focused support,
+portability, import, and migration tests (four PostgreSQL-only skips), 349
+i18n/design/static/router contracts, the 17-scenario live support-browser suite,
+full Ruff and diff checks, and a Tailwind rebuild with no generated CSS change.
+The PostgreSQL 15 migration rehearsal completed `head → 0034 → head`, including
+the real `0075 → 0074 → 0075` path, and the corrected cross-dialect one-shot
+case passed on PostgreSQL. The full fast suite passed 5,070 tests, skipped 187,
+and deselected 39.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

@@ -67,6 +67,13 @@ with an explicit reason, approver, expiry, mode, and concrete scope. This is how
 maintainers can investigate and repair production issues without creating an
 invisible global medical-record bypass.
 
+Support export is a separate exceptional scope, never an upgrade of record-read
+access. It names one versioned subject-portability operation, requires a fresh
+patient approval, expires after two hours, and is consumed atomically with its
+PHI-free audit event on the first successful release. The file is assembled only
+in request memory and returned with private no-store headers; no reusable export
+artifact is kept by the service.
+
 Browser cookies are signed, not encrypted. New compatibility cookies carry only
 a format version, token type, legacy auth source, and username; roles, subjects,
 grants, credentials, and PHI are deliberately excluded. Existing signed

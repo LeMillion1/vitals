@@ -14,12 +14,10 @@ active platform superadmin. ``approve_request`` refuses an actor who does not
 own the subject. And the schema refuses a grant whose approver is its grantee,
 so even a caller that got past both cannot write one.
 
-**Read only, for now.** ``repair`` and ``export`` exist in the vocabulary and
-are refused here by name. The roadmap sequences them that way on purpose — a
-repair needs a bounded diff and a second review, an export needs its own
-approval — and a mode that is accepted but unimplemented is worse than one that
-says so: it would look approved to the patient and do nothing, or worse, do
-something nobody designed.
+**Read and exceptional export are different doors.** Read requests enumerate
+record sections. Export requests carry one fixed operation scope and release one
+transient subject-portability file exactly once. ``repair`` remains refused: it
+needs a bounded diff and a second review rather than a broad mode name.
 
 **Nothing is deleted.** A declined or withdrawn request stays, because "support
 asked to read my record in March and I said no" is a thing a patient is
@@ -72,6 +70,7 @@ from vitals.models.identity import (
     User,
     UserRole,
 )
+from vitals.services import data_portability_service
 from vitals.services.identity_service import acquire_identity_governance_lock
 
 #: How long an unanswered ask stays answerable. A request nobody replied to is
@@ -95,6 +94,11 @@ EVENT_WITHDRAWN = "support_access.withdrawn"
 EVENT_REVOKED = "support_access.revoked"
 EVENT_EXPIRED = "support_access.expired"
 EVENT_RECORD_OPENED = "support_access.record.opened"
+EVENT_RECORD_EXPORTED = "support_access.record.exported"
+
+#: The only resource an exceptional support-export grant may contain. Versioned
+#: because approving a different export shape must require a fresh decision.
+EXPORT_OPERATION_KEY = "data_portability.subject_export.v1"
 
 _LIVE_REQUEST = SupportAccessRequestStatus.PENDING.value
 
@@ -164,6 +168,18 @@ def read_scopes_for(domains: Iterable[Domain]) -> tuple[RequestedScope, ...]:
             action=SupportAccessMode.READ,
         )
         for domain in domains
+    )
+
+
+def export_scope() -> tuple[RequestedScope, ...]:
+    """The complete, non-composable shape of a support export request."""
+
+    return (
+        RequestedScope(
+            resource_type=SupportScopeResourceType.OPERATION,
+            resource_key=EXPORT_OPERATION_KEY,
+            action=SupportAccessMode.EXPORT,
+        ),
     )
 
 
@@ -290,20 +306,30 @@ async def open_request(
     and until the patient answers it the policy engine has no grant to find.
     """
 
-    if mode is not SupportAccessMode.READ:
+    if mode is SupportAccessMode.REPAIR:
         raise UnsupportedMode(
-            f"support mode {mode.value!r} is not implemented: a repair needs a "
-            "bounded diff and a second review, an export needs its own approval, "
-            "and accepting the word without the work would look approved to the "
-            "patient and do something nobody designed"
+            "support repair is not implemented: it needs a bounded diff and a "
+            "second review"
         )
     if not scopes:
         raise ScopesRequired(
             "a grant with no scopes authorizes nothing, so an ask with none is "
             "a question with no answer"
         )
-    if any(scope.action is not SupportAccessMode.READ for scope in scopes):
-        raise UnsupportedMode("a read request may only ask for read scopes")
+    if mode is SupportAccessMode.READ:
+        if any(scope.action is not SupportAccessMode.READ for scope in scopes):
+            raise UnsupportedMode("a read request may only ask for read scopes")
+    elif mode is SupportAccessMode.EXPORT:
+        if tuple(scopes) != export_scope():
+            raise UnsupportedMode(
+                "an export request must name only the versioned subject export operation"
+            )
+        if ttl != DEFAULT_GRANT_TTL:
+            raise SupportAccessError(
+                "an exceptional support export uses the fixed two-hour approval window"
+            )
+    else:  # Defensive against callers bypassing the enum type contract.
+        raise UnsupportedMode(f"support mode {mode!r} is not implemented")
     cleaned_reason = (reason or "").strip()
     if not cleaned_reason:
         raise SupportAccessError(
@@ -398,6 +424,26 @@ async def approve_request(
 
     now = await _now(session)
     request = await _pending(session, request_id=request_id, now=now)
+    if request.mode == SupportAccessMode.EXPORT.value:
+        stored_scopes = {
+            (scope.resource_type, scope.resource_key, scope.action)
+            for scope in request.scopes
+        }
+        exact_export_scope = {
+            (
+                SupportScopeResourceType.OPERATION.value,
+                EXPORT_OPERATION_KEY,
+                SupportAccessMode.EXPORT.value,
+            )
+        }
+        if (
+            stored_scopes != exact_export_scope
+            or request.requested_ttl_seconds
+            != int(DEFAULT_GRANT_TTL.total_seconds())
+        ):
+            raise UnsupportedMode(
+                "the stored export request is not the exact approved operation"
+            )
     await _require_subject_owner(
         session, user_id=owner_user_id, subject_id=request.subject_id
     )
@@ -686,7 +732,7 @@ async def live_grants_for(
                 sorted(
                     f"{scope.resource_type}:{scope.resource_key}"
                     for scope in grant.scopes
-                    if scope.action == SupportAccessMode.READ.value
+                    if scope.action == grant.mode
                 )
             ),
         )
@@ -740,6 +786,12 @@ def _grant_lifecycle(
             lifecycle,
             _as_utc(grant.revoked_at) if grant.revoked_at is not None else None,
             grant.revoked_by.username if grant.revoked_by is not None else None,
+        )
+    if grant.status == SupportAccessStatus.CONSUMED.value:
+        return (
+            "consumed",
+            _as_utc(grant.consumed_at) if grant.consumed_at is not None else None,
+            None,
         )
     if grant.status == SupportAccessStatus.EXPIRED.value or now >= _as_utc(
         grant.expires_at
@@ -826,7 +878,7 @@ async def list_for_subject(
                     sorted(
                         f"{scope.resource_type}:{scope.resource_key}"
                         for scope in request.scopes
-                        if scope.action == SupportAccessMode.READ.value
+                        if scope.action == request.mode
                     )
                 ),
                 grant_lifecycle=lifecycle,
@@ -972,6 +1024,105 @@ async def record_record_opened(
     return event
 
 
+async def consume_subject_export(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+) -> dict[str, object]:
+    """Build and consume one exact exceptional export grant. Never commits.
+
+    The grant and identity-governance locks remain held while the portability
+    snapshot is assembled. The caller must serialize the returned value and
+    commit this transaction before returning any bytes. A generation or
+    serialization failure can then roll back without spending the approval;
+    once the commit lands, the grant is terminal even if the connection drops.
+    """
+
+    snapshot = context.support_grant
+    if snapshot is None:
+        raise NotASupportSession("export is not based on a support grant")
+    if (
+        snapshot.subject_id != context.subject_id
+        or snapshot.granted_to_user_id != context.principal.user_id
+        or snapshot.mode is not SupportAccessMode.EXPORT
+    ):
+        raise NotASupportSession("support export grant does not match this request")
+
+    exact_request = AccessRequest(
+        subject_id=context.subject_id,
+        resource_type=PolicyResourceType.OPERATION,
+        resource_key=EXPORT_OPERATION_KEY,
+        action=PolicyAction.EXPORT,
+    )
+    if not is_allowed(context, exact_request):
+        raise NotASupportSession("support export is outside the approved scope")
+
+    await acquire_identity_governance_lock(session)
+    await _require_platform_admin(session, user_id=context.principal.user_id)
+    grant = await session.scalar(
+        select(SupportAccessGrant)
+        .options(selectinload(SupportAccessGrant.scopes))
+        .where(
+            SupportAccessGrant.id == snapshot.grant_id,
+            SupportAccessGrant.subject_id == context.subject_id,
+            SupportAccessGrant.granted_to_user_id == context.principal.user_id,
+        )
+        .with_for_update()
+    )
+    if grant is None:
+        raise NotASupportSession("the support export grant no longer exists")
+
+    now = await _now(session)
+    if (
+        grant.mode != SupportAccessMode.EXPORT.value
+        or grant.status != SupportAccessStatus.ACTIVE.value
+        or grant.revoked_at is not None
+        or grant.consumed_at is not None
+        or now >= _as_utc(grant.expires_at)
+    ):
+        raise NotASupportSession("the support export grant is no longer usable")
+
+    live_scopes = {
+        (scope.resource_type, scope.resource_key, scope.action)
+        for scope in grant.scopes
+    }
+    required_scope = {
+        (
+            SupportScopeResourceType.OPERATION.value,
+            EXPORT_OPERATION_KEY,
+            SupportAccessMode.EXPORT.value,
+        )
+    }
+    if live_scopes != required_scope:
+        raise NotASupportSession("the support export grant is not exact")
+
+    payload = await data_portability_service.export_subject(
+        session, subject_id=context.subject_id
+    )
+    grant.status = SupportAccessStatus.CONSUMED.value
+    grant.consumed_at = now
+    event = AuditEvent(
+        actor_user_id=context.principal.user_id,
+        subject_id=context.subject_id,
+        support_access_grant_id=grant.id,
+        event_type=EVENT_RECORD_EXPORTED,
+        outcome=AuditOutcome.SUCCESS.value,
+        resource_type="subject_export",
+        resource_id=str(context.subject_id),
+        metadata_json={
+            "correlation_id": str(uuid.uuid4()),
+            "source_surface": "web.settings.support_export",
+            "reason_code": "approved_support_export",
+            "resource_type": "subject_export",
+            "resource_id": str(context.subject_id),
+            "grant_mode": SupportAccessMode.EXPORT.value,
+        },
+    )
+    session.add(event)
+    await session.flush()
+    return payload
+
+
 @dataclass(frozen=True, slots=True)
 class RecordOpenedEvent:
     """Patient-facing projection of one PHI-free audit envelope and its grant."""
@@ -1033,7 +1184,7 @@ async def record_opened_history(
                     sorted(
                         f"{scope.resource_type}:{scope.resource_key}"
                         for scope in grant.scopes
-                        if scope.action == SupportAccessMode.READ.value
+                        if scope.action == grant.mode
                     )
                 ),
             )
@@ -1141,7 +1292,7 @@ async def console_for_admin(
                     sorted(
                         f"{scope.resource_type}:{scope.resource_key}"
                         for scope in grant.scopes
-                        if scope.action == SupportAccessMode.READ.value
+                        if scope.action == grant.mode
                     )
                 ),
             )
@@ -1157,7 +1308,11 @@ async def console_for_admin(
                 created_at=_as_utc(request.created_at),
                 expires_at=_as_utc(request.expires_at),
                 scope_keys=tuple(
-                    sorted(scope.resource_key for scope in request.scopes)
+                    sorted(
+                        f"{scope.resource_type}:{scope.resource_key}"
+                        for scope in request.scopes
+                        if scope.action == request.mode
+                    )
                 ),
             )
             for request, display_name in request_rows
@@ -1262,6 +1417,8 @@ async def expire_stale(session: AsyncSession) -> tuple[int, int]:
 __all__ = [
     "AmbiguousSupportGrant",
     "DEFAULT_GRANT_TTL",
+    "EVENT_RECORD_EXPORTED",
+    "EXPORT_OPERATION_KEY",
     "GrantNotFound",
     "MAX_GRANT_TTL",
     "NotAPlatformAdmin",
@@ -1280,9 +1437,11 @@ __all__ = [
     "PatientAccessRequestHistory",
     "PatientLiveGrant",
     "approve_request",
+    "consume_subject_export",
     "console_for_admin",
     "decline_request",
     "expire_stale",
+    "export_scope",
     "list_for_subject",
     "live_grants_for",
     "load_support_grant",

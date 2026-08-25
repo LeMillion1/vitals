@@ -333,6 +333,11 @@ class SupportAccessGrant(Base):
             "AND revoked_by_user_id IS NULL AND revocation_reason IS NULL)",
             name="ck_support_access_grants_revocation_state",
         ),
+        CheckConstraint(
+            "(status = 'consumed' AND mode = 'export' AND consumed_at IS NOT NULL) "
+            "OR (status <> 'consumed' AND consumed_at IS NULL)",
+            name="ck_support_access_grants_consumed_state",
+        ),
         Index(
             "ix_support_access_grants_subject_status_expires",
             "subject_id",
@@ -385,6 +390,9 @@ class SupportAccessGrant(Base):
         nullable=True,
     )
     revocation_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 

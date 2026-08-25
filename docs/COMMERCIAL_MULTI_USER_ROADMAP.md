@@ -1778,8 +1778,9 @@ Additional gates:
   attachments: the file download route resolves its subject through the
   sole-owner adapter, so a professional opening a patient's attachment gets a
   404 that is not about permission.
-- [x] Ship the controlled support console and audit UX — read mode only; repair,
-      export, operational dashboards and the break-glass path remain unbuilt.
+- [x] Ship the controlled support console and audit UX — exact read grants and a
+      separately patient-approved, one-shot personal portability export are live;
+      repair, operational dashboards and the break-glass path remain unbuilt.
 - [ ] Complete commercial security/legal/operations review.
 - [ ] Open registration.
 - [ ] Run the final contract migration.

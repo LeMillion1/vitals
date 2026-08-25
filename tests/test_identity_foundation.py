@@ -97,6 +97,9 @@ def test_0035_migration_upgrade_and_downgrade_matches_models(monkeypatch):
     migration = importlib.import_module(
         "migrations.versions.0035_identity_foundation"
     )
+    support_export_migration = importlib.import_module(
+        "migrations.versions.0075_support_export_consumption"
+    )
     engine = create_engine("sqlite://")
     identity_models = (
         User,
@@ -111,8 +114,12 @@ def test_0035_migration_upgrade_and_downgrade_matches_models(monkeypatch):
         with engine.begin() as connection:
             context = MigrationContext.configure(connection)
             monkeypatch.setattr(migration, "op", Operations(context))
+            monkeypatch.setattr(
+                support_export_migration, "op", Operations(context)
+            )
 
             migration.upgrade()
+            support_export_migration.upgrade()
             inspector = inspect(connection)
             assert set(model.__tablename__ for model in identity_models) <= set(
                 inspector.get_table_names()
@@ -123,7 +130,30 @@ def test_0035_migration_upgrade_and_downgrade_matches_models(monkeypatch):
                     for column in inspector.get_columns(model.__tablename__)
                 }
                 assert migrated_columns == set(model.__table__.columns.keys())
+            grant_checks = {
+                item["name"]: item["sqltext"]
+                for item in inspector.get_check_constraints(
+                    SupportAccessGrant.__tablename__
+                )
+            }
+            assert "ck_support_access_grants_consumed_state" in grant_checks
+            assert "consumed" in grant_checks["ck_support_access_grants_status"]
 
+            support_export_migration.downgrade()
+            downgraded_inspector = inspect(connection)
+            assert "consumed_at" not in {
+                column["name"]
+                for column in downgraded_inspector.get_columns(
+                    SupportAccessGrant.__tablename__
+                )
+            }
+            assert "consumed" not in next(
+                item["sqltext"]
+                for item in downgraded_inspector.get_check_constraints(
+                    SupportAccessGrant.__tablename__
+                )
+                if item["name"] == "ck_support_access_grants_status"
+            )
             migration.downgrade()
             remaining = set(inspect(connection).get_table_names())
             assert not remaining.intersection(
@@ -295,6 +325,12 @@ async def test_support_grant_persists_explicit_scope_expiry_and_revocation(db_se
     await db_session.flush()
 
     assert {mode.value for mode in SupportAccessMode} == {"read", "repair", "export"}
+    assert {state.value for state in SupportAccessStatus} == {
+        "active",
+        "revoked",
+        "expired",
+        "consumed",
+    }
     assert active_grant.reason == "Investigate synthetic import failure"
     assert active_grant.expires_at == approved_at + timedelta(hours=1)
     assert scope.resource_type == "domain"

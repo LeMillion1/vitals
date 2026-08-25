@@ -13,6 +13,7 @@ come from whichever source cannot be stale.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import timedelta
 
@@ -20,17 +21,23 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import RECORD_SECTIONS, Domain
+from vitals.access import PolicyAction, PolicyResourceType
+from vitals.enums import RECORD_SECTIONS, Domain, SupportAccessMode
 from vitals.persistence.rls import bind_session_subject
-from vitals.services.legacy_ownership import NoPersonalRecordError
 from vitals.services import support_access_service as support
 from vitals.services.access_resolution import (
+    AccessDeniedError,
     AccessResolutionError,
     enter_subject_scope,
+    require_access,
     resolve_access_context,
 )
+from vitals.services.legacy_ownership import NoPersonalRecordError
+from vitals.utils.timeutils import today_local
 from web.care_context import principal_user_id
 from web.deps import get_session, require_auth, require_recent_auth
+from web.downloads import private_json_download
+from web.ratelimit import rate_limit
 from web.templating import templates
 
 admin_router = APIRouter(prefix="/settings/platform/support", tags=["support"])
@@ -159,6 +166,105 @@ async def ask_for_access(
         return _back("/settings/platform/support", "error=refused")
     await db.commit()
     return _back("/settings/platform/support", "asked=1")
+
+
+@admin_router.post("/export/request")
+async def ask_for_export(
+    request: Request,
+    subject_id: uuid.UUID = Form(...),
+    reason: str = Form(...),
+    ticket_reference: str = Form(default=""),
+    _username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """Ask for one separately approved, one-shot subject export."""
+
+    admin_user_id = await _admin_id(request, db)
+    await bind_session_subject(db, subject_id)
+    try:
+        await support.open_request(
+            db,
+            admin_user_id=admin_user_id,
+            subject_id=subject_id,
+            reason=reason,
+            scopes=support.export_scope(),
+            ttl=support.DEFAULT_GRANT_TTL,
+            ticket_reference=ticket_reference,
+            mode=SupportAccessMode.EXPORT,
+        )
+    except support.NotAPlatformAdmin as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform administrator access required",
+        ) from exc
+    except support.SupportAccessError:
+        await db.rollback()
+        return _back("/settings/platform/support", "error=refused")
+    await db.commit()
+    return _back("/settings/platform/support", "asked=export")
+
+
+@admin_router.post("/{subject_selector}/grant/{grant_selector}/export")
+async def download_export(
+    request: Request,
+    subject_selector: str,
+    grant_selector: str,
+    _username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
+    _rl: None = Depends(rate_limit("data_export", limit=2, window=60)),
+):
+    """Release one transient export, consuming the exact grant atomically."""
+
+    try:
+        subject_id = uuid.UUID(subject_selector)
+        grant_id = uuid.UUID(grant_selector)
+        if subject_id.int == 0 or grant_id.int == 0:
+            raise ValueError
+    except (TypeError, ValueError, AttributeError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+
+    admin_user_id = await _admin_id(request, db)
+    try:
+        await bind_session_subject(db, subject_id)
+        context = await resolve_access_context(
+            db,
+            user_id=admin_user_id,
+            subject_id=subject_id,
+            support_grant_id=grant_id,
+        )
+        require_access(
+            context,
+            resource_type=PolicyResourceType.OPERATION,
+            resource_key=support.EXPORT_OPERATION_KEY,
+            action=PolicyAction.EXPORT,
+        )
+        payload = await support.consume_subject_export(db, context=context)
+        # Serialization is part of the release transaction. If it fails, the
+        # grant and success audit roll back and the patient approval is retryable.
+        body = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        await db.commit()
+    except (
+        AccessResolutionError,
+        AccessDeniedError,
+        support.SupportAccessError,
+    ):
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    except support.data_portability_service.PortabilityError as exc:
+        # A valid grant can outlive the v1 format's ability to represent the
+        # record (for example after a provider connection was added). Keep the
+        # one-shot approval retryable and return a controlled, non-PHI refusal.
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except BaseException:
+        await db.rollback()
+        raise
+
+    filename = f"vitals_support_record_{today_local().strftime('%Y%m%d')}.json"
+    return private_json_download(body=body, filename=filename)
 
 
 @admin_router.post("/{request_id}/withdraw")

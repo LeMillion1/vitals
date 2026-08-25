@@ -61,6 +61,25 @@ def test_an_approved_grant_is_visible_everywhere_and_endable_from_anywhere(sign_
     assert not after.offers("/settings/access/grant/"), "the banner survived the revoke"
 
 
+def test_export_is_a_separate_one_shot_door(sign_in):
+    """An export approval never turns into a link for browsing the record."""
+
+    reason = "Patient requested a portable copy in ticket SUP-EXPORT-1."
+    admin = sign_in("admin")
+    admin.support_console().ask_for_export(
+        record="Patient 01", reason=reason, ticket="SUP-EXPORT-1"
+    )
+
+    history = sign_in("patient01").access_history()
+    assert history.says(reason)
+    assert history.says("one-use download")
+    history.allow()
+
+    console = admin.support_console()
+    assert console.page.locator(console.DOWNLOAD_ONCE).count() == 1
+    assert console.page.locator(console.OPEN_RECORD).count() == 0
+
+
 def test_a_phone_shows_both_live_grants_and_stopping_one_keeps_the_other(sign_in):
     admin = sign_in("admin")
     admin.support_console().ask_for(

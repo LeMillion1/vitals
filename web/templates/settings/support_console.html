@@ -33,7 +33,13 @@
                     <time datetime="{{ grant.expires_at.isoformat() }}">{{ grant.expires_at | format_datetime }}</time>
                 </span>
                 <div class="flex flex-wrap gap-3">
+                    {% if grant.mode == 'export' %}
+                    <form action="/settings/platform/support/{{ grant.subject_id }}/grant/{{ grant.grant_id }}/export" method="POST" hx-boost="false">
+                        <button type="submit" class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.download_once") }}</button>
+                    </form>
+                    {% else %}
                     <a href="/care/{{ grant.subject_id }}?support_grant_id={{ grant.grant_id }}" class="v-btn-ghost text-xs">{{ t("support.open_record") }}</a>
+                    {% endif %}
                     <form action="/settings/platform/support/grant/{{ grant.grant_id }}/revoke" method="POST">
                         <input type="hidden" name="subject_id" value="{{ grant.subject_id }}">
                         <button type="submit" class="v-btn-ghost text-xs">{{ t("support.hand_back") }}</button>
@@ -62,7 +68,7 @@
                 </form>
             </div>
             <p class="v-text-micro" style="color: var(--faint)">
-                {% for key in row.scope_keys %}{{ t("enum.domain." ~ key) }}{% if not loop.last %}, {% endif %}{% endfor %}
+                {{ scope_labels(row.scope_keys) }}
                 · {{ t("support.lapses") }} {{ row.expires_at | format_date }}
             </p>
         </div>
@@ -127,6 +133,40 @@
 
             <div class="flex justify-end">
                 <button type="submit" class="v-btn text-xs">{{ t("support.ask_submit") }}</button>
+            </div>
+        </form>
+        {% endif %}
+    </div>
+
+    <!-- Export is never an upgrade of read access. It is asked for separately,
+         has one fixed scope, and disappears after its first successful release. -->
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("support.export_ask_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.export_ask_hint") }}</p>
+
+        {% if not subjects %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.ask_nobody") }}</p>
+        {% else %}
+        <form action="/settings/platform/support/export/request" method="POST" hx-boost="false" class="space-y-4">
+            <div>
+                <label for="support-export-subject" class="v-label">{{ t("support.field_record") }}</label>
+                <select id="support-export-subject" name="subject_id" class="v-input" required>
+                    {% for subject_id, display_name in subjects %}
+                    <option value="{{ subject_id }}">{{ display_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="support-export-reason" class="v-label">{{ t("support.field_reason") }}</label>
+                <textarea id="support-export-reason" name="reason" rows="3" class="v-input" required maxlength="2000" placeholder="{{ t('support.field_reason_hint') }}"></textarea>
+            </div>
+            <div>
+                <label for="support-export-ticket" class="v-label">{{ t("support.field_ticket") }}</label>
+                <input id="support-export-ticket" name="ticket_reference" type="text" class="v-input" maxlength="120">
+            </div>
+            <p class="v-text-micro" style="color: var(--faint)">{{ t("support.export_contents") }}</p>
+            <div class="flex justify-end">
+                <button type="submit" class="v-btn text-xs">{{ t("support.export_ask_submit") }}</button>
             </div>
         </form>
         {% endif %}

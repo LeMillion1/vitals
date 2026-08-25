@@ -39,6 +39,8 @@
     <p class="v-text-micro" data-support-grant-lifecycle="{{ row.grant_lifecycle }}" style="color: var(--muted)">
         {% if row.grant_lifecycle == 'live' %}
             {{ t("support.grant_live") }}
+        {% elif row.grant_lifecycle == 'consumed' %}
+            {{ t("support.grant_consumed") }}
         {% elif row.grant_lifecycle == 'expired' %}
             {{ t("support.grant_expired") }}
         {% elif row.grant_lifecycle == 'revoked_by_owner' %}
@@ -55,6 +57,9 @@
     {% endif %}
 
     {% if actionable %}
+    {% if 'operation:data_portability.subject_export.v1' in row.scope_keys %}
+    <p class="v-text-body">{{ t("support.export_patient_warning") }}</p>
+    {% endif %}
     <div class="flex flex-wrap gap-3">
         <form action="/settings/access/{{ row.request_id }}/approve" method="POST">
             <button type="submit" class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("support.approve") }}</button>

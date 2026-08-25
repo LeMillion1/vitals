@@ -72,6 +72,7 @@ class SupportAccessStatus(StrEnum):
     ACTIVE = "active"
     REVOKED = "revoked"
     EXPIRED = "expired"
+    CONSUMED = "consumed"
 
 
 class ExternalApiTokenStatus(StrEnum):

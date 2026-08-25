@@ -31,7 +31,13 @@ from vitals.enums import (
     UserRoleName,
     UserStatus,
 )
-from vitals.models.identity import AuditEvent, HealthSubject, User, UserRole
+from vitals.models.identity import (
+    AuditEvent,
+    HealthSubject,
+    SupportAccessRequestScope,
+    User,
+    UserRole,
+)
 from vitals.services import support_access_service as support
 from vitals.services.access_resolution import resolve_access_context
 
@@ -273,24 +279,149 @@ async def test_a_read_grant_does_not_authorize_a_write(db_session):
         )
 
 
-async def test_repair_and_export_are_refused_by_name_rather_than_half_built(
-    db_session,
-):
-    """A mode accepted and unimplemented is worse than one that says so.
-
-    It would read as approved to the patient and then either do nothing or do
-    something nobody designed. Both need their own review — a bounded diff for
-    repair, a separate approval for export — and the roadmap sequences them
-    after this.
-    """
+async def test_repair_is_refused_by_name_rather_than_half_built(db_session):
+    """Repair still needs its own review and a bounded diff."""
 
     owner, subject = await _patient(db_session, "sup-unimpl")
     admin = await _admin(db_session, "sup-unimpl-admin")
 
-    for mode in (SupportAccessMode.REPAIR, SupportAccessMode.EXPORT):
-        with pytest.raises(support.UnsupportedMode):
-            await _ask(db_session, admin=admin, subject=subject, mode=mode)
+    with pytest.raises(support.UnsupportedMode):
+        await _ask(
+            db_session, admin=admin, subject=subject, mode=SupportAccessMode.REPAIR
+        )
     del owner
+
+
+async def test_export_is_a_separate_exact_one_shot_grant(db_session, monkeypatch):
+    from sqlalchemy import select
+
+    owner, subject = await _patient(db_session, "sup-export")
+    admin = await _admin(db_session, "sup-export-admin")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=subject.id,
+        reason="Patient asked support to recover a portable copy.",
+        scopes=support.export_scope(),
+        mode=SupportAccessMode.EXPORT,
+    )
+    grant = await support.approve_request(
+        db_session, owner_user_id=owner.id, request_id=request.id
+    )
+    await db_session.commit()
+    context = await resolve_access_context(
+        db_session,
+        user_id=admin.id,
+        subject_id=subject.id,
+        support_grant_id=grant.id,
+    )
+    assert context.support_grant is not None
+    assert is_allowed(
+        context,
+        AccessRequest(
+            subject_id=subject.id,
+            resource_type=PolicyResourceType.OPERATION,
+            resource_key=support.EXPORT_OPERATION_KEY,
+            action=PolicyAction.EXPORT,
+        ),
+    )
+    assert not is_allowed(context, _labs_read(subject.id))
+
+    async def synthetic_export(_session, *, subject_id):
+        assert subject_id == subject.id
+        return {"metadata": {"kind": "subject_export"}, "weight_logs": []}
+
+    monkeypatch.setattr(
+        support.data_portability_service, "export_subject", synthetic_export
+    )
+    payload = await support.consume_subject_export(db_session, context=context)
+    await db_session.commit()
+    await db_session.refresh(grant)
+    assert payload["metadata"] == {"kind": "subject_export"}
+    assert grant.status == SupportAccessStatus.CONSUMED.value
+    assert grant.consumed_at is not None
+    event = await db_session.scalar(
+        select(AuditEvent).where(AuditEvent.event_type == support.EVENT_RECORD_EXPORTED)
+    )
+    assert event is not None
+    assert event.support_access_grant_id == grant.id
+    assert set(event.metadata_json) == {
+        "correlation_id",
+        "source_surface",
+        "reason_code",
+        "resource_type",
+        "resource_id",
+        "grant_mode",
+    }
+    assert "Patient asked" not in str(event.metadata_json)
+
+    with pytest.raises(support.NotASupportSession):
+        await support.consume_subject_export(db_session, context=context)
+
+    grant.approved_at -= timedelta(days=2)
+    grant.expires_at = grant.approved_at + timedelta(hours=2)
+    await db_session.commit()
+    owner_context = await resolve_access_context(
+        db_session, user_id=owner.id, subject_id=None
+    )
+    history = await support.list_for_subject(db_session, context=owner_context)
+    exported_request = next(row for row in history.past if row.request_id == request.id)
+    assert exported_request.grant_lifecycle == "consumed"
+    assert exported_request.grant_ends_at.replace(
+        tzinfo=None
+    ) == grant.consumed_at.replace(tzinfo=None)
+
+
+async def test_export_request_rejects_scope_or_ttl_broadening(db_session):
+    _owner, subject = await _patient(db_session, "sup-export-shape")
+    admin = await _admin(db_session, "sup-export-shape-admin")
+    with pytest.raises(support.UnsupportedMode):
+        await support.open_request(
+            db_session,
+            admin_user_id=admin.id,
+            subject_id=subject.id,
+            reason="A broadened synthetic request.",
+            scopes=(*support.export_scope(), *support.read_scopes_for((Domain.LABS,))),
+            mode=SupportAccessMode.EXPORT,
+        )
+    with pytest.raises(support.SupportAccessError):
+        await support.open_request(
+            db_session,
+            admin_user_id=admin.id,
+            subject_id=subject.id,
+            reason="An extended synthetic request.",
+            scopes=support.export_scope(),
+            ttl=timedelta(hours=3),
+            mode=SupportAccessMode.EXPORT,
+        )
+
+
+async def test_approval_rechecks_a_stored_export_scope_under_lock(db_session):
+    from sqlalchemy import select
+
+    owner, subject = await _patient(db_session, "sup-export-forged")
+    admin = await _admin(db_session, "sup-export-forged-admin")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=subject.id,
+        reason="A request that is altered before approval.",
+        scopes=support.export_scope(),
+        mode=SupportAccessMode.EXPORT,
+    )
+    scope = await db_session.scalar(
+        select(SupportAccessRequestScope).where(
+            SupportAccessRequestScope.request_id == request.id
+        )
+    )
+    assert scope is not None
+    scope.resource_key = "data_portability.unreviewed_export"
+    await db_session.commit()
+
+    with pytest.raises(support.UnsupportedMode):
+        await support.approve_request(
+            db_session, owner_user_id=owner.id, request_id=request.id
+        )
 
 
 async def test_an_ask_with_no_scopes_is_refused(db_session):
@@ -2131,3 +2262,115 @@ async def test_a_professional_reaching_the_access_page_is_not_stranded(
     assert response.status_code == 303
     assert response.headers["location"] == "/care"
     del doctor, legacy_owner_roots
+
+
+async def test_support_export_http_is_post_only_no_store_and_one_shot(
+    client, db_session, legacy_owner_roots, monkeypatch
+):
+    admin = await _admin(db_session, "web-support-export-admin")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Recover the patient's synthetic portability file.",
+        scopes=support.export_scope(),
+        mode=SupportAccessMode.EXPORT,
+    )
+    grant = await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=request.id,
+    )
+    await db_session.commit()
+    grant_id = grant.id
+    url = (
+        f"/settings/platform/support/{legacy_owner_roots.subject_id}"
+        f"/grant/{grant_id}/export"
+    )
+
+    calls = []
+
+    async def synthetic_export(_session, *, subject_id):
+        calls.append(subject_id)
+        return {"metadata": {"kind": "subject_export"}, "raw_payloads": []}
+
+    monkeypatch.setattr(
+        support.data_portability_service, "export_subject", synthetic_export
+    )
+    _sign_in(client, admin.username)
+
+    get_response = await client.get(url)
+    assert get_response.status_code == 405
+    assert not calls
+
+    response = await client.post(url)
+    assert response.status_code == 200
+    assert response.json()["metadata"]["kind"] == "subject_export"
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["pragma"] == "no-cache"
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert calls == [legacy_owner_roots.subject_id]
+
+    second = await client.post(url)
+    assert second.status_code == 404
+    assert calls == [legacy_owner_roots.subject_id]
+    await db_session.refresh(grant)
+    assert grant.status == SupportAccessStatus.CONSUMED.value
+
+
+async def test_support_export_invalid_selector_never_reaches_portability(
+    client, db_session, monkeypatch
+):
+    admin = await _admin(db_session, "web-support-export-invalid-admin")
+    await db_session.commit()
+
+    async def phi_read_would_be_a_bug(*_args, **_kwargs):
+        raise AssertionError("invalid selector reached the portability exporter")
+
+    monkeypatch.setattr(
+        support.data_portability_service, "export_subject", phi_read_would_be_a_bug
+    )
+    _sign_in(client, admin.username)
+    response = await client.post(
+        "/settings/platform/support/not-a-subject/grant/not-a-grant/export"
+    )
+    assert response.status_code == 404
+
+
+async def test_unrepresentable_support_export_does_not_spend_the_grant(
+    client, db_session, legacy_owner_roots, monkeypatch
+):
+    admin = await _admin(db_session, "web-support-export-format-admin")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Recover a synthetic portability file.",
+        scopes=support.export_scope(),
+        mode=SupportAccessMode.EXPORT,
+    )
+    grant = await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=request.id,
+    )
+    await db_session.commit()
+
+    async def unrepresentable(*_args, **_kwargs):
+        raise support.data_portability_service.PortabilityError(
+            "This record cannot be represented by portability v1."
+        )
+
+    monkeypatch.setattr(
+        support.data_portability_service, "export_subject", unrepresentable
+    )
+    _sign_in(client, admin.username)
+    response = await client.post(
+        f"/settings/platform/support/{legacy_owner_roots.subject_id}"
+        f"/grant/{grant.id}/export"
+    )
+
+    assert response.status_code == 409
+    await db_session.refresh(grant)
+    assert grant.status == SupportAccessStatus.ACTIVE.value
+    assert grant.consumed_at is None

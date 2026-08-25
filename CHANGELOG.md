@@ -8,6 +8,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — patient-approved one-time support exports
+
+Platform support may now request a complete personal portability export as a
+separate permission from record reading. The patient approves one fixed,
+versioned export operation for a two-hour window; it cannot be widened with
+read scopes and its first successful download permanently consumes the grant.
+
+The POST-only download binds the exact subject and grant, rechecks the live
+administrator role, expiry, revocation state, mode, and singleton operation
+scope under transaction locks, then builds the existing subject-portability
+snapshot in memory. Grant consumption and a PHI-free audit event commit before
+any bytes leave the server. Failed generation or serialization rolls back
+without spending the approval, while a committed response cannot be generated
+again. Responses are attachment downloads with private `no-store` headers.
+
+No export artifact or payload is retained. The approval screen explicitly says
+that the portability shape includes complete raw source payloads and may include
+legacy file references, while credentials, account roles, support/control
+state, professional care notes and plans, and consent records remain excluded.
+
 ### Fixed — support openings select one exact grant
 
 Every operator-console record link now carries the ID of the grant whose

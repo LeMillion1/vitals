@@ -1418,7 +1418,8 @@ _EN: dict[str, str] = {
     "support.scope_plans": "care plans",
     "support.scope_other": "another approved item",
     "support.scope_none": "record overview",
-    "support.live_now": "Somebody from support can open this record right now",
+    "support.scope_subject_export": "one complete personal portability export",
+    "support.live_now": "Support holds approved access to this record right now",
     "support.live_banner": "Support access to this record is active: {count}",
     "support.manage_access": "Review access",
     "support.patient_live_title": "Active support access",
@@ -1438,6 +1439,7 @@ _EN: dict[str, str] = {
     "support.status_expired": "lapsed unanswered",
     "support.grant_live": "Access is currently live until",
     "support.grant_expired": "Access expired naturally at",
+    "support.grant_consumed": "The one-time export was downloaded at",
     "support.grant_revoked_by_owner": "You stopped this access at",
     "support.grant_handed_back": "{actor} handed this access back at",
     "support.grant_revoked": "{actor} stopped this access at",
@@ -1449,10 +1451,11 @@ _EN: dict[str, str] = {
     "support.console_heading": "Support access",
     "support.console_description": (
         "Reading somebody's record is asked for and granted by them, never taken. "
-        "Read only: repair and export are not implemented and are refused rather "
-        "than pretended."
+        "Record reading and a one-time portability export are separate approvals. "
+        "Repair remains unavailable until it has a separately reviewed bounded diff."
     ),
     "support.console_1": "Asked. The patient decides.",
+    "support.console_export": "Export requested. The patient decides separately.",
     "support.console_withdrawn": "Taken back.",
     "support.console_handed-back": "Handed back. That access is closed.",
     "support.live_title": "Open right now",
@@ -1468,6 +1471,7 @@ _EN: dict[str, str] = {
     "support.withdraw": "Take it back",
     "support.hand_back": "Hand it back",
     "support.open_record": "Open the record",
+    "support.download_once": "Download once",
     "support.mode_read": "read",
     "support.mode_repair": "repair",
     "support.mode_export": "export",
@@ -1477,6 +1481,24 @@ _EN: dict[str, str] = {
     "support.field_hours": "For how many hours",
     "support.field_ticket": "Ticket reference (optional)",
     "support.field_domains": "Which sections",
+    "support.export_ask_title": "Ask for a one-time export",
+    "support.export_ask_hint": (
+        "This is separate from record-reading access. The patient approves one "
+        "complete personal portability export, usable once within two hours."
+    ),
+    "support.export_contents": (
+        "The file includes portable health rows and complete raw source payloads, "
+        "and can include legacy file references (not file bytes). It excludes "
+        "credentials, account roles, support/control records, professional care "
+        "notes and plans, and consent records."
+    ),
+    "support.export_patient_warning": (
+        "Allowing this creates a two-hour, one-use download of your complete "
+        "personal portability file. It includes raw source payloads and may include "
+        "legacy file references, but excludes credentials, roles, support/control "
+        "records, professional care notes and plans, and consent records."
+    ),
+    "support.export_ask_submit": "Ask for export",
     # ── External API credentials ────────────────────────────────────────────
     "external_api.title": "External dashboard access",
     "external_api.description": (
@@ -1713,7 +1735,6 @@ _EN: dict[str, str] = {
     "portability.error.v1_multi_subject": "Backup format v1 supports exactly one local health subject.",
     "portability.error.v1_multi_subject_alternative": "Backup format v1 supports exactly one local health subject, and this installation holds several. Use the personal export instead: it carries one record and can be restored on its own.",
     "portability.error.v1_subject_export_is_not_a_backup": "This file is a personal export, not a full backup. Restoring it here would replace every record in the installation.",
-    "portability.error.v1_unportable_reference": "«{table}.{column}» points at a row this export cannot carry or name.",
     "portability.error.v1_unresolved_reference": "«{table}.{column}» refers to «{key}», which does not exist in this installation.",
     "portability.error.v1_not_a_subject_export": "This file is not a personal export.",
     "portability.error.v1_bad_reference": "«{table}» carries a malformed reference descriptor.",
@@ -3370,7 +3391,8 @@ _RU: dict[str, str] = {
     "support.scope_plans": "планы сопровождения",
     "support.scope_other": "другой разрешённый элемент",
     "support.scope_none": "обзор записи",
-    "support.live_now": "Прямо сейчас поддержка может открыть эту запись",
+    "support.scope_subject_export": "одна полная персональная выгрузка для переноса",
+    "support.live_now": "Прямо сейчас у поддержки есть одобренный доступ к этой записи",
     "support.live_banner": "Активных доступов поддержки к этой записи: {count}",
     "support.manage_access": "Проверить доступ",
     "support.patient_live_title": "Активный доступ поддержки",
@@ -3390,6 +3412,7 @@ _RU: dict[str, str] = {
     "support.status_expired": "истекла без ответа",
     "support.grant_live": "Доступ действует до",
     "support.grant_expired": "Срок доступа закончился",
+    "support.grant_consumed": "Одноразовая выгрузка скачана",
     "support.grant_revoked_by_owner": "Вы прекратили этот доступ",
     "support.grant_handed_back": "{actor} сдал этот доступ",
     "support.grant_revoked": "{actor} прекратил этот доступ",
@@ -3400,10 +3423,12 @@ _RU: dict[str, str] = {
     "support.console_title": "Доступ поддержки",
     "support.console_heading": "Доступ поддержки",
     "support.console_description": (
-        "Доступ к чужой записи просят и получают, а не берут. Только чтение: "
-        "починка и выгрузка не реализованы и отклоняются, а не изображаются."
+        "Доступ к чужой записи просят и получают, а не берут. Чтение записи и "
+        "одноразовая выгрузка требуют отдельных разрешений. Починка пока недоступна "
+        "без отдельно проверяемого ограниченного изменения."
     ),
     "support.console_1": "Запрошено. Решает пациент.",
+    "support.console_export": "Выгрузка запрошена отдельно. Решает пациент.",
     "support.console_withdrawn": "Просьба забрана.",
     "support.console_handed-back": "Доступ сдан и закрыт.",
     "support.live_title": "Открыто сейчас",
@@ -3418,6 +3443,7 @@ _RU: dict[str, str] = {
     "support.withdraw": "Забрать просьбу",
     "support.hand_back": "Сдать доступ",
     "support.open_record": "Открыть запись",
+    "support.download_once": "Скачать один раз",
     "support.mode_read": "чтение",
     "support.mode_repair": "починка",
     "support.mode_export": "выгрузка",
@@ -3427,6 +3453,24 @@ _RU: dict[str, str] = {
     "support.field_hours": "На сколько часов",
     "support.field_ticket": "Номер обращения (необязательно)",
     "support.field_domains": "Какие разделы",
+    "support.export_ask_title": "Попросить одноразовую выгрузку",
+    "support.export_ask_hint": (
+        "Это отдельное разрешение, не доступ для чтения записи. Пациент разрешает "
+        "одну полную персональную выгрузку, доступную один раз в течение двух часов."
+    ),
+    "support.export_contents": (
+        "Файл содержит переносимые медицинские строки и полные исходные ответы "
+        "источников, а также может содержать старые ссылки на файлы (не сами файлы). "
+        "В него не входят учётные данные, роли, записи поддержки и управления, "
+        "заметки и планы специалистов и записи согласий."
+    ),
+    "support.export_patient_warning": (
+        "Разрешение создаст на два часа одно одноразовое скачивание полной "
+        "персональной выгрузки. В ней есть исходные ответы источников и могут быть "
+        "старые ссылки на файлы, но нет учётных данных, ролей, записей поддержки и "
+        "управления, заметок и планов специалистов и записей согласий."
+    ),
+    "support.export_ask_submit": "Попросить выгрузку",
     # ── Ключи внешнего доступа ──────────────────────────────────────────────
     "external_api.title": "Доступ внешней панели",
     "external_api.description": (
@@ -3663,7 +3707,6 @@ _RU: dict[str, str] = {
     "portability.error.v1_multi_subject": "Формат бэкапа v1 поддерживает ровно одного локального подопечного.",
     "portability.error.v1_multi_subject_alternative": "Формат бэкапа v1 поддерживает ровно одного локального подопечного, а в этой установке их несколько. Используйте персональный экспорт: он выгружает одну запись и восстанавливается отдельно.",
     "portability.error.v1_subject_export_is_not_a_backup": "Это персональный экспорт, а не полный бэкап. Его восстановление заменило бы все записи в установке.",
-    "portability.error.v1_unportable_reference": "«{table}.{column}» указывает на запись, которую этот экспорт не может ни перенести, ни назвать.",
     "portability.error.v1_unresolved_reference": "«{table}.{column}» ссылается на «{key}», которого нет в этой установке.",
     "portability.error.v1_not_a_subject_export": "Этот файл — не персональный экспорт.",
     "portability.error.v1_bad_reference": "«{table}» содержит некорректный дескриптор ссылки.",
