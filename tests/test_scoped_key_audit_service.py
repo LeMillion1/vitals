@@ -271,6 +271,11 @@ async def test_collision_under_a_proposed_key_fails_closed(
                     subject_id=legacy_owner_roots.subject_id,
                     name="ferritin",
                     unit="ng/mL",
+                    # Revision 0077 added a later, partial canonical-key
+                    # invariant. Keep that real invariant installed while
+                    # constructing a collision only under the Stage-5A key
+                    # being audited here.
+                    is_canonical=False,
                 ),
                 LabMarker(
                     subject_id=legacy_owner_roots.subject_id,
