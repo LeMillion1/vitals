@@ -67,7 +67,12 @@ treated as hostile input, and the authorization response carries `iss`. Token bi
 connector token carries `sub`, `aud`, `iss` and `jti`, and revision `0064` gives
 it a revocation store, so one connector can be disconnected without rotating the
 signing secret and signing the whole installation out. Revision `0062` adds the ask as its own table because the grant's
-constraints, correctly, cannot express a pending one. `repair`, `export`,
+constraints, correctly, cannot express a pending one. Successful
+support-granted record responses now commit one PHI-free, grant-correlated read
+event before medical HTML is returned, and the patient sees those actual
+openings with the operator, local timestamp, and approved scopes derived from
+the protected grant rather than copied into audit metadata. The web paths bind
+that exact subject before PostgreSQL FORCE-RLS access. `repair`, `export`,
 operational dashboards, retention controls and the break-glass path are named
 and not built; each needs its own review and the roadmap already sequences them
 after the read path.

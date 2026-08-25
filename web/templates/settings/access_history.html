@@ -32,7 +32,49 @@
     </div>
     {% endif %}
 
-    <!-- ─── WHAT WAS ASKED ─────────────────────────────────────────────────── -->
+    <!-- ─── ACTUAL SUPPORT OPENINGS ───────────────────────────────────────── -->
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("support.opened_title")) }}
+
+        {% if not opened %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.opened_empty") }}</p>
+        {% else %}
+        <div class="space-y-3">
+            {% for event in opened %}
+            <div class="v-card-inset p-4 space-y-2">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <strong class="v-text-body">{{ event.actor_username }}</strong>
+                    <span class="v-text-micro" style="color: var(--faint)">
+                        {{ event.occurred_at | format_datetime }}
+                    </span>
+                </div>
+                <p class="v-text-micro" style="color: var(--muted)">
+                    {{ t("support.opened_scopes") }}:
+                    {% for key in event.scope_keys %}
+                        {% if key.startswith("domain:") %}
+                            {{ t("enum.domain." ~ key[7:]) }}
+                        {% elif key == "artifact:professional_note" %}
+                            {{ t("support.scope_notes") }}
+                        {% elif key == "artifact:care_plan" %}
+                            {{ t("support.scope_plans") }}
+                        {% else %}
+                            {{ t("support.scope_other") }}
+                        {% endif %}
+                        {% if not loop.last %}, {% endif %}
+                    {% else %}
+                        {{ t("support.scope_none") }}
+                    {% endfor %}
+                </p>
+            </div>
+            {% endfor %}
+        </div>
+        {% if opened_has_more %}
+        <p class="v-text-micro" style="color: var(--faint)">{{ t("support.opened_more") }}</p>
+        {% endif %}
+        {% endif %}
+    </div>
+
+    <!-- ─── REQUEST HISTORY ───────────────────────────────────────── -->
     <div class="v-card p-6 space-y-4">
         {{ card_header(t("support.history_title")) }}
 

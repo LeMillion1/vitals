@@ -934,3 +934,174 @@ async def test_real_postgres_platform_scope_is_transaction_local(
     finally:
         await restricted.dispose()
         await admin.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_real_postgres_support_disclosure_and_patient_history_bind_one_subject(
+    db_session,
+    monkeypatch,
+):
+    """The support path stays useful under FORCE RLS without platform scope."""
+
+    from alembic.config import Config as AlembicConfig
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from vitals.enums import Domain, UserRoleName, UserStatus
+    from vitals.models.identity import HealthSubject, User, UserRole
+    from vitals.persistence.rls import bind_session_subject, in_platform_scope
+    from vitals.services import support_access_service as support
+    from vitals.services.access_resolution import resolve_access_context
+    from web.auth import create_federated_session
+    from web.care_context import require_care_context
+    from web.config import SESSION_COOKIE
+    from starlette.requests import Request
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
+    await db_session.close()
+
+    admin_engine = await _migrated_engine(
+        database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
+    )
+    restricted = await restricted_engine(database_url)
+    admin_factory = async_sessionmaker(
+        admin_engine, expire_on_commit=False, class_=AsyncSession
+    )
+    restricted_factory = async_sessionmaker(
+        restricted, expire_on_commit=False, class_=AsyncSession
+    )
+    try:
+        async with admin_factory() as seed:
+            owner = User(
+                username="rls-support-owner",
+                normalized_username="rls-support-owner",
+                password_hash="$synthetic",
+                status=UserStatus.ACTIVE.value,
+            )
+            operator = User(
+                username="rls-support-operator",
+                normalized_username="rls-support-operator",
+                password_hash="$synthetic",
+                status=UserStatus.ACTIVE.value,
+            )
+            seed.add_all((owner, operator))
+            await seed.flush()
+            seed.add(
+                UserRole(
+                    user_id=operator.id,
+                    role=UserRoleName.PLATFORM_SUPERADMIN.value,
+                )
+            )
+            subject = HealthSubject(
+                owner_user_id=owner.id,
+                display_name="RLS support patient",
+                timezone="Asia/Almaty",
+            )
+            seed.add(subject)
+            await seed.flush()
+            request = await support.open_request(
+                seed,
+                admin_user_id=operator.id,
+                subject_id=subject.id,
+                reason="Synthetic RLS support check.",
+                scopes=support.read_scopes_for((Domain.LABS,)),
+            )
+            grant = await support.approve_request(
+                seed, owner_user_id=owner.id, request_id=request.id
+            )
+            owner_id = owner.id
+            operator_id = operator.id
+            subject_id = subject.id
+            grant_id = grant.id
+            await seed.commit()
+
+        async with restricted_factory() as disclosure:
+            unbound = await resolve_access_context(
+                disclosure, user_id=operator_id, subject_id=subject_id
+            )
+            assert unbound.support_grant is None
+
+            cookie = create_federated_session(
+                username="rls-support-operator",
+                user_id=operator_id,
+                session_version=1,
+                authenticated_at=None,
+                subject_id=None,
+            )
+            request = Request(
+                {
+                    "type": "http",
+                    "method": "GET",
+                    "path": f"/care/{subject_id}",
+                    "headers": [
+                        (
+                            b"cookie",
+                            f"{SESSION_COOKIE}={cookie}".encode("ascii"),
+                        )
+                    ],
+                }
+            )
+            care = await require_care_context(
+                subject_id=subject_id,
+                request=request,
+                db=disclosure,
+                _username="rls-support-operator",
+            )
+            context = care.access
+            assert context.support_grant is not None
+            assert not in_platform_scope(disclosure)
+            await support.record_record_opened(
+                disclosure,
+                context=context,
+                domain_keys=(Domain.LABS.value,),
+            )
+            await disclosure.commit()
+
+        async with restricted_factory() as patient:
+            owner_context = await resolve_access_context(
+                patient, user_id=owner_id, subject_id=None
+            )
+            await bind_session_subject(patient, owner_context.subject_id)
+            history = await support.record_opened_history(
+                patient, subject_id=subject_id
+            )
+            assert len(history.events) == 1
+            assert history.events[0].actor_username == "rls-support-operator"
+            assert history.events[0].scope_keys == ("domain:labs",)
+            assert not in_platform_scope(patient)
+
+        async with restricted_factory() as asking:
+            await bind_session_subject(asking, subject_id)
+            pending = await support.open_request(
+                asking,
+                admin_user_id=operator_id,
+                subject_id=subject_id,
+                reason="Synthetic request to withdraw under RLS.",
+                scopes=support.read_scopes_for((Domain.LABS,)),
+            )
+            pending_id = pending.id
+            await asking.commit()
+
+        async with restricted_factory() as withdrawing:
+            await bind_session_subject(withdrawing, subject_id)
+            await support.withdraw_request(
+                withdrawing,
+                admin_user_id=operator_id,
+                request_id=pending_id,
+            )
+            await withdrawing.commit()
+
+        async with restricted_factory() as handing_back:
+            await bind_session_subject(handing_back, subject_id)
+            await support.revoke_grant(
+                handing_back,
+                actor_user_id=operator_id,
+                grant_id=grant_id,
+                reason="Synthetic operator hand-back under RLS.",
+            )
+            await handing_back.commit()
+    finally:
+        await restricted.dispose()
+        await admin_engine.dispose()

@@ -45,10 +45,12 @@ from sqlalchemy.orm import selectinload
 
 from vitals.access import (
     AccessContext,
+    AccessRequest,
     AccessScope,
     PolicyAction,
     PolicyResourceType,
     SupportGrant,
+    is_allowed,
 )
 from vitals.enums import (
     AuditOutcome,
@@ -70,6 +72,7 @@ from vitals.models.identity import (
     User,
     UserRole,
 )
+from vitals.services.identity_service import acquire_identity_governance_lock
 
 #: How long an unanswered ask stays answerable. A request nobody replied to is
 #: not a pending obligation forever, and a patient returning after a holiday
@@ -91,6 +94,7 @@ EVENT_DECLINED = "support_access.declined"
 EVENT_WITHDRAWN = "support_access.withdrawn"
 EVENT_REVOKED = "support_access.revoked"
 EVENT_EXPIRED = "support_access.expired"
+EVENT_RECORD_OPENED = "support_access.record.opened"
 
 _LIVE_REQUEST = SupportAccessRequestStatus.PENDING.value
 
@@ -125,6 +129,10 @@ class UnsupportedMode(SupportAccessError):
 
 class ScopesRequired(SupportAccessError):
     """A grant with no scopes authorizes nothing, so an ask with none is refused."""
+
+
+class NotASupportSession(SupportAccessError):
+    """A caller tried to record support use without a matching support grant."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +197,6 @@ def _audit(
     grant_id: uuid.UUID | None,
     resource_id: uuid.UUID,
     reason_code: str,
-    scope_keys: Sequence[str] | None = None,
 ) -> None:
     """One immutable event per state change, carrying no PHI and no free text.
 
@@ -197,8 +204,8 @@ def _audit(
     patient, who agreed to read it, and is stored on the request where it
     belongs — the audit envelope is an operational record that gets shipped to
     log sinks and read by people with no business seeing why somebody's record
-    was investigated. ``reason_code`` is a fixed vocabulary; ``scope_keys`` are
-    catalog keys, not values.
+    was investigated. ``reason_code`` is a fixed vocabulary. Approved scope
+    categories stay in the subject-protected request/grant tables instead.
     """
 
     metadata: dict[str, object] = {
@@ -207,8 +214,6 @@ def _audit(
         "resource_type": "support_access_request",
         "resource_id": str(resource_id),
     }
-    if scope_keys:
-        metadata["scope_keys"] = sorted(scope_keys)
     session.add(
         AuditEvent(
             actor_user_id=actor_user_id,
@@ -354,7 +359,6 @@ async def open_request(
         grant_id=None,
         resource_id=request.id,
         reason_code="support_access_requested",
-        scope_keys=[scope.resource_key for scope in scopes],
     )
     await session.flush()
     return request
@@ -434,7 +438,6 @@ async def approve_request(
         grant_id=grant.id,
         resource_id=request.id,
         reason_code="support_access_approved",
-        scope_keys=[scope.resource_key for scope in request.scopes],
     )
     await session.flush()
     return grant
@@ -656,6 +659,195 @@ async def list_for_subject(
         .order_by(SupportAccessRequest.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+async def record_record_opened(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    domain_keys: Iterable[str],
+    artifact_keys: Iterable[str] = (),
+) -> AuditEvent:
+    """Durably describe one support-granted record response, without PHI.
+
+    The exact grant row is locked and rechecked after the record was assembled.
+    This turns a revoke/read race into an order: either revocation wins and the
+    response is refused, or this event commits before the response is returned
+    and revocation follows it. A caller must commit this event before handing
+    the rendered medical response to the browser.
+    """
+
+    snapshot = context.support_grant
+    if snapshot is None:
+        raise NotASupportSession("record access is not based on a support grant")
+    if snapshot.subject_id != context.subject_id:
+        raise NotASupportSession("support grant and selected record do not match")
+    if snapshot.granted_to_user_id != context.principal.user_id:
+        raise NotASupportSession("support grant and signed-in account do not match")
+
+    # Role assignment/removal takes this same transaction lock. Holding it
+    # through the caller's disclosure commit makes the live-role check an
+    # ordered fact rather than a snapshot that can race role revocation.
+    await acquire_identity_governance_lock(session)
+    await _require_platform_admin(session, user_id=context.principal.user_id)
+    grant = (
+        await session.execute(
+            select(
+                SupportAccessGrant.id,
+                SupportAccessGrant.status,
+                SupportAccessGrant.revoked_at,
+                SupportAccessGrant.expires_at,
+                SupportAccessGrant.mode,
+            )
+            .where(
+                SupportAccessGrant.id == snapshot.grant_id,
+                SupportAccessGrant.subject_id == context.subject_id,
+                SupportAccessGrant.granted_to_user_id == context.principal.user_id,
+            )
+            .with_for_update()
+        )
+    ).one_or_none()
+    if grant is None:
+        raise NotASupportSession("the support grant no longer exists")
+
+    now = await _now(session)
+    if (
+        grant.status != SupportAccessStatus.ACTIVE.value
+        or grant.revoked_at is not None
+        or now >= _as_utc(grant.expires_at)
+    ):
+        raise NotASupportSession("the support grant is no longer active")
+
+    live_scopes = set(
+        (
+            await session.execute(
+                select(
+                    SupportAccessScope.resource_type,
+                    SupportAccessScope.resource_key,
+                    SupportAccessScope.action,
+                ).where(SupportAccessScope.grant_id == grant.id)
+            )
+        ).all()
+    )
+
+    domains = tuple(
+        sorted({str(key).strip() for key in domain_keys if str(key).strip()})
+    )
+    artifacts = tuple(
+        sorted({str(key).strip() for key in artifact_keys if str(key).strip()})
+    )
+    requested = tuple((PolicyResourceType.DOMAIN, key) for key in domains) + tuple(
+        (PolicyResourceType.ARTIFACT, key) for key in artifacts
+    )
+    for resource_type, resource_key in requested:
+        request = AccessRequest(
+            subject_id=context.subject_id,
+            resource_type=resource_type,
+            resource_key=resource_key,
+            action=PolicyAction.READ,
+        )
+        if not is_allowed(context, request):
+            raise NotASupportSession(
+                "the rendered record exceeds the approved support scope"
+            )
+        if (
+            resource_type.value,
+            resource_key,
+            SupportAccessMode.READ.value,
+        ) not in live_scopes:
+            raise NotASupportSession(
+                "the live support grant does not contain the rendered scope"
+            )
+
+    event = AuditEvent(
+        actor_user_id=context.principal.user_id,
+        subject_id=context.subject_id,
+        support_access_grant_id=grant.id,
+        event_type=EVENT_RECORD_OPENED,
+        outcome=AuditOutcome.SUCCESS.value,
+        resource_type="health_record",
+        resource_id=str(context.subject_id),
+        metadata_json={
+            "correlation_id": str(uuid.uuid4()),
+            "source_surface": "web.care.record",
+            "reason_code": "approved_support_read",
+            "resource_type": "health_record",
+            "resource_id": str(context.subject_id),
+            "grant_mode": grant.mode,
+        },
+    )
+    session.add(event)
+    await session.flush()
+    return event
+
+
+@dataclass(frozen=True, slots=True)
+class RecordOpenedEvent:
+    """Patient-facing projection of one PHI-free audit envelope and its grant."""
+
+    event_id: uuid.UUID
+    grant_id: uuid.UUID
+    actor_username: str
+    occurred_at: datetime
+    scope_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RecordOpenedHistory:
+    events: tuple[RecordOpenedEvent, ...]
+    has_more: bool
+
+
+async def record_opened_history(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    limit: int = 50,
+) -> RecordOpenedHistory:
+    """Recent actual support openings for one patient's access centre."""
+
+    if limit < 1 or limit > 100:
+        raise ValueError("support read history limit must be between 1 and 100")
+    rows = (
+        await session.execute(
+            select(AuditEvent, User.username)
+            .options(
+                selectinload(AuditEvent.support_access_grant).selectinload(
+                    SupportAccessGrant.scopes
+                )
+            )
+            .join(User, User.id == AuditEvent.actor_user_id)
+            .where(
+                AuditEvent.subject_id == subject_id,
+                AuditEvent.event_type == EVENT_RECORD_OPENED,
+                AuditEvent.outcome == AuditOutcome.SUCCESS.value,
+                AuditEvent.support_access_grant_id.is_not(None),
+            )
+            .order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc())
+            .limit(limit + 1)
+        )
+    ).all()
+    events: list[RecordOpenedEvent] = []
+    for event, username in rows[:limit]:
+        grant = event.support_access_grant
+        if event.support_access_grant_id is None or grant is None:
+            continue
+        events.append(
+            RecordOpenedEvent(
+                event_id=event.id,
+                grant_id=event.support_access_grant_id,
+                actor_username=username,
+                occurred_at=_as_utc(event.occurred_at),
+                scope_keys=tuple(
+                    sorted(
+                        f"{scope.resource_type}:{scope.resource_key}"
+                        for scope in grant.scopes
+                        if scope.action == SupportAccessMode.READ.value
+                    )
+                ),
+            )
+        )
+    return RecordOpenedHistory(events=tuple(events), has_more=len(rows) > limit)
 
 
 @dataclass(frozen=True, slots=True)

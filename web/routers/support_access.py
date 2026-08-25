@@ -21,10 +21,12 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import RECORD_SECTIONS, Domain
+from vitals.persistence.rls import bind_session_subject
 from vitals.services.legacy_ownership import NoPersonalRecordError
 from vitals.services import support_access_service as support
 from vitals.services.access_resolution import (
     AccessResolutionError,
+    enter_subject_scope,
     resolve_access_context,
 )
 from web.care_context import principal_user_id
@@ -70,6 +72,7 @@ async def _own_subject(request: Request, db: AsyncSession) -> tuple[uuid.UUID, u
         raise NoPersonalRecordError(
             "this account keeps no health record of its own"
         ) from exc
+    await enter_subject_scope(db, access)
     return user_id, access.subject_id
 
 
@@ -133,6 +136,9 @@ async def ask_for_access(
         # checked here as well as omitted from the form, because the form is a
         # suggestion and this is the rule.
         return _back("/settings/platform/support", "error=domain")
+    # The form names exactly one record. Binding it is the PostgreSQL isolation
+    # boundary; the service's live platform-role check remains authorization.
+    await bind_session_subject(db, subject_id)
     try:
         await support.open_request(
             db,
@@ -159,10 +165,12 @@ async def ask_for_access(
 async def withdraw(
     request: Request,
     request_id: uuid.UUID,
+    subject_id: uuid.UUID = Form(...),
     _username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
     admin_user_id = await _admin_id(request, db)
+    await bind_session_subject(db, subject_id)
     try:
         await support.withdraw_request(
             db, admin_user_id=admin_user_id, request_id=request_id
@@ -178,12 +186,14 @@ async def withdraw(
 async def hand_it_back(
     request: Request,
     grant_id: uuid.UUID,
+    subject_id: uuid.UUID = Form(...),
     _username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
     """The admin putting the access down rather than waiting for it to lapse."""
 
     admin_user_id = await _admin_id(request, db)
+    await bind_session_subject(db, subject_id)
     try:
         await support.revoke_grant(
             db,
@@ -218,8 +228,9 @@ async def access_history(
     """
 
     _user_id, subject_id = await _own_subject(request, db)
-    history = await support.list_for_subject(db, subject_id=subject_id)
     context = await resolve_access_context(db, user_id=_user_id, subject_id=None)
+    history = await support.list_for_subject(db, subject_id=subject_id)
+    opened = await support.record_opened_history(db, subject_id=subject_id)
     live = await support.live_grant_for(db, context=context)
     return templates.TemplateResponse(
         request,
@@ -227,6 +238,8 @@ async def access_history(
         {
             "username": username,
             "history": history,
+            "opened": opened.events,
+            "opened_has_more": opened.has_more,
             "live": live,
             "decided": decided,
             "error": error,

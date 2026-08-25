@@ -131,10 +131,17 @@ a current validation result.
 - Every support mutation now requires authentication performed within the last
   15 minutes. OIDC step-up uses `prompt=login` and validates the returned
   `auth_time`; legacy mode clears the stale cookie and requires login again.
+- Every successful support-granted record response now commits one PHI-free,
+  grant-correlated read event before medical HTML is returned. The patient's
+  access centre shows the operator, exact local timestamp, and approved scopes
+  derived from the subject-protected grant. The audit envelope contains no
+  health-category list. Care and patient/admin support actions bind one exact
+  subject before reaching PostgreSQL FORCE-RLS tables.
 - Repair, exceptional export, two-person break-glass approval, operational
   dashboards, and retention tooling remain deliberately refused or absent.
-- The UI renders expiry as a date rather than an exact time/countdown and does
-  not clearly persist who ended a grant. These are current UX defects.
+- Active-grant expiry still renders as a date rather than an exact
+  time/countdown, multiple simultaneous live grants collapse to one banner, and
+  the UI does not clearly show who ended a grant. These are current UX defects.
 
 ### OIDC
 

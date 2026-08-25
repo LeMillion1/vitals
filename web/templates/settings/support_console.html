@@ -32,6 +32,7 @@
             <div class="flex gap-3">
                 <a href="/care/{{ grant.subject_id }}" class="v-btn-ghost text-xs">{{ t("support.open_record") }}</a>
                 <form action="/settings/platform/support/grant/{{ grant.grant_id }}/revoke" method="POST">
+                    <input type="hidden" name="subject_id" value="{{ grant.subject_id }}">
                     <button type="submit" class="v-btn-ghost text-xs">{{ t("support.hand_back") }}</button>
                 </form>
             </div>
@@ -49,6 +50,7 @@
             <div class="flex flex-wrap items-center justify-between gap-3">
                 <span class="v-text-body"><strong>{{ row.subject_display_name }}</strong></span>
                 <form action="/settings/platform/support/{{ row.request_id }}/withdraw" method="POST">
+                    <input type="hidden" name="subject_id" value="{{ row.subject_id }}">
                     <button type="submit" class="v-btn-ghost text-xs">{{ t("support.withdraw") }}</button>
                 </form>
             </div>

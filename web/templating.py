@@ -104,6 +104,27 @@ def format_date(value: Any) -> str:
     return str(value)
 
 
+def format_datetime(value: Any) -> str:
+    """Format an audit/security timestamp in the active subject timezone."""
+
+    if not value:
+        return ""
+    import datetime
+
+    from vitals.utils.timeutils import to_local_naive
+
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    if isinstance(parsed, datetime.datetime):
+        local = to_local_naive(parsed)
+        return local.strftime("%d-%m-%Y %H:%M") if local else ""
+    return format_date(parsed)
+
+
 def format_hm(seconds: Any) -> str:
     """Format a duration in seconds as "7 ч 18 мин"; falsy input renders as an
     em dash. The abbreviations come from the catalogue: "8h 40m" sitting next to
@@ -160,6 +181,7 @@ def format_unit(value: Any) -> Markup:
 # Register filters and globals
 templates.env.filters["format_number"] = format_number
 templates.env.filters["format_date"] = format_date
+templates.env.filters["format_datetime"] = format_datetime
 templates.env.filters["format_hm"] = format_hm
 templates.env.filters["plural_ru"] = plural_ru
 templates.env.filters["plural"] = lambda n, *args: plural(n, *args)

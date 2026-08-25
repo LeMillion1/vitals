@@ -1395,8 +1395,8 @@ _EN: dict[str, str] = {
     "care.record_workouts_count": "{n} in the period",
     "care.record_workouts_last": "last on {date}",
     # ── Support access: an administrator asks, the patient answers ──────────
-    "support.patient_title": "Who has been reading my record",
-    "support.patient_heading": "Platform access",
+    "support.patient_title": "Support requests and access",
+    "support.patient_heading": "Support requests and access",
     "support.patient_description": (
         "Nobody from the platform can open your record unless you let them, and "
         "only for as long and as far as you agree. Every ask ever made is below, "
@@ -1404,6 +1404,14 @@ _EN: dict[str, str] = {
     ),
     "support.history_title": "Asks about this record",
     "support.history_empty": "Nobody has asked to open this record.",
+    "support.opened_title": "Actually opened by support",
+    "support.opened_empty": "Support has not opened this record.",
+    "support.opened_scopes": "Sections approved for this opening",
+    "support.opened_more": "Only the 50 most recent openings are shown here.",
+    "support.scope_notes": "professional notes",
+    "support.scope_plans": "care plans",
+    "support.scope_other": "another approved item",
+    "support.scope_none": "record overview",
     "support.live_now": "Somebody from support can open this record right now",
     "support.until": "until",
     "support.lapses": "lapses",
@@ -3323,8 +3331,8 @@ _RU: dict[str, str] = {
     "care.consent_task": "Специалист принял ваше приглашение и ждёт, когда вы выберете, чем поделиться.",
     "care.consent_task_action": "Выбрать доступ",
     # ── Доступ поддержки: администратор просит, пациент отвечает ────────────
-    "support.patient_title": "Кто читал мою запись",
-    "support.patient_heading": "Доступ платформы",
+    "support.patient_title": "Запросы и доступ поддержки",
+    "support.patient_heading": "Запросы и доступ поддержки",
     "support.patient_description": (
         "Никто со стороны платформы не может открыть вашу запись без вашего "
         "разрешения — и только настолько и на столько, насколько вы согласились. "
@@ -3332,6 +3340,14 @@ _RU: dict[str, str] = {
     ),
     "support.history_title": "Просьбы об этой записи",
     "support.history_empty": "Никто не просил открыть эту запись.",
+    "support.opened_title": "Фактические открытия поддержкой",
+    "support.opened_empty": "Поддержка не открывала эту запись.",
+    "support.opened_scopes": "Разделы, разрешённые для этого открытия",
+    "support.opened_more": "Здесь показаны только 50 последних открытий.",
+    "support.scope_notes": "заметки специалистов",
+    "support.scope_plans": "планы сопровождения",
+    "support.scope_other": "другой разрешённый элемент",
+    "support.scope_none": "обзор записи",
     "support.live_now": "Прямо сейчас поддержка может открыть эту запись",
     "support.until": "до",
     "support.lapses": "истекает",

@@ -4,7 +4,7 @@ Regression: integers (Garmin steps/calories) used to crash on Python 3.11 becaus
 ``int`` has no ``.is_integer()`` (added in 3.12) — the Garmin dashboard 500'd."""
 from __future__ import annotations
 
-from web.templating import format_number, format_date
+from web.templating import format_date, format_datetime, format_number
 import datetime
 
 
@@ -43,3 +43,15 @@ def test_format_date_handles_various_inputs():
     assert format_date(None) == ""
     assert format_date("") == ""
     assert format_date("invalid-date") == "invalid-date"
+
+
+def test_format_datetime_uses_the_active_subject_timezone():
+    from vitals.utils.timeutils import subject_timezone
+
+    stamp = datetime.datetime(2026, 8, 25, 10, 15, tzinfo=datetime.timezone.utc)
+    with subject_timezone("Asia/Almaty"):
+        assert format_datetime(stamp) == "25-08-2026 15:15"
+        assert format_datetime("2026-08-25T10:15:00Z") == "25-08-2026 15:15"
+
+    assert format_datetime(None) == ""
+    assert format_datetime("not-a-timestamp") == "not-a-timestamp"

@@ -36,6 +36,7 @@ from vitals.access import AccessContext, PolicyAction, PolicyResourceType, is_al
 from vitals.enums import CareRelationshipStatus, ProfessionalKind
 from vitals.models.identity import HealthSubject, User
 from vitals.models.professional import CareRelationship
+from vitals.persistence.rls import bind_session_subject
 from vitals.services.access_resolution import (
     AccessResolutionError,
     resolve_access_context,
@@ -244,6 +245,12 @@ async def require_care_context(
     """
 
     user_id = await principal_user_id(request, db)
+    # This delivery path can serve exactly the subject named in the URL. Bind
+    # that isolation boundary before resolution because a support grant is
+    # itself subject-protected under PostgreSQL RLS and cannot be inspected in
+    # an unbound transaction. Binding is not authorization: the policy context
+    # below must still prove ownership, live care, or an exact support grant.
+    await bind_session_subject(db, subject_id)
     return await resolve_care_context(db, user_id=user_id, subject_id=subject_id)
 
 

@@ -8,6 +8,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — support record reads are durable and visible
+
+A successful support-granted `/care/{subject}` response now commits one
+PHI-free, grant-correlated `support_access.record.opened` event after the page
+renders and before its medical HTML is returned. The service rechecks the exact
+grant, live administrator role, expiry, revocation state, subject, actor, mode
+ceiling, and every rendered domain/artifact scope under transaction locks. A
+concurrent role or grant revocation therefore wins before the response or
+follows a read that already has a durable event; an audit commit failure returns
+no medical page.
+
+The patient's access centre now separates actual support openings from access
+requests, shows the operator, exact local date and time, and approved sections,
+and remains subject-isolated and bounded to the 50 most recent events. Care and
+support forms now bind their exact record before touching FORCE-RLS tables, so
+the workflow also functions with the restricted production database role.
+Owner reads do not manufacture support activity, denied/revoked reads do not
+create a success event, and neither the support reason, approved health
+categories, nor medical values enter audit metadata; patient-visible scope
+labels are derived from the protected grant instead.
+
 ### Fixed — medical-data transfers require a fresh trusted session
 
 Every personal, AI, and legacy installation JSON export and both JSON import

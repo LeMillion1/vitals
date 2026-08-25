@@ -35,7 +35,7 @@ from vitals.enums import (
 )
 from vitals.models.identity import UserRole
 from vitals.models.professional import ProfessionalProfile
-from vitals.services import digest_service, modules_service
+from vitals.services import digest_service, modules_service, support_access_service
 from vitals.services.care import invitations, professionals, records, relationships
 from vitals.services.care import threads as care_threads
 from web.care_context import CareContext, principal_user_id, require_care_context
@@ -358,7 +358,7 @@ RECORD_SECTIONS: tuple[tuple[str, Domain, str], ...] = (
 
 async def _visible_record(
     db: AsyncSession, care: CareContext
-) -> tuple[dict[str, dict], list[str]]:
+) -> tuple[dict[str, dict], list[str], list[str]]:
     """The patient's record as this professional may see it, and what is missing.
 
     A doctor and a trainer are granted the same domains — the kind decides who
@@ -413,6 +413,11 @@ async def _visible_record(
         for _section, domain, module in RECORD_SECTIONS
         if module not in permitted and enabled.get(module, False)
     ]
+    read_domains = [
+        domain.value
+        for _section, domain, module in RECORD_SECTIONS
+        if module in permitted and enabled.get(module, False)
+    ]
     return (
         {
             "record": record,
@@ -420,6 +425,7 @@ async def _visible_record(
             "period": (context.get("report_meta") or {}),
         },
         withheld,
+        read_domains,
     )
 
 
@@ -459,8 +465,8 @@ async def patient(
         db,
         {item.actor_user_id for item in (*notes, *plans)},
     )
-    visible, withheld = await _visible_record(db, care)
-    return templates.TemplateResponse(
+    visible, withheld, read_domains = await _visible_record(db, care)
+    response = templates.TemplateResponse(
         request,
         "care/patient.html",
         {
@@ -495,6 +501,29 @@ async def patient(
             ),
         },
     )
+    if care.is_support:
+        artifact_keys = []
+        if may_read_notes:
+            artifact_keys.append(records.NOTE_ARTIFACT)
+        if may_read_plans:
+            artifact_keys.append(records.PLAN_ARTIFACT)
+        try:
+            await support_access_service.record_record_opened(
+                db,
+                context=care.access,
+                domain_keys=read_domains,
+                artifact_keys=artifact_keys,
+            )
+            # Rendering has succeeded, but the response has not left this
+            # boundary. No committed audit event means no medical HTML leaves.
+            await db.commit()
+        except (
+            support_access_service.NotASupportSession,
+            support_access_service.NotAPlatformAdmin,
+        ):
+            await db.rollback()
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    return response
 
 
 @router.post("/{subject_id}/note")

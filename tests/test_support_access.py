@@ -534,6 +534,7 @@ async def test_every_state_change_leaves_one_audit_event_without_the_reason_text
         serialized = repr(row["metadata_json"])
         assert "failed lab import" not in serialized
         assert "Changed my mind" not in serialized
+        assert Domain.LABS.value not in serialized
         assert row["metadata_json"]["source_surface"] == support.AUDIT_SURFACE
 
 
@@ -783,6 +784,17 @@ async def test_a_revoked_grant_closes_the_former_holder_route_immediately(
         timeout=3,
     )
     assert opened.status_code == 200
+    from sqlalchemy import func, select
+
+    reads_before_revoke = int(
+        await db_session.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.event_type == support.EVENT_RECORD_OPENED)
+        )
+        or 0
+    )
+    assert reads_before_revoke == 1
 
     await support.revoke_grant(
         db_session,
@@ -801,6 +813,15 @@ async def test_a_revoked_grant_closes_the_former_holder_route_immediately(
     )
     assert refused.status_code == 404
     assert "<html" in refused.text.lower()
+    reads_after_refusal = int(
+        await db_session.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.event_type == support.EVENT_RECORD_OPENED)
+        )
+        or 0
+    )
+    assert reads_after_refusal == reads_before_revoke
 
 
 async def test_the_banner_is_absent_when_nothing_is_open(
@@ -948,6 +969,531 @@ async def test_a_granted_record_opens_and_shows_only_what_was_granted(
     # And the withheld line names a grant rather than a consent, because those
     # are different documents and this is the privacy line of the page.
     assert "support grant" in page.text or "поддержке" in page.text
+
+
+async def test_each_support_record_response_commits_one_phi_free_read_event(
+    client, db_session, legacy_owner_roots
+):
+    """The audit is a prerequisite for the response, not best-effort logging."""
+
+    from sqlalchemy import select
+
+    admin = await _admin(db_session, "care-support-audited-read")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Checking a sync failure with private clinical details.",
+        scopes=support.read_scopes_for((Domain.WEIGHT,)),
+    )
+    grant = await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=request.id,
+    )
+    await db_session.commit()
+
+    _sign_in(client, admin.username)
+    for expected_count in (1, 2):
+        page = await client.get(
+            f"/care/{legacy_owner_roots.subject_id}",
+            headers={"Accept": "text/html"},
+        )
+        assert page.status_code == 200
+
+        events = list(
+            (
+                await db_session.execute(
+                    select(AuditEvent).where(
+                        AuditEvent.subject_id == legacy_owner_roots.subject_id,
+                        AuditEvent.event_type == support.EVENT_RECORD_OPENED,
+                    )
+                )
+            ).scalars()
+        )
+        assert len(events) == expected_count
+
+    event = events[-1]
+    from vitals.persistence.rls import bound_subject
+
+    assert bound_subject(db_session) == legacy_owner_roots.subject_id
+    assert event.actor_user_id == admin.id
+    assert event.support_access_grant_id == grant.id
+    assert event.resource_type == "health_record"
+    assert event.metadata_json == {
+        "correlation_id": event.metadata_json["correlation_id"],
+        "source_surface": "web.care.record",
+        "reason_code": "approved_support_read",
+        "resource_type": "health_record",
+        "resource_id": str(legacy_owner_roots.subject_id),
+        "grant_mode": SupportAccessMode.READ.value,
+    }
+    serialized = repr(event.metadata_json)
+    assert "private clinical details" not in serialized
+    assert Domain.WEIGHT.value not in serialized
+
+
+async def test_support_read_audit_refuses_scopes_outside_the_exact_grant(db_session):
+    from sqlalchemy import func, select
+
+    owner, subject = await _patient(db_session, "support-audit-scope")
+    admin = await _admin(db_session, "support-audit-scope-admin")
+    request = await _ask(db_session, admin=admin, subject=subject)
+    await support.approve_request(
+        db_session, owner_user_id=owner.id, request_id=request.id
+    )
+    await db_session.commit()
+    context = await resolve_access_context(
+        db_session, user_id=admin.id, subject_id=subject.id
+    )
+
+    with pytest.raises(support.NotASupportSession):
+        await support.record_record_opened(
+            db_session,
+            context=context,
+            domain_keys=(Domain.WEIGHT.value,),
+        )
+    await db_session.rollback()
+
+    assert (
+        int(
+            await db_session.scalar(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.event_type == support.EVENT_RECORD_OPENED)
+            )
+            or 0
+        )
+        == 0
+    )
+
+
+async def test_support_read_audit_rechecks_a_role_lost_after_context_resolution(
+    db_session,
+):
+    from sqlalchemy import delete, func, select
+
+    owner, subject = await _patient(db_session, "support-audit-demoted")
+    admin = await _admin(db_session, "support-audit-demoted-admin")
+    request = await _ask(db_session, admin=admin, subject=subject)
+    await support.approve_request(
+        db_session, owner_user_id=owner.id, request_id=request.id
+    )
+    await db_session.commit()
+    context = await resolve_access_context(
+        db_session, user_id=admin.id, subject_id=subject.id
+    )
+    assert context.support_grant is not None
+
+    await db_session.execute(
+        delete(UserRole).where(
+            UserRole.user_id == admin.id,
+            UserRole.role == UserRoleName.PLATFORM_SUPERADMIN.value,
+        )
+    )
+    await db_session.commit()
+
+    with pytest.raises(support.NotAPlatformAdmin):
+        await support.record_record_opened(
+            db_session,
+            context=context,
+            domain_keys=(Domain.LABS.value,),
+        )
+    await db_session.rollback()
+    assert (
+        int(
+            await db_session.scalar(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.event_type == support.EVENT_RECORD_OPENED)
+            )
+            or 0
+        )
+        == 0
+    )
+
+
+@pytest.mark.integration
+async def test_locked_audit_refreshes_a_grant_revoked_in_another_transaction(
+    db_session,
+):
+    """A stale identity-map grant cannot survive a revocation that won first."""
+
+    from sqlalchemy import func, select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    owner, subject = await _patient(db_session, "support-audit-race")
+    admin = await _admin(db_session, "support-audit-race-admin")
+    request = await _ask(db_session, admin=admin, subject=subject)
+    grant = await support.approve_request(
+        db_session, owner_user_id=owner.id, request_id=request.id
+    )
+    owner_id = owner.id
+    subject_id = subject.id
+    admin_id = admin.id
+    grant_id = grant.id
+    await db_session.commit()
+
+    factory = async_sessionmaker(
+        db_session.bind, expire_on_commit=False, class_=AsyncSession
+    )
+    async with factory() as reader, factory() as revoker:
+        stale_context = await resolve_access_context(
+            reader, user_id=admin_id, subject_id=subject_id
+        )
+        assert stale_context.support_grant is not None
+
+        await support.revoke_grant(
+            revoker,
+            actor_user_id=owner_id,
+            grant_id=grant_id,
+            reason="Patient ended access before the next disclosure.",
+        )
+        await revoker.commit()
+
+        with pytest.raises(support.NotASupportSession):
+            await support.record_record_opened(
+                reader,
+                context=stale_context,
+                domain_keys=(Domain.LABS.value,),
+            )
+        await reader.rollback()
+
+    assert (
+        int(
+            await db_session.scalar(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.event_type == support.EVENT_RECORD_OPENED)
+            )
+            or 0
+        )
+        == 0
+    )
+
+
+@pytest.mark.integration
+async def test_role_revocation_that_commits_first_refuses_the_disclosure(
+    db_session,
+):
+    from sqlalchemy import func, select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from vitals.services import identity_service
+
+    owner, subject = await _patient(db_session, "support-role-race-revoke-first")
+    operator = await _admin(db_session, "support-role-race-operator")
+    reviewer = await _admin(db_session, "support-role-race-reviewer")
+    request = await _ask(db_session, admin=operator, subject=subject)
+    await support.approve_request(
+        db_session, owner_user_id=owner.id, request_id=request.id
+    )
+    subject_id = subject.id
+    operator_id = operator.id
+    reviewer_id = reviewer.id
+    await db_session.commit()
+
+    factory = async_sessionmaker(
+        db_session.bind, expire_on_commit=False, class_=AsyncSession
+    )
+    async with factory() as reader, factory() as revoker:
+        stale_context = await resolve_access_context(
+            reader, user_id=operator_id, subject_id=subject_id
+        )
+        assert stale_context.support_grant is not None
+
+        assert await identity_service.revoke_role(
+            revoker,
+            user_id=operator_id,
+            role=UserRoleName.PLATFORM_SUPERADMIN,
+            actor_user_id=reviewer_id,
+        )
+        await revoker.commit()
+
+        with pytest.raises(support.NotAPlatformAdmin):
+            await support.record_record_opened(
+                reader,
+                context=stale_context,
+                domain_keys=(Domain.LABS.value,),
+            )
+        await reader.rollback()
+
+    assert (
+        int(
+            await db_session.scalar(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.event_type == support.EVENT_RECORD_OPENED)
+            )
+            or 0
+        )
+        == 0
+    )
+
+
+@pytest.mark.integration
+async def test_disclosure_that_holds_the_governance_lock_precedes_role_revocation(
+    db_session,
+):
+    from sqlalchemy import func, select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from vitals.services import identity_service
+
+    owner, subject = await _patient(db_session, "support-role-race-read-first")
+    operator = await _admin(db_session, "support-role-race-read-operator")
+    reviewer = await _admin(db_session, "support-role-race-read-reviewer")
+    request = await _ask(db_session, admin=operator, subject=subject)
+    await support.approve_request(
+        db_session, owner_user_id=owner.id, request_id=request.id
+    )
+    subject_id = subject.id
+    operator_id = operator.id
+    reviewer_id = reviewer.id
+    await db_session.commit()
+
+    factory = async_sessionmaker(
+        db_session.bind, expire_on_commit=False, class_=AsyncSession
+    )
+    async with factory() as reader, factory() as revoker:
+        context = await resolve_access_context(
+            reader, user_id=operator_id, subject_id=subject_id
+        )
+        await support.record_record_opened(
+            reader,
+            context=context,
+            domain_keys=(Domain.LABS.value,),
+        )
+
+        started = asyncio.Event()
+
+        async def _revoke_role() -> bool:
+            started.set()
+            changed = await identity_service.revoke_role(
+                revoker,
+                user_id=operator_id,
+                role=UserRoleName.PLATFORM_SUPERADMIN,
+                actor_user_id=reviewer_id,
+            )
+            await revoker.commit()
+            return changed
+
+        revocation = asyncio.create_task(_revoke_role())
+        await started.wait()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(revocation), timeout=0.1)
+
+        await reader.commit()
+        assert await asyncio.wait_for(revocation, timeout=3)
+
+    assert (
+        int(
+            await db_session.scalar(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.event_type == support.EVENT_RECORD_OPENED)
+            )
+            or 0
+        )
+        == 1
+    )
+
+
+async def test_template_failure_happens_before_a_support_read_is_audited(
+    client, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from web.routers import care as care_router
+
+    admin = await _admin(db_session, "care-support-template-failure")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Checking a sync failure.",
+        scopes=support.read_scopes_for((Domain.WEIGHT,)),
+    )
+    await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=request.id,
+    )
+    await db_session.commit()
+    _sign_in(client, admin.username)
+
+    def _fail_render(*_args, **_kwargs):
+        raise RuntimeError("synthetic template render failure")
+
+    monkeypatch.setattr(care_router.templates, "TemplateResponse", _fail_render)
+    with pytest.raises(RuntimeError, match="template render failure"):
+        await client.get(
+            f"/care/{legacy_owner_roots.subject_id}",
+            headers={"Accept": "text/html"},
+        )
+    await db_session.rollback()
+
+    assert (
+        int(
+            await db_session.scalar(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.event_type == support.EVENT_RECORD_OPENED)
+            )
+            or 0
+        )
+        == 0
+    )
+
+
+async def test_audit_commit_failure_does_not_return_the_medical_page(
+    client, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    admin = await _admin(db_session, "care-support-audit-commit")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Checking a sync failure.",
+        scopes=support.read_scopes_for((Domain.WEIGHT,)),
+    )
+    await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=request.id,
+    )
+    await db_session.commit()
+    _sign_in(client, admin.username)
+
+    original_commit = db_session.commit
+
+    async def _fail_commit():
+        raise RuntimeError("synthetic audit commit failure")
+
+    monkeypatch.setattr(db_session, "commit", _fail_commit)
+    with pytest.raises(RuntimeError, match="audit commit failure"):
+        await client.get(
+            f"/care/{legacy_owner_roots.subject_id}",
+            headers={"Accept": "text/html"},
+        )
+    monkeypatch.setattr(db_session, "commit", original_commit)
+    await db_session.rollback()
+
+    assert (
+        int(
+            await db_session.scalar(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.event_type == support.EVENT_RECORD_OPENED)
+            )
+            or 0
+        )
+        == 0
+    )
+
+
+async def test_owner_reads_do_not_create_support_use_events(
+    client, db_session, legacy_owner_roots
+):
+    """The event means support used a grant, not merely that a page rendered."""
+
+    from sqlalchemy import func, select
+
+    _sign_in(client, "tester")
+    page = await client.get(
+        f"/care/{legacy_owner_roots.subject_id}",
+        headers={"Accept": "text/html"},
+    )
+    assert page.status_code == 200
+    count = int(
+        await db_session.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.event_type == support.EVENT_RECORD_OPENED)
+        )
+        or 0
+    )
+    assert count == 0
+
+
+async def test_patient_access_centre_shows_actual_support_openings(
+    client, db_session, legacy_owner_roots, redis
+):
+    from vitals.services import modules_service
+
+    await modules_service.set_module_enabled(
+        db_session,
+        key="hrt",
+        enabled=False,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    await db_session.commit()
+    await redis.delete(modules_service.cache_key(legacy_owner_roots.subject_id))
+
+    admin = await _admin(db_session, "care-support-visible-read")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Checking a sync failure.",
+        scopes=support.read_scopes_for((Domain.HRT,)),
+    )
+    await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=request.id,
+    )
+    await db_session.commit()
+
+    _sign_in(client, admin.username)
+    opened = await client.get(
+        f"/care/{legacy_owner_roots.subject_id}",
+        headers={"Accept": "text/html"},
+    )
+    assert opened.status_code == 200
+
+    _sign_in(client, "tester")
+    history = await client.get(
+        "/settings/access", headers={"Accept": "text/html"}
+    )
+    assert history.status_code == 200
+    assert admin.username in history.text
+    assert "support.opened_title" not in history.text
+    assert "support.opened_scopes" not in history.text
+    assert "domain:hrt" not in history.text
+    assert "Разделы, разрешённые для этого открытия" in history.text
+
+
+async def test_support_read_history_is_subject_isolated(db_session):
+    first_owner, first_subject = await _patient(db_session, "read-history-first")
+    second_owner, second_subject = await _patient(db_session, "read-history-second")
+    admin = await _admin(db_session, "read-history-admin")
+
+    for owner, subject, domain in (
+        (first_owner, first_subject, Domain.LABS),
+        (second_owner, second_subject, Domain.WEIGHT),
+    ):
+        request = await _ask(
+            db_session, admin=admin, subject=subject, domains=(domain,)
+        )
+        await support.approve_request(
+            db_session, owner_user_id=owner.id, request_id=request.id
+        )
+        context = await resolve_access_context(
+            db_session, user_id=admin.id, subject_id=subject.id
+        )
+        await support.record_record_opened(
+            db_session, context=context, domain_keys=(domain.value,)
+        )
+        await db_session.commit()
+
+    first = await support.record_opened_history(
+        db_session, subject_id=first_subject.id
+    )
+    assert len(first.events) == 1
+    assert first.events[0].scope_keys == (f"domain:{Domain.LABS.value}",)
 
 
 async def test_a_read_grant_cannot_write_a_note_through_the_record_screen(
