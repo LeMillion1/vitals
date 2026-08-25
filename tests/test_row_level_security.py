@@ -69,6 +69,7 @@ _POLICY_REVISIONS = (
     "0063_external_api_tokens",
     "0065_subject_scoped_mcp_grants",
     "0067_care_message_attachments",
+    "0069_subject_isolated_care_push_outbox",
 )
 
 

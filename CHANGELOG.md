@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — care messages create a subject-isolated push outbox
+
+Revision `0069` adds one PHI-free delivery claim for each currently enrolled
+device of each active conversation participant except the author. The claims
+are created in the message transaction, so a rollback leaves neither message
+nor wakeup behind; removed participants, suspended accounts, revoked devices,
+and devices enrolled later receive no historical claim. Composite foreign keys,
+a unique message/recipient/device triple, and FORCE RLS prevent cross-subject,
+cross-account, and duplicate rows. The outbox deliberately stores no rendered
+notification, message text, name, filename, endpoint, or provider response.
+Transport and server-side dispatch remain disabled until their separate,
+consent-rechecking implementation lands.
+
 ### Added — care notifications are an explicit per-device choice
 
 Patients, doctors, and trainers can now enable or disable browser notifications
@@ -17,8 +30,7 @@ and never lists device endpoints or account/patient identifiers. The control
 detects unsupported and denied browsers, shared-browser ownership conflicts,
 device limits, and VAPID key rotation; an existing subscription remains
 removable even after browser permission is denied. Notification content and
-server-side delivery remain disabled until the separate care outbox and
-transport land.
+server-side delivery remain disabled until the separate transport lands.
 
 ### Fixed — the PWA worker controls the application, not only static files
 

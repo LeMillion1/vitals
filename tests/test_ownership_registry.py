@@ -31,8 +31,9 @@ def test_every_registered_table_has_exactly_one_ownership_contract():
     # API token; 76 since 0064 added the revocable connector token; 77 since 0065
     # normalized each connector's exact capabilities; 78 since 0067 attached
     # private files to patient-visible care messages; 79 since 0068 added
-    # encrypted, account-owned browser push subscriptions.
-    assert len(OWNERSHIP_REGISTRY) == 79
+    # encrypted, account-owned browser push subscriptions; 80 since 0069 added
+    # the subject-isolated care-message push outbox.
+    assert len(OWNERSHIP_REGISTRY) == 80
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -74,6 +75,7 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "audit_events",
         "care_messages",
         "care_message_attachments",
+        "care_push_deliveries",
         "care_plans",
         "care_relationships",
         "care_thread_participants",

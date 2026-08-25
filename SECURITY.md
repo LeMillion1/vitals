@@ -104,8 +104,9 @@ health subject: one doctor's browser can receive work across several separately
 authorized patients without copying a delivery credential into every record.
 The endpoint and browser encryption keys are encrypted under the installation's
 credential key, never listed back to the browser, and erased on revocation or
-account suspension. The future care-message outbox remains subject-scoped and
-must revalidate live relationship and consent before delivery.
+account suspension. The separate care-message outbox is subject-scoped, stores
+no rendered payload or medical text, and must revalidate live relationship and
+consent before delivery.
 
 ## Revoking Claude.ai Access
 

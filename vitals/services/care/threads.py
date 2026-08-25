@@ -62,6 +62,7 @@ from vitals.models.identity import HealthSubject
 from vitals.models.tenancy import FileAsset
 from vitals.models.professional import CareRelationship
 from vitals.services import file_asset_service
+from vitals.services.notifications import care_push_outbox
 
 #: The operation key a consent carries for this feature. It matches what
 #: ``relationships.default_scopes`` writes, and a mismatch would silently make
@@ -477,6 +478,7 @@ async def send_message(
     # conversation. Their own message must never create unread work for them.
     participation.last_read_at = said_at
     await session.flush()
+    await care_push_outbox.enqueue_for_message(session, message=message)
     return message
 
 

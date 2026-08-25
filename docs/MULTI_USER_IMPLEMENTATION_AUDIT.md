@@ -12,7 +12,7 @@ read during the audit.
 
 The conversion is substantial and real, but not finished. Vitals now has local
 users and additive roles, one owned health subject per patient account,
-subject-scoped facts, 65 PostgreSQL RLS tables, professional relationships and
+subject-scoped facts, 66 PostgreSQL RLS tables, professional relationships and
 consent, care-team conversations, OIDC login, revocable browser sessions,
 per-subject integrations, and controlled read-only support access.
 
@@ -32,7 +32,7 @@ the others remain useful provenance for the remediations named below:
    specific gaps.
 3. The ownership inventory called itself exhaustive but originally omitted 12
    of 76 live tables. It now includes the subsequently added MCP scope table and
-   matches all 79 machine-registry entries.
+   matches all 80 machine-registry entries.
 4. `ARCHITECTURE.html` was a historical snapshot presented as a live reference.
    Its schema, migration, router, service, RLS, ownership-class, and roadmap
    counters were synchronized during this audit.
@@ -41,15 +41,15 @@ the others remain useful provenance for the remediations named below:
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0068 (head)`; 68 files in `migrations/versions` | Verified |
-| SQLAlchemy tables | `len(Base.metadata.tables)` → 79 | Verified |
-| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 79 | Verified and exhaustive in code |
-| Subject-scoped tables | 65 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
-| Required subject columns | 54 of the 65 `subject_id` columns are non-null | Verified |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0069 (head)`; 69 files in `migrations/versions` | Verified |
+| SQLAlchemy tables | `len(Base.metadata.tables)` → 80 | Verified |
+| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 80 | Verified and exhaustive in code |
+| Subject-scoped tables | 66 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
+| Required subject columns | 55 of the 66 `subject_id` columns are non-null | Verified |
 | Ownership cutover | 18 ordered backfill phases and 18 matching scripts | Verified |
 | Domain enum | 14 health domains | Verified |
-| Web routers | 28 modules under `web/routers` | Verified |
-| Application services | 96 tracked non-`__init__` modules after the care, authentication, analytics, and persistence moves | Verified |
+| Web routers | 29 modules under `web/routers` | Verified |
+| Application services | 99 tracked non-`__init__` modules after the care, authentication, analytics, persistence, and notification moves | Verified |
 | Flat service debt | 77 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
 | Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
 | Commercial Git history | 247 commits after base `c91456a`; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
@@ -75,7 +75,7 @@ a current validation result.
 
 ### Data isolation
 
-- 65 tables are subject-scoped and covered by FORCE RLS in PostgreSQL.
+- 66 tables are subject-scoped and covered by FORCE RLS in PostgreSQL.
 - The application binds `vitals.subject_id` transaction-locally; unbound or
   wrong-subject sessions fail closed in PostgreSQL tests.
 - Natural keys, raw payloads, normalized facts, integrations, settings, files,
@@ -164,9 +164,10 @@ verifiable GitHub pull request: the commercial history has only one merge
 commit. Keep this document as target/decision history and use this audit for the
 current state.
 
-The following roadmap targets are not shipped: web-push permission UI,
-consent-rechecked care delivery and its sender (encrypted account/device
-subscriptions landed in `0068`),
+The following roadmap targets are not shipped: consent-rechecked care delivery,
+its transport/dispatcher and service-worker notification content (encrypted
+account/device subscriptions landed in `0068`; explicit enrollment and the
+subject-isolated outbox landed with `0069`),
 invitation inbox, multi-subject full backup, support repair/export
 and break-glass, registration modes, lab
 marker collision migration, private-byte relocation outside static storage, and
@@ -181,7 +182,7 @@ machine registry is the source of truth and is complete.
 The prose inventory previously listed only 64 live and two dropped tables. It
 now includes the missing identity, professional-care, support-request, and
 credential rows, the MCP scope child, the care attachment row, and the web-push
-subscription row and matches all 79 live tables in the
+subscription and care-push-delivery rows and matches all 80 live tables in the
 machine registry.
 
 The historical Stage 3/4/5 narrative should be archived separately from a
@@ -377,6 +378,15 @@ desktop width, then the patient inbox at 390 px with no horizontal overflow.
 That browser run caught and fixed a real cascade error where `.v-btn-ghost`
 overrode Tailwind `.hidden`; denied-permission controls now compute to
 `display:none`. No permission prompt was invoked.
+
+The subject-isolated care-push outbox on revision `0069` passed 28 focused fast
+outbox/ownership/RLS tests. A fresh PostgreSQL 15 instance completed the full
+`head → 0034 → head` migration cycle and all 36 selected outbox/ownership/RLS
+tests, including FORCE RLS and both subject- and account-equality composite
+foreign keys. The full fast suite passed 4,696 tests (170 skipped, 35 UI
+deselected); focused and full Ruff plus diff checks passed. No sender, network
+transport, scheduler job, or service-worker notification content was enabled by
+this revision.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

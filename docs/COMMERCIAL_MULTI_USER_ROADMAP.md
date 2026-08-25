@@ -27,10 +27,10 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0068` — 68 revisions |
-| Schema | 79 tables; 65 carry `subject_id` and are covered by an RLS policy; 54 have it `NOT NULL` |
+| Alembic head | `0069` — 69 revisions |
+| Schema | 80 tables; 66 carry `subject_id` and are covered by an RLS policy; 55 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,686 fast passed / 168 skipped; 508 focused push/care/UI/security tests; migration plus 74 current PostgreSQL push/identity/RLS/schema tests |
+| Suites | 4,696 fast passed / 170 skipped / 35 UI deselected; 28 focused outbox/ownership/RLS fast tests; migration plus 36 current PostgreSQL outbox/ownership/RLS tests |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -96,9 +96,11 @@ one-line fix.
 
 **Two behaviours will look like bugs if you don't know they were chosen:**
 
-1. **There is no notification transport.** Telegram was removed outright (see the
+1. **There is no notification sender yet.** Telegram was removed outright (see the
    decision log); revision `0068` stores encrypted account/device subscriptions,
-   but the care outbox, sender, and permission UI have not landed. The proactive layer composes a brief
+   the explicit permission UI is live, and revision `0069` writes a PHI-free,
+   subject-isolated care outbox in the message transaction. The transport,
+   dispatcher, and service-worker notification content have not landed. The proactive layer composes a brief
    on schedule and stores it in `/reports`, and every send resolves to "no
    endpoint", which every caller already handles as an ordinary answer.
    `channels.resolve_legacy_bound_notifier` returns `None`. Its historical
@@ -1375,9 +1377,11 @@ at all while `/health` stayed green. `record_subject_job_outcome` takes a
 mandatory subject and is called once per record by the fan-out; the runner keeps
 only the platform-family jobs, which are about the installation's own state.
 
-What is left in PR-09 is the notification transport. There is none: Telegram was
-removed and revision `0068` has only the encrypted account/device endpoint, so the proactive layer composes on schedule
-and every send resolves to "no endpoint".
+What is left in PR-09 is the notification sender. Telegram was removed;
+revision `0068` holds the encrypted account/device endpoint and revision `0069`
+holds a separate subject-owned care outbox. No job claims those rows and no
+network transport sends them yet, so proactive sends still resolve to "no
+endpoint".
 
 **The shape of the rest.** `.env` should hold only what belongs to the
 installation: the database and Redis, the session secret, the identity provider,

@@ -17,7 +17,7 @@ The original table-by-table inventory contains the 55 tables present at the
 Stage-0 expansion. The post-foundation and later identity/care tables below keep
 the prose inventory aligned with the machine-readable registry.
 
-**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 79 live tables today.** Revision
+**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 80 live tables today.** Revision
 `0058` also dropped two historical tables: `signals` and `day_context`. Their rows below are
 kept, struck through, at their original numbers — the numbering is referenced
 from the Stage-3 narrative further down, and renumbering would silently
@@ -183,6 +183,7 @@ Telegram transport is gone; its journal is not.
 | `care_threads` / `CareThread` | Required S | One conversation about one patient. `uq_care_threads_id_subject` exists so the two children below can name both the thread and its subject and have the database check they agree. Not user-portable: an export would carry what a doctor and a trainer wrote, which is not the patient's alone to hand out. |
 | `care_thread_participants` / `CareThreadParticipant` | Required S and thread | Who was let into one conversation. `relationship_id` is NULL for the patient — who is in the room as its subject — and set for a professional, naming the care they joined under. `last_read_at` is that participant's durable message cursor; `removed_at` rather than deletion preserves who was in the room when a thing was said. The patient's row cannot be removed at all. |
 | `care_messages` / `CareMessage` | Required S, required author, required thread | One thing somebody said. `edited_at` rather than a delete path; only the author may correct it, and the correction keeps the row. Bodies never reach `AuditEvent`, whose metadata allowlist forbids a display value. |
+| `care_push_deliveries` / `CarePushDelivery` | Required S, message, recipient, and exact account device | A PHI-free, payload-free wakeup claim created in the same transaction as its message. Composite foreign keys bind it both to the same-subject message and to a subscription owned by the recipient; a unique message/recipient/subscription triple prevents duplicate delivery claims. FORCE RLS isolates it by S, and it is not ordinary-user portable because it is operational care-team state. |
 | `integration_credentials` / `IntegrationCredential` | Required S and C, keyed by C | The one table here that holds a secret, which is why it is not in `models/tenancy.py`: `credential_ref` on the connection stays a handle, and `vault:v1` is one of the things it names. One Fernet ciphertext of a small JSON object under `VITALS_CREDENTIAL_KEY`, plus `key_version` so rotation is a migration rather than an outage. The foreign key is composite on `(C, S)` so a credential whose two owners disagree cannot exist. No email, account id or key suffix in any column, and never user-portable: an export carrying this row would carry a Garmin password out of the installation, and an import accepting one would let a crafted file plant a credential against another subject's connection. |
 | `ownership_backfill_checkpoints` / `OwnershipBackfillCheckpoint` | Required S control state | One versioned phase checkpoint with stable scan watermarks, cumulative counts, operational timestamps, and lowercase SHA-256 digests. It contains no row payload, title, medical/event date, file path, credential, or free-form error and is excluded from ordinary portability. Any populated checkpoint makes revision `0045` downgrade fail before DDL. |
 | `web_push_subscriptions` / `WebPushSubscription` | Account control plane | One browser-profile endpoint belongs to one user, not one patient. Endpoint URL, `p256dh`, and `auth` are one Fernet ciphertext under `VITALS_CREDENTIAL_KEY`; only a lowercase SHA-256 endpoint digest is readable for exact refresh/revocation. A global unique prevents the same endpoint from silently moving between accounts and active devices are bounded to ten per account. Revocation/account suspension retains the lifecycle row but erases its ciphertext. The row is never ordinary-user portable. |
@@ -195,9 +196,9 @@ silently reassigned or deleted.
 
 ### Later identity, professional-care, and credential additions
 
-These fourteen live tables arrived after the earlier prose additions. Together
+These live tables arrived after the earlier prose additions. Together
 with the sections above they make this hand-reviewed inventory exhaustive for
-the same 79 live tables as `OWNERSHIP_REGISTRY`.
+the same 80 live tables as `OWNERSHIP_REGISTRY`.
 
 | Table | Ownership | Contract |
 | --- | --- | --- |

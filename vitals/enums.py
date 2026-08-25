@@ -174,6 +174,30 @@ class CareThreadStatus(StrEnum):
     CLOSED = "closed"
 
 
+class CarePushDeliveryStatus(StrEnum):
+    """At-most-once lifecycle of one care-message device notification."""
+
+    PENDING = "pending"
+    DISPATCHING = "dispatching"
+    SENT = "sent"
+    AMBIGUOUS = "ambiguous"
+    CANCELLED = "cancelled"
+
+
+class CarePushDeliveryErrorCode(StrEnum):
+    """PHI-free, allowlisted outcomes for care push delivery."""
+
+    ACCESS_REVOKED = "access_revoked"
+    ACCOUNT_INACTIVE = "account_inactive"
+    SUBSCRIPTION_REVOKED = "subscription_revoked"
+    STALE_PENDING = "stale_pending"
+    PROVIDER_GONE = "provider_gone"
+    TRANSPORT_ERROR = "transport_error"
+    INVALID_RESPONSE = "invalid_response"
+    STALE_DISPATCH = "stale_dispatch"
+    INTERNAL_ERROR = "internal_error"
+
+
 class SupportScopeResourceType(StrEnum):
     """Kind of resource named by an explicit support-access scope."""
 
