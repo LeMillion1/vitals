@@ -459,8 +459,10 @@ def test_invitation_claim_codec_rejects_tampering_extension_and_expiry(monkeypat
 
     invitation_id = uuid.uuid4()
     claim = create_invitation_claim(invitation_id)
-    replacement = "a" if claim[-1] != "a" else "b"
-    assert read_invitation_claim(claim[:-1] + replacement) is None
+    signed_value, signature = claim.rsplit(".", 1)
+    replacement = "A" if signature[0] != "A" else "B"
+    tampered = f"{signed_value}.{replacement}{signature[1:]}"
+    assert read_invitation_claim(tampered) is None
 
     serializer = URLSafeTimedSerializer(
         get_web_config().session_secret,
