@@ -1499,10 +1499,17 @@ async def brief_job(session_factory, redis=None, *, subject_id) -> None:
         )
         brief_hour = None
         if not claimed:
-            subject_policy = await prefs.get_subject_policy(
-                session,
-                subject_id=ownership.subject_id,
-            )
+            try:
+                subject_policy = await prefs.get_subject_policy(
+                    session,
+                    subject_id=ownership.subject_id,
+                )
+            except prefs.ProactivePreferencesNotConfiguredError:
+                # New accounts intentionally have no delivery policy until the
+                # owner saves notification settings. That is not a failed job
+                # and must not become a permanent dashboard alert.
+                await session.commit()
+                return
             brief_hour = subject_policy.brief_time.hour
         # End all ownership/settings reads before Garmin can touch the network.
         await session.commit()

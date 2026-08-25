@@ -88,6 +88,43 @@ async def test_a_provisioned_subject_is_not_one_row(db_session, legacy_owner_roo
     assert modules is not None
 
 
+async def test_unconfigured_subject_proactive_jobs_are_clean_noops(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    """Joining the service must not immediately create two failure alerts.
+
+    Proactive preferences are intentionally absent until the owner saves that
+    settings form. Missing is therefore an ordinary opt-in state; malformed or
+    partially stored preferences remain strict failures.
+    """
+
+    from vitals.services import garmin_service
+    from vitals.services.proactive import brief, nudges
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    provisioned = await account_provisioning_service.provision_account(
+        db_session,
+        username="quiet-new-patient",
+    )
+    await db_session.commit()
+    assert provisioned.subject_id is not None
+    session_factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+
+    async def unexpected_sync(*args, **kwargs):
+        raise AssertionError("an unconfigured brief must stop before network work")
+
+    monkeypatch.setattr(garmin_service, "sync_job", unexpected_sync)
+
+    await brief.brief_job(session_factory, subject_id=provisioned.subject_id)
+    await nudges.nudges_job(session_factory, subject_id=provisioned.subject_id)
+
+
 async def test_compatibility_whitespace_display_name_uses_username_fallback(
     db_session, legacy_owner_roots
 ):

@@ -271,6 +271,32 @@ async def test_partial_malformed_and_drifted_state_fail_closed(
         await prefs.initialize_legacy_preferences(db_session, scope=scope)
 
 
+async def test_subject_job_policy_distinguishes_opt_in_from_torn_bundle(
+    db_session,
+    legacy_owner_roots,
+):
+    scope = await _legacy_scope(db_session)
+    await _clear_preferences(db_session, scope)
+
+    with pytest.raises(prefs.ProactivePreferencesNotConfiguredError):
+        await prefs.get_subject_policy(db_session, subject_id=scope.subject_id)
+
+    await prefs.initialize_legacy_preferences(db_session, scope=scope)
+    subject = await db_session.get(
+        SubjectSetting,
+        (scope.subject_id, prefs.SUBJECT_POLICY_KEY),
+    )
+    await db_session.delete(subject)
+    await db_session.flush()
+
+    with pytest.raises(prefs.ProactivePreferencesUnavailableError) as exc_info:
+        await prefs.get_subject_policy(db_session, subject_id=scope.subject_id)
+    assert not isinstance(
+        exc_info.value,
+        prefs.ProactivePreferencesNotConfiguredError,
+    )
+
+
 async def test_two_subjects_keep_all_three_policy_partitions_isolated(
     db_session,
     legacy_owner_roots,

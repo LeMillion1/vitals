@@ -389,9 +389,16 @@ async def nudges_job(session_factory, redis=None, *, subject_id) -> None:
             session,
             subject_id=subject_id,
         )
-        await run(
-            session,
-            None,
-            ownership=ownership,
-        )
+        try:
+            await run(
+                session,
+                None,
+                ownership=ownership,
+            )
+        except prefs.ProactivePreferencesNotConfiguredError:
+            # A newly provisioned subject opts into proactive delivery by
+            # saving notification settings. Until then this is a no-op, not an
+            # operational failure worth surfacing on their dashboard.
+            await session.commit()
+            return
         await session.commit()

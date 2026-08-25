@@ -129,6 +129,15 @@ class ProactivePreferencesUnavailableError(ProactivePreferencesError):
     """A strict runtime policy cannot be proved from complete scoped rows."""
 
 
+class ProactivePreferencesNotConfiguredError(ProactivePreferencesUnavailableError):
+    """The subject has never configured proactive delivery.
+
+    This is an ordinary state for a newly provisioned account, unlike a stored
+    row with an invalid shape or a partially written three-row bundle. Scheduled
+    work may safely skip it while continuing to fail closed on corrupted state.
+    """
+
+
 class ProactivePreferencesScopeError(ProactivePreferencesError):
     """The supplied subject, recipient, or connection graph is not exact."""
 
@@ -811,7 +820,29 @@ async def get_subject_policy(
             )
         )
     if row is None:
-        raise ProactivePreferencesUnavailableError(
+        # No rows at all is the deliberate pre-opt-in state. A missing subject
+        # partition beside either connection partition is a torn bundle and
+        # must keep failing loudly rather than being mistaken for onboarding.
+        partial_connection_row = await session.scalar(
+            select(IntegrationConnectionSetting.key)
+            .join(
+                IntegrationConnection,
+                IntegrationConnection.id
+                == IntegrationConnectionSetting.integration_connection_id,
+            )
+            .where(
+                IntegrationConnection.subject_id == subject_id,
+                IntegrationConnectionSetting.key.in_(
+                    (TELEGRAM_DELIVERY_POLICY_KEY, GARMIN_POLICY_KEY)
+                ),
+            )
+            .limit(1)
+        )
+        if partial_connection_row is not None:
+            raise ProactivePreferencesUnavailableError(
+                "scoped proactive preference split is partial"
+            )
+        raise ProactivePreferencesNotConfiguredError(
             "subject proactive preference row is missing"
         )
     return _decode_subject(row.value)
@@ -1230,6 +1261,7 @@ __all__ = [
     "ProactivePreferencesBundle",
     "ProactivePreferencesDriftError",
     "ProactivePreferencesError",
+    "ProactivePreferencesNotConfiguredError",
     "ProactivePreferencesScope",
     "ProactivePreferencesScopeError",
     "ProactivePreferencesUnavailableError",
