@@ -391,18 +391,23 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
     trainer_b = await _professional(
         session, "coach-sokol", "Coach Sokol", ProfessionalKind.TRAINER
     )
+    _pending_trainer = await _professional(
+        session, "coach-pending", "Coach Pending", ProfessionalKind.TRAINER
+    )
     for name, label in (
         ("dr-ivanov", "doctor — holds four patients, in every consent state"),
         ("dr-petrova", "doctor — verified, holds nobody: the empty roster"),
         ("coach-orlov", "trainer — holds two patients"),
-        ("coach-sokol", "trainer — unverified profile, holds one patient"),
+        ("coach-sokol", "trainer — verified, one revoked consent"),
+        ("coach-pending", "trainer — awaiting platform verification"),
     ):
         who.append((name, label))
 
-    # Three of the four are verified; one is left in the queue on purpose, so
-    # the operator's review screen has something in it and the consent centre
-    # has an unverified professional to draw.
-    for professional in (doctor_a, doctor_b, trainer_a):
+    # Four working professionals are verified; a fifth remains in the review
+    # queue. The trainer with revoked consent must have been verified before the
+    # relationship could truthfully exist — the domain service now enforces
+    # that invariant rather than letting demo data bypass it.
+    for professional in (doctor_a, doctor_b, trainer_a, trainer_b):
         from sqlalchemy import select
 
         from vitals.models.professional import ProfessionalProfile

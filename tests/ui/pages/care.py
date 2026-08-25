@@ -58,6 +58,12 @@ class ConversationsPage(Page):
     START = 'button:has-text("Start")'
 
     def start_a_thread(self, title: str, first_message: str) -> "ConversationPage":
+        title_field = self.page.locator(self.TITLE)
+        if not title_field.is_visible():
+            # A populated inbox keeps creation collapsed so current messages
+            # stay above the phone fold. Open the native disclosure just as a
+            # person must before interacting with the form.
+            title_field.locator("xpath=ancestor::details[1]/summary").click()
         self.page.fill(self.TITLE, title)
         self.page.fill(self.FIRST_MESSAGE, first_message)
         self._act(self.START)

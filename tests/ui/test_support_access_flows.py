@@ -171,5 +171,7 @@ def test_a_professional_holding_patients_is_sent_to_their_roster(sign_in):
 
 
 def test_a_professional_holding_nobody_gets_a_page_with_a_way_out(sign_in):
-    refusal = sign_in("dr-petrova").is_refused_from("their access history", status=409)
-    refusal.assert_is_a_page_with_a_way_out()
+    landed = sign_in("dr-petrova").access_history()
+    assert landed.status == 200
+    assert "/care" in landed.url, f"not sent to the professional home: {landed.url}"
+    assert landed.text.strip(), "the empty professional home rendered no guidance"
