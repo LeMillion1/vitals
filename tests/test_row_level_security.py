@@ -889,6 +889,10 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
             "vitals/services/authentication/admission/retention.py",
             "maintenance_job",
         ),
+        # Provider fan-out has no subject until it enumerates live account
+        # roots. Every returned account is then processed in a separate
+        # subject-bound job transaction.
+        ("vitals/scheduler/fanout.py", "_list_provider_accounts"),
         # An administrator's own console: their live grants and unanswered asks
         # span every record that answered one, so there is no single subject to
         # bind and binding one would answer a different question. Both queries
@@ -1077,6 +1081,131 @@ async def test_real_postgres_platform_scope_is_transaction_local(
             assert await session.scalar(
                 sa.text("SELECT count(*) FROM supplements")
             ) == 0
+    finally:
+        await restricted.dispose()
+        await admin.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_provider_fanout_discovers_every_account_under_forced_rls(
+    db_session,
+    monkeypatch,
+):
+    """A restricted worker discovers both accounts, then runs each once.
+
+    ``integration_connections`` is FORCE-RLS protected. Before discovery
+    entered the installation scope, this runtime role returned an empty list
+    and provider schedules reported success without syncing anybody.
+    """
+
+    from alembic.config import Config as AlembicConfig
+    from cryptography.fernet import Fernet
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from vitals.enums import IntegrationProvider
+    from vitals.persistence.rls import bind_session_subject
+    from vitals.scheduler import fanout
+    from vitals.services import (
+        credential_vault_service,
+        provider_credentials_service,
+    )
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
+    monkeypatch.setenv(
+        credential_vault_service.CREDENTIAL_KEY_ENV,
+        Fernet.generate_key().decode("ascii"),
+    )
+    await db_session.close()
+
+    admin = await _migrated_engine(
+        database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
+    )
+    restricted = await restricted_engine(database_url)
+    try:
+        first, second = await _seed_two_subjects(admin)
+        corrupt_subject, valid_subject = sorted((first, second))
+        valid_ciphertext = credential_vault_service.encrypt_mapping(
+            {"email": "synthetic@example.test", "password": "synthetic-password"}
+        )
+        async with admin.begin() as connection:
+            for index, subject_id in enumerate(
+                (corrupt_subject, valid_subject), start=1
+            ):
+                connection_id = await connection.scalar(
+                    sa.text(
+                        "INSERT INTO integration_connections "
+                        "(id, subject_id, provider, connection_type, "
+                        "external_account_discriminator, credential_ref, "
+                        "status, created_at, updated_at) VALUES "
+                        "(gen_random_uuid(), :subject, 'garmin', 'account', "
+                        ":discriminator, 'vault:v1', 'active', now(), now()) "
+                        "RETURNING id"
+                    ),
+                    {
+                        "subject": subject_id,
+                        "discriminator": f"synthetic-rls-{index}",
+                    },
+                )
+                await connection.execute(
+                    sa.text(
+                        "INSERT INTO integration_credentials "
+                        "(integration_connection_id, subject_id, key_version, "
+                        "ciphertext, created_at, updated_at) VALUES "
+                        "(:connection, :subject, 1, :ciphertext, now(), now())"
+                    ),
+                    {
+                        "connection": connection_id,
+                        "subject": subject_id,
+                        "ciphertext": (
+                            b"synthetic-corrupt-ciphertext"
+                            if subject_id == corrupt_subject
+                            else valid_ciphertext
+                        ),
+                    },
+                )
+
+        factory = async_sessionmaker(
+            restricted, expire_on_commit=False, class_=AsyncSession
+        )
+        seen: list[uuid.UUID] = []
+        configured: list[uuid.UUID] = []
+
+        async def job(
+            _factory,
+            _redis,
+            *,
+            subject_id,
+            integration_connection_id,
+        ):
+            assert isinstance(integration_connection_id, uuid.UUID)
+            seen.append(subject_id)
+            async with _factory() as session:
+                await bind_session_subject(session, subject_id)
+                account = await provider_credentials_service.resolve_garmin_account(
+                    session,
+                    subject_id=subject_id,
+                )
+                assert account is not None
+                assert account.integration_connection_id == integration_connection_id
+                if account.configured:
+                    configured.append(subject_id)
+
+        async def ignore_outcome(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(fanout, "_record_outcome_for", ignore_outcome)
+        with pytest.raises(credential_vault_service.CredentialVaultCorrupt):
+            await fanout.for_each_connection(
+                job,
+                job_id="garmin_sync",
+                provider=IntegrationProvider.GARMIN,
+            )(factory)
+
+        assert seen == [corrupt_subject, valid_subject]
+        assert configured == [valid_subject]
     finally:
         await restricted.dispose()
         await admin.dispose()

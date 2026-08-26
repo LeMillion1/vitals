@@ -247,6 +247,38 @@ async def test_an_unusable_zone_does_not_take_the_tick_down(
 # ── Per connection, not per subject ──────────────────────────────────────────
 
 
+async def test_provider_discovery_explicitly_enters_platform_scope(
+    session_factory, monkeypatch
+):
+    """An unbound runtime session sees zero FORCE-RLS connection rows."""
+
+    from vitals.enums import IntegrationProvider
+    from vitals.persistence.rls import in_platform_scope
+    from vitals.scheduler import fanout
+    from vitals.services import provider_credentials_service
+
+    observed = False
+
+    async def _list(session, *, provider):
+        nonlocal observed
+        assert provider is IntegrationProvider.GARMIN
+        observed = in_platform_scope(session)
+        return []
+
+    monkeypatch.setattr(provider_credentials_service, "list_live_account_refs", _list)
+
+    async def job(_factory, _redis, *, subject_id, integration_connection_id):
+        raise AssertionError((subject_id, integration_connection_id))
+
+    await fanout.for_each_connection(
+        job,
+        job_id="garmin_sync",
+        provider=IntegrationProvider.GARMIN,
+    )(session_factory)
+
+    assert observed
+
+
 async def _connected(session, subject_id, *, provider):
     from vitals.enums import IntegrationProvider
     from vitals.services import provider_credentials_service

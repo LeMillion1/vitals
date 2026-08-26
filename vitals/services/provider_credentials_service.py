@@ -105,6 +105,14 @@ class ProviderAccount:
         return self.config.provider_key_namespace
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderAccountRef:
+    """A scheduled-work target with no credential material attached."""
+
+    subject_id: uuid.UUID
+    integration_connection_id: uuid.UUID
+
+
 def _require_subject_id(value: object) -> uuid.UUID:
     if not isinstance(value, uuid.UUID) or value.int == 0:
         raise ProviderCredentialsValidationError("subject_id must be a non-zero UUID")
@@ -376,18 +384,18 @@ async def forget_credentials(
     return had
 
 
-async def list_live_accounts(
+async def list_live_account_refs(
     session: AsyncSession,
     *,
     provider: IntegrationProvider,
-    base_config: Config | None = None,
-) -> list[ProviderAccount]:
-    """Every subject's account with this provider that has something to sign in with.
+) -> list[ProviderAccountRef]:
+    """Provider targets that claim a credential, without resolving any secret.
 
-    What a per-connection scheduled job iterates. Ordered by subject so a
-    fan-out is reproducible across ticks, for the same reason the subject
-    fan-out is: "which record did this run for first" has to be answerable from
-    the logs.
+    Scheduler discovery runs across subjects, so it must never decrypt every
+    account into one platform-scoped transaction. The subject-bound job resolves
+    its own credential later; a missing, unavailable, or corrupt credential is
+    consequently isolated to that account instead of aborting discovery for all
+    of them.
     """
 
     connection_type = _RESOLVABLE.get(provider)
@@ -395,39 +403,36 @@ async def list_live_accounts(
         raise ProviderCredentialsValidationError(
             f"{provider.value} is not a subject-owned provider account"
         )
-    with session.no_autoflush:
-        subject_ids = list(
-            await session.scalars(
-                select(IntegrationConnection.subject_id)
-                .where(
-                    IntegrationConnection.provider == provider.value,
-                    IntegrationConnection.connection_type == connection_type.value,
-                    IntegrationConnection.status.in_(_LIVE_STATUSES),
-                )
-                .order_by(IntegrationConnection.subject_id)
+    rows = (
+        await session.execute(
+            select(IntegrationConnection.subject_id, IntegrationConnection.id)
+            .where(
+                IntegrationConnection.provider == provider.value,
+                IntegrationConnection.connection_type == connection_type.value,
+                IntegrationConnection.status.in_(_LIVE_STATUSES),
+                IntegrationConnection.credential_ref.is_not(None),
             )
+            .order_by(IntegrationConnection.subject_id)
         )
-    accounts: list[ProviderAccount] = []
-    for subject_id in subject_ids:
-        account = await resolve_account(
-            session,
-            subject_id=subject_id,
-            provider=provider,
-            base_config=base_config,
+    ).all()
+    return [
+        ProviderAccountRef(
+            subject_id=row.subject_id,
+            integration_connection_id=row.id,
         )
-        if account is not None and account.configured:
-            accounts.append(account)
-    return accounts
+        for row in rows
+    ]
 
 
 __all__ = [
     "LEGACY_ENV_REF_PREFIX",
     "ProviderAccount",
+    "ProviderAccountRef",
     "ProviderCredentialsError",
     "ProviderCredentialsValidationError",
     "ProviderRootMissing",
     "forget_credentials",
-    "list_live_accounts",
+    "list_live_account_refs",
     "resolve_account",
     "sync_marker_key",
     "resolve_garmin_account",

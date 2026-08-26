@@ -188,10 +188,17 @@ async def _list_provider_accounts(
     state and not an outage to report.
     """
 
+    from vitals.persistence.rls import enter_platform_scope
     from vitals.services import provider_credentials_service
 
     async with session_factory() as session:
-        return await provider_credentials_service.list_live_accounts(
+        # ``integration_connections`` is FORCE-RLS protected. A scheduler tick
+        # has no human subject to bind while it discovers which accounts need
+        # work, so an unbound runtime session correctly sees no rows. Open the
+        # installation scope only for this short enumeration transaction; each
+        # account is processed later by a fresh subject-bound job session.
+        await enter_platform_scope(session)
+        return await provider_credentials_service.list_live_account_refs(
             session, provider=provider
         )
 

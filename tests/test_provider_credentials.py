@@ -316,35 +316,38 @@ async def test_forgetting_an_account_keeps_the_history_it_produced(
     ) is not None
 
 
-async def test_the_fanout_list_holds_only_accounts_that_can_sign_in(
+async def test_the_fanout_list_holds_only_metadata_for_claimed_credentials(
     db_session, legacy_owner_roots, second_patient, monkeypatch
 ):
-    """What a per-connection scheduled job will iterate.
+    """Cross-subject discovery never loads or returns a plaintext secret.
 
-    A subject with a root and no credential is not an error and not a failure to
-    report — they have simply not connected a watch — so they are absent rather
-    than present and broken.
+    A legacy environment reference is a candidate even when the current process
+    has no matching environment secret; its subject-bound job will no-op. A root
+    with no credential reference is absent because it has nothing to resolve.
     """
 
     monkeypatch.setenv("VITALS_GARMIN_EMAIL", "")
     monkeypatch.setenv("VITALS_GARMIN_PASSWORD", "")
 
-    assert (
-        await provider_credentials_service.list_live_accounts(
-            db_session, provider=IntegrationProvider.GARMIN
-        )
-        == []
+    refs = await provider_credentials_service.list_live_account_refs(
+        db_session, provider=IntegrationProvider.GARMIN
     )
+    assert [ref.subject_id for ref in refs] == [legacy_owner_roots.subject_id]
+    assert all(not hasattr(ref, "config") for ref in refs)
 
     await provider_credentials_service.set_garmin_credentials(
         db_session, subject_id=second_patient, email="s@example.test", password="x"
     )
     await db_session.commit()
 
-    accounts = await provider_credentials_service.list_live_accounts(
+    refs = await provider_credentials_service.list_live_account_refs(
         db_session, provider=IntegrationProvider.GARMIN
     )
-    assert [account.subject_id for account in accounts] == [second_patient]
+    assert {ref.subject_id for ref in refs} == {
+        legacy_owner_roots.subject_id,
+        second_patient,
+    }
+    assert all(not hasattr(ref, "config") for ref in refs)
 
 
 async def test_a_retired_connection_is_provenance_and_not_a_login(
