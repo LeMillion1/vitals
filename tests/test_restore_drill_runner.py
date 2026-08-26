@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 from types import SimpleNamespace
+from urllib import error as urlerror
 
 import pytest
 
@@ -127,6 +128,21 @@ def test_app_failure_classification_uses_only_container_state_for_unknown_logs(
     monkeypatch.setattr(runner, "_run", fake_run)
 
     assert runner._classify_app_failure(context) == "drill_app_exited_7"
+
+
+def test_http_wait_retains_bounded_error_status(monkeypatch):
+    def unavailable(*_args, **_kwargs):
+        raise urlerror.HTTPError(
+            "http://127.0.0.1:18080/health",
+            503,
+            "sensitive reason",
+            {},
+            None,
+        )
+
+    monkeypatch.setattr(runner.urlrequest, "urlopen", unavailable)
+
+    assert runner._wait_http(18080, "/health", timeout=0.01) == 503
 
 
 def _bundle(tmp_path: Path) -> runner.Bundle:

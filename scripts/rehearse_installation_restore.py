@@ -764,6 +764,8 @@ def _wait_http(port: int, path: str, *, timeout: float = 60.0) -> int:
                 last_status = response.status
                 if response.status == 200:
                     return 200
+        except urlerror.HTTPError as exc:
+            last_status = exc.code
         except (OSError, urlerror.URLError):
             pass
         time.sleep(1)
@@ -1309,7 +1311,10 @@ def run_drill(args: argparse.Namespace) -> dict[str, Any]:
             env=_safe_env(),
             code="drill_app_start_failed",
         )
-        if _wait_http(context.port, "/health") != 200:
+        health_status = _wait_http(context.port, "/health")
+        if health_status != 200:
+            if 100 <= health_status <= 599:
+                _fail(f"drill_app_health_status_{health_status}")
             _fail(_classify_app_failure(context))
         if _wait_http(context.port, "/login") != 200:
             _fail("drill_login_page_failed")
