@@ -44,6 +44,7 @@ def test_runtime_success_preserves_only_aggregate_counts():
         "result": "ok",
         "subjects": 1,
         "unbound_visible_rows": 0,
+        "validated_subjects": 1,
     }
 
     safe = wrapper._sanitize_runtime_payload(json.dumps(payload))
@@ -79,6 +80,7 @@ def test_runtime_output_rejects_missing_or_invalid_counts():
         "result": "ok",
         "subjects": 1,
         "unbound_visible_rows": 0,
+        "validated_subjects": 1,
     }
     assert wrapper._sanitize_runtime_payload(json.dumps(payload))["error_code"] == (
         "validator_output_invalid"

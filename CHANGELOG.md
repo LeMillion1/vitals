@@ -10,11 +10,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed — restore validation proves the complete RLS boundary
 
-The restore validator now refuses a schema missing any registry-required
-subject table or its one canonical forced-RLS policy. It also tests an unknown
-subject and up to two real subjects through the restricted login, so a policy
-that merely accepts any non-empty subject setting can no longer produce a false
-successful restore.
+The restore validator now derives all 71 current subject-policy tables from the
+migrations, including nullable inherited rows and installation-shared catalogs,
+and refuses a schema missing any table or its one canonical forced-RLS policy.
+It compares the exact PostgreSQL `USING` and `WITH CHECK` predicates, tests an
+unknown subject and up to two real subjects through the restricted login, and
+requires the wrapper and nested web/worker role attestations to have their exact
+complete shape. A partial result, unsafe write predicate, or policy that merely
+accepts any non-empty subject setting can no longer produce a false successful
+restore.
 
 ### Fixed — restored authorization routines close PostgreSQL defaults
 

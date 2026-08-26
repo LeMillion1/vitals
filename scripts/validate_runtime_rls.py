@@ -10,6 +10,7 @@ must have forced row-level security.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -28,11 +29,42 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPOSITORY_ROOT))
 
-from vitals.ownership import OWNERSHIP_REGISTRY, TargetColumn
-
-
 OPERATION = "validate_runtime_rls"
 SUBJECT_SETTING = "vitals.subject_id"
+PLATFORM_SETTING = "vitals.platform_scope"
+_POLICY_REVISIONS = (
+    "0050_force_subject_row_level_security",
+    "0051_row_security_for_catalogs_and_children",
+    "0055_professional_invitations",
+    "0056_care_relationships_and_consent",
+    "0057_professional_notes_and_care_plans",
+    "0060_per_subject_provider_credentials",
+    "0061_care_team_threads_and_messages",
+    "0062_support_access_requests",
+    "0063_external_api_tokens",
+    "0065_subject_scoped_mcp_grants",
+    "0067_care_message_attachments",
+    "0069_subject_isolated_care_push_outbox",
+    "0076_support_repair_actions",
+    "0078_break_glass_sessions",
+    "0079_portability_import_receipts",
+)
+_DROPPED_POLICY_TABLES = frozenset({"signals", "day_context"})
+_SUBJECT_PREDICATE = (
+    "(subject_id = (NULLIF(current_setting('vitals.subject_id'::text, true), "
+    "''::text))::uuid)"
+)
+_PLATFORM_PREDICATE = (
+    "((subject_id = (NULLIF(current_setting('vitals.subject_id'::text, true), "
+    "''::text))::uuid) OR "
+    "(current_setting('vitals.platform_scope'::text, true) = 'on'::text))"
+)
+_SHARED_PREDICATE = (
+    "((subject_id IS NULL) OR "
+    "(subject_id = (NULLIF(current_setting('vitals.subject_id'::text, true), "
+    "''::text))::uuid) OR "
+    "(current_setting('vitals.platform_scope'::text, true) = 'on'::text))"
+)
 _ERROR_CODES = frozenset(
     {
         "bound_subject_rows_mismatch",
@@ -124,17 +156,58 @@ def _quote_table(connection: Any, table_name: str) -> str:
 
 def _required_subject_tables(
     relation_state: Mapping[str, tuple[bool, bool]],
+    policy_kinds: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """Require the complete current ownership registry, never an intersection."""
+    """Require every current table that a migration placed behind subject RLS."""
 
-    required = sorted(
-        table_name
-        for table_name, spec in OWNERSHIP_REGISTRY.items()
-        if spec.subject is TargetColumn.REQUIRED
-    )
+    required = sorted(policy_kinds if policy_kinds is not None else _policy_kinds())
     if not required or any(table_name not in relation_state for table_name in required):
         _fail("required_subject_tables_missing")
     return required
+
+
+def _policy_kinds() -> dict[str, str]:
+    """Derive today's exact policy inventory from the immutable migrations."""
+
+    kinds: dict[str, str] = {}
+    for stem in _POLICY_REVISIONS:
+        path = _REPOSITORY_ROOT / "migrations" / "versions" / f"{stem}.py"
+        spec = importlib.util.spec_from_file_location(f"_vitals_rls_{stem[:4]}", path)
+        if spec is None or spec.loader is None:
+            _fail("required_subject_tables_missing")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        shared = set(getattr(module, "SHARED_WITH_INSTALLATION", ()))
+        tables = set(getattr(module, "SUBJECT_ISOLATED_TABLES", ()))
+        tables.update(getattr(module, "INHERITED_CHILDREN", ()))
+        tables.update(shared)
+        for table_name in tables:
+            if table_name in _DROPPED_POLICY_TABLES:
+                continue
+            if table_name in shared:
+                kind = "shared"
+            elif stem.startswith(("0050_", "0051_")) or hasattr(
+                module, "PLATFORM_SETTING"
+            ):
+                kind = "platform"
+            else:
+                kind = "subject"
+            previous = kinds.setdefault(table_name, kind)
+            if previous != kind:
+                _fail("required_table_policy_invalid")
+    return kinds
+
+
+def _expected_policy(table_name: str, policy_kinds: Mapping[str, str]) -> str:
+    predicate = {
+        "subject": _SUBJECT_PREDICATE,
+        "platform": _PLATFORM_PREDICATE,
+        "shared": _SHARED_PREDICATE,
+    }.get(policy_kinds.get(table_name, ""))
+    if predicate is None:
+        _fail("required_table_policy_invalid")
+    return predicate
 
 
 async def validate_runtime_rls(
@@ -210,7 +283,10 @@ async def validate_runtime_rls(
                     name: (bool(enabled), bool(forced))
                     for name, enabled, forced in relation_rows
                 }
-                required_tables = _required_subject_tables(relation_state)
+                policy_kinds = _policy_kinds()
+                required_tables = _required_subject_tables(
+                    relation_state, policy_kinds
+                )
 
                 rls_states = [
                     state for state in relation_state.values() if state[0]
@@ -254,17 +330,14 @@ async def validate_runtime_rls(
                     if len(rows) != 1:
                         _fail("required_table_policy_invalid")
                     name, permissive, command, roles, using, check = rows[0]
-                    using_text = str(using or "")
-                    check_text = str(check or "")
+                    expected_policy = _expected_policy(table_name, policy_kinds)
                     if (
                         name != "rls_subject_isolation"
                         or not permissive
                         or command not in ("*", b"*")
                         or list(roles or ()) != [0]
-                        or "subject_id" not in using_text
-                        or SUBJECT_SETTING not in using_text
-                        or "subject_id" not in check_text
-                        or SUBJECT_SETTING not in check_text
+                        or using != expected_policy
+                        or check != expected_policy
                     ):
                         _fail("required_table_policy_invalid")
 

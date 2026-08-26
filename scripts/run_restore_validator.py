@@ -22,6 +22,7 @@ _RUNTIME_COUNT_KEYS = frozenset(
         "required_subject_tables",
         "subjects",
         "unbound_visible_rows",
+        "validated_subjects",
     }
 )
 

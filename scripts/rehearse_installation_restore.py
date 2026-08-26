@@ -141,6 +141,57 @@ def _fail(code: str) -> NoReturn:
     raise DrillError(code)
 
 
+def _validate_role_payload(context: Context, payload: Any) -> None:
+    """Accept only the complete attested web/worker role result."""
+
+    top_keys = {"status", "database", "migration_role", "web", "worker"}
+    role_keys = {
+        "status",
+        "database",
+        "migration_role",
+        "runtime_role",
+        "owned_objects",
+        "role_memberships",
+        "role_settings",
+        "extra_privileges",
+        "superuser",
+        "bypass_rls",
+    }
+    if not isinstance(payload, dict) or set(payload) != top_keys:
+        _fail("runtime_role_provision_failed")
+    if (
+        payload["status"] != "completed"
+        or payload["database"] != context.database
+        or payload["migration_role"] != context.owner_role
+    ):
+        _fail("runtime_role_provision_failed")
+    for label, expected_role in (
+        ("web", context.runtime_role),
+        ("worker", context.worker_role),
+    ):
+        state = payload[label]
+        if not isinstance(state, dict) or set(state) != role_keys:
+            _fail("runtime_role_provision_failed")
+        if (
+            state["status"] != "completed"
+            or state["database"] != context.database
+            or state["migration_role"] != context.owner_role
+            or state["runtime_role"] != expected_role
+            or state["superuser"] is not False
+            or state["bypass_rls"] is not False
+        ):
+            _fail("runtime_role_provision_failed")
+        for key in (
+            "owned_objects",
+            "role_memberships",
+            "role_settings",
+            "extra_privileges",
+        ):
+            value = state[key]
+            if isinstance(value, bool) or not isinstance(value, int) or value != 0:
+                _fail("runtime_role_provision_failed")
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
@@ -1240,24 +1291,7 @@ def run_drill(args: argparse.Namespace) -> dict[str, Any]:
             ),
             code="runtime_role_provision_failed",
         )
-        required_zero = (
-            "owned_objects",
-            "role_memberships",
-            "role_settings",
-            "extra_privileges",
-        )
-        role_states = (role_payload.get("web", {}), role_payload.get("worker", {}))
-        if (
-            role_payload.get("status") != "completed"
-            or any(
-                state.get(key) != 0
-                for state in role_states
-                for key in required_zero
-            )
-            or role_states[0].get("runtime_role") != context.runtime_role
-            or role_states[1].get("runtime_role") != context.worker_role
-        ):
-            _fail("runtime_role_provision_failed")
+        _validate_role_payload(context, role_payload)
         rls_payload = _json_from_output(
             _service_run(
                 context,

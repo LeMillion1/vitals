@@ -247,6 +247,70 @@ def _context(tmp_path: Path) -> runner.Context:
     )
 
 
+def _role_payload(context: runner.Context) -> dict:
+    def state(runtime_role: str) -> dict:
+        return {
+            "status": "completed",
+            "database": context.database,
+            "migration_role": context.owner_role,
+            "runtime_role": runtime_role,
+            "owned_objects": 0,
+            "role_memberships": 0,
+            "role_settings": 0,
+            "extra_privileges": 0,
+            "superuser": False,
+            "bypass_rls": False,
+        }
+
+    return {
+        "status": "completed",
+        "database": context.database,
+        "migration_role": context.owner_role,
+        "web": state(context.runtime_role),
+        "worker": state(context.worker_role),
+    }
+
+
+def test_role_provision_payload_requires_the_complete_exact_attestation(tmp_path):
+    context = _context(tmp_path)
+
+    assert runner._validate_role_payload(context, _role_payload(context)) is None
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("database",), "other"),
+        (("unexpected",), 0),
+        (("web", "status"), "partial"),
+        (("web", "database"), "other"),
+        (("web", "migration_role"), "other"),
+        (("web", "runtime_role"), "other"),
+        (("web", "owned_objects"), True),
+        (("web", "role_memberships"), 1),
+        (("web", "superuser"), True),
+        (("worker", "bypass_rls"), True),
+        (("worker", "unexpected"), 0),
+    ],
+)
+def test_role_provision_payload_rejects_partial_or_unsafe_state(
+    tmp_path, path, value
+):
+    context = _context(tmp_path)
+    payload = _role_payload(context)
+    target = payload
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    _assert_drill_error(
+        "runtime_role_provision_failed",
+        runner._validate_role_payload,
+        context,
+        payload,
+    )
+
+
 def _write_bound_state(context: runner.Context) -> None:
     context.marker_file.write_text(
         json.dumps({"project": context.project, "run_id": context.run_id}),

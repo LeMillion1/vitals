@@ -130,11 +130,10 @@ def test_cli_does_not_render_database_exception_details(monkeypatch, capsys):
 
 
 def test_required_table_inventory_refuses_a_partial_schema(monkeypatch):
-    supplement = validator.OWNERSHIP_REGISTRY["supplements"]
     monkeypatch.setattr(
         validator,
-        "OWNERSHIP_REGISTRY",
-        {"supplements": supplement, "weight_logs": supplement},
+        "_policy_kinds",
+        lambda: {"supplements": "subject", "weight_logs": "subject"},
     )
 
     with pytest.raises(
@@ -142,6 +141,19 @@ def test_required_table_inventory_refuses_a_partial_schema(monkeypatch):
         match="^required_subject_tables_missing$",
     ):
         validator._required_subject_tables({"supplements": (True, True)})
+
+
+def test_policy_inventory_covers_every_current_migration_declared_table():
+    kinds = validator._policy_kinds()
+
+    assert len(kinds) == 71
+    assert list(kinds.values()).count("platform") == 61
+    assert list(kinds.values()).count("shared") == 5
+    assert list(kinds.values()).count("subject") == 5
+    assert "body_scan_metrics" in kinds
+    assert "system_alerts" in kinds
+    assert "mcp_access_tokens" in kinds
+    assert not validator._DROPPED_POLICY_TABLES & kinds.keys()
 
 
 @pytest.mark.integration
@@ -254,8 +266,8 @@ async def test_real_postgres_proves_forced_rls_with_split_roles(monkeypatch):
 
         monkeypatch.setattr(
             validator,
-            "OWNERSHIP_REGISTRY",
-            {"supplements": validator.OWNERSHIP_REGISTRY["supplements"]},
+            "_policy_kinds",
+            lambda: {"supplements": "subject"},
         )
 
         result = await validator.validate_runtime_rls(
@@ -294,7 +306,33 @@ async def test_real_postgres_proves_forced_rls_with_split_roles(monkeypatch):
 
         with pytest.raises(
             validator.RuntimeRlsValidationError,
-            match="^bound_subject_rows_mismatch$",
+            match="^required_table_policy_invalid$",
+        ):
+            await validator.validate_runtime_rls(
+                migration_url=migration_url,
+                runtime_url=runtime_url,
+            )
+
+        migration = create_async_engine(migration_url, poolclass=NullPool)
+        try:
+            async with migration.begin() as connection:
+                await connection.exec_driver_sql(
+                    "DROP POLICY rls_subject_isolation ON supplements"
+                )
+                subject = (
+                    "subject_id = NULLIF(current_setting("
+                    "'vitals.subject_id', true), '')::uuid"
+                )
+                await connection.exec_driver_sql(
+                    "CREATE POLICY rls_subject_isolation ON supplements "
+                    f"USING ({subject}) WITH CHECK (subject_id = subject_id)"
+                )
+        finally:
+            await migration.dispose()
+
+        with pytest.raises(
+            validator.RuntimeRlsValidationError,
+            match="^required_table_policy_invalid$",
         ):
             await validator.validate_runtime_rls(
                 migration_url=migration_url,
