@@ -48,12 +48,48 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m
 
+  vitals_worker:
+    restart: "no"
+    read_only: true
+    environment:
+      VITALS_RESTORE_DRILL: "true"
+    networks:
+      - default
+    volumes:
+      - type: bind
+        source: ${VITALS_DRILL_RUNTIME_ENV_FILE:?VITALS_DRILL_RUNTIME_ENV_FILE is required}
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${VITALS_DRILL_GARMIN_DIR:?VITALS_DRILL_GARMIN_DIR is required}
+        target: /data/garmin_session
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${VITALS_DRILL_LEGACY_UPLOAD_DIR:?VITALS_DRILL_LEGACY_UPLOAD_DIR is required}
+        target: /app/web/static/uploads
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${VITALS_DRILL_PRIVATE_FILES_DIR:?VITALS_DRILL_PRIVATE_FILES_DIR is required}
+        target: /data/private_files
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+
   # Docker does not publish host ports for a container attached only to an
   # internal bridge. This fixed byte proxy carries no credentials or mounts;
   # only it reaches the non-internal ingress bridge, while the app keeps no
   # outbound route.
   vitals_drill_proxy:
     build: .
+    image: ${COMPOSE_PROJECT_NAME:-vitals}_runtime:${VITALS_IMAGE_TAG:-local}
     command: ["python", "scripts/serve_restore_drill_proxy.py"]
     environment:
       VITALS_RESTORE_DRILL_PROXY: "true"

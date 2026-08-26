@@ -1,3 +1,9 @@
+x-vitals-runtime: &vitals-runtime
+  build: .
+  # Every application process in one project runs identical bytes. Deployment
+  # supplies an immutable commit tag; local/manual Compose retains `local`.
+  image: ${COMPOSE_PROJECT_NAME:-vitals}_runtime:${VITALS_IMAGE_TAG:-local}
+
 services:
   vitals_db:
     image: postgres:15-alpine
@@ -19,12 +25,17 @@ services:
     restart: unless-stopped
     volumes:
       - vitals_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   # Schema changes run with the owner/exempt role, never with the web runtime
   # credential. This service is intentionally one-shot and contains no provider
   # credentials or application settings beyond the migration database URL.
   vitals_migrate:
-    build: .
+    <<: *vitals-runtime
     depends_on:
       vitals_db:
         condition: service_healthy
@@ -36,7 +47,7 @@ services:
   # Re-apply least-privilege grants after every migration so newly created
   # tables and sequences are available without making the application an owner.
   vitals_db_roles:
-    build: .
+    <<: *vitals-runtime
     depends_on:
       vitals_migrate:
         condition: service_completed_successfully
@@ -48,17 +59,18 @@ services:
     restart: "no"
 
   vitals_app:
-    build: .
+    <<: *vitals-runtime
     depends_on:
       vitals_db_roles:
         condition: service_completed_successfully
       vitals_redis:
-        condition: service_started
+        condition: service_healthy
     environment:
       TZ: Europe/Chisinau
       # Compose deployments fail startup if the mounted application file
       # contains a DB-owner/control-plane key or if one is injected directly.
       VITALS_RUNTIME_ENV_ISOLATION_REQUIRED: "true"
+      VITALS_PROCESS_MODE: web
     # No `env_file:` here on purpose: it would inject a snapshot of .env as
     # container-level env vars at creation time, which then permanently shadows
     # the live bind-mounted file below (python-dotenv's load_dotenv() never
@@ -93,6 +105,55 @@ services:
       # or put a TLS reverse proxy / VPN (Tailscale) in front. The plan requires
       # this app to live behind a VPN/firewall.
       - "127.0.0.1:${VITALS_APP_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).close()"
+      interval: 15s
+      timeout: 10s
+      retries: 4
+      start_period: 90s
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # APScheduler and every provider/background job live in this process. The
+  # canonical database setting is deliberately mapped from the host-only worker
+  # DSN; the source key itself never enters the restricted process environment.
+  vitals_worker:
+    <<: *vitals-runtime
+    depends_on:
+      vitals_db_roles:
+        condition: service_completed_successfully
+      vitals_redis:
+        condition: service_healthy
+    environment:
+      TZ: Europe/Chisinau
+      VITALS_RUNTIME_ENV_ISOLATION_REQUIRED: "true"
+      VITALS_PROCESS_MODE: worker
+      VITALS_DATABASE_URL: ${VITALS_WORKER_DATABASE_URL:?VITALS_WORKER_DATABASE_URL must be set}
+    command: ["python", "-m", "vitals.worker"]
+    volumes:
+      # The worker reads shared application/provider settings but never writes
+      # the Settings-owned runtime file. Its process-level DB URL above wins
+      # over the web URL stored in this file.
+      - type: bind
+        source: ${VITALS_RUNTIME_ENV_FILE:-.env.runtime}
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
+      - vitals_garmin_session:/data/garmin_session
+      - ./web/static/uploads:/app/web/static/uploads
+      - vitals_private_files:/data/private_files
+    healthcheck:
+      test: ["CMD", "python", "-m", "vitals.worker_health"]
+      interval: 15s
+      timeout: 10s
+      retries: 4
+      start_period: 90s
+    stop_grace_period: 90s
     restart: unless-stopped
 
   # ── Identity provider ────────────────────────────────────────────────────

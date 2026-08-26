@@ -51,6 +51,7 @@ OPERATOR_ENV_KEYS = (
     "VITALS_DB_NAME",
     "VITALS_DB_PASSWORD",
     "VITALS_DB_USER",
+    "VITALS_IMAGE_TAG",
     "VITALS_DRILL_GARMIN_DIR",
     "VITALS_DRILL_LEGACY_UPLOAD_DIR",
     "VITALS_DRILL_PRIVATE_FILES_DIR",
@@ -685,6 +686,7 @@ def _render_and_assert(context: Context) -> dict[str, Any]:
         "vitals_drill_proxy",
         "vitals_migrate",
         "vitals_redis",
+        "vitals_worker",
     }
     if set(services) != expected_services:
         _fail("compose_service_set_invalid")
@@ -692,7 +694,22 @@ def _render_and_assert(context: Context) -> dict[str, Any]:
     ports = app.get("ports") or []
     if ports:
         _fail("compose_app_port_exposed")
+    worker = services.get("vitals_worker", {})
+    if worker.get("ports"):
+        _fail("compose_worker_port_exposed")
     proxy = services.get("vitals_drill_proxy", {})
+    runtime_service_names = (
+        "vitals_app",
+        "vitals_worker",
+        "vitals_migrate",
+        "vitals_db_roles",
+        "vitals_drill_proxy",
+    )
+    expected_runtime_image = f"{context.project}_runtime:{context.source_revision}"
+    if {
+        (services.get(name) or {}).get("image") for name in runtime_service_names
+    } != {expected_runtime_image}:
+        _fail("compose_runtime_image_invalid")
     ports = proxy.get("ports") or []
     if len(ports) != 1:
         _fail("compose_port_count_invalid")
@@ -709,30 +726,50 @@ def _render_and_assert(context: Context) -> dict[str, Any]:
         "/app/web/static/uploads",
         "/data/private_files",
     }
-    seen: set[str] = set()
-    for mount in app.get("volumes") or []:
-        target = mount.get("target")
-        if target not in expected_targets:
-            continue
-        seen.add(target)
-        if mount.get("type") != "bind" or mount.get("read_only") is not True:
-            _fail("compose_sensitive_mount_not_read_only")
-        source = Path(mount.get("source", "")).resolve(strict=True)
-        if not _is_relative_to(source, context.run_dir):
-            _fail("compose_bind_outside_scratch")
-    if seen != expected_targets:
-        _fail("compose_sensitive_mount_missing")
-    if app.get("read_only") is not True:
+    for runtime in (app, worker):
+        seen: set[str] = set()
+        for mount in runtime.get("volumes") or []:
+            target = mount.get("target")
+            if target not in expected_targets:
+                continue
+            seen.add(target)
+            if mount.get("type") != "bind" or mount.get("read_only") is not True:
+                _fail("compose_sensitive_mount_not_read_only")
+            source = Path(mount.get("source", "")).resolve(strict=True)
+            if not _is_relative_to(source, context.run_dir):
+                _fail("compose_bind_outside_scratch")
+        if seen != expected_targets:
+            _fail("compose_sensitive_mount_missing")
+    if app.get("read_only") is not True or worker.get("read_only") is not True:
         _fail("compose_app_root_not_read_only")
-    if (app.get("environment") or {}).get("VITALS_RESTORE_DRILL") != "true":
+    if any(
+        (runtime.get("environment") or {}).get("VITALS_RESTORE_DRILL") != "true"
+        for runtime in (app, worker)
+    ):
         _fail("compose_restore_marker_missing")
+    app_environment = app.get("environment") or {}
+    worker_environment = worker.get("environment") or {}
+    if (
+        app_environment.get("VITALS_PROCESS_MODE") != "web"
+        or worker_environment.get("VITALS_PROCESS_MODE") != "worker"
+        or worker_environment.get("VITALS_DATABASE_URL")
+        != context.compose_env["VITALS_WORKER_DATABASE_URL"]
+        or "VITALS_WORKER_DATABASE_URL" in app_environment
+        or "VITALS_WORKER_DATABASE_URL" in worker_environment
+        or worker.get("command") != ["python", "-m", "vitals.worker"]
+        or (worker.get("healthcheck") or {}).get("test")
+        != ["CMD", "python", "-m", "vitals.worker_health"]
+    ):
+        _fail("compose_runtime_process_invalid")
     app_networks = set(app.get("networks") or {})
+    worker_networks = set(worker.get("networks") or {})
     proxy_networks = set(proxy.get("networks") or {})
     data_networks = set((services.get("vitals_db") or {}).get("networks") or {})
     if (
         app_networks != internal_networks
         or len(data_networks) != 1
         or not data_networks < app_networks
+        or worker_networks != data_networks
         or proxy_networks & internal_networks != app_networks - data_networks
         or proxy_networks & ingress_networks != ingress_networks
         or len(proxy_networks) != 2
@@ -749,7 +786,7 @@ def _render_and_assert(context: Context) -> dict[str, Any]:
             continue
         if not set(service.get("networks") or {}).issubset(internal_networks):
             _fail("compose_service_network_invalid")
-    for service_name in ("vitals_app", "vitals_db_roles", "vitals_migrate", "vitals_drill_proxy"):
+    for service_name in runtime_service_names:
         context_value = ((services[service_name].get("build") or {}).get("context"))
         if Path(str(context_value)).resolve(strict=True) != context.source_dir:
             _fail("compose_build_context_invalid")
@@ -962,6 +999,27 @@ def _classify_app_failure(context: Context) -> str:
     return "drill_app_health_failed"
 
 
+def _start_worker(context: Context) -> None:
+    """Start and prove the restored scheduler before exposing restored web."""
+
+    _run(
+        _compose(context)
+        + [
+            "up",
+            "-d",
+            "--wait",
+            "--wait-timeout",
+            "90",
+            "--no-deps",
+            "--no-build",
+            "vitals_worker",
+        ],
+        cwd=context.source_dir,
+        env=_safe_env(),
+        code="drill_worker_start_failed",
+    )
+
+
 def _resource_ids(project: str) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
     for kind, command in (
@@ -1090,6 +1148,7 @@ def _context_from_state(run_dir: Path) -> tuple[Context, dict[str, Any]]:
         or worker_match.group(2) != database
         or migration_match.groups() != (owner, database)
         or values.get("VITALS_APP_PORT") != str(port)
+        or values.get("VITALS_IMAGE_TAG") != source_revision
         or values.get("VITALS_DRILL_GARMIN_DIR") != str(run_dir / "garmin")
         or values.get("VITALS_DRILL_LEGACY_UPLOAD_DIR")
         != str(run_dir / "legacy_uploads")
@@ -1168,6 +1227,7 @@ def _build_context(bundle: Bundle, scratch_parent: Path, port: int) -> Context:
             "VITALS_DB_NAME": database,
             "VITALS_DB_PASSWORD": owner_password,
             "VITALS_DB_USER": owner,
+            "VITALS_IMAGE_TAG": revision,
             "VITALS_DRILL_GARMIN_DIR": str(run_dir / "garmin"),
             "VITALS_DRILL_LEGACY_UPLOAD_DIR": str(run_dir / "legacy_uploads"),
             "VITALS_DRILL_MCP_SECRET": secrets.token_urlsafe(32),
@@ -1248,6 +1308,7 @@ def run_drill(args: argparse.Namespace) -> dict[str, Any]:
                 "vitals_migrate",
                 "vitals_db_roles",
                 "vitals_app",
+                "vitals_worker",
                 "vitals_drill_proxy",
             ],
             cwd=context.source_dir,
@@ -1466,6 +1527,7 @@ def run_drill(args: argparse.Namespace) -> dict[str, Any]:
             credentials,
             f"username=drill-{context.run_id}\npassword={password}\n",
         )
+        _start_worker(context)
         _run(
             _compose(context)
             + [

@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — web and scheduler run as separate services
+
+Compose now runs FastAPI explicitly in web mode and APScheduler through the
+standalone worker entry point with its dedicated restricted PostgreSQL login.
+Both processes wait for healthy Redis and expose mode-specific healthchecks; the
+worker has no published port and receives only its database URL under the
+canonical runtime key. Web, worker, migrations, and role provisioning share one
+project-scoped image reference, while restore drills pin that image to the
+staged source revision and verify the worker before accepting web as healthy.
+
 ### Fixed — split worker health is instance-local and fail-closed
 
 The standalone scheduler worker now publishes a container-local readiness marker

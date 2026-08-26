@@ -149,6 +149,33 @@ def test_http_wait_retains_bounded_error_status(monkeypatch):
     assert runner._wait_http(18080, "/health", timeout=0.01) == 503
 
 
+def test_restore_worker_start_waits_for_instance_health(tmp_path, monkeypatch):
+    context = _context(tmp_path)
+    captured = []
+
+    def fake_run(command, **kwargs):
+        captured.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(runner, "_run", fake_run)
+
+    runner._start_worker(context)
+
+    command, kwargs = captured[0]
+    assert command[-8:] == [
+        "up",
+        "-d",
+        "--wait",
+        "--wait-timeout",
+        "90",
+        "--no-deps",
+        "--no-build",
+        "vitals_worker",
+    ]
+    assert kwargs["cwd"] == context.source_dir
+    assert kwargs["code"] == "drill_worker_start_failed"
+
+
 def _bundle(tmp_path: Path) -> runner.Bundle:
     names = [
         f"vitals_{STAMP}.sql.gz",
@@ -204,6 +231,7 @@ def _context(tmp_path: Path) -> runner.Context:
         "VITALS_DB_NAME": f"vitals_drill_{run_id}",
         "VITALS_DB_PASSWORD": "owner-secret",
         "VITALS_DB_USER": owner,
+        "VITALS_IMAGE_TAG": "a" * 40,
         "VITALS_DATABASE_URL": (
             f"postgresql+asyncpg://{runtime_role}:runtime-secret@"
             f"vitals_db:5432/{database}"
@@ -660,17 +688,18 @@ def test_restore_compose_overlay_keeps_drill_inputs_read_only_and_network_intern
     assert "internal: true" in overlay
     assert "ports: !reset []" in overlay
     assert "vitals_drill_proxy:" in overlay
+    assert "vitals_worker:" in overlay
     assert "VITALS_RESTORE_DRILL_PROXY" in overlay
     assert 'profiles: ["restore-drill-disabled"]' in overlay
-    assert overlay.count("read_only: true") == 6
-    assert overlay.count("create_host_path: false") == 4
+    assert overlay.count("read_only: true") == 11
+    assert overlay.count("create_host_path: false") == 8
     for target in (
         "/app/.env",
         "/data/garmin_session",
         "/app/web/static/uploads",
         "/data/private_files",
     ):
-        assert f"target: {target}" in overlay
+        assert overlay.count(f"target: {target}") == 2
 
 
 def test_restore_marker_is_process_control_not_a_runtime_file_setting(tmp_path):

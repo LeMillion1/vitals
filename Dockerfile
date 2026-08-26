@@ -16,8 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Launch FastAPI + APScheduler as the restricted runtime role. Compose runs
-# Alembic and role provisioning in separate one-shot services before this starts.
+# Launch FastAPI by default. Compose overrides this command for the standalone
+# scheduler worker and runs Alembic/role provisioning as separate one-shot steps.
 # --forwarded-allow-ips="*": trust X-Forwarded-For so per-IP login throttling
 # sees the real client IP, not Caddy's. Safe here — the port binds loopback only
 # and Caddy is the sole upstream.

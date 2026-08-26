@@ -31,6 +31,51 @@ def test_app_has_one_configurable_loopback_mapping():
     assert "127.0.0.1:8000:8000" not in ports
 
 
+def test_web_and_worker_have_distinct_process_and_health_contracts():
+    services = _compose()["services"]
+    app = services["vitals_app"]
+    worker = services["vitals_worker"]
+
+    runtime_image = (
+        "${COMPOSE_PROJECT_NAME:-vitals}_runtime:${VITALS_IMAGE_TAG:-local}"
+    )
+    assert {
+        services[name]["image"]
+        for name in (
+            "vitals_app",
+            "vitals_worker",
+            "vitals_migrate",
+            "vitals_db_roles",
+        )
+    } == {runtime_image}
+    assert app["environment"]["VITALS_PROCESS_MODE"] == "web"
+    assert worker["environment"]["VITALS_PROCESS_MODE"] == "worker"
+    assert worker["command"] == ["python", "-m", "vitals.worker"]
+    assert "ports" not in worker
+    assert "vitals_worker" not in app["depends_on"]
+    assert app["healthcheck"]["test"][:3] == ["CMD", "python", "-c"]
+    assert worker["healthcheck"]["test"] == [
+        "CMD",
+        "python",
+        "-m",
+        "vitals.worker_health",
+    ]
+    assert app["stop_grace_period"] == "30s"
+    assert worker["stop_grace_period"] == "90s"
+    assert services["vitals_redis"]["healthcheck"]["test"] == [
+        "CMD",
+        "redis-cli",
+        "ping",
+    ]
+    for runtime in (app, worker):
+        assert runtime["depends_on"]["vitals_redis"]["condition"] == (
+            "service_healthy"
+        )
+        assert runtime["depends_on"]["vitals_db_roles"]["condition"] == (
+            "service_completed_successfully"
+        )
+
+
 def test_schema_migration_and_runtime_roles_are_separate_startup_steps():
     compose = _compose()
     migrate = compose["services"]["vitals_migrate"]
@@ -74,6 +119,25 @@ def test_app_mounts_only_the_allowlisted_runtime_environment():
     }
     assert app["environment"]["VITALS_RUNTIME_ENV_ISOLATION_REQUIRED"] == "true"
     assert ".env:/app/.env" not in str(app)
+
+
+def test_worker_maps_only_its_dsn_to_the_canonical_runtime_key():
+    worker = _compose()["services"]["vitals_worker"]
+    environment = worker["environment"]
+
+    assert environment["VITALS_DATABASE_URL"].startswith(
+        "${VITALS_WORKER_DATABASE_URL:"
+    )
+    assert "VITALS_WORKER_DATABASE_URL" not in environment
+    assert environment["VITALS_RUNTIME_ENV_ISOLATION_REQUIRED"] == "true"
+    runtime_mount = next(
+        mount
+        for mount in worker["volumes"]
+        if isinstance(mount, dict) and mount["target"] == "/app/.env"
+    )
+    assert runtime_mount["source"] == "${VITALS_RUNTIME_ENV_FILE:-.env.runtime}"
+    assert runtime_mount["read_only"] is True
+    assert runtime_mount["bind"] == {"create_host_path": False}
 
 
 def test_configurable_app_port_is_documented_in_both_operator_languages():
