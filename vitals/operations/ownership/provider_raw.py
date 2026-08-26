@@ -1488,15 +1488,42 @@ async def _scan_table(
             return rows_above
         if for_update:
             await _lock_graph_for_ids(session, spec=spec, row_ids=ids)
-        for row_id in ids:
-            _row, _raw, changed = await _row_plan(
-                session,
-                spec=spec,
-                row_id=row_id,
-                scope=scope,
-                historical=row_id <= high_watermark,
-                lock_children=for_update,
+        if spec.model is GarminIntraday:
+            rows, graphs = await _load_intraday_batch_graphs(
+                session, spec=spec, row_ids=ids
             )
+            plans = []
+            for row in rows:
+                raw, connection = graphs[row._mapping["raw_payload_id"]]
+                plans.append(
+                    (
+                        row,
+                        raw,
+                        _validate_graph(
+                            spec=spec,
+                            row=row,
+                            raw=raw,
+                            connection=connection,
+                            scope=scope,
+                            historical=row._mapping["id"] <= high_watermark,
+                        ),
+                    )
+                )
+        else:
+            plans = []
+            for row_id in ids:
+                plans.append(
+                    await _row_plan(
+                        session,
+                        spec=spec,
+                        row_id=row_id,
+                        scope=scope,
+                        historical=row_id <= high_watermark,
+                        lock_children=for_update,
+                    )
+                )
+        for row, _raw, changed in plans:
+            row_id = row._mapping["id"]
             if (
                 checkpoint_cursor is not None
                 and row_id <= checkpoint_cursor

@@ -415,6 +415,7 @@ async def test_intraday_page_uses_bounded_queries_instead_of_one_graph_load_per_
     assert result.batch_scanned_rows == 251
     assert result.batch_updated_rows == 251
     assert statement_count < 150
+    await db_session.commit()
     assert await db_session.scalar(
         select(func.count())
         .select_from(GarminIntraday)
@@ -424,6 +425,18 @@ async def test_intraday_page_uses_bounded_queries_instead_of_one_graph_load_per_
             == connections[IntegrationProvider.GARMIN.value].id,
         )
     ) == 251
+
+    statement_count = 0
+    event.listen(engine.sync_engine, "before_cursor_execute", count_statement)
+    try:
+        completed = await run_provider_raw_ownership_backfill_batch(
+            db_session, batch_size=1000
+        )
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", count_statement)
+    assert completed.batch_table == "hevy_workouts"
+    assert completed.completed
+    assert statement_count < 300
 
 
 @pytest.mark.asyncio
