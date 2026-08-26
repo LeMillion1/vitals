@@ -413,7 +413,9 @@ services:
     volumes:
       - vitals_idp_config:/zitadel/config:ro
       - vitals_idp_masterkey:/zitadel/masterkey:ro
-    networks: [vitals_idp_internal]
+    networks:
+      - vitals_idp_internal
+      - vitals_idp_proxy
     command: ["start", "--masterkeyFile", "/zitadel/masterkey/masterkey", "--config", "/zitadel/config/config.yaml"]
     healthcheck:
       test: ["CMD", "/app/zitadel", "ready"]
@@ -436,7 +438,7 @@ services:
       CUSTOM_REQUEST_HEADERS: Host:${VITALS_IDP_DOMAIN:-localhost}:${VITALS_IDP_EXTERNAL_PORT:-8080},X-Forwarded-Proto:${VITALS_IDP_PUBLIC_SCHEME:-http}
     volumes:
       - vitals_idp_bootstrap:/zitadel/bootstrap:ro
-    networks: [vitals_idp_internal]
+    networks: [vitals_idp_proxy]
     healthcheck:
       test: ["CMD", "/bin/sh", "-c", "node /app/healthcheck.mjs http://localhost:3000/ui/v2/login/healthy"]
       interval: 10s
@@ -460,7 +462,7 @@ services:
     volumes:
       - ./deploy/zitadel/Caddyfile:/etc/caddy/Caddyfile:ro
     networks:
-      - vitals_idp_internal
+      - vitals_idp_proxy
       - vitals_idp_edge
     ports:
       - "127.0.0.1:${VITALS_IDP_ORIGIN_PORT:-8080}:8080"
@@ -475,6 +477,45 @@ services:
       - /config:rw,noexec,nosuid,nodev,size=16m
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/debug/ready"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # Public HTTP/2/TLS boundary for a normal proxied DNS record. Keep it in its
+  # own profile: preparing the provider on loopback must not publish 80/443.
+  # The existing local gateway remains the recovery/debug path and never owns
+  # certificate state.
+  vitals_idp_public_gateway:
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    profiles: ["idp-public"]
+    depends_on:
+      vitals_idp:
+        condition: service_healthy
+      vitals_idp_login:
+        condition: service_healthy
+    environment:
+      # Empty is intentional: unlike the loopback profile, a public listener
+      # must fail Caddy config loading when the real issuer was not supplied.
+      VITALS_IDP_DOMAIN: "${VITALS_IDP_DOMAIN-}"
+    volumes:
+      - ./deploy/zitadel/Caddy.public:/etc/caddy/Caddyfile:ro
+      - vitals_idp_caddy_data:/data:rw
+    networks:
+      - vitals_idp_proxy
+      - vitals_idp_edge
+    ports:
+      - "0.0.0.0:80:80"
+      - "0.0.0.0:443:443"
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /config:rw,noexec,nosuid,nodev,size=16m
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8081/debug/ready"]
       interval: 10s
       timeout: 10s
       retries: 12
@@ -666,11 +707,16 @@ volumes:
   vitals_idp_config:
   vitals_idp_bootstrap:
   vitals_idp_masterkey:
+  vitals_idp_caddy_data:
   vitals_offsite_state:
   vitals_idp_offsite_state:
 
 networks:
   vitals_idp_internal:
+    internal: true
+  # The two HTTP frontends can reach only Login/API, never PostgreSQL or the
+  # provisioning/backup jobs on the provider's database network.
+  vitals_idp_proxy:
     internal: true
   vitals_idp_edge:
 

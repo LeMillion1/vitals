@@ -76,9 +76,15 @@ def test_identity_profile_pins_reviewed_api_login_and_gateway_images():
     assert compose["services"]["vitals_idp_setup"]["image"] == API_IMAGE
     assert compose["services"]["vitals_idp_login"]["image"] == LOGIN_IMAGE
     assert compose["services"]["vitals_idp_gateway"]["image"] == GATEWAY_IMAGE
+    assert compose["services"]["vitals_idp_public_gateway"]["image"] == (
+        GATEWAY_IMAGE
+    )
     assert "v0.0.0" not in source
     assert "${VITALS_IDP_IMAGE" not in source
     assert "docker.sock" not in str(compose["services"]["vitals_idp_gateway"])
+    assert "docker.sock" not in str(
+        compose["services"]["vitals_idp_public_gateway"]
+    )
 
 
 def test_identity_preflight_accepts_complete_production_configuration(tmp_path):
@@ -158,10 +164,79 @@ def test_identity_service_graph_separates_setup_runtime_and_public_gateway():
         for name, service in services.items()
         if name.startswith("vitals_idp") and service.get("ports")
     }
-    assert publishers == {"vitals_idp_gateway"}
+    assert publishers == {
+        "vitals_idp_gateway",
+        "vitals_idp_public_gateway",
+    }
     assert services["vitals_idp_gateway"]["ports"] == [
         "127.0.0.1:${VITALS_IDP_ORIGIN_PORT:-8080}:8080"
     ]
+
+
+def test_public_identity_gateway_is_explicit_tls_profile_without_secrets():
+    compose = _compose()
+    service = compose["services"]["vitals_idp_public_gateway"]
+    caddyfile = (ROOT / "deploy" / "zitadel" / "Caddy.public").read_text(
+        encoding="utf-8"
+    )
+
+    assert service["profiles"] == ["idp-public"]
+    assert service["depends_on"] == {
+        "vitals_idp": {"condition": "service_healthy"},
+        "vitals_idp_login": {"condition": "service_healthy"},
+    }
+    assert service["ports"] == [
+        "0.0.0.0:80:80",
+        "0.0.0.0:443:443",
+    ]
+    assert service["environment"] == {
+        "VITALS_IDP_DOMAIN": "${VITALS_IDP_DOMAIN-}"
+    }
+    assert service["read_only"] is True
+    assert service["cap_drop"] == ["ALL"]
+    assert service["cap_add"] == ["NET_BIND_SERVICE"]
+    assert service["security_opt"] == ["no-new-privileges:true"]
+    assert service["volumes"] == [
+        "./deploy/zitadel/Caddy.public:/etc/caddy/Caddyfile:ro",
+        "vitals_idp_caddy_data:/data:rw",
+    ]
+    assert "secrets" not in service
+    assert "docker.sock" not in str(service)
+    assert service["healthcheck"]["test"] == [
+        "CMD",
+        "wget",
+        "--spider",
+        "-q",
+        "http://127.0.0.1:8081/debug/ready",
+    ]
+    assert "{$VITALS_IDP_DOMAIN}" in caddyfile
+    assert "@login path /ui/v2/login /ui/v2/login/*" in caddyfile
+    assert "reverse_proxy @login http://vitals_idp_login:3000" in caddyfile
+    assert "reverse_proxy h2c://vitals_idp:8080" in caddyfile
+    assert "header_up -TE" in caddyfile
+    assert "admin off" in caddyfile
+    assert "trusted_proxies static" in caddyfile
+    assert "trusted_proxies_strict" in caddyfile
+    assert "client_ip_headers CF-Connecting-IP X-Forwarded-For" in caddyfile
+    assert "vitals_idp_caddy_data" in compose["volumes"]
+
+
+def test_identity_gateways_cannot_reach_identity_database_network():
+    compose = _compose()
+    services = compose["services"]
+
+    assert services["vitals_idp"]["networks"] == [
+        "vitals_idp_internal",
+        "vitals_idp_proxy",
+    ]
+    assert services["vitals_idp_login"]["networks"] == ["vitals_idp_proxy"]
+    for gateway in ("vitals_idp_gateway", "vitals_idp_public_gateway"):
+        assert services[gateway]["networks"] == [
+            "vitals_idp_proxy",
+            "vitals_idp_edge",
+        ]
+    assert compose["networks"]["vitals_idp_internal"]["internal"] is True
+    assert compose["networks"]["vitals_idp_proxy"]["internal"] is True
 
 
 def test_identity_master_key_stays_private_but_readable_to_nonroot_zitadel():

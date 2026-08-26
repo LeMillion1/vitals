@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — public ZITADEL TLS is an explicit cutover profile
+
+Self-hosted identity now has a separate hardened Caddy profile for the normal
+DNS route on TCP 80/443. It preserves native HTTP/2/gRPC to ZITADEL over h2c,
+routes Login V2 separately, persists only reissuable certificate state, and
+receives no provider or application secrets. Both gateways are isolated from
+the identity database network, and an absent public domain fails closed instead
+of serving a healthy-looking localhost site. Preparing or recovering the
+loopback identity stack therefore never publishes public ports accidentally.
+
 ### Fixed — root-owned ZITADEL master keys work without weakening permissions
 
 Self-hosted identity setup now stages the host mode-`0600` master key through a

@@ -297,6 +297,13 @@ database superuser is restricted to PostgreSQL and two one-shot provisioning
 jobs. Image approval does not authorize production cutover: the destructive
 restore and external HTTP/2/gRPC/browser gates below still must pass.
 
+The separate `idp-public` profile may additionally publish TCP 80/443 after the
+issuer DNS record is ready. Its Caddy data volume contains
+reissuable public certificate state, not identity recovery truth. A complete
+identity recovery point remains the DB+PAT manifest plus the separately
+escrowed master key; do not delay or reject a restore merely because the old
+Caddy volume is absent.
+
 Every complete identity bundle contains exactly two payloads plus a manifest
 published last: `zitadel_<timestamp>.sql.gz` and
 `zitadel_login_client_<timestamp>.pat`. The sidecar fingerprints the live PAT
@@ -369,6 +376,11 @@ docker compose --env-file .env --env-file .env.idp \
 docker compose --env-file .env --env-file .env.idp \
   --profile idp up -d --wait vitals_idp_gateway
 ```
+
+Never start `idp-public` inside the scratch project: it would contend for the
+production host's public ports and certificate identity. Exercise the restored
+provider through its unique loopback origin, while the production public
+gateway is tested separately against the production issuer hostname.
 
 Start the exact approved image digest against that restored database with the
 escrowed master key and an isolated external URL. The valid drill must pass

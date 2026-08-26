@@ -103,10 +103,37 @@ docker compose --env-file .env --env-file .env.idp \
 The only published provider origin is the Caddy gateway at
 `127.0.0.1:${VITALS_IDP_ORIGIN_PORT}`. It routes `/ui/v2/login` to Login V2 and
 all other paths to the API over h2c. API, Login, and PostgreSQL publish no host
-ports. The public `https://<VITALS_IDP_DOMAIN>:443` route is a separate cutover
-gate: it must preserve HTTP/2/gRPC to this h2c-aware boundary and pass external
-discovery, Console, Login V2, gRPC-Web, and `grpcurl` checks. A plain
-Cloudflare-Tunnel HTTP smoke is not that proof.
+ports. The public `https://<VITALS_IDP_DOMAIN>:443` route is a separate opt-in
+profile and cutover gate. Do not use a Cloudflare Tunnel for this hostname:
+create a normal DNS A/AAAA record to the host, allow inbound TCP 80/443, and
+preserve HTTP/2 and gRPC. When Cloudflare proxies the record, use
+**Full (strict)** TLS mode and enable HTTP/2 and gRPC.
+
+After DNS resolves to the intended host, start only the public gateway and its
+already-running dependencies:
+
+```bash
+docker compose --env-file .env --env-file .env.idp \
+  --profile idp --profile idp-public up -d --wait \
+  vitals_idp_public_gateway
+```
+
+The public profile owns ports 80/443 and its own persistent Caddy certificate
+volume; it mounts no provider or application secrets. Do not start it beside
+another reverse proxy that already owns those ports. Prove externally that the
+discovered issuer is exactly `https://<VITALS_IDP_DOMAIN>`, that Console and
+Login V2 render, and that both gRPC-Web and native `grpcurl` work through 443.
+A plain HTTP smoke is not that proof. The loopback gateway remains available as
+the credential-free recovery/debug origin and does not share certificate state.
+The public and loopback gateways share a proxy-only network with Login/API;
+neither can reach the identity database network.
+The public gateway trusts forwarded client addresses only from the reviewed
+Cloudflare network ranges. Recheck those ranges against
+`https://www.cloudflare.com/ips/` during every gateway-image review. If the
+Cloudflare proxy is the intended security boundary, also restrict origin
+ingress to those ranges after certificate issuance and prove that a direct
+origin request cannot bypass the proxy; the Caddy rule alone preserves audit
+addresses but does not implement a host firewall.
 
 Sign in with the configured `VITALS_IDP_ADMIN_USERNAME` (ZITADEL may suffix the
 default organization domain) and the value of
