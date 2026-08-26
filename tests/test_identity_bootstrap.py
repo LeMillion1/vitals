@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vitals.enums import UserRoleName, UserStatus
 from vitals.models.identity import AuditEvent, HealthSubject, User, UserRole
+from vitals.persistence.rls import bound_subject, in_platform_scope
 from vitals.services.identity_bootstrap import (
     LegacyOwnerConfigurationError,
     LegacyOwnerCredentialMismatchError,
@@ -139,6 +140,8 @@ async def test_bootstrap_creates_owner_roles_subject_and_one_audit_event(db_sess
     assert event.subject_id == subject.id
     assert event.metadata_json["source_surface"] == "startup"
     assert password_hash not in str(event.metadata_json)
+    assert bound_subject(db_session) == subject.id
+    assert not in_platform_scope(db_session)
 
 
 @pytest.mark.asyncio

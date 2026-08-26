@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from vitals.enums import UserStatus
 from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.models.scoped_settings import SubjectSetting
-from vitals.persistence.rls import in_platform_scope
+from vitals.persistence.rls import bound_subject, in_platform_scope
 from vitals.services import modules_service
 from vitals.services.identity_bootstrap import LegacyOwnerIdentityMismatchError
 from vitals.services.proactive import prefs
@@ -48,7 +48,8 @@ async def test_startup_boundary_commits_the_configured_legacy_owner(
     assert module_policy is not None
     assert module_policy.value == modules_service.DEFAULT_STATE
     assert preference_bundle.as_flat_dict() == prefs.sanitize(None)
-    assert in_platform_scope(db_session)
+    assert bound_subject(db_session) == subject_id
+    assert not in_platform_scope(db_session)
 
 
 async def test_startup_boundary_rolls_back_and_propagates_identity_mismatch(

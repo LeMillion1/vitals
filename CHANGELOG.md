@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — legacy web startup binds one record instead of the platform
+
+The password-era compatibility bootstrap now discovers or creates only the
+non-RLS identity roots while unbound, then binds its transaction to the exact
+legacy owner's health subject before writing audit history, integration roots,
+module settings, preferences, or profile data. The web process no longer opens
+the installation-wide PostgreSQL platform scope during startup.
+
 ### Fixed — restore validation proves the complete RLS boundary
 
 The restore validator now derives all 71 current subject-policy tables from the

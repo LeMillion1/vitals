@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import AuditOutcome, UserRoleName, UserStatus
 from vitals.models.identity import AuditEvent, HealthSubject, User, UserRole
+from vitals.persistence.rls import bind_session_subject
 from vitals.services.identity_service import (
     acquire_identity_governance_lock,
     bcrypt_cost,
@@ -199,6 +200,13 @@ async def bootstrap_legacy_owner(
             changed_fields.append("health_subject.display_name")
 
     await session.flush()
+
+    # Identity roots are deliberately outside subject RLS, so the exact legacy
+    # owner can be discovered or created while the session is unbound. From
+    # this point onward every mutable row belongs to that one record: bind
+    # before writing the subject-owned audit event and leave the caller bound
+    # for resource-root/settings bootstrap in the same transaction.
+    await bind_session_subject(session, subject.id)
 
     audit_event_id: uuid.UUID | None = None
     if changed_fields:
