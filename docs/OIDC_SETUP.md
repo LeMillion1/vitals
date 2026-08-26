@@ -1,6 +1,6 @@
 # Federated login: setting it up, and the order to do it in
 
-Last reviewed: 2026-08-26
+Last reviewed: 2026-08-27
 
 Vitals stops authenticating passwords once the complete OIDC group is set:
 `VITALS_OIDC_ISSUER`, `VITALS_OIDC_CLIENT_ID`,
@@ -14,9 +14,10 @@ switch *to*, rather than on the deploy that ships the code. Follow the order
 below and there is no window in which you cannot reach your own record.
 
 The cutover is hard: after it there is no password login, and no second factor
-inside Vitals. Both move to the provider, which is where password hashing,
-reset, recovery codes, TOTP, WebAuthn and rotation already live and are already
-done properly.
+inside Vitals. Both move to the provider. Password hashing, reset, recovery
+codes, TOTP, WebAuthn and rotation therefore become provider responsibilities;
+do not cut over merely because the provider container is healthy. Prove the
+configured production flows first.
 
 OIDC startup does not require `VITALS_AUTH_USERNAME` or
 `VITALS_AUTH_PASSWORD_HASH`. Before the first federated identity is linked, it
@@ -61,6 +62,23 @@ mounts, so that job copies the root-owned host file into a provider-only volume
 as mode `0400` for ZITADEL's uid 1000; setup and API mount only that derived
 volume read-only. DB admin, Login, backup, gateway, Vitals web, and Vitals worker
 cannot read either copy.
+
+Before treating the provider as a production sign-in boundary, the human owner
+must also complete the controls that cannot be inferred from a healthy
+container:
+
+- change the first-instance administrator password;
+- enroll a strong MFA factor and escrow recovery codes outside the VPS;
+- create and separately escrow an independent `IAM_OWNER` break-glass
+  credential, preferably with a second trusted administrator;
+- configure an active SMTP provider and sender domain with SPF, DKIM and DMARC;
+- prove initialization, verification and password-reset mail on a disposable
+  non-administrator account;
+- verify in a private browser that provider self-registration is absent.
+
+Changing `FirstInstance` or default SMTP environment values after the identity
+database exists does not update that instance. Use the ZITADEL Console or its
+administrative API, then test the persisted result.
 
 Never put these values in either the host/operator `.env` or the
 application runtime file. Compose does not mount the operator `.env` into web or
@@ -217,15 +235,81 @@ address later, and a link made on that basis would hand over the whole record.
 
 ## 4. Configure Vitals, and cut over
 
+Do not edit four OIDC values into the live runtime file and then issue a broad
+Compose restart. Use the host coordinator so the existing project, immutable
+image, rendered application config, single Compose network, writable runtime
+mount, exact non-shadowed container runtime controls, stopped-web boundary and
+HTTP result are one crash-recoverable operation. The helper runs by attested
+image ID under the host operator's UID/GID with only the runtime directory and
+a temporary directory containing the two selected proof files; it does not
+inherit medical-file, Garmin-session, backup, or sibling-secret mounts. The
+private journal binds OIDC phases to a secret-safe keyed identifier of the
+runtime provider group and rejects authority drift before recovery code runs.
+
+Create two distinct files below an owner-only directory, each mode `0600` and
+containing exactly one unpadded line:
+
+- the ZITADEL Web application's client secret;
+- the current plaintext Vitals legacy password, used only to prove that an
+  automatic password rollback would actually be usable. Keep this proof until
+  the observation window and identity restore/login test are complete.
+
+From the exact live production checkout, define the non-secret values and the
+fixed coordinator prefix. The state file is owner-only and contains no client
+secret, password, subject, client ID, DSN, or subprocess output:
+
 ```bash
-VITALS_OIDC_ISSUER=https://idp.example.com          # no trailing slash
-VITALS_OIDC_CLIENT_ID=...
-VITALS_OIDC_CLIENT_SECRET=...
-VITALS_OIDC_REDIRECT_URL=https://vitals.example.com/auth/callback
-VITALS_OIDC_BOOTSTRAP_SUBJECT=...                   # the ID from step 3
+OIDC_ISSUER=https://idp.example.com                 # no trailing slash
+OIDC_CLIENT_ID=...
+OIDC_CLIENT_SECRET_FILE=/absolute/private/oidc-client-secret
+LEGACY_PASSWORD_FILE=/absolute/private/legacy-password-proof
+OIDC_REDIRECT=https://vitals.example.com/auth/callback
+OIDC_OWNER_SUBJECT=...                              # opaque ID from step 3
+
+OIDC_CUTOVER=(
+  python3 scripts/oidc_cutover_host.py
+  --project vitals_prod
+  --compose-file "$PWD/docker-compose.yml"
+  --compose-file "$PWD/docker-compose.production.yml"
+  --env-file "$PWD/.env"
+  --env-file "$PWD/.env.idp"
+  --runtime-env "$PWD/.vitals-runtime/vitals.env"
+  --state-file "$PWD/.vitals-oidc-cutover-state"
+)
+
+"${OIDC_CUTOVER[@]}" preflight \
+  --issuer "$OIDC_ISSUER" \
+  --client-id "$OIDC_CLIENT_ID" \
+  --client-secret-file "$OIDC_CLIENT_SECRET_FILE" \
+  --legacy-password-file "$LEGACY_PASSWORD_FILE" \
+  --redirect-url "$OIDC_REDIRECT" \
+  --bootstrap-subject "$OIDC_OWNER_SUBJECT"
+
+"${OIDC_CUTOVER[@]}" cutover \
+  --issuer "$OIDC_ISSUER" \
+  --client-id "$OIDC_CLIENT_ID" \
+  --client-secret-file "$OIDC_CLIENT_SECRET_FILE" \
+  --legacy-password-file "$LEGACY_PASSWORD_FILE" \
+  --redirect-url "$OIDC_REDIRECT" \
+  --bootstrap-subject "$OIDC_OWNER_SUBJECT" \
+  --confirm 'CUT OVER TO OIDC; AUTOMATIC ROLLBACK ON FAILED POSTFLIGHT'
 ```
 
-Restart the app. From this point:
+The cutover rotates the installation session secret, recreates only
+`vitals_app`, and leaves the journal at `awaiting_owner_binding`. Complete a
+real owner login in the browser. A redirect smoke alone is insufficient: the
+callback must exchange the code, create the exact provider binding and update
+the durable owner's login time after this cutover's journal boundary. Only then
+finalize:
+
+```bash
+"${OIDC_CUTOVER[@]}" finalize \
+  --issuer "$OIDC_ISSUER" \
+  --confirm 'OWNER OIDC LOGIN VERIFIED; FINALIZE CUTOVER'
+```
+
+Finalization refuses an identity binding or login left by an earlier attempt,
+and again recreates only the web process. From this point:
 
 - `/login` redirects to the provider, keeping wherever you were going.
 - Every pre-cutover password-session cookie is rejected even though its old
@@ -248,6 +332,37 @@ Log in. The first login whose subject matches `VITALS_OIDC_BOOTSTRAP_SUBJECT`
 binds your existing user to that provider identity, once, under the identity
 governance lock. Every login after that finds the link and does not need the
 variable — you can remove it, and should.
+
+During the bounded observation window, an explicit password rollback requires
+the same still-owner-only plaintext proof and refuses if the database graph or
+bcrypt hash changed:
+
+```bash
+"${OIDC_CUTOVER[@]}" rollback \
+  --issuer "$OIDC_ISSUER" \
+  --legacy-password-file "$LEGACY_PASSWORD_FILE" \
+  --confirm 'ROLL BACK TO PASSWORD MODE AND ROTATE SESSIONS'
+```
+
+If the host command is interrupted, do not guess which phase completed. Run
+`status`, then `recover`; supply `--issuer` for OIDC state and the legacy proof
+when the journal says password compensation may be required. Recovery refuses
+an incomplete phase if the image ID, rendered service config, or Docker network
+changed since that phase.
+
+After a successful identity restore drill, complete another fresh owner OIDC
+login after the `oidc_bound` journal time. Only then may the operator run
+`retire-legacy`. It first checks that login while web remains online, then
+transactionally removes the durable owner's bcrypt verifier, records
+`identity.password.retired`, clears both runtime bridge values, rotates the
+installation session secret, and recreates only web. The normal password
+rollback is intentionally impossible afterward:
+
+```bash
+"${OIDC_CUTOVER[@]}" retire-legacy \
+  --issuer "$OIDC_ISSUER" \
+  --confirm 'IDP RESTORE VERIFIED; RETIRE LEGACY PASSWORD'
+```
 
 The issuer must be `https` unless it is `http://localhost`, which is allowed
 only because a machine talking to itself cannot be intercepted. Startup rejects

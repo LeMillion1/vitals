@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — production OIDC cutover is attested and crash-recoverable
+
+An operator-only host coordinator now verifies the exact Compose project,
+rendered web configuration, immutable image and Docker network before switching
+authentication. It stops and recreates only web, rotates installation sessions,
+keeps a private phase journal, compensates a failed first cutover back to a
+proven usable legacy password, and refuses recovery under changed authority.
+Finalization requires a successful owner login after the current cutover.
+After a fresh post-recovery login, explicit retirement removes both runtime
+bridge values and the durable bcrypt verifier with an audit event.
+
 ### Added — recovery freshness failures remain visible until acknowledged
 
 An hourly hardened host monitor now verifies the selected local and encrypted

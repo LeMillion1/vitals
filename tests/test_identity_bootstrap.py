@@ -1,4 +1,5 @@
 """Focused PR-02 tests for legacy bootstrap and identity governance."""
+
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +19,7 @@ from vitals.services.identity_bootstrap import (
     bootstrap_legacy_owner,
 )
 from vitals.services.identity_service import (
+    IdentityStateConflictError,
     IdentityValidationError,
     LastActivePlatformSuperadminError,
     PasswordHashDowngradeError,
@@ -26,6 +28,7 @@ from vitals.services.identity_service import (
     change_user_status,
     has_active_platform_superadmin,
     normalize_username,
+    retire_password_hash,
     revoke_role,
     rotate_password_hash,
 )
@@ -57,9 +60,7 @@ async def _bootstrap(session: AsyncSession, password_hash: str):
         ("Straße", "Straße", "strasse"),
     ],
 )
-def test_normalize_username_uses_nfkc_trim_and_casefold(
-    raw, display, lookup_key
-):
+def test_normalize_username_uses_nfkc_trim_and_casefold(raw, display, lookup_key):
     normalized = normalize_username(raw)
     assert normalized.display == display
     assert normalized.lookup_key == lookup_key
@@ -83,9 +84,7 @@ def test_normalize_username_rejects_unsafe_values(raw):
     ids=["blank-username", "blank-hash", "weak-cost", "unknown-zone", "long-zone"],
 )
 @pytest.mark.asyncio
-async def test_bootstrap_rejects_invalid_configuration_before_writes(
-    db_session, kwargs
-):
+async def test_bootstrap_rejects_invalid_configuration_before_writes(db_session, kwargs):
     values = {
         "username": "Legacy Owner",
         "password_hash": _hash("legacy-password"),
@@ -107,14 +106,10 @@ async def test_bootstrap_creates_owner_roles_subject_and_one_audit_event(db_sess
     user = await db_session.get(User, result.user_id)
     subject = await db_session.get(HealthSubject, result.subject_id)
     roles = set(
-        await db_session.scalars(
-            select(UserRole.role).where(UserRole.user_id == result.user_id)
-        )
+        await db_session.scalars(select(UserRole.role).where(UserRole.user_id == result.user_id))
     )
     event = await db_session.scalar(
-        select(AuditEvent).where(
-            AuditEvent.event_type == "identity.legacy_owner.bootstrap"
-        )
+        select(AuditEvent).where(AuditEvent.event_type == "identity.legacy_owner.bootstrap")
     )
 
     assert result.user_created is True
@@ -186,9 +181,7 @@ async def test_bootstrap_repairs_missing_state_without_overwriting_identity(db_s
     )
     db_session.add(user)
     await db_session.flush()
-    db_session.add(
-        UserRole(user_id=user.id, role=UserRoleName.MEMBER.value)
-    )
+    db_session.add(UserRole(user_id=user.id, role=UserRoleName.MEMBER.value))
     subject = HealthSubject(
         owner_user_id=user.id,
         display_name=None,
@@ -389,6 +382,25 @@ async def test_non_superadmin_role_assignment_and_revocation_are_idempotent(db_s
 
 
 @pytest.mark.asyncio
+async def test_password_retirement_recovery_requires_audit_evidence(db_session):
+    password_hash = _hash("legacy-password")
+    owner = await _bootstrap(db_session, password_hash)
+    user = await db_session.get(User, owner.user_id)
+    assert user is not None
+    user.password_hash = None
+    await db_session.flush()
+
+    with pytest.raises(IdentityStateConflictError, match="audit evidence"):
+        await retire_password_hash(
+            db_session,
+            user_id=owner.user_id,
+            expected_current_hash=password_hash,
+            actor_user_id=owner.user_id,
+            allow_already_retired=True,
+        )
+
+
+@pytest.mark.asyncio
 async def test_allowed_status_change_increments_session_version(db_session):
     owner = await _bootstrap(db_session, _hash("legacy-password"))
     second = User(
@@ -435,9 +447,7 @@ async def test_password_rotation_is_cas_and_increments_session_version(db_sessio
     assert user.password_hash == new_hash
     assert user.session_version == 2
     event = await db_session.scalar(
-        select(AuditEvent).where(
-            AuditEvent.event_type == "identity.password.rotated"
-        )
+        select(AuditEvent).where(AuditEvent.event_type == "identity.password.rotated")
     )
     assert event is not None
     assert "password" not in event.metadata_json
@@ -482,6 +492,71 @@ async def test_password_rotation_with_same_hash_is_a_noop(db_session):
 
 
 @pytest.mark.asyncio
+async def test_password_retirement_is_audited_cas_and_idempotent(db_session):
+    password_hash = _hash("legacy-password")
+    owner = await _bootstrap(db_session, password_hash)
+
+    user = await retire_password_hash(
+        db_session,
+        user_id=owner.user_id,
+        expected_current_hash=password_hash,
+        actor_user_id=owner.user_id,
+    )
+
+    assert user.password_hash is None
+    assert user.session_version == 2
+    event = await db_session.scalar(
+        select(AuditEvent).where(AuditEvent.event_type == "identity.password.retired")
+    )
+    assert event is not None
+    assert password_hash not in str(event.metadata_json)
+
+    with pytest.raises(PasswordHashMismatchError, match="already absent"):
+        await retire_password_hash(
+            db_session,
+            user_id=owner.user_id,
+            expected_current_hash=password_hash,
+            actor_user_id=owner.user_id,
+        )
+
+    repeated = await retire_password_hash(
+        db_session,
+        user_id=owner.user_id,
+        expected_current_hash=password_hash,
+        actor_user_id=owner.user_id,
+        allow_already_retired=True,
+    )
+    assert repeated.session_version == 2
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.event_type == "identity.password.retired")
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_password_retirement_refuses_a_stale_hash(db_session):
+    password_hash = _hash("legacy-password")
+    owner = await _bootstrap(db_session, password_hash)
+
+    with pytest.raises(PasswordHashMismatchError):
+        await retire_password_hash(
+            db_session,
+            user_id=owner.user_id,
+            expected_current_hash=_hash("different-password"),
+            actor_user_id=owner.user_id,
+        )
+
+    user = await db_session.get(User, owner.user_id)
+    assert user is not None
+    assert user.password_hash == password_hash
+    assert user.session_version == 1
+
+
+@pytest.mark.asyncio
 async def test_password_rotation_rejects_bcrypt_cost_downgrade(db_session):
     import bcrypt
 
@@ -511,9 +586,7 @@ async def test_postgres_concurrent_bootstrap_serializes_empty_table(db_session):
 
     await db_session.commit()
     assert db_session.bind is not None
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
     password_hash = _hash("legacy-password")
 
     async def run_bootstrap():
@@ -556,9 +629,7 @@ async def test_postgres_concurrent_admin_revocations_leave_one_active(db_session
     await db_session.commit()
 
     assert db_session.bind is not None
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
 
     async def revoke(user_id):
         async with factory() as session:
@@ -577,10 +648,7 @@ async def test_postgres_concurrent_admin_revocations_leave_one_active(db_session
 
     outcomes = await asyncio.gather(revoke(first.user_id), revoke(second_id))
     assert sum(outcome is True for outcome in outcomes) == 1
-    assert sum(
-        isinstance(outcome, LastActivePlatformSuperadminError)
-        for outcome in outcomes
-    ) == 1
+    assert sum(isinstance(outcome, LastActivePlatformSuperadminError) for outcome in outcomes) == 1
 
     async with factory() as session:
         assert await has_active_platform_superadmin(session) is True

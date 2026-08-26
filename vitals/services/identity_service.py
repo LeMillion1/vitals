@@ -10,6 +10,7 @@ serializes empty-table bootstrap and the otherwise racy "last active admin"
 check.  SQLite is the fast test path and has no equivalent cross-connection
 guarantee, so the lock is intentionally a no-op there.
 """
+
 from __future__ import annotations
 
 import hmac
@@ -33,9 +34,7 @@ _PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY = (
     "vitals.identity.pre_identity_compatibility_transaction"
 )
 
-_BCRYPT_RE = re.compile(
-    r"^\$2[aby]\$(?P<cost>\d{2})\$[./A-Za-z0-9]{53}$"
-)
+_BCRYPT_RE = re.compile(r"^\$2[aby]\$(?P<cost>\d{2})\$[./A-Za-z0-9]{53}$")
 _MIN_BCRYPT_COST = 4
 _MAX_BCRYPT_COST = 31
 _MAX_USERNAME_LENGTH = 128
@@ -172,8 +171,7 @@ async def acquire_identity_governance_lock(session: AsyncSession) -> None:
         )
     await session.execute(
         text(
-            "SELECT pg_advisory_xact_lock("
-            "CAST(:namespace AS INTEGER), CAST(:lock_key AS INTEGER))"
+            "SELECT pg_advisory_xact_lock(CAST(:namespace AS INTEGER), CAST(:lock_key AS INTEGER))"
         ),
         {
             "namespace": IDENTITY_GOVERNANCE_LOCK_NAMESPACE,
@@ -186,9 +184,7 @@ def _reject_pending_subject_state(sync_session) -> None:
     """Refuse to treat a session with pending subject rows as pre-identity."""
 
     subject_state = (
-        tuple(sync_session.new)
-        + tuple(sync_session.dirty)
-        + tuple(sync_session.deleted)
+        tuple(sync_session.new) + tuple(sync_session.dirty) + tuple(sync_session.deleted)
     )
     if any(isinstance(row, HealthSubject) for row in subject_state):
         raise PreIdentityCompatibilityError(
@@ -212,8 +208,7 @@ async def _guard_pre_identity_root(session: AsyncSession) -> object:
     if (
         transaction is None
         or not transaction.is_active
-        or sync_session.info.get(_PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY)
-        is not transaction
+        or sync_session.info.get(_PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY) is not transaction
     ):
         pending_transaction = transaction
         with session.no_autoflush:
@@ -223,9 +218,7 @@ async def _guard_pre_identity_root(session: AsyncSession) -> object:
                 # started one yet.  An adopted transaction therefore keeps
                 # SQLite's deferred write lock — which is no weaker than the
                 # cross-connection guarantee this dialect offers anyway.
-                if transaction is None or not bool(
-                    getattr(transaction, "_connections", {})
-                ):
+                if transaction is None or not bool(getattr(transaction, "_connections", {})):
                     await session.execute(text("BEGIN IMMEDIATE"))
             else:
                 await acquire_identity_governance_lock(session)
@@ -233,17 +226,12 @@ async def _guard_pre_identity_root(session: AsyncSession) -> object:
         if (
             transaction is None
             or not transaction.is_active
-            or (
-                pending_transaction is not None
-                and transaction is not pending_transaction
-            )
+            or (pending_transaction is not None and transaction is not pending_transaction)
         ):
             raise PreIdentityCompatibilityError(
                 "pre-identity compatibility could not establish a guarded transaction"
             )
-        sync_session.info[
-            _PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY
-        ] = transaction
+        sync_session.info[_PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY] = transaction
 
     with session.no_autoflush:
         subject_id = await session.scalar(
@@ -281,9 +269,7 @@ async def authorize_pre_identity_compatibility_transaction(
     _reject_pending_subject_state(sync_session)
 
     transaction = sync_session.get_transaction()
-    authorized = sync_session.info.get(
-        _PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY
-    )
+    authorized = sync_session.info.get(_PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY)
     # ``Session.add()`` creates a logical root before any database work.  That
     # exact connectionless root is still safe to guard below, which is how
     # unrelated pending ORM state can stay pending and unflushed; anything that
@@ -291,10 +277,7 @@ async def authorize_pre_identity_compatibility_transaction(
     if (
         transaction is not None
         and not (transaction is authorized and transaction.is_active)
-        and (
-            not transaction.is_active
-            or bool(getattr(transaction, "_connections", {None: None}))
-        )
+        and (not transaction.is_active or bool(getattr(transaction, "_connections", {None: None})))
     ):
         raise PreIdentityCompatibilityError(
             "pre-identity compatibility requires a fresh guarded transaction"
@@ -336,9 +319,7 @@ async def require_pre_identity_compatibility(session: AsyncSession) -> object:
 
 
 async def _user_for_update(session: AsyncSession, user_id: uuid.UUID) -> User:
-    user = await session.scalar(
-        select(User).where(User.id == user_id).with_for_update()
-    )
+    user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
     if user is None:
         raise UserNotFoundError(f"user {user_id} does not exist")
     return user
@@ -470,9 +451,7 @@ async def revoke_role(
     if (
         role_name is UserRoleName.PLATFORM_SUPERADMIN
         and user.status == UserStatus.ACTIVE.value
-        and not await has_active_platform_superadmin(
-            session, exclude_user_id=user.id
-        )
+        and not await has_active_platform_superadmin(session, exclude_user_id=user.id)
     ):
         raise LastActivePlatformSuperadminError(
             "cannot revoke the last active platform_superadmin role"
@@ -515,9 +494,7 @@ async def change_user_status(
         user.status == UserStatus.ACTIVE.value
         and status is not UserStatus.ACTIVE
         and superadmin_role is not None
-        and not await has_active_platform_superadmin(
-            session, exclude_user_id=user.id
-        )
+        and not await has_active_platform_superadmin(session, exclude_user_id=user.id)
     ):
         raise LastActivePlatformSuperadminError(
             "cannot deactivate the last active platform_superadmin"
@@ -568,9 +545,7 @@ async def rotate_password_hash(
     try:
         current_cost = bcrypt_cost(user.password_hash)
     except IdentityValidationError as exc:
-        raise IdentityStateConflictError(
-            "stored password hash is not a valid bcrypt hash"
-        ) from exc
+        raise IdentityStateConflictError("stored password hash is not a valid bcrypt hash") from exc
     if new_cost < current_cost:
         raise PasswordHashDowngradeError(
             "new bcrypt work factor is lower than the stored work factor"
@@ -586,6 +561,62 @@ async def rotate_password_hash(
         user_id=user.id,
         event_type="identity.password.rotated",
         result_code="password_hash_rotated",
+        changed_fields=["password_hash", "session_version"],
+    )
+    await session.flush()
+    return user
+
+
+async def retire_password_hash(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    expected_current_hash: str,
+    actor_user_id: uuid.UUID | None,
+    allow_already_retired: bool = False,
+) -> User:
+    """Remove the last local verifier after federated recovery is proven.
+
+    The compare-and-swap prevents an operational cutover from deleting a hash
+    that changed after preflight. Re-entry is allowed only for an explicit host
+    recovery and only when the matching credential-free audit evidence exists.
+    """
+
+    await acquire_identity_governance_lock(session)
+    user = await _user_for_update(session, user_id)
+    if user.password_hash is None:
+        if not allow_already_retired:
+            raise PasswordHashMismatchError("stored password hash is already absent")
+        retirement_events = await session.scalars(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "identity.password.retired",
+                AuditEvent.resource_type == "user",
+                AuditEvent.resource_id == str(user.id),
+            )
+        )
+        if not any(
+            isinstance(event.metadata_json, dict)
+            and event.metadata_json.get("result_code")
+            == "password_hash_removed_after_oidc_recovery"
+            for event in retirement_events
+        ):
+            raise IdentityStateConflictError(
+                "stored password hash is absent without retirement audit evidence"
+            )
+        return user
+    if not isinstance(expected_current_hash, str) or not hmac.compare_digest(
+        user.password_hash, expected_current_hash
+    ):
+        raise PasswordHashMismatchError("stored password hash changed concurrently")
+    bcrypt_cost(user.password_hash)
+    user.password_hash = None
+    user.session_version += 1
+    _add_audit_event(
+        session,
+        actor_user_id=actor_user_id,
+        user_id=user.id,
+        event_type="identity.password.retired",
+        result_code="password_hash_removed_after_oidc_recovery",
         changed_fields=["password_hash", "session_version"],
     )
     await session.flush()
@@ -616,5 +647,6 @@ __all__ = [
     "normalize_email",
     "require_pre_identity_compatibility",
     "revoke_role",
+    "retire_password_hash",
     "rotate_password_hash",
 ]

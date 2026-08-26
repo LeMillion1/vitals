@@ -156,6 +156,23 @@ administrator with an owned health subject for the configured issuer. Password
 mode still requires the trusted legacy credential pair; retain it separately if
 provider-independent break-glass rollback is part of the recovery policy.
 
+Production changes use the host OIDC coordinator rather than an in-place env
+edit. It binds every incomplete phase to the exact rendered web config,
+immutable image ID, actual container runtime controls, runtime OIDC authority,
+and Compose network. It rejects image-, container-, and Compose-level variables
+that could shadow the mounted runtime file, executes the helper as the host
+operator with only the writable runtime directory plus selected ephemeral proof
+files, and recreates only web with image pulls disabled. Initial cutover and
+rollback require an
+owner-only plaintext proof that matches the legacy bcrypt verifier, so a
+formally consistent but unknown password cannot be accepted as recovery.
+Finalization requires a durable owner login after the current cutover boundary.
+After a later fresh login and identity restore test, explicit legacy retirement
+removes the database verifier under the identity-governance lock, increments
+the account session version, records a credential-free audit event, clears the
+runtime bridge and rotates the installation session secret. Ordinary password
+rollback is no longer available after that operation.
+
 ## Inbound Endpoints
 
 There is no webhook. `POST /tg/<path>` — the Telegram bot's endpoint, and the
