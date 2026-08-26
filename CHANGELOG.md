@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — exposed migration credentials have a bounded rotation path
+
+The one-shot migration image can now rotate its PostgreSQL owner password and
+atomically update only `VITALS_DB_PASSWORD` plus
+`VITALS_MIGRATION_DATABASE_URL` in the host operator file without printing the
+replacement. It verifies the connected role/database and restores the old
+database password if publishing the staged operator file fails.
+
 ### Fixed — the web process no longer receives the database-owner credential
 
 Compose now mounts an application-only `.env.runtime` into `vitals_app` instead

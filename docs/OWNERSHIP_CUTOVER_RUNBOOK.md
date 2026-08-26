@@ -144,6 +144,32 @@ session sees nothing rather than everything. Roles that must see across subjects
 `BYPASSRLS` or superuser. A backfill that could not see an unstamped row could
 not stamp it.
 
+## Rotate an owner credential previously exposed to the web container
+
+Deployments created before the application-only `.env.runtime` boundary mounted
+the host `.env` into `vitals_app`. After creating `.env.runtime`, rendering the
+production overlay to prove that `/app/.env` uses it, and recreating the app,
+rotate the old migration-owner password. Run the bounded helper through the
+already authenticated one-shot migration image; it updates PostgreSQL and the
+two exact operator-file fields without printing the replacement:
+
+```bash
+docker compose run --rm --no-deps \
+  --volume "$PWD/.env:/operator/.env" vitals_migrate \
+  python scripts/rotate_migration_db_password.py --env-file /operator/.env
+```
+
+Then recreate the backup sidecar so its container environment receives the new
+password, and prove the migration/role chain using the new credential:
+
+```bash
+docker compose up -d --no-deps --force-recreate vitals_backup
+docker compose run --rm vitals_db_roles
+```
+
+Do not rotate before the web mount is isolated: otherwise the freshly generated
+owner credential is immediately exposed to the same process again.
+
 ## If step 3 refuses
 
 The message names each table that is behind and by how many rows. Find the phase
