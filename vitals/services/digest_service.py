@@ -45,6 +45,7 @@ from vitals.integrations.llm_client import (
 from vitals.models.ai import AIInvocation
 from vitals.models.identity import HealthSubject, User
 from vitals.models.milestones import DOMAIN, WeeklyDigest
+from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import ai_gateway_service, health_profile_service
@@ -62,6 +63,9 @@ _DIGEST_POLICY_VERSION = "wd:v1"
 _DIGEST_RESERVATION_OVERHEAD_UNITS = 512
 _DIGEST_RESERVED_COST_MICROUNITS = 10_000_000
 _DIGEST_MAX_ATTEMPTS = 3
+_DIGEST_OWNERSHIP_CHECKPOINT_PHASE = (
+    "stage3.retained_artifact.weekly_digests.v1.weekly_digests"
+)
 
 _BODY_MEASUREMENT_LIMIT = 6
 _BODY_SCAN_LIMIT = 3
@@ -2842,16 +2846,14 @@ def _validate_source_actor(
     source: str,
     actor_user_id: uuid.UUID | None,
     owner_user_id: uuid.UUID,
+    historical: bool,
 ) -> None:
     if source not in _DIGEST_SOURCES:
         raise DigestOwnershipError(f"unsupported digest source {source!r}")
     if source in {Source.MANUAL.value, Source.MCP.value}:
-        # Stage-3R deliberately preserves the absent actor on pre-tenancy
-        # manual/MCP artifacts: the sole subject was provable, the originating
-        # human was not. Live writers always stamp their actor, but read-time
-        # validation must not turn that reviewed historical NULL into a forged
-        # owner attribution merely to make the artifact readable.
-        if actor_user_id not in {None, owner_user_id}:
+        if actor_user_id != owner_user_id and not (
+            historical and actor_user_id is None
+        ):
             raise DigestOwnershipError(
                 "human digest source requires the current owner actor"
             )
@@ -2967,6 +2969,17 @@ async def _validate_digest_rows(
     owner_user_id: uuid.UUID | None,
 ) -> None:
     """Validate every persisted digest root without materializing narrative PHI."""
+    historical_high_watermark = int(
+        await session.scalar(
+            select(OwnershipBackfillCheckpoint.scan_high_watermark_id).where(
+                OwnershipBackfillCheckpoint.phase_key
+                == _DIGEST_OWNERSHIP_CHECKPOINT_PHASE,
+                OwnershipBackfillCheckpoint.subject_id == subject_id,
+                OwnershipBackfillCheckpoint.status == "completed",
+            )
+        )
+        or 0
+    )
     roots = list(
         await session.execute(
             select(
@@ -3016,6 +3029,7 @@ async def _validate_digest_rows(
     )
 
     for root in roots:
+        historical = root.id <= historical_high_watermark
         if root.domain != DOMAIN:
             raise DigestOwnershipError(
                 f"digest {root.id} has unexpected domain {root.domain!r}"
@@ -3050,6 +3064,7 @@ async def _validate_digest_rows(
             source=root.source,
             actor_user_id=root.actor_user_id,
             owner_user_id=owner_user_id,
+            historical=historical,
         )
         if root.ai_invocation_id is not None:
             if root.integration_connection_id is not None:
@@ -3098,11 +3113,15 @@ async def _validate_digest_rows(
                 )
             continue
         if root.kind == DigestKind.WEEKLY.value:
-            if root.integration_connection_id is None:
+            if root.integration_connection_id is None and not historical:
                 raise DigestOwnershipError(
                     f"weekly digest {root.id} lacks OpenRouter provenance"
                 )
-        elif root.integration_connection_id is None and root.model is not None:
+        elif (
+            root.integration_connection_id is None
+            and root.model is not None
+            and not historical
+        ):
             raise DigestOwnershipError(
                 f"digest {root.id} has a model without provider provenance"
             )
@@ -3379,6 +3398,7 @@ async def prepare_digest(
         source=artifact_source,
         actor_user_id=owner._actor_user_id,
         owner_user_id=owner._owner_user_id,
+        historical=False,
     )
     from vitals.services import milestones_service
 

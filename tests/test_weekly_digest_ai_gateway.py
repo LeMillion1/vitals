@@ -34,7 +34,8 @@ from vitals.models.ai import (
 )
 from vitals.models.identity import User
 from vitals.models.milestones import DOMAIN, WeeklyDigest
-from vitals.models.tenancy import IntegrationConnection, PlatformIntegrationConnection
+from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
+from vitals.models.tenancy import PlatformIntegrationConnection
 from vitals.operations.ownership.portability_v1 import import_full
 from vitals.ownership import OWNERSHIP_REGISTRY
 from vitals.services import ai_gateway_service as gateway
@@ -798,28 +799,40 @@ async def test_legacy_subject_connection_and_platform_invocation_rows_validate_t
     legacy_owner_roots,
     monkeypatch,
 ):
-    legacy_connection_id = await db_session.scalar(
-        select(IntegrationConnection.id).where(
-            IntegrationConnection.subject_id == legacy_owner_roots.subject_id,
-            IntegrationConnection.provider == IntegrationProvider.OPENROUTER.value,
-        )
+    legacy = WeeklyDigest(
+        subject_id=legacy_owner_roots.subject_id,
+        # Stage-3R can prove the historical subject but deliberately does not
+        # invent either missing provenance root on a pre-tenancy artifact.
+        actor_user_id=None,
+        integration_connection_id=None,
+        ai_invocation_id=None,
+        date=date(2026, 8, 13),
+        domain=DOMAIN,
+        source=Source.MANUAL.value,
+        kind=DigestKind.WEEKLY.value,
+        content="Legacy synthetic narrative",
+        context_json={"legacy": True},
+        model=MODEL,
     )
-    assert legacy_connection_id is not None
+    db_session.add(legacy)
+    await db_session.flush()
     db_session.add(
-        WeeklyDigest(
+        OwnershipBackfillCheckpoint(
+            phase_key="stage3.retained_artifact.weekly_digests.v1.weekly_digests",
             subject_id=legacy_owner_roots.subject_id,
-            # Stage-3R can prove the historical subject but deliberately does
-            # not invent the missing actor on a pre-tenancy manual artifact.
-            actor_user_id=None,
-            integration_connection_id=legacy_connection_id,
-            ai_invocation_id=None,
-            date=date(2026, 8, 13),
-            domain=DOMAIN,
-            source=Source.MANUAL.value,
-            kind=DigestKind.WEEKLY.value,
-            content="Legacy synthetic narrative",
-            context_json={"legacy": True},
-            model=MODEL,
+            status="completed",
+            scan_high_watermark_id=legacy.id,
+            snapshot_rows=1,
+            last_scanned_id=legacy.id,
+            scanned_rows=1,
+            updated_rows=1,
+            unchanged_rows=0,
+            data_checksum_before="a" * 64,
+            data_checksum_after="b" * 64,
+            ownership_checksum_after="b" * 64,
+            started_at=NOW,
+            updated_at=NOW,
+            completed_at=NOW,
         )
     )
     await db_session.commit()
