@@ -176,16 +176,24 @@ revision and that Alembic can upgrade the restored database to the checked-out
 head without a downgrade.
 
 Point a drill checkout at the restored database and run the aggregate-only
-validators first in status mode:
+validators. Run ownership status first, record evidence for the restored graph,
+then do the same for scoped keys:
 
 ```bash
 .venv/bin/python scripts/validate_subject_ownership.py
+.venv/bin/python scripts/validate_subject_ownership.py --apply
 .venv/bin/python scripts/audit_scoped_keys.py
+.venv/bin/python scripts/audit_scoped_keys.py --apply
 ```
 
-If the recovered revision legitimately predates a completed checkpoint, follow
-the [ownership cutover runbook](OWNERSHIP_CUTOVER_RUNBOOK.md); do not improvise
-an ownership update. Re-provision
+An otherwise healthy status can be `not_started` after ordinary new writes,
+because the persisted cutover checksum describes an older graph. The two
+`--apply` commands above update aggregate checkpoint evidence only in the
+disposable drill database; either refusal fails the drill. Do not run them on
+production merely to make a drill green. If the recovered revision legitimately
+predates the cutover, follow the
+[ownership cutover runbook](OWNERSHIP_CUTOVER_RUNBOOK.md); do not improvise an
+ownership update. Re-provision
 the distinct runtime role with `scripts/provision_runtime_db_role.py` and verify
 that it is not superuser, has no `BYPASSRLS`, owns no relation, sees no patient
 rows without a bound subject context, and sees only the bound subject inside a
