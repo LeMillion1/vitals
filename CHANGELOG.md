@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — split runtimes cannot see different data mounts
+
+Production deployment now refuses before migration when a host-only Compose
+overlay gives web and worker different Garmin-session, legacy-upload, or
+private-file sources or access modes.
+
 ### Added — identity recovery refuses partial or occupied targets
 
 An operator-only `idp-restore` profile now accepts one exact ZITADEL manifest,

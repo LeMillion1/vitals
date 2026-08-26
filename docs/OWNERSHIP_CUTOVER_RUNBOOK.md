@@ -170,8 +170,10 @@ The new `deploy.sh` renders the combined configuration and refuses before any
 migration unless web and worker resolve to the same owner-only runtime
 directory, web is read/write, worker is read-only, both use
 `/run/vitals-runtime/vitals.env`, and neither receives an `/app/.env` bind. It
-also requires host modes `0700` and `0600`; do not loosen them to make Docker
-startup pass.
+also requires host modes `0700` and `0600`. The Garmin session, legacy uploads,
+and private-file mounts must resolve to identical sources and access modes in
+web and worker; host-only overlays must therefore override both services
+together. Do not loosen either boundary to make Docker startup pass.
 
 Before that first invocation, prepare a separate detached worktree, a reviewed
 copy of the old production overlay, and a deliberately named local pre-split

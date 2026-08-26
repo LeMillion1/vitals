@@ -179,11 +179,43 @@ if (
 ' || die "runtime config must be one private directory: web read/write, worker read-only, operator .env absent"
 }
 
+assert_runtime_data_mounts() {
+  compose config --format json | python3 -c '
+import json
+import sys
+
+payload = json.load(sys.stdin)
+services = payload.get("services", {})
+app = services.get("vitals_app", {})
+worker = services.get("vitals_worker", {})
+targets = (
+    "/data/garmin_session",
+    "/app/web/static/uploads",
+    "/data/private_files",
+)
+
+def one_mount(service, target):
+    matches = [item for item in service.get("volumes", []) if item.get("target") == target]
+    if len(matches) != 1:
+        raise SystemExit(1)
+    mount = matches[0]
+    return (
+        mount.get("type"),
+        mount.get("source"),
+        bool(mount.get("read_only", False)),
+    )
+
+if any(one_mount(app, target) != one_mount(worker, target) for target in targets):
+    raise SystemExit(1)
+' || die "web and worker data mounts must resolve to identical sources and access modes"
+}
+
 compose_preflight() {
   DEPLOY_PHASE="compose preflight"
   compose config --quiet
   assert_shared_runtime_image
   assert_runtime_config_mounts
+  assert_runtime_data_mounts
 }
 
 start_data_services() {

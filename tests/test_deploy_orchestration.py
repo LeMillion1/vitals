@@ -70,6 +70,7 @@ def test_deploy_fast_forwards_and_builds_one_immutable_shared_image():
     assert "docker image tag" not in source
     assert "assert_shared_runtime_image" in source
     assert "assert_runtime_config_mounts" in _function(source, "compose_preflight")
+    assert "assert_runtime_data_mounts" in _function(source, "compose_preflight")
     assert "vitals.worker_health import check_configured_worker_health" in source
 
 
@@ -354,6 +355,80 @@ assert_shared_runtime_image
 
     assert result.returncode != 0
     assert "do not resolve to one expected image" in result.stderr
+
+
+def test_runtime_data_mount_helper_rejects_web_worker_source_drift(tmp_path):
+    targets = (
+        "/data/garmin_session",
+        "/app/web/static/uploads",
+        "/data/private_files",
+    )
+    payload = {
+        "services": {
+            name: {
+                "volumes": [
+                    {
+                        "type": "volume",
+                        "source": f"shared-{index}",
+                        "target": target,
+                        "read_only": target == "/app/web/static/uploads",
+                    }
+                    for index, target in enumerate(targets)
+                ]
+            }
+            for name in ("vitals_app", "vitals_worker")
+        }
+    }
+    compose_json = tmp_path / "compose.json"
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    shell = r'''
+source "$1"
+compose() { cat "$COMPOSE_JSON"; }
+assert_runtime_data_mounts
+'''
+    environment = os.environ.copy()
+    environment["COMPOSE_JSON"] = str(compose_json)
+
+    accepted = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert accepted.returncode == 0, accepted.stderr
+
+    worker_upload = payload["services"]["vitals_worker"]["volumes"][1]
+    worker_upload["source"] = "/wrong/checkout/uploads"
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    rejected_source = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert rejected_source.returncode != 0
+    assert "identical sources and access modes" in rejected_source.stderr
+
+    worker_upload["source"] = "shared-1"
+    worker_upload["read_only"] = False
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    rejected_access = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert rejected_access.returncode != 0
+    assert "identical sources and access modes" in rejected_access.stderr
 
 
 def test_operator_docs_preserve_project_and_first_cutover_boundary():
