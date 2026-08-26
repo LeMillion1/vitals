@@ -970,6 +970,50 @@ async def test_patient_cannot_start_an_owner_only_conversation(
     assert await db_session.scalar(select(func.count()).select_from(CareThread)) == 0
 
 
+async def test_patient_opens_the_exact_professionals_shared_conversation(
+    doctor_client, db_session
+):
+    from vitals.models.care_thread import CareThreadParticipant
+    from vitals.models.professional import CareRelationship
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client, doctor, (owner, subject), _b = doctor_client
+    relationship_id = await db_session.scalar(
+        select(CareRelationship.id).where(
+            CareRelationship.subject_id == subject.id,
+            CareRelationship.professional_user_id == doctor.id,
+        )
+    )
+    client.cookies.set(SESSION_COOKIE, create_session(owner.username))
+
+    team = await client.get("/settings/care", headers={"Accept": "text/html"})
+    assert team.status_code == 200
+    assert f'action="/messages/relationship/{relationship_id}"' in team.text
+
+    opened = await client.post(
+        f"/messages/relationship/{relationship_id}",
+        follow_redirects=False,
+    )
+    assert opened.status_code == 303
+    thread_id = uuid.UUID(opened.headers["location"].rsplit("/", 1)[1])
+    participants = set(
+        await db_session.scalars(
+            select(CareThreadParticipant.user_id).where(
+                CareThreadParticipant.thread_id == thread_id,
+                CareThreadParticipant.removed_at.is_(None),
+            )
+        )
+    )
+    assert participants == {owner.id, doctor.id}
+
+    client.cookies.set(SESSION_COOKIE, create_session(doctor.username))
+    shared = await client.get(
+        opened.headers["location"], headers={"Accept": "text/html"}
+    )
+    assert shared.status_code == 200
+
+
 async def test_owner_record_does_not_offer_professional_write_forms(
     client, legacy_owner_roots
 ):
@@ -1092,8 +1136,8 @@ async def test_the_patient_conversation_uses_the_owners_perspective(doctor_clien
     assert page.status_code == 200
     assert "Care team" in page.text or "Команда помощи" in page.text
     assert (
-        "Write to your care team" in page.text
-        or "Напишите своей команде помощи" in page.text
+        "Write a message" in page.text
+        or "Напишите сообщение" in page.text
     )
     assert "Write to the patient" not in page.text
     assert "Напишите пациенту" not in page.text

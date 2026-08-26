@@ -334,6 +334,87 @@ async def open_thread(
     return thread
 
 
+async def open_relationship_thread(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    relationship_id: uuid.UUID,
+    title: str,
+) -> CareThread:
+    """Return the stable two-person conversation for one care relationship.
+
+    The patient chooses the recipient by relationship id. Locking that exact
+    relationship serializes first-open races; an existing open pair thread is
+    reused, while topic/group threads and closed history remain untouched.
+    """
+
+    _require_scope(context, action=SEND_ACTION)
+    owner_id = await _subject_owner_id(session, context.subject_id)
+    if context.principal.user_id != owner_id:
+        raise NotInTheConversation("only the patient chooses this recipient")
+
+    relationship = await session.scalar(
+        select(CareRelationship)
+        .where(
+            CareRelationship.id == relationship_id,
+            CareRelationship.subject_id == context.subject_id,
+            CareRelationship.subject_owner_user_id == owner_id,
+            CareRelationship.status == CareRelationshipStatus.ACTIVE.value,
+        )
+        .with_for_update()
+    )
+    if relationship is None:
+        raise NotInTheConversation("this recipient is not in active care")
+
+    # The professional must still have the exact live consent, role, profile,
+    # and message scopes. A participant row cannot resurrect withdrawn access.
+    from vitals.services.access_resolution import resolve_access_context
+
+    professional_context = await resolve_access_context(
+        session,
+        user_id=relationship.professional_user_id,
+        subject_id=context.subject_id,
+    )
+    _require_scope(professional_context, action=READ_ACTION)
+    _require_scope(professional_context, action=SEND_ACTION)
+
+    active_participant_count = (
+        select(func.count(CareThreadParticipant.id))
+        .where(
+            CareThreadParticipant.thread_id == CareThread.id,
+            CareThreadParticipant.removed_at.is_(None),
+        )
+        .correlate(CareThread)
+        .scalar_subquery()
+    )
+    relationship_participant = aliased(CareThreadParticipant)
+    existing = await session.scalar(
+        select(CareThread)
+        .join(
+            relationship_participant,
+            relationship_participant.thread_id == CareThread.id,
+        )
+        .where(
+            CareThread.subject_id == context.subject_id,
+            CareThread.status == CareThreadStatus.OPEN.value,
+            relationship_participant.relationship_id == relationship.id,
+            relationship_participant.user_id == relationship.professional_user_id,
+            relationship_participant.removed_at.is_(None),
+            active_participant_count == 2,
+        )
+        .order_by(CareThread.created_at, CareThread.id)
+        .limit(1)
+    )
+    if existing is not None:
+        return existing
+
+    return await open_thread(
+        session,
+        context=professional_context,
+        title=title,
+    )
+
+
 async def add_participant(
     session: AsyncSession,
     *,
@@ -892,6 +973,7 @@ __all__ = [
     "list_threads",
     "list_thread_summaries",
     "mark_thread_read",
+    "open_relationship_thread",
     "open_thread",
     "read_thread",
     "remove_participant",

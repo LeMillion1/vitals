@@ -19,10 +19,14 @@ a conversation is the patient it is about, and that is ``/care``.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, status
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vitals.i18n import t
+from vitals.services.care import threads as care_threads
 from vitals.services.access_resolution import (
     AccessResolutionError,
     resolve_access_context,
@@ -52,5 +56,34 @@ async def my_conversations(
         ) from exc
     return RedirectResponse(
         url=f"/care/{access.subject_id}/messages",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/messages/relationship/{relationship_id}")
+async def open_relationship_conversation(
+    relationship_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    username: str = Depends(require_auth),
+) -> RedirectResponse:
+    """Open the patient's stable conversation with one chosen professional."""
+
+    del username
+    user_id = await principal_user_id(request, db)
+    try:
+        access = await resolve_access_context(db, user_id=user_id, subject_id=None)
+        thread = await care_threads.open_relationship_thread(
+            db,
+            context=access,
+            relationship_id=relationship_id,
+            title=t("care.relationship_thread_title"),
+        )
+    except (AccessResolutionError, care_threads.CareThreadError):
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    await db.commit()
+    return RedirectResponse(
+        url=f"/care/{access.subject_id}/messages/{thread.id}",
         status_code=status.HTTP_303_SEE_OTHER,
     )

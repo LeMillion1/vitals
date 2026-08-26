@@ -861,6 +861,12 @@ stacking three unrelated tasks down the page. Unread state is a small neutral
 chip and a PHI-free count in navigation; never put sender, topic, or body into
 shared chrome.
 
+The normal care-team path is one stable conversation per relationship: the
+patient chooses a named doctor or trainer on their team card, and the service
+reuses that exact two-person room. Do not describe this pair chat as a message
+to an unspecified «team». Historical topic threads remain readable, while any
+future group conversation must be introduced as a separate explicit feature.
+
 Attachments are optional supporting material, not a second composer. Keep the
 standard `.v-file-drop` inside a native disclosure below the message field so
 the ordinary text exchange stays visually primary. Render an uploaded file as

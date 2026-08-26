@@ -112,6 +112,11 @@
             {% endif %}
 
             <div class="flex flex-wrap gap-2">
+                {% if p.relationship_status == 'active' and p.consent_status == 'active' and p.messages %}
+                <form action="/messages/relationship/{{ p.relationship_id }}" method="POST">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("care.relationship_thread_open") }}</button>
+                </form>
+                {% endif %}
                 {% if p.consent_status == 'active' %}
                 <form action="/settings/care/{{ p.relationship_id }}/pause" method="POST">
                     <button type="submit" class="v-btn-ghost text-xs">{{ t("consents.pause") }}</button>

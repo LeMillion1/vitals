@@ -139,6 +139,120 @@ async def test_patient_cannot_open_a_conversation_without_a_recipient(db_session
     assert await db_session.scalar(select(func.count()).select_from(CareThread)) == 0
 
 
+async def test_relationship_conversation_is_an_idempotent_exact_pair(db_session):
+    owner, subject = await _patient(db_session, "thread-pair")
+    doctor, relationship, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-pair-doctor",
+    )
+    owner_context = await _context(db_session, owner, subject)
+
+    first = await threads.open_relationship_thread(
+        db_session,
+        context=owner_context,
+        relationship_id=relationship.id,
+        title="Care conversation",
+    )
+    second = await threads.open_relationship_thread(
+        db_session,
+        context=owner_context,
+        relationship_id=relationship.id,
+        title="Ignored on reuse",
+    )
+
+    assert second.id == first.id
+    participants = list(
+        await db_session.scalars(
+            select(CareThreadParticipant).where(
+                CareThreadParticipant.thread_id == first.id,
+                CareThreadParticipant.removed_at.is_(None),
+            )
+        )
+    )
+    assert {participant.user_id for participant in participants} == {
+        owner.id,
+        doctor.id,
+    }
+    professional = next(p for p in participants if p.user_id == doctor.id)
+    assert professional.relationship_id == relationship.id
+
+
+async def test_doctor_and_trainer_get_separate_relationship_conversations(db_session):
+    owner, subject = await _patient(db_session, "thread-pair-kinds")
+    doctor, doctor_relationship, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-pair-kinds-doctor",
+    )
+    trainer, trainer_relationship, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-pair-kinds-trainer",
+        kind=ProfessionalKind.TRAINER,
+    )
+    owner_context = await _context(db_session, owner, subject)
+
+    doctor_thread = await threads.open_relationship_thread(
+        db_session,
+        context=owner_context,
+        relationship_id=doctor_relationship.id,
+        title="Doctor",
+    )
+    trainer_thread = await threads.open_relationship_thread(
+        db_session,
+        context=owner_context,
+        relationship_id=trainer_relationship.id,
+        title="Trainer",
+    )
+
+    assert doctor_thread.id != trainer_thread.id
+    rows = list(
+        await db_session.scalars(
+            select(CareThreadParticipant).where(
+                CareThreadParticipant.thread_id.in_(
+                    (doctor_thread.id, trainer_thread.id)
+                ),
+                CareThreadParticipant.relationship_id.is_not(None),
+            )
+        )
+    )
+    assert {(row.thread_id, row.user_id) for row in rows} == {
+        (doctor_thread.id, doctor.id),
+        (trainer_thread.id, trainer.id),
+    }
+
+
+async def test_patient_cannot_open_pair_after_message_consent_is_paused(db_session):
+    owner, subject = await _patient(db_session, "thread-pair-paused")
+    _doctor, relationship, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-pair-paused-doctor",
+    )
+    await relationships.set_consent_paused(
+        db_session,
+        relationship_id=relationship.id,
+        actor_user_id=owner.id,
+        paused=True,
+    )
+    owner_context = await _context(db_session, owner, subject)
+
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.open_relationship_thread(
+            db_session,
+            context=owner_context,
+            relationship_id=relationship.id,
+            title="Must stay closed",
+        )
+
+    assert await db_session.scalar(select(func.count()).select_from(CareThread)) == 0
+
+
 async def test_a_thread_a_professional_opens_has_the_patient_in_it(db_session):
     """The difference between this feature and a hidden clinical channel."""
 

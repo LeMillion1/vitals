@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — patients can open a conversation with one chosen professional
+
+Each active care-team card now opens an idempotent two-person conversation for
+that exact doctor or trainer. The service reuses the existing open pair thread,
+serializes first-open races, and rechecks the professional's live relationship,
+verification, role, consent, and message scopes before adding any participant.
+
 ### Changed — the care team is a permanent destination
 
 Patients can now reach invitations and professional-access controls directly
