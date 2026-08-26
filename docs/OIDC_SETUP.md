@@ -265,6 +265,7 @@ OIDC_CLIENT_SECRET_FILE=/absolute/private/oidc-client-secret
 LEGACY_PASSWORD_FILE=/absolute/private/legacy-password-proof
 OIDC_REDIRECT=https://vitals.example.com/auth/callback
 OIDC_OWNER_SUBJECT=...                              # opaque ID from step 3
+export VITALS_IMAGE_TAG="$(git rev-parse HEAD)"     # exact running full SHA
 
 OIDC_CUTOVER=(
   python3 scripts/oidc_cutover_host.py
