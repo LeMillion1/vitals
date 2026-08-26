@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — the self-hosted ZITADEL issuer example matches discovery
+
+The production OIDC runbook now keeps ZITADEL's explicit external `:443` in
+the issuer. Vitals deliberately compares provider metadata verbatim, so the
+former portless example would have failed closed during discovery.
+
 ### Added — platform control can live on a recordless operator account
 
 OIDC startup now accepts an active linked platform administrator without a
