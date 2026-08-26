@@ -18,16 +18,22 @@ Response conventions (a stable contract the model can rely on):
     (one ``delete_record`` tool serves every domain; see ``_DELETE_TARGETS``).
   * A write to a switched-off optional domain — ``{"error": "module '<key>' is
     disabled"}``; ``get_modules`` says which are on.
+  * An unexpected execution failure — a safe ``{"error": ..., "code": ...,
+    "error_id": ..., "retryable": ...}`` result. The id correlates with a
+    payload-free server log entry; arbitrary exception text is never exposed.
 """
 from __future__ import annotations
 
 import contextvars
 import functools
 import importlib
+import json
 import logging
+import traceback
 import uuid
 from datetime import date as date_type, timedelta
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -35,7 +41,11 @@ from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
+from mcp_types import CallToolResult, TextContent
+from pydantic import ValidationError
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import selectinload
 
 from vitals.config import load_config
@@ -241,11 +251,25 @@ class VitalsMCPServer(MCPServer):
         ]
 
     async def call_tool(self, name, arguments, context=None):
-        if not _tool_allowed(name, arguments):
+        tool = self._tool_manager.get_tool(name)
+        if tool is None:
+            raise ToolError(f"Unknown tool: {name}")
+        try:
+            allowed = _tool_allowed(name, arguments)
+        except McpActorUnresolved as exc:
+            return _visible_tool_failure(name, exc, output_schema=tool.output_schema)
+        if not allowed:
             # Same answer as an absent tool. A denied direct invocation must not
             # reveal that another role or a wider connector can see it.
             raise ToolError(f"Unknown tool: {name}")
-        return await super().call_tool(name, arguments, context)
+        try:
+            return await super().call_tool(name, arguments, context)
+        except MCPError:
+            # Protocol failures already carry a JSON-RPC code/message/data
+            # object. Do not turn that standard channel into a tool result.
+            raise
+        except Exception as exc:
+            return _visible_tool_failure(name, exc, output_schema=tool.output_schema)
 
     async def list_resources(self, *args, **kwargs):
         resources = await super().list_resources(*args, **kwargs)
@@ -362,6 +386,10 @@ def _conflict_payload(exc: ConflictBlocked) -> dict:
     }
 
 
+class McpArgumentError(ValueError):
+    """A reviewed argument error whose message contains no supplied value."""
+
+
 def _parse_date(value: Optional[str], default=None, *, field: str):
     """Parse a ``YYYY-MM-DD`` tool argument, falling back to ``default`` when omitted.
 
@@ -374,7 +402,7 @@ def _parse_date(value: Optional[str], default=None, *, field: str):
     try:
         return date_type.fromisoformat(value)
     except (ValueError, TypeError):
-        raise ValueError(f"{field} must be a YYYY-MM-DD date, got {value!r}") from None
+        raise McpArgumentError(f"{field} must be a YYYY-MM-DD date") from None
 
 
 def _parse_time(value: Optional[str], *, field: str):
@@ -386,7 +414,7 @@ def _parse_time(value: Optional[str], *, field: str):
     try:
         return time_type.fromisoformat(value)
     except (ValueError, TypeError):
-        raise ValueError(f"{field} must be an HH:MM time, got {value!r}") from None
+        raise McpArgumentError(f"{field} must be an HH:MM time") from None
 
 
 async def _merged(session, model, record_id: int, **fields) -> Optional[dict]:
@@ -451,6 +479,145 @@ ANONYMOUS_TOKEN = "\x00anonymous-connector-token"
 
 class McpActorUnresolved(RuntimeError):
     """A token that cannot say whose record it is for, where that matters."""
+
+
+def _visible_tool_failure(
+    name: str,
+    exc: Exception,
+    *,
+    output_schema: dict | None,
+) -> CallToolResult:
+    """Return a safe diagnostic that clients cannot replace with generic copy.
+
+    The SDK normally sends escaped tool exceptions as ``isError=true``. Some
+    connector clients render every result in that channel as only "Error
+    occurred during tool execution", discarding the useful reason. Vitals uses
+    its existing application-level ``{"error": ...}`` contract here instead.
+
+    Raw exception strings are never copied into the response or log: database
+    drivers and validators can echo SQL parameters or user input containing
+    health data. The stable code explains the failure class; the opaque id
+    correlates it with one payload-free server log entry.
+    """
+
+    chain: list[BaseException] = []
+    cause: BaseException | None = exc
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        chain.append(cause)
+        cause = cause.__cause__
+
+    classified = next(
+        (
+            item
+            for item in chain
+            if isinstance(item, McpActorUnresolved | PermissionError)
+        ),
+        None,
+    )
+    if classified is not None:
+        code = "access_denied"
+        message = "The connector is not authorized for this operation."
+    elif classified := next(
+        (item for item in chain if isinstance(item, SQLAlchemyError)), None
+    ):
+        code = "database_error"
+        message = "The database could not complete the operation."
+    elif classified := next(
+        (item for item in chain if isinstance(item, ConnectionError | TimeoutError)),
+        None,
+    ):
+        code = "dependency_unavailable"
+        message = "A required service is temporarily unavailable."
+    elif classified := next(
+        (item for item in chain if isinstance(item, McpArgumentError)),
+        None,
+    ):
+        code = "invalid_request"
+        message = str(classified)
+    elif classified := next(
+        (item for item in chain if isinstance(item, ValidationError)), None
+    ):
+        code = "invalid_request"
+        message = "The tool could not validate its arguments."
+    else:
+        classified = chain[-1]
+        code = "internal_error"
+        message = "The tool failed unexpectedly."
+
+    error_id = uuid.uuid4().hex
+    frames = [
+        frame
+        for item in chain
+        for frame in traceback.extract_tb(item.__traceback__)
+    ]
+    application_frames = [
+        frame for frame in frames if "site-packages" not in Path(frame.filename).parts
+    ]
+    if application_frames or frames:
+        frame = (application_frames or frames)[-1]
+        location = f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
+    else:
+        location = "unavailable"
+
+    sqlstate = "none"
+    constraint = "none"
+    database_error = next(
+        (item for item in chain if isinstance(item, SQLAlchemyError)), None
+    )
+    if database_error is not None:
+        original = getattr(database_error, "orig", None)
+        raw_sqlstate = getattr(original, "sqlstate", None) or getattr(
+            original, "pgcode", None
+        )
+        if (
+            isinstance(raw_sqlstate, str)
+            and len(raw_sqlstate) == 5
+            and all(
+                character.isdigit() or "A" <= character <= "Z"
+                for character in raw_sqlstate
+            )
+        ):
+            sqlstate = raw_sqlstate
+        raw_constraint = getattr(
+            getattr(original, "diag", None), "constraint_name", None
+        )
+        if (
+            isinstance(raw_constraint, str)
+            and 0 < len(raw_constraint) <= 128
+            and all(character.isalnum() or character == "_" for character in raw_constraint)
+        ):
+            constraint = raw_constraint
+    logger.error(
+        "mcp: tool execution failed error_id=%s tool=%s code=%s "
+        "exception=%s location=%s sqlstate=%s constraint=%s",
+        error_id,
+        name,
+        code,
+        type(classified).__name__,
+        location,
+        sqlstate,
+        constraint,
+    )
+    payload = {
+        "error": message,
+        "code": code,
+        "error_id": error_id,
+        # A transport or database failure after COMMIT has an unknown outcome.
+        # Never invite an automatic retry that could duplicate a health write.
+        "retryable": False,
+    }
+    structured_content: dict | None = payload
+    if output_schema is not None:
+        result_schema = output_schema.get("properties", {}).get("result", {})
+        structured_content = (
+            {"result": [payload]} if result_schema.get("type") == "array" else None
+        )
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(payload, sort_keys=True))],
+        structured_content=structured_content,
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — MCP tool failures stay visible without leaking health data
+
+Unexpected MCP tool failures now return a normal structured Vitals error with
+a stable category, retry hint, and opaque diagnostic id instead of relying on
+the MCP execution-error channel that some clients collapse to generic copy.
+The matching server log records bounded metadata: that id, tool name, category,
+exception type, application location, SQLSTATE, and constraint name. It never
+records tool arguments, SQL, credentials, or exception text. Protocol-level MCP
+errors keep their standard JSON-RPC error channel.
+
 ### Added — the scheduler has an explicit process lifecycle
 
 The default application process still runs FastAPI and APScheduler together for

@@ -21,6 +21,7 @@ is missing.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 
 import pytest
 
@@ -30,6 +31,9 @@ import httpx2  # noqa: E402
 import mcp.types as mcp_types  # noqa: E402
 from mcp.client.session import ClientSession  # noqa: E402
 from mcp.client.streamable_http import streamable_http_client  # noqa: E402
+from mcp.server.mcpserver.exceptions import ToolError  # noqa: E402
+from mcp.shared.exceptions import MCPError  # noqa: E402
+from sqlalchemy.exc import OperationalError  # noqa: E402
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
@@ -154,6 +158,190 @@ async def test_a_tool_call_crosses_the_wire_and_comes_back(
     assert not answer.is_error, answer.content
     body = str(answer.structured_content or answer.content)
     assert "72.5" in body, body
+
+
+async def test_a_tool_failure_returns_a_safe_visible_diagnostic(
+    endpoint, monkeypatch, caplog
+):
+    """A connector must receive a reason even if it hides MCP error results."""
+
+    secret = "PHI_SENTINEL token=SECRET_SENTINEL"
+
+    async def fail_tool(name, arguments, context, convert_result=False):
+        try:
+            raise ConnectionError(secret)
+        except ConnectionError as exc:
+            raise ToolError(f"Error executing tool {name}: {secret}") from exc
+
+    monkeypatch.setattr(mcp_router.mcp._tool_manager, "call_tool", fail_tool)
+    caplog.set_level(logging.ERROR, logger=mcp_router.__name__)
+
+    async with _serving(endpoint) as app:
+        async with _connect(app, _token()) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                answer = await session.call_tool("get_weight_logs", {"limit": 5})
+
+    assert not answer.is_error, "the client would replace this with generic copy"
+    payload = answer.structured_content
+    assert payload == {
+        "error": "A required service is temporarily unavailable.",
+        "code": "dependency_unavailable",
+        "error_id": payload["error_id"],
+        "retryable": False,
+    }
+    assert len(payload["error_id"]) == 32
+    assert payload["error_id"] in caplog.text
+    assert "exception=ConnectionError" in caplog.text
+    assert "location=test_mcp_wire_protocol.py:" in caplog.text
+    assert secret not in str(answer.content)
+    assert secret not in caplog.text
+
+
+async def test_a_visible_failure_respects_the_tool_output_schema(
+    endpoint, monkeypatch
+):
+    """Structured diagnostics stay valid for list-returning tools."""
+
+    async def fail_tool(name, arguments, context, convert_result=False):
+        try:
+            raise mcp_router.McpArgumentError(
+                "from_date must be a YYYY-MM-DD date"
+            )
+        except mcp_router.McpArgumentError as exc:
+            raise ToolError(f"Error executing tool {name}") from exc
+
+    monkeypatch.setattr(mcp_router.mcp._tool_manager, "call_tool", fail_tool)
+
+    async with _serving(endpoint) as app:
+        async with _connect(app, _token()) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                answer = await session.call_tool("get_lab_results", {"limit": 5})
+
+    assert not answer.is_error
+    wrapped = answer.structured_content
+    payload = wrapped["result"][0]
+    assert payload["code"] == "invalid_request"
+    assert payload["error"] == "from_date must be a YYYY-MM-DD date"
+    assert payload["retryable"] is False
+    tool = mcp_router.mcp._tool_manager.get_tool("get_lab_results")
+    tool.fn_metadata.output_model.model_validate(wrapped)
+
+
+async def test_an_internal_tool_failure_is_redacted(endpoint, monkeypatch, caplog):
+    """Unknown exceptions expose a reference, never their arbitrary text."""
+
+    secret = "postgresql://operator:SECRET@db patient_weight=72.5"
+
+    async def fail_tool(name, arguments, context, convert_result=False):
+        try:
+            raise RuntimeError(secret)
+        except RuntimeError as exc:
+            raise ToolError(f"Error executing tool {name}: {secret}") from exc
+
+    monkeypatch.setattr(mcp_router.mcp._tool_manager, "call_tool", fail_tool)
+    caplog.set_level(logging.ERROR, logger=mcp_router.__name__)
+
+    async with _serving(endpoint) as app:
+        async with _connect(app, _token()) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                answer = await session.call_tool("get_weight_logs", {"limit": 5})
+
+    assert not answer.is_error
+    payload = answer.structured_content
+    assert payload["code"] == "internal_error"
+    assert payload["error"] == "The tool failed unexpectedly."
+    assert payload["retryable"] is False
+    assert payload["error_id"] in caplog.text
+    assert "exception=RuntimeError" in caplog.text
+    assert secret not in str(answer.content)
+    assert secret not in caplog.text
+
+
+async def test_a_nested_database_failure_keeps_its_database_category(
+    endpoint, monkeypatch, caplog
+):
+    """A driver cause must not hide the enclosing SQLAlchemy failure."""
+
+    secret = "SELECT patient_weight FROM health_data WHERE token='SECRET'"
+
+    class Diagnostic:
+        constraint_name = "uq_weight_subject_date"
+
+    class DriverFailure(RuntimeError):
+        sqlstate = "40001"
+        diag = Diagnostic()
+
+    async def fail_tool(name, arguments, context, convert_result=False):
+        try:
+            raise DriverFailure(secret)
+        except DriverFailure as driver:
+            try:
+                raise OperationalError(secret, {"token": "SECRET"}, driver) from driver
+            except OperationalError as database:
+                raise ToolError("database operation failed") from database
+
+    monkeypatch.setattr(mcp_router.mcp._tool_manager, "call_tool", fail_tool)
+    caplog.set_level(logging.ERROR, logger=mcp_router.__name__)
+
+    async with _serving(endpoint) as app:
+        async with _connect(app, _token()) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                answer = await session.call_tool("get_weight_logs", {"limit": 5})
+
+    payload = answer.structured_content
+    assert payload["code"] == "database_error"
+    assert payload["retryable"] is False
+    assert "exception=OperationalError" in caplog.text
+    assert "sqlstate=40001" in caplog.text
+    assert "constraint=uq_weight_subject_date" in caplog.text
+    assert secret not in str(answer.content)
+    assert secret not in caplog.text
+
+
+async def test_an_unknown_unscoped_tool_stays_an_mcp_error():
+    """The diagnostic wrapper must not make an absent tool look successful."""
+
+    with pytest.raises(ToolError, match="Unknown tool"):
+        await mcp_router.mcp.call_tool("tool_that_does_not_exist", {})
+
+
+async def test_an_unresolvable_grant_returns_a_visible_access_reason(
+    endpoint, monkeypatch
+):
+    """Authorization resolution failures must not fall back to generic copy."""
+
+    def fail_binding():
+        raise mcp_router.McpActorUnresolved("unsafe identity detail")
+
+    monkeypatch.setattr(mcp_router, "_current_grant_binding", fail_binding)
+
+    async with _serving(endpoint) as app:
+        async with _connect(app, _token()) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                answer = await session.call_tool("get_weight_logs", {"limit": 5})
+
+    assert not answer.is_error
+    payload = answer.structured_content
+    assert payload["code"] == "access_denied"
+    assert payload["error"] == "The connector is not authorized for this operation."
+    assert "unsafe identity detail" not in str(answer.content)
+
+
+async def test_a_protocol_error_keeps_the_standard_mcp_channel(
+    endpoint, monkeypatch
+):
+    """Only execution failures use the visible Vitals error contract."""
+
+    async def fail_tool(name, arguments, context, convert_result=False):
+        raise MCPError(-32001, "synthetic protocol failure")
+
+    monkeypatch.setattr(mcp_router.mcp._tool_manager, "call_tool", fail_tool)
+
+    async with _serving(endpoint) as app:
+        async with _connect(app, _token()) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                with pytest.raises(MCPError, match="synthetic protocol failure"):
+                    await session.call_tool("get_weight_logs", {"limit": 5})
 
 
 async def test_an_unauthenticated_client_is_refused_at_the_transport(endpoint):
