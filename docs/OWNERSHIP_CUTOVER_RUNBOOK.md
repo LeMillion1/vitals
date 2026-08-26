@@ -1,6 +1,6 @@
 # Ownership Cutover Runbook
 
-Last reviewed: 2026-08-24
+Last reviewed: 2026-08-26
 
 ## Not this, if the database is empty
 
@@ -123,14 +123,65 @@ Between any two, the upgrade can pause indefinitely.
 
 ## 3. Migrate the rest of the way
 
+Create the allowlisted `.env.runtime` and distinct web/worker DSNs first. Preserve
+the exact existing production project and its host-only overlay; an accidental
+Compose project name creates different volumes and is not a deployment:
+
 ```bash
-docker compose up -d --build vitals_app
+# First split adoption only: do not invoke the old deploy.sh. It parses its old
+# hard-reset/combined body before updating itself. Bootstrap the reviewed new
+# script through an explicit fast-forward, then invoke it separately.
+branch="$(git rev-parse --abbrev-ref HEAD)"
+test "$branch" != HEAD
+git diff --quiet && git diff --cached --quiet
+git fetch --prune origin
+git merge-base --is-ancestor HEAD "origin/$branch"
+git merge --ff-only "origin/$branch"
 ```
 
-The dependency chain upgrades to head as the migration role, reapplies DML and
-default grants to the distinct restricted runtime role, and starts FastAPI only
-after both one-shot services exit successfully. Verify the running web role is
-neither a superuser nor `BYPASSRLS`, and owns zero relations.
+Before that first invocation, prepare a separate detached worktree, a reviewed
+copy of the old production overlay, and a deliberately named local pre-split
+image tag from the currently running app image ID:
+
+```bash
+test "$(pwd -P)" = /root/vitals-commercial-production
+git worktree add --detach /root/vitals-pre-split dba1053
+install -m 600 docker-compose.production.yml \
+  /root/vitals-pre-split/docker-compose.production.yml
+pre_split_container="$(docker ps -aq \
+  --filter label=com.docker.compose.project=vitals_prod \
+  --filter label=com.docker.compose.service=vitals_app)"
+test -n "$pre_split_container"
+test "$(printf '%s\n' "$pre_split_container" | awk 'NF { count++ } END { print count + 0 }')" -eq 1
+pre_split_image="$(docker inspect --format '{{.Image}}' "$pre_split_container")"
+docker image tag "$pre_split_image" vitals_prod_pre_split:dba1053
+docker image inspect vitals_prod_pre_split:dba1053 >/dev/null
+```
+
+Keep that emergency bundle outside the active checkout and treat it as
+read-only. The new deploy's fast-forward neither preserves nor manufactures it,
+and its normal rollback state must not claim it. On later split releases, skip
+the manual bootstrap block and invoke the already new `deploy.sh` directly. Do
+not copy `.env` or `.env.runtime` into the worktree: the only authoritative
+copies remain under `/root/vitals-commercial-production`.
+
+Only after that emergency anchor exists, invoke the newly fast-forwarded script
+as a separate shell command:
+
+```bash
+cd /root/vitals-commercial-production
+export COMPOSE_PROJECT_NAME=vitals_prod
+export COMPOSE_FILE=docker-compose.yml:docker-compose.production.yml
+./deploy.sh
+```
+
+The deploy preflight proves that exactly one existing `vitals_db` and
+`vitals_app` belong to that project. It fast-forwards a clean checkout, builds
+one immutable full-SHA image, upgrades to head as the migration role, converges
+the two restricted role contracts, and starts the scheduler-only worker before
+switching web. Both service healthchecks and a loopback `/health` plus `/login`
+smoke must pass before the successful SHA is recorded. Verify that both runtime
+roles are neither superusers nor `BYPASSRLS` and own zero relations.
 
 Revision `0049` counts the remaining nulls in every
 target column before it alters anything, and refuses with the table, the column
@@ -139,10 +190,103 @@ enables the row policies.
 
 After this the application must supply `vitals.subject_id` on every transaction
 that reads patient data; `vitals/persistence/rls.py` does it, and an unbound
-session sees nothing rather than everything. Roles that must see across subjects
-— the migration runner, these backfill jobs, the platform control plane — need
-`BYPASSRLS` or superuser. A backfill that could not see an unstamped row could
-not stamp it.
+session sees nothing rather than everything. Migration and backfill roles that
+must see every row need `BYPASSRLS` or superuser. The long-running runtime roles
+have neither. Revision `0083` instead grants only the worker membership in a
+NOLOGIN capability role, and the worker still has to set the transaction-local
+platform GUC. Web receives no such membership. A backfill that could not see an
+unstamped row could not stamp it.
+
+## Split-runtime rollback boundary
+
+An ordinary rollback changes runtime images only. It accepts a full Git SHA only
+after importing `vitals.worker_health` from that exact local image, switches the
+worker before web, repeats both health gates, and deliberately does not run
+Alembic or role provisioning:
+
+```bash
+export COMPOSE_PROJECT_NAME=vitals_prod
+export COMPOSE_FILE=docker-compose.yml:docker-compose.production.yml
+./deploy.sh rollback
+# Or: ./deploy.sh rollback <full-split-compatible-sha>
+```
+
+The first successful split deployment is preserved as the future compatibility
+anchor, but there is no older ordinary rollback target during that first
+cutover. In particular, the currently deployed pre-split revision `dba1053`
+does not contain `vitals.worker_health`; the script must and does reject it.
+Never point the new Compose topology at that image after schema revision `0083`.
+
+If the first cutover cannot be fixed forward and returning to the old combined
+runtime is unavoidable, declare a maintenance window and use a separately
+reviewed emergency procedure. Stop writes and both split runtime services, keep
+the database/Redis volumes untouched, and use the failed split SHA's migration
+image to perform exactly one downgrade:
+
+```bash
+cd /root/vitals-commercial-production
+export COMPOSE_PROJECT_NAME=vitals_prod
+export COMPOSE_FILE=docker-compose.yml:docker-compose.production.yml
+export VITALS_IMAGE_TAG=<failed-split-full-sha>
+docker compose stop vitals_app vitals_worker
+docker compose run --rm --no-deps vitals_migrate alembic downgrade 0082
+```
+
+Then use the separately prepared detached `dba1053` worktree and reviewed old
+production overlay. Create the named owner-only emergency override before
+entering its YAML, and verify its mode:
+
+```bash
+cd /root/vitals-pre-split
+umask 077
+"${EDITOR:?set EDITOR}" docker-compose.emergency-pre-split.yml
+chmod 600 docker-compose.emergency-pre-split.yml
+test "$(stat -c '%a' docker-compose.emergency-pre-split.yml)" = 600
+```
+
+The file must contain only this reviewed image and runtime bind replacement:
+
+```yaml
+services:
+  vitals_app:
+    image: vitals_prod_pre_split:dba1053
+    volumes:
+      - type: bind
+        source: /root/vitals-commercial-production/.env.runtime
+        target: /app/.env
+        bind:
+          create_host_path: false
+```
+
+Explicitly keep `COMPOSE_PROJECT_NAME=vitals_prod`, render the combined
+configuration without printing it, and prove that the image and `/app/.env`
+source resolve exactly before starting only `vitals_app`:
+
+```bash
+cd /root/vitals-pre-split
+export COMPOSE_PROJECT_NAME=vitals_prod
+export COMPOSE_FILE=docker-compose.yml:docker-compose.production.yml:docker-compose.emergency-pre-split.yml
+docker compose --env-file /root/vitals-commercial-production/.env config --quiet
+docker compose --env-file /root/vitals-commercial-production/.env \
+  config --format json | python3 -c '
+import json
+import sys
+
+app = json.load(sys.stdin)["services"]["vitals_app"]
+mounts = [item for item in app["volumes"] if item["target"] == "/app/.env"]
+expected_source = "/root/vitals-commercial-production/.env.runtime"
+assert app["image"] == "vitals_prod_pre_split:dba1053"
+assert len(mounts) == 1 and mounts[0]["source"] == expected_source
+'
+docker compose --env-file /root/vitals-commercial-production/.env \
+  up -d --no-deps --no-build vitals_app
+```
+
+Keep the split `vitals_worker` stopped: the old FastAPI process owns its embedded
+scheduler. Prove combined `/health` plus login locally. This weakens the
+capability boundary and is an emergency recovery, not `deploy.sh rollback`; the
+script must never automate the schema downgrade or guess an old image, checkout,
+project, or overlay.
 
 ## Rotate an owner credential previously exposed to the web container
 

@@ -524,7 +524,8 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 # Bcrypt-хеш пароля для входа
 python -c "import bcrypt; print(bcrypt.hashpw(b'ваш-пароль', bcrypt.gensalt()).decode())"
 
-# Два разных URL-safe пароля PostgreSQL: сначала admin, затем runtime
+# Три разных URL-safe пароля PostgreSQL: admin, web, затем worker
+python -c "import secrets; print(secrets.token_hex(24))"
 python -c "import secrets; print(secrets.token_hex(24))"
 python -c "import secrets; print(secrets.token_hex(24))"
 ```
@@ -541,8 +542,9 @@ VITALS_DB_USER="vitals_admin"
 VITALS_DB_PASSWORD="PASTE_ADMIN_PASSWORD"
 VITALS_MIGRATION_DATABASE_URL="postgresql+asyncpg://vitals_admin:PASTE_ADMIN_PASSWORD@vitals_db:5432/vitals_db"
 
-# Web/runtime — отдельная ограниченная роль; Compose создаст её и выдаст DML.
-VITALS_DATABASE_URL="postgresql+asyncpg://vitals_runtime:PASTE_RUNTIME_PASSWORD@vitals_db:5432/vitals_db"
+# Web и worker — разные ограниченные роли; Compose создаст их и выдаст DML.
+VITALS_DATABASE_URL="postgresql+asyncpg://vitals_web:PASTE_WEB_PASSWORD@vitals_db:5432/vitals_db"
+VITALS_WORKER_DATABASE_URL="postgresql+asyncpg://vitals_worker:PASTE_WORKER_PASSWORD@vitals_db:5432/vitals_db"
 
 # Только для локального http://127.0.0.1; за HTTPS оставьте true
 VITALS_COOKIE_SECURE=false
@@ -551,36 +553,75 @@ VITALS_COOKIE_SECURE=false
 VITALS_MCP_CLIENT_SECRET="ещё-один-случайный-секрет"
 ```
 
-Когда `.env` полностью заполнен, один раз создайте отдельный файл для web-
-процесса. Команда переносит только разрешённые runtime-настройки, ставит права
-`0600` и отказывается перезаписывать файл, который позднее изменяет Settings:
+Когда `.env` полностью заполнен, один раз создайте отдельный файл для runtime-
+процессов. Команда переносит только разрешённые настройки, ставит права `0600`
+и отказывается перезаписывать файл, который позднее изменяет Settings:
 
 ```bash
 python3 scripts/create_runtime_env.py
 ```
 
-Host-only `.env` с migration DSN и паролем владельца PostgreSQL никогда не
-монтируется в `vitals_app`.
+Host-only `.env` с migration DSN, worker DSN и паролем владельца PostgreSQL
+никогда не монтируется в web или worker. Web монтирует `.env.runtime` для
+чтения/изменения настроек, worker — только для чтения и получает свой DSN через
+точное Compose-сопоставление.
 
 #### 4. Запустите
 
 ```bash
-docker compose up -d --build vitals_db vitals_redis vitals_app
+export COMPOSE_PROJECT_NAME=vitals_prod
+docker compose build vitals_app
+docker compose up -d --wait --no-build vitals_worker vitals_app
 ```
 
 > [!NOTE]
-> Перед `vitals_app` Compose последовательно запускает одноразовые сервисы
+> Перед worker и `vitals_app` Compose последовательно запускает одноразовые сервисы
 > `vitals_migrate` (владелец схемы) и `vitals_db_roles` (выдача минимальных
-> runtime-прав). Сам web-процесс не может менять схему или обходить RLS.
+> прав двум runtime-ролям). Планировщик и фоновые интеграции работают только в
+> `vitals_worker`; у него нет опубликованного порта. Web-процесс не может менять
+> схему, обходить RLS или получить worker-only capability.
 > Backup sidecar включайте отдельно после настройки каталога резервных копий.
+
+Последующие production-обновления выполняйте только из чистого checkout, сохраняя
+точное имя существующего Compose-проекта и host-only production overlay:
+
+> [!IMPORTANT]
+> Для первого перехода со старого combined runtime не запускайте старую копию
+> `deploy.sh`: shell уже разобрал её прежний hard-reset/combined сценарий до
+> обновления файла. Сначала вручную сделайте проверяемый fast-forward чистого
+> checkout по инструкции [runbook cutover](docs/OWNERSHIP_CUTOVER_RUNBOOK.md),
+> затем отдельной командой запустите уже новый скрипт.
+
+```bash
+export COMPOSE_PROJECT_NAME=vitals_prod
+export COMPOSE_FILE=docker-compose.yml:docker-compose.production.yml
+./deploy.sh
+```
+
+Скрипт отказывается создавать новый проект, строит один образ с полным Git SHA,
+выполняет migrate/roles, проверяет worker, затем переключает и проверяет web. MCP
+остаётся на прежнем `/mcp/` web URL: перенастраивать клиент из-за отделения
+worker не требуется.
 
 #### 5. Проверьте
 
 Дашборд: `http://127.0.0.1:8000`
 
 ```bash
-curl -s http://127.0.0.1:8000/health
+curl --fail http://127.0.0.1:8000/health
 ```
+
+Обычный runtime-откат доступен только на ранее успешно проверенный split-образ:
+
+```bash
+./deploy.sh rollback                 # предыдущий записанный SHA
+./deploy.sh rollback <full-git-sha>  # явно выбранный совместимый SHA
+```
+
+Он не откатывает схему. У первого split-cutover нет автоматического anchor:
+pre-split образ нельзя запускать против revision `0083`. Аварийный возврат к
+старому combined runtime требует отдельного maintenance window и явного
+`0083` → `0082`; см. [runbook cutover](docs/OWNERSHIP_CUTOVER_RUNBOOK.md).
 
 #### 6. Проверяемое восстановление
 
@@ -686,6 +727,7 @@ digest, совместимой конфигурацией и полной restor
 | Переменная | Описание | Дефолт |
 | :--- | :--- | :--- |
 | `VITALS_DATABASE_URL` | PostgreSQL (asyncpg) | `postgresql+asyncpg://...` |
+| `VITALS_WORKER_DATABASE_URL` | Отдельный PostgreSQL DSN для scheduler/jobs | `postgresql+asyncpg://...` |
 | `VITALS_DB_USER` | Владелец схемы PostgreSQL (контейнер БД и backup) | `vitals_admin` |
 | `VITALS_MIGRATION_DATABASE_URL` | Привилегированный URL только для Alembic/операций | — |
 | `VITALS_DB_PASSWORD` | Пароль PostgreSQL | *Обязательный* |
@@ -1320,7 +1362,8 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 # Bcrypt password hash
 python -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt()).decode())"
 
-# Two distinct URL-safe PostgreSQL passwords: admin first, then runtime
+# Three distinct URL-safe PostgreSQL passwords: admin, web, then worker
+python -c "import secrets; print(secrets.token_hex(24))"
 python -c "import secrets; print(secrets.token_hex(24))"
 python -c "import secrets; print(secrets.token_hex(24))"
 ```
@@ -1337,8 +1380,9 @@ VITALS_DB_USER="vitals_admin"
 VITALS_DB_PASSWORD="PASTE_ADMIN_PASSWORD"
 VITALS_MIGRATION_DATABASE_URL="postgresql+asyncpg://vitals_admin:PASTE_ADMIN_PASSWORD@vitals_db:5432/vitals_db"
 
-# Web/runtime uses a distinct restricted role; Compose creates and grants it.
-VITALS_DATABASE_URL="postgresql+asyncpg://vitals_runtime:PASTE_RUNTIME_PASSWORD@vitals_db:5432/vitals_db"
+# Web and worker use distinct restricted roles; Compose creates and grants both.
+VITALS_DATABASE_URL="postgresql+asyncpg://vitals_web:PASTE_WEB_PASSWORD@vitals_db:5432/vitals_db"
+VITALS_WORKER_DATABASE_URL="postgresql+asyncpg://vitals_worker:PASTE_WORKER_PASSWORD@vitals_db:5432/vitals_db"
 
 # Local http://127.0.0.1 only; keep true behind HTTPS
 VITALS_COOKIE_SECURE=false
@@ -1347,36 +1391,76 @@ VITALS_COOKIE_SECURE=false
 VITALS_MCP_CLIENT_SECRET="another-random-secret"
 ```
 
-After `.env` is final, create the separate web-process file once. The command
-copies only allowlisted runtime settings, sets mode `0600`, and refuses to
+After `.env` is final, create the separate runtime-process file once. The
+command copies only allowlisted settings, sets mode `0600`, and refuses to
 overwrite the file that Settings subsequently owns:
 
 ```bash
 python3 scripts/create_runtime_env.py
 ```
 
-The host-only `.env`, including the migration DSN and PostgreSQL owner password,
-is never mounted into `vitals_app`.
+The host-only `.env`, including the migration DSN, worker DSN, and PostgreSQL
+owner password, is never mounted into either runtime. Web mounts `.env.runtime`
+for Settings reads/writes; the worker mounts it read-only and receives its own
+DSN through one exact Compose mapping.
 
 #### 4. Launch
 
 ```bash
-docker compose up -d --build vitals_db vitals_redis vitals_app
+export COMPOSE_PROJECT_NAME=vitals_prod
+docker compose build vitals_app
+docker compose up -d --wait --no-build vitals_worker vitals_app
 ```
 
 > [!NOTE]
-> Before `vitals_app`, Compose runs the one-shot `vitals_migrate` (schema owner)
-> and `vitals_db_roles` (least-privilege grants) services in order. The web
-> process itself cannot change the schema or bypass RLS. Enable the backup
-> sidecar separately after configuring its host directory.
+> Before the worker and `vitals_app`, Compose runs the one-shot `vitals_migrate`
+> (schema owner) and `vitals_db_roles` (least-privilege grants to both runtime
+> roles) services in order. Scheduler and provider jobs run only in
+> `vitals_worker`, which publishes no port. Web cannot change the schema, bypass
+> RLS, or obtain the worker-only capability. Enable the backup sidecar separately
+> after configuring its host directory.
+
+For subsequent production updates, use a clean checkout and preserve the exact
+existing Compose project plus the host-only production overlay:
+
+> [!IMPORTANT]
+> For the first transition from the old combined runtime, do not invoke the old
+> copy of `deploy.sh`: the shell has already parsed its former hard-reset and
+> combined-start body before that file updates. First manually fast-forward the
+> clean checkout as specified in the
+> [cutover runbook](docs/OWNERSHIP_CUTOVER_RUNBOOK.md), then invoke the new script
+> as a separate command.
+
+```bash
+export COMPOSE_PROJECT_NAME=vitals_prod
+export COMPOSE_FILE=docker-compose.yml:docker-compose.production.yml
+./deploy.sh
+```
+
+The script refuses to initialize a new project, builds one full-Git-SHA image,
+runs migrations and role convergence, gates the worker, then switches and gates
+web. MCP remains at the same `/mcp/` web URL; splitting the worker does not
+require client reconfiguration.
 
 #### 5. Verify
 
 Dashboard: `http://127.0.0.1:8000`
 
 ```bash
-curl -s http://127.0.0.1:8000/health
+curl --fail http://127.0.0.1:8000/health
 ```
+
+An ordinary runtime rollback accepts only a previously validated split image:
+
+```bash
+./deploy.sh rollback                 # recorded previous SHA
+./deploy.sh rollback <full-git-sha>  # explicit compatible SHA
+```
+
+It never downgrades the schema. The first split cutover has no automatic anchor:
+a pre-split image must not run against revision `0083`. Returning to the old
+combined runtime is an emergency maintenance operation with an explicit `0083`
+to `0082` downgrade; see the [cutover runbook](docs/OWNERSHIP_CUTOVER_RUNBOOK.md).
 
 #### 6. Verified recovery
 
@@ -1484,6 +1568,7 @@ A traditional setup using Nginx as a reverse proxy.
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `VITALS_DATABASE_URL` | PostgreSQL (asyncpg) | `postgresql+asyncpg://...` |
+| `VITALS_WORKER_DATABASE_URL` | Separate PostgreSQL DSN for scheduler/jobs | `postgresql+asyncpg://...` |
 | `VITALS_DB_USER` | PostgreSQL schema owner (DB container and backup) | `vitals_admin` |
 | `VITALS_MIGRATION_DATABASE_URL` | Privileged URL for Alembic/operator work only | — |
 | `VITALS_DB_PASSWORD` | PostgreSQL password | *Required* |

@@ -19,10 +19,11 @@ files:
   artifact checksums.
 
 The encrypted offsite snapshot also contains the protected host/operator `.env`
-and the application-only `.env.runtime`. The first holds the database-owner
-authority and must never be mounted into the web process; the second is the
-allowlisted file Settings updates. Never treat a loose artifact without its
-matching manifest as a recovery point.
+and the runtime-only `.env.runtime`. The first holds the database-owner and
+worker DSNs and must never be mounted into either runtime process; the second is
+the allowlisted file Settings updates. Web mounts that file read/write and the
+worker read-only. Never treat a loose artifact without its matching manifest as
+a recovery point.
 
 The optional ZITADEL identity store is deliberately separate. A complete
 identity-store recovery point lives below `backups/idp/` and has exactly:
@@ -161,6 +162,32 @@ revision, aggregate ownership validation result, RLS result, and browser smoke
 result. Do not put row values, filenames from medical uploads, tokens, or
 credentials into the drill record.
 
+## Release deployment gate
+
+Before a production update, verify a complete recovery point and preserve the
+exact existing project plus its owner-only overlay. `deploy.sh` refuses a new or
+mistyped project by requiring exactly one existing database and web container
+with matching Compose labels:
+
+```bash
+export COMPOSE_PROJECT_NAME=vitals_prod
+export COMPOSE_FILE=docker-compose.yml:docker-compose.production.yml
+./deploy.sh
+```
+
+The script builds one image tagged with the full Git SHA, migrates and converges
+roles, waits for worker readiness, switches web, then requires local `/health`
+and `/login` smoke. `.vitals-deploy-state` is a mode-`0600` host-local record of
+validated image SHAs, not a health-data backup or a disaster-recovery point. If
+it or an image is absent, rollback fails closed instead of guessing.
+
+`./deploy.sh rollback` is only a runtime-image switch to a recorded compatible
+split image; it neither restores data nor downgrades Alembic. The first split
+cutover has no ordinary pre-split rollback anchor. The explicit `0083` to `0082`
+combined-runtime emergency path is documented in
+[OWNERSHIP_CUTOVER_RUNBOOK.md](OWNERSHIP_CUTOVER_RUNBOOK.md), and must never be
+substituted for a production restore decision.
+
 ## Scratch restore drill
 
 Restore an offsite snapshot on a trusted administration machine when that is
@@ -188,12 +215,13 @@ volume, or credential. It stages the exact Git `HEAD`, verifies and safely
 extracts the exact five-file bundle, renders and audits a scratch-only Compose
 configuration, and restores PostgreSQL with `ON_ERROR_STOP` and one transaction.
 It then migrates to the single Alembic head, records the ownership and scoped-key
-checks in the disposable database, provisions a distinct runtime role, proves
-forced subject RLS through that role, restarts PostgreSQL, and repeats the
-read-only proof. The app and data services have only internal networks. A
-credential-free byte proxy on a separate app-only network publishes the
-loopback browser port without giving the app an outbound route; backup, offsite,
-and identity services are not part of the active service set.
+checks in the disposable database, provisions distinct web and worker roles,
+proves forced subject RLS through the web role, restarts PostgreSQL, and repeats
+the read-only proof. Web, worker, and data services have only internal networks.
+The worker must pass its DB/Redis/generation/lease/heartbeat readiness helper and
+has no published port. A credential-free byte proxy on a separate app-only
+network publishes the loopback browser port without giving web an outbound
+route; backup, offsite, and identity services are not part of the active set.
 
 An ordinary successful run removes its exact Compose project, volumes, copied
 bundle, synthetic secrets, and run directory, and returns one aggregate JSON
@@ -219,8 +247,8 @@ every enabled module at desktop and phone widths. Check protected legacy uploads
 and private attachments only through authenticated routes. Do not expose this
 port beyond loopback.
 
-After the first browser pass, prove process recovery and repeat the health/RLS
-gate:
+After the first browser pass, restart both runtime services and repeat worker,
+web-health, and RLS gates:
 
 ```bash
 python3 scripts/rehearse_installation_restore.py status --run-dir <exact-run-dir>
@@ -244,8 +272,9 @@ separate release gates.
 A production restore requires a maintenance window, a fresh verified recovery
 point, an explicit chosen timestamp, and a successful scratch drill of that
 same bundle. Stop writes before taking the final pre-restore copy. Restore into
-new database and file volumes first, validate them, and switch the application
-only after the new stack passes health, RLS, and browser checks.
+new database and file volumes first, validate them, and switch worker before web
+only after the new stack passes worker readiness, web health, RLS, and browser
+checks.
 
 Do not overwrite the old database or volumes during the first attempt. Retain
 them read-only until the restored stack has passed the agreed observation
@@ -275,10 +304,11 @@ distinguish the public HTTPS port from the loopback origin port.
 
 Before the approved provider's first start, copy `.env.idp.example` to an
 owner-only `.env.idp` and escrow `VITALS_IDP_MASTERKEY` outside the VPS. Never
-put IDP control-plane secrets in the application `.env`: `vitals_app` mounts
-that file. The provider image/digest belongs in reviewed Compose code, not this
-secret file. The database password is not the encryption key; losing the master
-key can leave a successfully restored identity database unusable.
+put IDP control-plane secrets in `.env.runtime` or another runtime-visible file.
+Neither runtime mounts the host/operator `.env`. The provider image/digest
+belongs in reviewed Compose code, not a secret file. The database password is
+not the encryption key; losing the master key can leave a successfully restored
+identity database unusable.
 
 For the current production checkout, preserve the exact project and overlay on
 every command:

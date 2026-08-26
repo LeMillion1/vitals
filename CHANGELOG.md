@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — production deploys gate worker before web
+
+The production deploy helper now requires and attests the exact existing Compose
+project, fast-forwards a clean checkout, builds one immutable full-SHA runtime
+image, runs migrations and role convergence, then health-gates the worker before
+switching web and running loopback smoke. It records only validated split-image
+anchors and refuses pre-split rollback; the first-cutover `0083` to `0082`
+combined-runtime escape hatch remains an explicit maintenance procedure rather
+than an automatic deploy action.
+
 ### Changed — web and scheduler run as separate services
 
 Compose now runs FastAPI explicitly in web mode and APScheduler through the

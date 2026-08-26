@@ -87,3 +87,7 @@ local_vitals.db
 # Screenshots and markup left behind by a failing browser test. Evidence for
 # the run that produced them, stale the moment the next one starts.
 .ui-failures/
+
+# Successful split-runtime deploy/rollback anchor for this exact Compose project.
+.vitals-deploy-state
+.vitals-deploy-state.tmp.*
