@@ -1020,6 +1020,33 @@ def _start_worker(context: Context) -> None:
     )
 
 
+def _restart_worker(context: Context) -> None:
+    """Restart the restored scheduler and wait for its health proof."""
+
+    _run(
+        _compose(context) + ["restart", "vitals_worker"],
+        cwd=context.source_dir,
+        env=_safe_env(),
+        code="drill_worker_restart_failed",
+    )
+    _run(
+        _compose(context)
+        + [
+            "up",
+            "-d",
+            "--wait",
+            "--wait-timeout",
+            "90",
+            "--no-deps",
+            "--no-build",
+            "vitals_worker",
+        ],
+        cwd=context.source_dir,
+        env=_safe_env(),
+        code="drill_worker_restart_failed",
+    )
+
+
 def _resource_ids(project: str) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
     for kind, command in (
@@ -1590,6 +1617,7 @@ def restart_run(run_dir: Path) -> dict[str, Any]:
     if state.get("phase") != "served":
         _fail("run_not_served")
     _render_and_assert(context)
+    _restart_worker(context)
     _run(
         _compose(context) + ["restart", "vitals_app"],
         cwd=context.source_dir,

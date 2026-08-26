@@ -176,6 +176,111 @@ def test_restore_worker_start_waits_for_instance_health(tmp_path, monkeypatch):
     assert kwargs["code"] == "drill_worker_start_failed"
 
 
+def test_restore_restart_proves_worker_before_web_and_rls(tmp_path, monkeypatch):
+    context = _context(tmp_path)
+    events = []
+    state = {
+        "phase": "served",
+        "credentials_file": str(context.run_dir / "browser-credentials.txt"),
+        "head_revision": "0083",
+        "restored_revision": "0080",
+        "runtime_rls_audit": "completed",
+    }
+
+    monkeypatch.setattr(
+        runner, "_context_from_state", lambda _run_dir: (context, state)
+    )
+    monkeypatch.setattr(
+        runner, "_render_and_assert", lambda _context: events.append("render")
+    )
+
+    def fake_run(command, **kwargs):
+        if command[-2:] == ["restart", "vitals_worker"]:
+            events.append("worker_restart")
+            assert kwargs["code"] == "drill_worker_restart_failed"
+        elif command[-1] == "vitals_worker" and "--wait" in command:
+            events.append("worker_health")
+            assert kwargs["code"] == "drill_worker_restart_failed"
+        elif command[-2:] == ["restart", "vitals_app"]:
+            events.append("web_restart")
+            assert kwargs["code"] == "drill_app_restart_failed"
+        else:
+            pytest.fail(f"unexpected command: {command}")
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(runner, "_run", fake_run)
+    monkeypatch.setattr(
+        runner,
+        "_wait_http",
+        lambda _port, _path: events.append("web_health") or 200,
+    )
+
+    def fake_service_run(_context, service, command, **kwargs):
+        events.append("rls")
+        assert service == "vitals_db_roles"
+        assert command == [
+            "python",
+            "scripts/run_restore_validator.py",
+            "runtime-rls",
+        ]
+        assert kwargs["code"] == "restart_rls_validation_failed"
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=b'{"result":"ok"}\n',
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(runner, "_service_run", fake_service_run)
+    monkeypatch.setattr(
+        runner,
+        "_write_state",
+        lambda _context, **updates: {"phase": updates["phase"]},
+    )
+
+    result = runner.restart_run(context.run_dir)
+
+    assert events == [
+        "render",
+        "worker_restart",
+        "worker_health",
+        "web_restart",
+        "web_health",
+        "rls",
+    ]
+    assert result == {"phase": "served", "result": "ok", "restart": "completed"}
+
+
+def test_restore_restart_stops_before_web_when_worker_health_fails(
+    tmp_path, monkeypatch
+):
+    context = _context(tmp_path)
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_context_from_state",
+        lambda _run_dir: (context, {"phase": "served"}),
+    )
+    monkeypatch.setattr(runner, "_render_and_assert", lambda _context: None)
+
+    def fake_run(command, **_kwargs):
+        if command[-2:] == ["restart", "vitals_worker"]:
+            events.append("worker_restart")
+            return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+        if command[-1] == "vitals_worker" and "--wait" in command:
+            events.append("worker_health")
+            raise runner.DrillError("drill_worker_restart_failed")
+        events.append("unexpected")
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(runner, "_run", fake_run)
+
+    _assert_drill_error(
+        "drill_worker_restart_failed", runner.restart_run, context.run_dir
+    )
+    assert events == ["worker_restart", "worker_health"]
+
+
 def _bundle(tmp_path: Path) -> runner.Bundle:
     names = [
         f"vitals_{STAMP}.sql.gz",

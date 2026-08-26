@@ -171,7 +171,9 @@ ownership, scoped-key, runtime-role, forced-RLS, and database-restart checks. A
 successful ordinary run removes its copied health data and secrets; `--serve`
 retains a loopback-only, outbound-isolated app with synthetic drill credentials
 for browser inspection through a credential-free network proxy and an explicit
-restart/destroy lifecycle. Failed
+restart/destroy lifecycle. The restart proof brings the worker back first,
+waits for its healthcheck, then restarts web and repeats web-health and RLS
+validation. Failed
 validators expose only their bounded machine-readable error code, never captured
 SQL, database URLs, or subprocess diagnostics.
 
