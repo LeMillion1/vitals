@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -20,6 +21,11 @@ import sqlalchemy as sa
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
+
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
 
 from vitals.ownership import OWNERSHIP_REGISTRY, TargetColumn
 

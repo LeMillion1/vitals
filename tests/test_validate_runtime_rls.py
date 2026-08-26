@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import secrets
+import subprocess
+import sys
 import uuid
 
 import pytest
@@ -14,6 +17,34 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 import scripts.validate_runtime_rls as validator
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_validator_entrypoint_resolves_project_from_foreign_cwd(tmp_path):
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"PYTHONPATH", "VITALS_DATABASE_URL", "VITALS_MIGRATION_DATABASE_URL"}
+    }
+
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/validate_runtime_rls.py")],
+        cwd=tmp_path,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == b""
+    assert json.loads(result.stdout) == {
+        "error_code": "database_url_missing",
+        "operation": "validate_runtime_rls",
+        "result": "error",
+    }
 
 
 def _url(role: str, database: str = "vitals") -> str:
