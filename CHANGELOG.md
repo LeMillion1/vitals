@@ -16,6 +16,9 @@ initialized S3-backed restic repository. Repository, encryption, and S3
 credentials arrive as file secrets; the read-only sidecar has no database
 credential or Docker socket, never initializes or prunes the repository, and
 advances its freshness marker only after successful encrypted replication.
+The operator runbook separates health-store recovery from the not-yet-enabled
+identity store and requires checksum, PostgreSQL 15, ownership, RLS, and browser
+validation on an isolated restore before any production recovery.
 
 ### Fixed — care consent matches the record a professional can see
 

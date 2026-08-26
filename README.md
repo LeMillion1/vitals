@@ -571,7 +571,17 @@ docker compose up -d --build vitals_db vitals_redis vitals_app
 curl -s http://127.0.0.1:8000/health
 ```
 
-#### 6. Проактивный слой (опционально)
+#### 6. Проверяемое восстановление
+
+Локальный backup-sidecar ежедневно публикует manifest только после успешного
+дампа PostgreSQL и архивирования Garmin-сессии, приватного volume и legacy-
+загрузок. Копия на том же VPS не является disaster recovery. Для зашифрованной
+репликации в отдельный версионируемый S3-репозиторий и обязательной scratch-
+репетиции следуйте [runbook резервного копирования и восстановления](docs/BACKUP_RESTORE_RUNBOOK.md).
+Профиль `offsite` не запускается автоматически. ZITADEL хранится отдельно и не
+должен включаться до появления отдельного проверенного backup/restore IdP.
+
+#### 7. Проактивный слой (опционально)
 
 Настраивается целиком в приложении: карточка «Проактивный слой» в `/settings` задаёт время брифа, тихие часы, дневной бюджет и категории нуджей, а сохранение перевешивает задачи на живом планировщике без перезапуска. Переменных окружения для этого нет — и по замыслу не будет: расписание принадлежит человеку, а не установке.
 
@@ -1341,7 +1351,18 @@ Dashboard: `http://127.0.0.1:8000`
 curl -s http://127.0.0.1:8000/health
 ```
 
-#### 6. Proactive layer (optional)
+#### 6. Verified recovery
+
+The local backup sidecar publishes its daily manifest only after the PostgreSQL
+dump plus the Garmin session, private volume, and legacy-upload archives all
+succeed. A copy on the same VPS is not disaster recovery. Follow the
+[backup and restore runbook](docs/BACKUP_RESTORE_RUNBOOK.md) for encrypted
+replication to a separate versioned S3 repository and the mandatory scratch
+restore drill. The `offsite` profile never starts automatically. ZITADEL remains
+separate and must not be enabled until its own verified IdP backup/restore path
+exists.
+
+#### 7. Proactive layer (optional)
 
 Configured entirely inside the app: the "Proactive layer" card in `/settings` sets the brief time, quiet hours, the daily budget and the nudge categories, and saving reschedules the jobs on the live scheduler without a restart. There are no environment variables for any of it, by design — a schedule belongs to a person, not to an installation.
 
