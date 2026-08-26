@@ -179,6 +179,38 @@ def test_all_direct_dotenv_loaders_honor_vitals_env_file():
         assert "VITALS_ENV_FILE" in source or "runtime_environment_path" in source
 
 
+def test_runtime_role_provisioner_can_run_from_outside_repository(tmp_path):
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    for key in (
+        "VITALS_DATABASE_URL",
+        "VITALS_ENV_FILE",
+        "VITALS_MIGRATION_DATABASE_URL",
+        "VITALS_WORKER_DATABASE_URL",
+    ):
+        environment.pop(key, None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(
+                Path(__file__).resolve().parents[1]
+                / "scripts"
+                / "provision_runtime_db_role.py"
+            ),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "ModuleNotFoundError" not in result.stderr
+    assert "VITALS_MIGRATION_DATABASE_URL must be a valid PostgreSQL URL" in result.stderr
+
+
 @pytest.mark.parametrize(
     "line",
     [

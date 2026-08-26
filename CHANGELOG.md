@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — role provisioning runs from its container command
+
+The database-role provisioner now bootstraps the repository import path before
+loading the shared runtime-file locator, so its documented
+`python scripts/provision_runtime_db_role.py` Compose command works in the
+production image as well as when the module is imported by tests.
+
 ### Fixed — care navigation follows the reader's role
 
 The professional `/care` home now redirects ordinary members to their care-team
