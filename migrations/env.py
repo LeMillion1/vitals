@@ -18,11 +18,12 @@ from alembic import context
 # Importing the package registers every model on Base.metadata.
 import vitals.models  # noqa: F401
 from vitals.models.base import Base
+from vitals.runtime_env import runtime_environment_path
 
 # This runs as its own process (`alembic upgrade head`, before uvicorn starts),
 # so unlike the app it never imports vitals.config — load .env directly here too,
 # since the container no longer gets it pre-injected via docker-compose env_file.
-load_dotenv()
+load_dotenv(dotenv_path=runtime_environment_path())
 
 config = context.config
 

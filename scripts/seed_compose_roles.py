@@ -18,8 +18,8 @@ from dotenv import load_dotenv
 REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPOSITORY_ROOT)
 
-# Compose bind-mounts /app/.env instead of injecting its contents. Load it before
-# importing seed_care_demo, whose local-SQLite defaults use setdefault().
+# Compose bind-mounts the runtime-config directory instead of injecting its
+# contents. Load the exact file before importing seed_care_demo.
 load_dotenv(os.getenv("VITALS_ENV_FILE") or os.path.join(REPOSITORY_ROOT, ".env"))
 
 from sqlalchemy import func, select  # noqa: E402

@@ -123,9 +123,9 @@ Between any two, the upgrade can pause indefinitely.
 
 ## 3. Migrate the rest of the way
 
-Create the allowlisted `.env.runtime` and distinct web/worker DSNs first. Preserve
-the exact existing production project and its host-only overlay; an accidental
-Compose project name creates different volumes and is not a deployment:
+Create distinct web/worker DSNs first. Preserve the exact existing production
+project and its host-only overlay; an accidental Compose project name creates
+different volumes and is not a deployment:
 
 ```bash
 # First split adoption only: do not invoke the old deploy.sh. It parses its old
@@ -138,6 +138,40 @@ git fetch --prune origin
 git merge-base --is-ancestor HEAD "origin/$branch"
 git merge --ff-only "origin/$branch"
 ```
+
+The new checkout contains the directory-aware one-shot helper. Before invoking
+the new deploy script, migrate the current Settings-owned legacy runtime file
+into the new private directory and verify both modes. This copies rather than
+moves the old file because the first-cutover emergency path needs its absolute
+bind unchanged:
+
+```bash
+python3 scripts/create_runtime_env.py --migrate-from .env.runtime
+test "$(stat -c '%a' .vitals-runtime)" = 700
+test "$(stat -c '%a' .vitals-runtime/vitals.env)" = 600
+```
+
+For a fresh installation with no legacy runtime file, use
+`python3 scripts/create_runtime_env.py` instead. Both modes are one-shot and
+refuse to replace `.vitals-runtime/vitals.env`.
+
+The new base Compose file owns the runtime-directory mount. Remove only a legacy
+`/app/.env` bind from the host-only production overlay if that overlay added one;
+do not remove its proxy, port, upload, or other installation-specific settings:
+
+```bash
+if grep -q -- '/app/.env' docker-compose.production.yml; then
+  "${EDITOR:?set EDITOR}" docker-compose.production.yml
+fi
+! grep -q -- '/app/.env' docker-compose.production.yml
+```
+
+The new `deploy.sh` renders the combined configuration and refuses before any
+migration unless web and worker resolve to the same owner-only runtime
+directory, web is read/write, worker is read-only, both use
+`/run/vitals-runtime/vitals.env`, and neither receives an `/app/.env` bind. It
+also requires host modes `0700` and `0600`; do not loosen them to make Docker
+startup pass.
 
 Before that first invocation, prepare a separate detached worktree, a reviewed
 copy of the old production overlay, and a deliberately named local pre-split
@@ -162,8 +196,8 @@ Keep that emergency bundle outside the active checkout and treat it as
 read-only. The new deploy's fast-forward neither preserves nor manufactures it,
 and its normal rollback state must not claim it. On later split releases, skip
 the manual bootstrap block and invoke the already new `deploy.sh` directly. Do
-not copy `.env` or `.env.runtime` into the worktree: the only authoritative
-copies remain under `/root/vitals-commercial-production`.
+not copy `.env`, `.env.runtime`, or `.vitals-runtime/` into the worktree: the
+only authoritative copies remain under `/root/vitals-commercial-production`.
 
 Only after that emergency anchor exists, invoke the newly fast-forwarded script
 as a separate shell command:
@@ -290,12 +324,13 @@ project, or overlay.
 
 ## Rotate an owner credential previously exposed to the web container
 
-Deployments created before the application-only `.env.runtime` boundary mounted
-the host `.env` into `vitals_app`. After creating `.env.runtime`, rendering the
-production overlay to prove that `/app/.env` uses it, and recreating the app,
-rotate the old migration-owner password. Run the bounded helper through the
-already authenticated one-shot migration image; it updates PostgreSQL and the
-two exact operator-file fields without printing the replacement:
+Deployments created before the application-only runtime boundary mounted the
+host `.env` into `vitals_app`. After creating `.vitals-runtime/vitals.env`,
+rendering the production overlay to prove that `/run/vitals-runtime` resolves to
+that host directory, and recreating the app, rotate the old migration-owner
+password. Run the bounded helper through the already authenticated one-shot
+migration image; it updates PostgreSQL and the two exact operator-file fields
+without printing the replacement:
 
 ```bash
 docker compose run --rm --no-deps \

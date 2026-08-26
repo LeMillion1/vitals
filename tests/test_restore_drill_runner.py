@@ -345,13 +345,13 @@ def _context(tmp_path: Path) -> runner.Context:
         "VITALS_DRILL_LEGACY_UPLOAD_DIR": str(run_dir / "legacy_uploads"),
         "VITALS_DRILL_MCP_SECRET": "mcp-secret",
         "VITALS_DRILL_PRIVATE_FILES_DIR": str(run_dir / "private_files"),
-        "VITALS_DRILL_RUNTIME_ENV_FILE": str(run_dir / "runtime.env"),
+        "VITALS_DRILL_RUNTIME_ENV_DIR": str(run_dir / "runtime-config"),
         "VITALS_DRILL_RUNTIME_PASSWORD": "runtime-secret",
         "VITALS_DRILL_SESSION_SECRET": "session-secret",
         "VITALS_MIGRATION_DATABASE_URL": (
             f"postgresql+asyncpg://{owner}:owner-secret@vitals_db:5432/{database}"
         ),
-        "VITALS_RUNTIME_ENV_FILE": str(run_dir / "runtime.env"),
+        "VITALS_RUNTIME_ENV_DIR": str(run_dir / "runtime-config"),
         "VITALS_WORKER_DATABASE_URL": (
             f"postgresql+asyncpg://{worker_role}:worker-secret@"
             f"vitals_db:5432/{database}"
@@ -365,7 +365,7 @@ def _context(tmp_path: Path) -> runner.Context:
         source_dir=source_dir,
         bundle_dir=run_dir / "bundle",
         operator_env=run_dir / "operator.env",
-        runtime_env=run_dir / "runtime.env",
+        runtime_env=run_dir / "runtime-config" / "vitals.env",
         state_file=run_dir / runner.STATE_NAME,
         marker_file=run_dir / runner.MARKER_NAME,
         port=18080,
@@ -799,7 +799,7 @@ def test_restore_compose_overlay_keeps_drill_inputs_read_only_and_network_intern
     assert overlay.count("read_only: true") == 11
     assert overlay.count("create_host_path: false") == 8
     for target in (
-        "/app/.env",
+        "/run/vitals-runtime",
         "/data/garmin_session",
         "/app/web/static/uploads",
         "/data/private_files",

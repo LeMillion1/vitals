@@ -22,8 +22,8 @@ services:
       - proxy_backend
     volumes:
       - type: bind
-        source: ${VITALS_DRILL_RUNTIME_ENV_FILE:?VITALS_DRILL_RUNTIME_ENV_FILE is required}
-        target: /app/.env
+        source: ${VITALS_DRILL_RUNTIME_ENV_DIR:?VITALS_DRILL_RUNTIME_ENV_DIR is required}
+        target: /run/vitals-runtime
         read_only: true
         bind:
           create_host_path: false
@@ -57,8 +57,8 @@ services:
       - default
     volumes:
       - type: bind
-        source: ${VITALS_DRILL_RUNTIME_ENV_FILE:?VITALS_DRILL_RUNTIME_ENV_FILE is required}
-        target: /app/.env
+        source: ${VITALS_DRILL_RUNTIME_ENV_DIR:?VITALS_DRILL_RUNTIME_ENV_DIR is required}
+        target: /run/vitals-runtime
         read_only: true
         bind:
           create_host_path: false

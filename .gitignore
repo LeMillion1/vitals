@@ -17,6 +17,7 @@ private_key.txt
 origin*.txt
 cert*.txt
 .secrets/
+.vitals-runtime/
 
 # ── Python Specifics ──────────────────────────────────────────────────────────
 __pycache__/

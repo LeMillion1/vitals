@@ -2,7 +2,7 @@
 """Rotate the PostgreSQL migration-owner password without printing it.
 
 Run this through the one-shot ``vitals_migrate`` service with the host operator
-env mounted read/write.  The web container must already use ``.env.runtime``.
+env mounted read/write.  Web must already use the dedicated runtime directory.
 The command stages and fsyncs the new operator file before changing PostgreSQL,
 then atomically publishes it while the authenticated connection is still open.
 If publication fails, it restores the old database password before returning.

@@ -19,11 +19,13 @@ files:
   artifact checksums.
 
 The encrypted offsite snapshot also contains the protected host/operator `.env`
-and the runtime-only `.env.runtime`. The first holds the database-owner and
-worker DSNs and must never be mounted into either runtime process; the second is
-the allowlisted file Settings updates. Web mounts that file read/write and the
-worker read-only. Never treat a loose artifact without its matching manifest as
-a recovery point.
+and the exact runtime-only `.vitals-runtime/vitals.env`. The first holds the
+database-owner and worker DSNs and must never be mounted into either runtime
+process; the second is the allowlisted file Settings updates. Web mounts its
+containing directory read/write so atomic replacement works, while the worker
+mounts that directory read-only. The offsite sidecar receives only the exact
+runtime file, not the directory. Never treat a loose artifact without its
+matching manifest as a recovery point.
 
 The optional ZITADEL identity store is deliberately separate. A complete
 identity-store recovery point lives below `backups/idp/` and has exactly:
@@ -304,7 +306,8 @@ distinguish the public HTTPS port from the loopback origin port.
 
 Before the approved provider's first start, copy `.env.idp.example` to an
 owner-only `.env.idp` and escrow `VITALS_IDP_MASTERKEY` outside the VPS. Never
-put IDP control-plane secrets in `.env.runtime` or another runtime-visible file.
+put IDP control-plane secrets in `.vitals-runtime/vitals.env` or another
+runtime-visible file.
 Neither runtime mounts the host/operator `.env`. The provider image/digest
 belongs in reviewed Compose code, not a secret file. The database password is
 not the encryption key; losing the master key can leave a successfully restored

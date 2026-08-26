@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -68,6 +69,7 @@ def test_deploy_fast_forwards_and_builds_one_immutable_shared_image():
     assert source.count("compose build vitals_app") == 1
     assert "docker image tag" not in source
     assert "assert_shared_runtime_image" in source
+    assert "assert_runtime_config_mounts" in _function(source, "compose_preflight")
     assert "vitals.worker_health import check_configured_worker_health" in source
 
 
@@ -241,6 +243,97 @@ assert_shared_runtime_image
     assert result.returncode == 0, result.stderr
 
 
+def test_runtime_mount_helper_proves_directory_permissions_and_asymmetric_access(
+    tmp_path,
+):
+    runtime_dir = tmp_path / ".vitals-runtime"
+    runtime_dir.mkdir(mode=0o700)
+    (runtime_dir / "vitals.env").write_text(
+        "VITALS_DATABASE_URL=synthetic\n", encoding="utf-8"
+    )
+    (runtime_dir / "vitals.env").chmod(0o600)
+    payload = {
+        "services": {
+            name: {
+                "environment": {
+                    "VITALS_ENV_FILE": "/run/vitals-runtime/vitals.env"
+                },
+                "volumes": [
+                    {
+                        "type": "bind",
+                        "source": str(runtime_dir),
+                        "target": "/run/vitals-runtime",
+                        "read_only": name == "vitals_worker",
+                    }
+                ],
+            }
+            for name in ("vitals_app", "vitals_worker")
+        }
+    }
+    compose_json = tmp_path / "compose.json"
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    shell = r'''
+source "$1"
+SCRIPT_DIR="$2"
+compose() { cat "$COMPOSE_JSON"; }
+assert_runtime_config_mounts
+'''
+    environment = os.environ.copy()
+    environment["COMPOSE_JSON"] = str(compose_json)
+
+    result = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT), str(tmp_path)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+    payload["services"]["vitals_app"]["volumes"][0]["read_only"] = True
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    rejected = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT), str(tmp_path)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert rejected.returncode != 0
+    assert "web read/write, worker read-only" in rejected.stderr
+
+    # A private directory is still forbidden if it is broad enough to contain
+    # the host/operator .env. This pins the actual owner-secret boundary rather
+    # than merely comparing a directory path with a file path.
+    payload["services"]["vitals_app"]["volumes"][0]["read_only"] = False
+    for service in payload["services"].values():
+        service["volumes"][0]["source"] = str(tmp_path)
+    tmp_path.chmod(0o700)
+    (tmp_path / "vitals.env").write_text(
+        "VITALS_DATABASE_URL=synthetic\n", encoding="utf-8"
+    )
+    (tmp_path / "vitals.env").chmod(0o600)
+    (tmp_path / ".env").write_text(
+        "VITALS_DB_PASSWORD=operator-secret\n", encoding="utf-8"
+    )
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    contains_operator_env = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT), str(tmp_path)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert contains_operator_env.returncode != 0
+    assert "operator .env absent" in contains_operator_env.stderr
+
+
 def test_shared_image_helper_rejects_a_mixed_runtime_image():
     shell = r'''
 source "$1"
@@ -289,7 +382,17 @@ def test_operator_docs_preserve_project_and_first_cutover_boundary():
         "--env-file /root/vitals-commercial-production/.env"
     ) >= 3
     assert 'mounts[0]["source"] == expected_source' in ownership
-    assert "not copy `.env` or `.env.runtime` into the worktree" in ownership
+    assert (
+        "not copy `.env`, `.env.runtime`, or `.vitals-runtime/` into the worktree"
+        in ownership
+    )
+    assert (
+        "python3 scripts/create_runtime_env.py --migrate-from .env.runtime"
+        in ownership
+    )
+    assert ownership.index(
+        "python3 scripts/create_runtime_env.py --migrate-from .env.runtime"
+    ) < ownership.index("\n./deploy.sh\n")
     assert ownership.count("export COMPOSE_PROJECT_NAME=vitals_prod") >= 3
     assert '"${EDITOR:?set EDITOR}" docker-compose.emergency-pre-split.yml' in (
         ownership

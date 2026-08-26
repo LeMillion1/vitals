@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — runtime settings use a directory-backed atomic file
+
+Web now mounts the owner-only `.vitals-runtime/` host directory read/write and
+reads its exact `vitals.env` through `VITALS_ENV_FILE`; worker mounts the same
+directory read-only. This lets Settings complete its sibling-file `os.replace`
+without exposing the operator `.env` or falling back to partial in-place writes.
+The one-shot creator supports a validated, non-destructive migration from the
+legacy `.env.runtime`, restore drills use their own read-only scratch directory,
+and encrypted offsite backup still receives the exact runtime file.
+
 ### Changed — production deploys gate worker before web
 
 The production deploy helper now requires and attests the exact existing Compose

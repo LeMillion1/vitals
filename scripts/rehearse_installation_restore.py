@@ -55,9 +55,9 @@ OPERATOR_ENV_KEYS = (
     "VITALS_DRILL_GARMIN_DIR",
     "VITALS_DRILL_LEGACY_UPLOAD_DIR",
     "VITALS_DRILL_PRIVATE_FILES_DIR",
-    "VITALS_DRILL_RUNTIME_ENV_FILE",
+    "VITALS_DRILL_RUNTIME_ENV_DIR",
     "VITALS_MIGRATION_DATABASE_URL",
-    "VITALS_RUNTIME_ENV_FILE",
+    "VITALS_RUNTIME_ENV_DIR",
     "VITALS_WORKER_DATABASE_URL",
 )
 MARKER_NAME = ".vitals-restore-drill"
@@ -721,7 +721,7 @@ def _render_and_assert(context: Context) -> dict[str, Any]:
     ):
         _fail("compose_port_mapping_invalid")
     expected_targets = {
-        "/app/.env",
+        "/run/vitals-runtime",
         "/data/garmin_session",
         "/app/web/static/uploads",
         "/data/private_files",
@@ -752,6 +752,10 @@ def _render_and_assert(context: Context) -> dict[str, Any]:
     if (
         app_environment.get("VITALS_PROCESS_MODE") != "web"
         or worker_environment.get("VITALS_PROCESS_MODE") != "worker"
+        or app_environment.get("VITALS_ENV_FILE")
+        != "/run/vitals-runtime/vitals.env"
+        or worker_environment.get("VITALS_ENV_FILE")
+        != "/run/vitals-runtime/vitals.env"
         or worker_environment.get("VITALS_DATABASE_URL")
         != context.compose_env["VITALS_WORKER_DATABASE_URL"]
         or "VITALS_WORKER_DATABASE_URL" in app_environment
@@ -1181,9 +1185,10 @@ def _context_from_state(run_dir: Path) -> tuple[Context, dict[str, Any]]:
         != str(run_dir / "legacy_uploads")
         or values.get("VITALS_DRILL_PRIVATE_FILES_DIR")
         != str(run_dir / "private_files")
-        or values.get("VITALS_DRILL_RUNTIME_ENV_FILE")
-        != str(run_dir / "runtime.env")
-        or values.get("VITALS_RUNTIME_ENV_FILE") != str(run_dir / "runtime.env")
+        or values.get("VITALS_DRILL_RUNTIME_ENV_DIR")
+        != str(run_dir / "runtime-config")
+        or values.get("VITALS_RUNTIME_ENV_DIR")
+        != str(run_dir / "runtime-config")
     ):
         _fail("run_operator_env_invalid")
     context = Context(
@@ -1194,7 +1199,7 @@ def _context_from_state(run_dir: Path) -> tuple[Context, dict[str, Any]]:
         source_dir=run_dir / "source",
         bundle_dir=run_dir / "bundle",
         operator_env=operator_env,
-        runtime_env=run_dir / "runtime.env",
+        runtime_env=run_dir / "runtime-config" / "vitals.env",
         state_file=state_file,
         marker_file=marker_file,
         port=port,
@@ -1259,14 +1264,14 @@ def _build_context(bundle: Bundle, scratch_parent: Path, port: int) -> Context:
             "VITALS_DRILL_LEGACY_UPLOAD_DIR": str(run_dir / "legacy_uploads"),
             "VITALS_DRILL_MCP_SECRET": secrets.token_urlsafe(32),
             "VITALS_DRILL_PRIVATE_FILES_DIR": str(run_dir / "private_files"),
-            "VITALS_DRILL_RUNTIME_ENV_FILE": str(run_dir / "runtime.env"),
+            "VITALS_DRILL_RUNTIME_ENV_DIR": str(run_dir / "runtime-config"),
             "VITALS_DRILL_RUNTIME_PASSWORD": runtime_password,
             "VITALS_DRILL_SESSION_SECRET": secrets.token_urlsafe(48),
             "VITALS_MIGRATION_DATABASE_URL": (
                 f"postgresql+asyncpg://{owner}:{owner_password}@"
                 f"vitals_db:5432/{database}"
             ),
-            "VITALS_RUNTIME_ENV_FILE": str(run_dir / "runtime.env"),
+            "VITALS_RUNTIME_ENV_DIR": str(run_dir / "runtime-config"),
             "VITALS_WORKER_DATABASE_URL": (
                 f"postgresql+asyncpg://{worker}:{worker_password}@"
                 f"vitals_db:5432/{database}"
@@ -1280,7 +1285,7 @@ def _build_context(bundle: Bundle, scratch_parent: Path, port: int) -> Context:
             source_dir=run_dir / "source",
             bundle_dir=run_dir / "bundle",
             operator_env=run_dir / "operator.env",
-            runtime_env=run_dir / "runtime.env",
+            runtime_env=run_dir / "runtime-config" / "vitals.env",
             state_file=run_dir / STATE_NAME,
             marker_file=run_dir / MARKER_NAME,
             port=port,
@@ -1323,6 +1328,7 @@ def run_drill(args: argparse.Namespace) -> dict[str, Any]:
                 context.bundle_dir / f"{prefix}_{staged.timestamp}.tar.gz",
                 destination,
             )
+        context.runtime_env.parent.mkdir(mode=0o700)
         _write_owner_only(context.runtime_env, _runtime_content(context))
         _write_owner_only(context.operator_env, _operator_content(context))
         _project_absent(context.project)

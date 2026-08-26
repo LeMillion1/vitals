@@ -553,18 +553,30 @@ VITALS_COOKIE_SECURE=false
 VITALS_MCP_CLIENT_SECRET="ещё-один-случайный-секрет"
 ```
 
-Когда `.env` полностью заполнен, один раз создайте отдельный файл для runtime-
-процессов. Команда переносит только разрешённые настройки, ставит права `0600`
-и отказывается перезаписывать файл, который позднее изменяет Settings:
+Когда `.env` полностью заполнен, один раз создайте отдельный runtime-каталог.
+Команда переносит только разрешённые настройки в
+`.vitals-runtime/vitals.env`, создаёт каталог с правами `0700`, файл с
+правами `0600` и отказывается перезаписывать файл, который позднее изменяет Settings:
 
 ```bash
 python3 scripts/create_runtime_env.py
 ```
 
+При первом обновлении установки, где Settings уже изменял старый
+`.env.runtime`, копируйте именно его актуальные разрешённые значения:
+
+```bash
+python3 scripts/create_runtime_env.py --migrate-from .env.runtime
+```
+
+Миграция валидирует allowlist, не перезаписывает целевой файл и не удаляет
+`.env.runtime`: он остаётся точным bind-файлом для проверенного аварийного
+отката первой split-миграции.
+
 Host-only `.env` с migration DSN, worker DSN и паролем владельца PostgreSQL
-никогда не монтируется в web или worker. Web монтирует `.env.runtime` для
-чтения/изменения настроек, worker — только для чтения и получает свой DSN через
-точное Compose-сопоставление.
+никогда не монтируется в web или worker. Web монтирует каталог
+`.vitals-runtime/` для атомарного чтения/изменения `vitals.env`, worker — тот же
+каталог только для чтения и получает свой DSN через точное Compose-сопоставление.
 
 #### 4. Запустите
 
@@ -1391,18 +1403,32 @@ VITALS_COOKIE_SECURE=false
 VITALS_MCP_CLIENT_SECRET="another-random-secret"
 ```
 
-After `.env` is final, create the separate runtime-process file once. The
-command copies only allowlisted settings, sets mode `0600`, and refuses to
+After `.env` is final, create the dedicated runtime directory once. The command
+copies only allowlisted settings into `.vitals-runtime/vitals.env`, creates the
+directory with mode `0700` and the file with mode `0600`, and refuses to
 overwrite the file that Settings subsequently owns:
 
 ```bash
 python3 scripts/create_runtime_env.py
 ```
 
+On the first upgrade of an installation where Settings has already changed the
+legacy `.env.runtime`, copy that current allowlisted file instead of stale
+values from the operator `.env`:
+
+```bash
+python3 scripts/create_runtime_env.py --migrate-from .env.runtime
+```
+
+Migration validates the allowlist, never overwrites an existing destination,
+and leaves `.env.runtime` in place as the exact bind file used by the reviewed
+first-split emergency rollback.
+
 The host-only `.env`, including the migration DSN, worker DSN, and PostgreSQL
-owner password, is never mounted into either runtime. Web mounts `.env.runtime`
-for Settings reads/writes; the worker mounts it read-only and receives its own
-DSN through one exact Compose mapping.
+owner password, is never mounted into either runtime. Web mounts
+`.vitals-runtime/` read/write so Settings can atomically replace `vitals.env`;
+the worker mounts the same directory read-only and receives its own DSN through
+one exact Compose mapping.
 
 #### 4. Launch
 

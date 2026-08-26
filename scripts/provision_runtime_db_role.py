@@ -1006,7 +1006,9 @@ async def provision_runtime_roles(
 
 
 def main() -> None:
-    load_dotenv()
+    from vitals.runtime_env import runtime_environment_path
+
+    load_dotenv(dotenv_path=runtime_environment_path())
     migration_url = _postgres_url("VITALS_MIGRATION_DATABASE_URL")
     web_url = _postgres_url("VITALS_DATABASE_URL")
     worker_url = _postgres_url("VITALS_WORKER_DATABASE_URL")

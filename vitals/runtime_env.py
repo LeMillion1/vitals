@@ -1,10 +1,10 @@
 """Application-only environment-file boundary.
 
 Production Compose keeps database-owner and infrastructure credentials in the
-host ``.env`` file.  The web process receives a separate ``.env.runtime`` file
-containing only settings it is allowed to consume.  Keeping the allowlist here
-makes a newly introduced setting an explicit security review instead of an
-implicit copy of every operator secret.
+host ``.env`` file.  The long-lived processes receive a separate
+``.vitals-runtime/vitals.env`` file containing only settings they are allowed to
+consume.  Keeping the allowlist here makes a newly introduced setting an
+explicit security review instead of an implicit copy of every operator secret.
 """
 
 from __future__ import annotations

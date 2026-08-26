@@ -12,7 +12,9 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-load_dotenv()
+from vitals.runtime_env import runtime_environment_path
+
+load_dotenv(dotenv_path=runtime_environment_path())
 
 
 DEFAULT_DB_STATEMENT_TIMEOUT_MS = 10000

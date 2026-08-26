@@ -70,6 +70,7 @@ services:
       # Compose deployments fail startup if the mounted application file
       # contains a DB-owner/control-plane key or if one is injected directly.
       VITALS_RUNTIME_ENV_ISOLATION_REQUIRED: "true"
+      VITALS_ENV_FILE: /run/vitals-runtime/vitals.env
       VITALS_PROCESS_MODE: web
     # No `env_file:` here on purpose: it would inject a snapshot of .env as
     # container-level env vars at creation time, which then permanently shadows
@@ -80,12 +81,13 @@ services:
     # the file fresh.
     volumes:
       # Never mount the host operator .env here: it contains the migration DSN
-      # and PostgreSQL owner password. Settings writes this separate allowlisted
-      # application file. create_host_path=false refuses a missing file instead
-      # of silently creating a directory at /app/.env.
+      # and PostgreSQL owner password. Settings atomically replaces the separate
+      # allowlisted file, so mount its containing directory rather than making
+      # the file itself an EBUSY bind-mount point. create_host_path=false refuses
+      # a missing directory instead of silently creating one.
       - type: bind
-        source: ${VITALS_RUNTIME_ENV_FILE:-.env.runtime}
-        target: /app/.env
+        source: ${VITALS_RUNTIME_ENV_DIR:-.vitals-runtime}
+        target: /run/vitals-runtime
         bind:
           create_host_path: false
       # Persist the Garmin (garth) OAuth token session across rebuilds/restarts so
@@ -131,6 +133,7 @@ services:
     environment:
       TZ: Europe/Chisinau
       VITALS_RUNTIME_ENV_ISOLATION_REQUIRED: "true"
+      VITALS_ENV_FILE: /run/vitals-runtime/vitals.env
       VITALS_PROCESS_MODE: worker
       VITALS_DATABASE_URL: ${VITALS_WORKER_DATABASE_URL:?VITALS_WORKER_DATABASE_URL must be set}
     command: ["python", "-m", "vitals.worker"]
@@ -139,8 +142,8 @@ services:
       # the Settings-owned runtime file. Its process-level DB URL above wins
       # over the web URL stored in this file.
       - type: bind
-        source: ${VITALS_RUNTIME_ENV_FILE:-.env.runtime}
-        target: /app/.env
+        source: ${VITALS_RUNTIME_ENV_DIR:-.vitals-runtime}
+        target: /run/vitals-runtime
         read_only: true
         bind:
           create_host_path: false
@@ -355,7 +358,7 @@ services:
       - ./backups:/backups:ro
       - ./.env:/source/vitals.env:ro
       - type: bind
-        source: ${VITALS_RUNTIME_ENV_FILE:-.env.runtime}
+        source: ${VITALS_RUNTIME_ENV_DIR:-.vitals-runtime}/vitals.env
         target: /source/vitals.runtime.env
         read_only: true
         bind:

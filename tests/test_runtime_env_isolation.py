@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import re
 import stat
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
-from scripts.create_runtime_env import create_runtime_env
+from scripts.create_runtime_env import create_runtime_env, migrate_runtime_env
 from vitals.runtime_env import (
     PRIVILEGED_ENV_KEYS,
     RuntimeEnvIsolationError,
@@ -61,6 +64,119 @@ def test_runtime_file_is_allowlisted_private_and_never_overwritten(tmp_path):
 
     with pytest.raises(RuntimeEnvIsolationError, match="refusing to overwrite"):
         create_runtime_env(source=source, destination=destination)
+
+
+def test_legacy_runtime_migration_preserves_only_validated_runtime_assignments(
+    tmp_path,
+):
+    legacy = tmp_path / ".env.runtime"
+    destination = tmp_path / ".vitals-runtime" / "vitals.env"
+    legacy.write_text(
+        "# Settings-owned legacy file\n"
+        "VITALS_DATABASE_URL=postgresql+asyncpg://runtime:run@db/vitals\n"
+        "VITALS_OPENROUTER_API_KEY=synthetic-runtime-key\n",
+        encoding="utf-8",
+    )
+
+    count = migrate_runtime_env(source=legacy, destination=destination)
+
+    assert count == 2
+    assert legacy.is_file()
+    assert destination.parent.is_dir()
+    assert stat.S_IMODE(destination.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+    assert "VITALS_OPENROUTER_API_KEY=synthetic-runtime-key" in (
+        destination.read_text(encoding="utf-8")
+    )
+    with pytest.raises(RuntimeEnvIsolationError, match="refusing to overwrite"):
+        migrate_runtime_env(source=legacy, destination=destination)
+
+
+def test_legacy_runtime_migration_rejects_control_plane_keys(tmp_path):
+    legacy = tmp_path / ".env.runtime"
+    destination = tmp_path / ".vitals-runtime" / "vitals.env"
+    legacy.write_text(
+        "VITALS_DATABASE_URL=postgresql+asyncpg://runtime:run@db/vitals\n"
+        "VITALS_MIGRATION_DATABASE_URL=postgresql+asyncpg://owner:own@db/vitals\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeEnvIsolationError, match="non-runtime keys"):
+        migrate_runtime_env(source=legacy, destination=destination)
+
+    assert not destination.exists()
+
+
+def test_runtime_creation_rejects_an_existing_non_private_directory(tmp_path):
+    source = tmp_path / ".env"
+    _operator_env(source)
+    runtime_dir = tmp_path / "runtime-config"
+    runtime_dir.mkdir(mode=0o755)
+    runtime_dir.chmod(0o755)
+    destination = runtime_dir / "vitals.env"
+
+    with pytest.raises(RuntimeEnvIsolationError, match="mode 0700"):
+        create_runtime_env(source=source, destination=destination)
+
+    assert not destination.exists()
+
+
+def test_create_runtime_env_cli_defaults_to_private_dedicated_directory(tmp_path):
+    source = tmp_path / ".env"
+    _operator_env(source)
+
+    result = subprocess.run(
+        [sys.executable, str(Path("scripts/create_runtime_env.py").resolve())],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    destination = tmp_path / ".vitals-runtime" / "vitals.env"
+    assert destination.is_file()
+    assert stat.S_IMODE(destination.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+
+
+def test_core_dotenv_loader_uses_exact_vitals_env_file(tmp_path):
+    runtime = tmp_path / "runtime-config" / "vitals.env"
+    runtime.parent.mkdir()
+    runtime.write_text(
+        "VITALS_DATABASE_URL=sqlite+aiosqlite:///synthetic-runtime.db\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment.pop("VITALS_DATABASE_URL", None)
+    environment["VITALS_ENV_FILE"] = str(runtime)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from vitals.config import load_config; print(load_config().database_url)",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "sqlite+aiosqlite:///synthetic-runtime.db"
+
+
+def test_all_direct_dotenv_loaders_honor_vitals_env_file():
+    for relative_path in (
+        "vitals/config.py",
+        "migrations/env.py",
+        "scripts/provision_runtime_db_role.py",
+        "scripts/seed_compose_roles.py",
+    ):
+        source = Path(relative_path).read_text(encoding="utf-8")
+        assert "VITALS_ENV_FILE" in source or "runtime_environment_path" in source
 
 
 @pytest.mark.parametrize(

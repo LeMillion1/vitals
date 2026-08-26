@@ -130,10 +130,60 @@ raise SystemExit(0 if images == {expected} else 1)
 ' || die "runtime services do not resolve to one expected image: $expected"
 }
 
+assert_runtime_config_mounts() {
+  export VITALS_DEPLOY_SCRIPT_DIR="$SCRIPT_DIR"
+  compose config --format json | python3 -c '
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+
+payload = json.load(sys.stdin)
+services = payload.get("services", {})
+app = services.get("vitals_app", {})
+worker = services.get("vitals_worker", {})
+target = "/run/vitals-runtime"
+
+def one_mount(service):
+    matches = [item for item in service.get("volumes", []) if item.get("target") == target]
+    if len(matches) != 1 or matches[0].get("type") != "bind":
+        raise SystemExit(1)
+    return matches[0]
+
+app_mount = one_mount(app)
+worker_mount = one_mount(worker)
+raw_source = Path(app_mount.get("source", ""))
+source = raw_source.resolve(strict=False)
+runtime_file = source / "vitals.env"
+operator_file = (Path(os.environ["VITALS_DEPLOY_SCRIPT_DIR"]) / ".env").resolve(strict=False)
+if (
+    worker_mount.get("source") != app_mount.get("source")
+    or bool(app_mount.get("read_only", False))
+    or worker_mount.get("read_only") is not True
+    or (app.get("environment") or {}).get("VITALS_ENV_FILE") != "/run/vitals-runtime/vitals.env"
+    or (worker.get("environment") or {}).get("VITALS_ENV_FILE") != "/run/vitals-runtime/vitals.env"
+    or any(item.get("target") == "/app/.env" for service in (app, worker) for item in service.get("volumes", []))
+    or operator_file == source
+    or operator_file.is_relative_to(source)
+    or raw_source.is_symlink()
+    or not source.is_dir()
+    or source.stat().st_uid != os.geteuid()
+    or runtime_file.is_symlink()
+    or not runtime_file.is_file()
+    or runtime_file.stat().st_uid != os.geteuid()
+    or stat.S_IMODE(source.stat().st_mode) != 0o700
+    or stat.S_IMODE(runtime_file.stat().st_mode) != 0o600
+):
+    raise SystemExit(1)
+' || die "runtime config must be one private directory: web read/write, worker read-only, operator .env absent"
+}
+
 compose_preflight() {
   DEPLOY_PHASE="compose preflight"
   compose config --quiet
   assert_shared_runtime_image
+  assert_runtime_config_mounts
 }
 
 start_data_services() {

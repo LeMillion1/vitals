@@ -109,16 +109,19 @@ def test_app_mounts_only_the_allowlisted_runtime_environment():
     runtime_mount = next(
         mount
         for mount in app["volumes"]
-        if isinstance(mount, dict) and mount["target"] == "/app/.env"
+        if isinstance(mount, dict) and mount["target"] == "/run/vitals-runtime"
     )
     assert runtime_mount == {
         "type": "bind",
-        "source": "${VITALS_RUNTIME_ENV_FILE:-.env.runtime}",
-        "target": "/app/.env",
+        "source": "${VITALS_RUNTIME_ENV_DIR:-.vitals-runtime}",
+        "target": "/run/vitals-runtime",
         "bind": {"create_host_path": False},
     }
+    assert app["environment"]["VITALS_ENV_FILE"] == (
+        "/run/vitals-runtime/vitals.env"
+    )
     assert app["environment"]["VITALS_RUNTIME_ENV_ISOLATION_REQUIRED"] == "true"
-    assert ".env:/app/.env" not in str(app)
+    assert "./.env" not in str(app)
 
 
 def test_worker_maps_only_its_dsn_to_the_canonical_runtime_key():
@@ -133,11 +136,12 @@ def test_worker_maps_only_its_dsn_to_the_canonical_runtime_key():
     runtime_mount = next(
         mount
         for mount in worker["volumes"]
-        if isinstance(mount, dict) and mount["target"] == "/app/.env"
+        if isinstance(mount, dict) and mount["target"] == "/run/vitals-runtime"
     )
-    assert runtime_mount["source"] == "${VITALS_RUNTIME_ENV_FILE:-.env.runtime}"
+    assert runtime_mount["source"] == "${VITALS_RUNTIME_ENV_DIR:-.vitals-runtime}"
     assert runtime_mount["read_only"] is True
     assert runtime_mount["bind"] == {"create_host_path": False}
+    assert environment["VITALS_ENV_FILE"] == "/run/vitals-runtime/vitals.env"
 
 
 def test_configurable_app_port_is_documented_in_both_operator_languages():
@@ -194,7 +198,7 @@ def test_offsite_backup_is_opt_in_pinned_and_least_privileged():
     assert "./.env:/source/vitals.env:ro" in service["volumes"]
     assert {
         "type": "bind",
-        "source": "${VITALS_RUNTIME_ENV_FILE:-.env.runtime}",
+        "source": "${VITALS_RUNTIME_ENV_DIR:-.vitals-runtime}/vitals.env",
         "target": "/source/vitals.runtime.env",
         "read_only": True,
         "bind": {"create_host_path": False},
