@@ -1,6 +1,6 @@
 # Backup and Restore Runbook
 
-Last reviewed: 2026-08-26
+Last reviewed: 2026-08-27
 
 ## Scope and release boundary
 
@@ -166,6 +166,58 @@ Record the snapshot ID, source manifest, start/end time, restored Alembic
 revision, aggregate ownership validation result, RLS result, and browser smoke
 result. Do not put row values, filenames from medical uploads, tokens, or
 credentials into the drill record.
+
+### Install the host freshness monitor
+
+The repository ships a root-only checker and an hourly systemd timer. The
+checker reads manifest names and the Login V2 PAT expiration only; it does not
+read backup payloads, Compose environment values, or secret values. Enable only
+streams that are actually configured. In particular, do not select either
+`*-offsite` stream until its sidecar has completed a verified first snapshot.
+
+Copy [`deploy/systemd/recovery-monitor.conf.example`](../deploy/systemd/recovery-monitor.conf.example)
+to `/etc/vitals/recovery-monitor.conf`, replace every path with an absolute
+production path, and install it as `root:root` mode `0600`. The checkout path
+must be the directory named by the live `com.docker.compose.project.working_dir`
+label, not another clone. Install the service and timer as `root:root` mode
+`0644`, then verify the first run before enabling the timer:
+
+```bash
+install -o root -g root -m 0600 \
+  deploy/systemd/recovery-monitor.conf.example \
+  /etc/vitals/recovery-monitor.conf
+# Edit the installed file and replace every example path.
+install -o root -g root -m 0644 \
+  deploy/systemd/vitals-recovery-monitor.service \
+  /etc/systemd/system/vitals-recovery-monitor.service
+install -o root -g root -m 0644 \
+  deploy/systemd/vitals-recovery-monitor.timer \
+  /etc/systemd/system/vitals-recovery-monitor.timer
+systemctl daemon-reload
+systemctl start vitals-recovery-monitor.service
+systemctl status vitals-recovery-monitor.service
+systemctl enable --now vitals-recovery-monitor.timer
+```
+
+Exit `0` means every selected stream is healthy, exit `1` is a recovery or
+restart alert, and exit `2` means the checker could not establish the answer.
+Container restart and recreation alerts are deliberately sticky: the hourly
+timer continues to fail until an operator investigates and acknowledges the
+exact latest container ID and restart count printed by the checker. A stale
+acknowledgement cannot clear a newer event. For the packaged unit, the explicit
+form is:
+
+```bash
+scripts/check_recovery_monitor.py acknowledge \
+  --state-file /var/lib/vitals-recovery-monitor/state.json \
+  --service vitals_backup \
+  --container-id <exact-reported-container-id> \
+  --restart-count <exact-reported-count>
+```
+
+The timer makes failures durable in systemd and the journal; it does not invent
+an outbound notification credential. Connect the failed unit to the host's
+normal alerting system before treating it as unattended paging.
 
 ## Release deployment gate
 

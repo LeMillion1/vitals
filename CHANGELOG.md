@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — recovery freshness failures remain visible until acknowledged
+
+An hourly hardened host monitor now verifies the selected local and encrypted
+offsite health/identity streams from embedded manifest timestamps, exact
+Compose container labels, offsite markers, restart counts, and Login V2 PAT
+expiration without reading recovery payloads or secrets. Container restarts and
+recreations remain a failed systemd check until an operator acknowledges the
+exact latest observation, so a later healthy hour cannot erase an incident.
+
 ### Fixed — weekly changes keep full phone touch targets
 
 The four navigating rows in Today's weekly-change summary now retain the

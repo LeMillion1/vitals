@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Vitals recovery freshness monitor hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5m
+Unit=vitals-recovery-monitor.service
+
+[Install]
+WantedBy=timers.target

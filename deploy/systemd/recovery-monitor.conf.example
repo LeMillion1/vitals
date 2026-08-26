@@ -1,0 +1,7 @@
+# Root-owned systemd EnvironmentFile for vitals-recovery-monitor.service.
+# Copy to /etc/vitals/recovery-monitor.conf, replace every path, then chmod 0600.
+VITALS_MONITOR_CHECKOUT=/absolute/path/to/vitals
+VITALS_MONITOR_PROJECT=vitals_prod
+VITALS_MONITOR_BACKUP_ROOT=/absolute/path/to/backups
+VITALS_MONITOR_STREAMS=health-local,idp-local
+VITALS_MONITOR_IDP_ENV=/absolute/path/to/vitals/.env.idp

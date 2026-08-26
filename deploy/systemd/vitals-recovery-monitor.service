@@ -1,0 +1,31 @@
+[Unit]
+Description=Vitals recovery freshness monitor
+Documentation=man:systemd.service(5)
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+EnvironmentFile=/etc/vitals/recovery-monitor.conf
+StateDirectory=vitals-recovery-monitor
+ExecStart=/usr/bin/python3 ${VITALS_MONITOR_CHECKOUT}/scripts/check_recovery_monitor.py check --project ${VITALS_MONITOR_PROJECT} --backup-root ${VITALS_MONITOR_BACKUP_ROOT} --streams ${VITALS_MONITOR_STREAMS} --state-file /var/lib/vitals-recovery-monitor/state.json --rpo-seconds 86400 --replication-delay-seconds 900 --pat-warning-seconds 2592000 --pat-critical-seconds 604800
+TimeoutStartSec=90
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/vitals-recovery-monitor
+PrivateDevices=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=true
+SystemCallArchitectures=native
