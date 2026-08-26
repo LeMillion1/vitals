@@ -315,6 +315,27 @@ def test_job_failure_family_registry_is_complete_and_matches_alert_keys():
     assert retention.failure_family is scheduler_mod.JobFailureFamily.PLATFORM
 
 
+@pytest.mark.parametrize(
+    ("sync_hours", "expected_hour", "expected_budget"),
+    [
+        (1, "*/1", 3_900.0),
+        (24, 0, 86_700.0),
+    ],
+)
+def test_garmin_sync_boundary_cadences_build_valid_cron_triggers(
+    sync_hours,
+    expected_hour,
+    expected_budget,
+):
+    register_all_jobs({"garmin_sync_hours": sync_hours})
+
+    spec = scheduler_mod._registry["garmin_sync"]
+    assert spec.trigger_kwargs["hour"] == expected_hour
+    # This constructs the real APScheduler CronTrigger. In particular, the
+    # allowed 24-hour preference must not become the invalid hour step */24.
+    assert scheduler_mod.heartbeat_budgets("UTC")["garmin_sync"] == expected_budget
+
+
 # ── The keepalive itself ─────────────────────────────────────────────────────
 async def test_keepalive_job_actually_records_its_heartbeat(redis):
     """The one always-on liveness signal has to run — and to *do* something.

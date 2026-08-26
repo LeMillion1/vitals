@@ -194,6 +194,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # four polls a day the old fixed 3/11/16/22 cron did). A cron rather than an
     # interval so the times survive a deploy instead of re-phasing off boot.
     # No-ops when Garmin isn't configured.
+    garmin_sync_hours = settings["garmin_sync_hours"]
     register_job(
         "garmin_sync",
         for_each_connection(
@@ -203,7 +204,10 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         ),
         trigger="cron",
         failure_family=JobFailureFamily.GARMIN_ACCOUNT,
-        hour=f"*/{settings['garmin_sync_hours']}",
+        # APScheduler's hour field is 0..23, so ``*/24`` is invalid even
+        # though a 24-hour cadence is a supported preference. Midnight is the
+        # stable once-daily phase for that boundary value.
+        hour=0 if garmin_sync_hours == 24 else f"*/{garmin_sync_hours}",
         minute=0,
     )
 
