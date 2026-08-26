@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from collections.abc import Callable
 from contextlib import AsyncExitStack, suppress
 
 from redis.asyncio import Redis
@@ -26,6 +27,11 @@ from vitals.scheduler.control import (
     publish_worker_manifest,
 )
 from vitals.scheduler.lifecycle import WorkerLifecycle, load_worker_settings
+from vitals.worker_health import (
+    clear_worker_ready,
+    mark_worker_ready,
+    worker_ready_file,
+)
 
 logger = logging.getLogger(__name__)
 _STOP_REQUESTED = object()
@@ -88,6 +94,7 @@ async def monitor_schedule_reloads(
     applied_settings: dict | None,
     stop_event: asyncio.Event,
     poll_seconds: float = RELOAD_POLL_SECONDS,
+    on_manifest_published: Callable[[], None] | None = None,
 ) -> None:
     """Poll PostgreSQL truth until shutdown and lease the applied worker state.
 
@@ -137,6 +144,8 @@ async def monitor_schedule_reloads(
                     # A newer signal won the WATCH race. Observe it immediately
                     # rather than keeping an avoidable pending window.
                     continue
+                if on_manifest_published is not None:
+                    on_manifest_published()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -155,6 +164,8 @@ async def run_worker(*, stop_event: asyncio.Event | None = None) -> None:
             "the standalone worker requires VITALS_PROCESS_MODE=worker"
         )
 
+    ready_path = worker_ready_file()
+    clear_worker_ready(ready_path)
     # The worker is more privileged than web once the database roles split, so
     # it must enforce the same owner/control-plane credential boundary before
     # it opens either database or Redis resources.
@@ -219,16 +230,20 @@ async def run_worker(*, stop_event: asyncio.Event | None = None) -> None:
                     ),
                     event,
                 )
-            if published is _STOP_REQUESTED:
-                return
+                if published is _STOP_REQUESTED:
+                    return
+                if published is not None:
+                    mark_worker_ready(ready_path)
             await monitor_schedule_reloads(
                 lifecycle=lifecycle,
                 session_factory=session_factory,
                 redis=redis,
                 applied_settings=settings,
                 stop_event=event,
+                on_manifest_published=lambda: mark_worker_ready(ready_path),
             )
     finally:
+        clear_worker_ready(ready_path)
         loop = asyncio.get_running_loop()
         for signum in installed_handlers:
             with suppress(NotImplementedError, RuntimeError):

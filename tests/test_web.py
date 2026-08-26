@@ -77,6 +77,7 @@ async def test_web_mode_health_uses_worker_manifest_and_generation(
     await request_schedule_reload(redis)
     response = await auth_client.get("/health")
 
+    assert response.status_code == 503
     assert response.json()["status"] == "error"
     assert response.json()["scheduler"] == "stale"
     assert response.json()["scheduler_reload_pending"] is True
@@ -86,6 +87,7 @@ async def test_web_mode_health_uses_worker_manifest_and_generation(
     await redis.delete(WORKER_MANIFEST_KEY)
     response = await auth_client.get("/health")
 
+    assert response.status_code == 503
     assert response.json()["scheduler"] == "stale"
     assert response.json()["scheduler_reload_pending"] is None
 

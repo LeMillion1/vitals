@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from vitals.process_mode import ProcessMode, load_process_mode
 from vitals.scheduler.lifecycle import WorkerLifecycle, load_worker_settings
+
+
+@pytest.fixture(autouse=True)
+def _isolated_worker_ready_file(tmp_path, monkeypatch):
+    from vitals import worker
+
+    ready_path = tmp_path / "worker-ready"
+    monkeypatch.setattr(worker, "worker_ready_file", lambda: ready_path)
+    return ready_path
 
 
 def test_process_mode_defaults_to_combined_and_rejects_unknown_values():
@@ -258,7 +269,10 @@ async def test_worker_settings_use_explicit_platform_scope(monkeypatch):
     assert calls[3] == "rollback"
 
 
-async def test_standalone_worker_runs_and_releases_owned_resources(monkeypatch):
+async def test_standalone_worker_runs_and_releases_owned_resources(
+    monkeypatch,
+    _isolated_worker_ready_file: Path,
+):
     from vitals import worker
 
     calls: list[object] = []
@@ -324,6 +338,7 @@ async def test_standalone_worker_runs_and_releases_owned_resources(monkeypatch):
     async def publish_probe(redis_client, **kwargs):
         calls.append(("manifest", redis_client, kwargs))
         if sum(call[0] == "manifest" for call in calls if isinstance(call, tuple)) == 2:
+            assert _isolated_worker_ready_file.read_text() == f"v1:{os.getpid()}\n"
             stop_event.set()
         return object()
 
@@ -362,6 +377,7 @@ async def test_standalone_worker_runs_and_releases_owned_resources(monkeypatch):
         "redis": redis,
         "timezone": "UTC",
     }
+    assert not _isolated_worker_ready_file.exists()
 
 
 async def test_pre_set_worker_stop_never_starts_or_publishes_readiness(monkeypatch):
@@ -524,8 +540,11 @@ async def test_worker_poll_observes_postgres_change_without_redis_notification(
 
     async def publish_probe(redis_client, **kwargs):
         calls.append(("ack", kwargs))
-        stop_event.set()
         return object()
+
+    def ready_probe():
+        calls.append("ready")
+        stop_event.set()
 
     monkeypatch.setattr(worker, "publish_worker_manifest", publish_probe)
 
@@ -536,6 +555,7 @@ async def test_worker_poll_observes_postgres_change_without_redis_notification(
         applied_settings={"brief_time": "08:00"},
         stop_event=stop_event,
         poll_seconds=0.01,
+        on_manifest_published=ready_probe,
     )
 
     assert calls == [
@@ -547,6 +567,7 @@ async def test_worker_poll_observes_postgres_change_without_redis_notification(
                 "heartbeat_job_ids": ("daily_brief", "keepalive"),
             },
         ),
+        "ready",
     ]
 
 
@@ -774,12 +795,15 @@ async def test_worker_entrypoint_rejects_combined_mode_before_loading_resources(
 
 async def test_worker_enforces_runtime_isolation_before_loading_resources(
     monkeypatch,
+    _isolated_worker_ready_file: Path,
 ):
     from vitals import worker
 
     monkeypatch.setattr(worker, "load_process_mode", lambda: ProcessMode.WORKER)
+    _isolated_worker_ready_file.write_text("v1:999999\n")
 
     def reject_runtime():
+        assert not _isolated_worker_ready_file.exists()
         raise RuntimeError("runtime environment isolation failed: synthetic")
 
     monkeypatch.setattr(

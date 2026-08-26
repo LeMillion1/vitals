@@ -1003,7 +1003,14 @@ async def health(
         if process_mode is ProcessMode.WEB:
             body["scheduler_reload_pending"] = worker_reload_pending
 
-    return body
+    return JSONResponse(
+        content=body,
+        status_code=(
+            status.HTTP_200_OK
+            if status_str == "ok"
+            else status.HTTP_503_SERVICE_UNAVAILABLE
+        ),
+    )
 
 
 # ── Base redirection ──────────────────────────────────────────────────────────

@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — split worker health is instance-local and fail-closed
+
+The standalone scheduler worker now publishes a container-local readiness marker
+only after its first durable Redis manifest acknowledgement, removes stale
+readiness before startup and on shutdown, and exposes a bounded executable check
+for its database, Redis generation/lease, and reviewed scheduler heartbeats. The
+web health endpoint now returns HTTP 503 whenever that same health body reports
+an error, so orchestration cannot mistake a degraded scheduler for HTTP success.
+
 ### Security — platform-wide RLS belongs only to the worker login
 
 PostgreSQL platform scope now requires both the transaction-local setting and a
