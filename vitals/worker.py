@@ -1,8 +1,8 @@
-"""Standalone APScheduler entry point for the split-runtime transition.
+"""Standalone APScheduler entry point for the production split runtime.
 
-Run it only with ``VITALS_PROCESS_MODE=worker``. Compose deliberately continues
-to use the default combined process until the database-role and deployment
-cutover is implemented separately.
+Run it only with ``VITALS_PROCESS_MODE=worker``. Production Compose pairs this
+process with web-only FastAPI and gives each a different restricted PostgreSQL
+login; combined mode remains a local compatibility path.
 """
 
 from __future__ import annotations

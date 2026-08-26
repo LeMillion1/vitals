@@ -1,6 +1,6 @@
 """The order the ownership backfill phases have to run in, named once.
 
-Twenty phases stamp the lake, and they are not independent: a child cannot
+Nineteen phases stamp the lake, and they are not independent: a child cannot
 inherit a subject its parent does not have yet, and a normalized fact cannot
 take its provenance from a raw payload that is still unowned. The order below is
 that dependency graph flattened, and it is the same order an operator follows.

@@ -1,12 +1,14 @@
 # Multi-user implementation audit
 
-Last verified: 2026-08-26, branch `commercial/main`.
+Last verified: 2026-08-27, branch `commercial/main`.
 
 This is the current-state companion to the commercial roadmap and ownership
 cutover history. It separates shipped behavior from target design and records
-the commands or source registries behind quantitative claims. No production
-database, `.env`, upload, backup, credential, Garmin session, or OAuth token was
-read during the audit.
+the commands or source registries behind quantitative claims. The original
+code audit read no production database, `.env`, upload, backup, credential,
+Garmin session, or OAuth token. The 2026-08-27 production addendum below records
+only aggregate schema/role/health and checksum results from the authorized
+cutover; it contains no payloads or secret values.
 
 ## Executive verdict
 
@@ -19,9 +21,12 @@ access.
 
 This does not by itself authorize a public commercial launch. Registration
 remains closed until the operator completes the external security, legal, and
-operations review. Multi-subject installation backup, a professional invitation
-inbox, and broader support repair and operations dashboards remain explicit
-future roadmap items rather than hidden release claims.
+operations review. ZITADEL identity onboarding/recovery delivery and broader
+operations dashboards remain explicit future roadmap items rather than hidden
+release claims; Vitals professional-link invitations are shipped. The
+multi-subject health-store and independent identity-store recovery
+paths are now shipped and destructively rehearsed, but encrypted automated
+offsite replication still requires operator-owned repositories.
 
 The earlier documentation overstated completion in important areas. Those
 findings remain useful provenance, but this document now records the later
@@ -44,30 +49,57 @@ verdict:
    are included in the inventory now.
 4. `ARCHITECTURE.html` was a historical snapshot presented as a live reference.
    Its live counters and authorization bases have been resynchronized at 88
-   tables, 71 RLS policies, revision `0081`, and the shipped break-glass path.
+   tables, 71 RLS policies, revision `0084`, and the shipped break-glass path.
 
 ## Reproducible current facts
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0081 (head)`; 81 files in `migrations/versions` | Verified |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0084 (head)`; 84 files in `migrations/versions` | Verified |
 | SQLAlchemy tables | `len(Base.metadata.tables)` → 88 | Verified |
 | Ownership registry | `len(OWNERSHIP_REGISTRY)` → 88 | Verified and exhaustive in code |
 | Subject-scoped tables | 71 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
 | Required subject columns | 60 of the 71 `subject_id` columns are non-null | Verified |
-| Ownership cutover | 18 ordered backfill phases and 18 matching scripts | Verified |
-| Domain enum | 14 health domains | Verified |
+| Ownership cutover | 19 ordered backfill phases and 19 matching scripts | Verified |
+| Domain enum | 14 values: 13 record sections plus internal `system` | Verified |
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
 | Web routers | 34 tracked non-`__init__` modules under `web/routers` | Verified |
-| Application services | 101 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
+| Application services | 102 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
 | Flat service debt | 54 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 20 |
-| Platform-scope callers | the AST contract in `tests/test_row_level_security.py` enumerates 15 exact application functions; invitation acceptance is no longer one of them | Verified and shrinking |
+| Scheduled jobs | 16 registered jobs; 11 fan out per subject or provider connection | Verified |
+| Platform-scope callers | the AST contract in `tests/test_row_level_security.py` enumerates 9 exact permitted functions; invitation acceptance is no longer one of them | Verified and shrinking |
 | Browser scenarios | `pytest tests/ui -m ui -q` → 39 passed in 150.04s | Verified on the final runtime tree |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
 current commit. The final gate below records commands executed against the
 final runtime tree; later commit `19e67f4` changes only a PostgreSQL corruption
 test and was rerun in its complete shard.
+
+## Production transition addendum — 2026-08-27
+
+The production health store is at Alembic `0084`. All 71 subject-policy tables
+have RLS enabled and forced. Migration ownership, web runtime, and worker use
+three different PostgreSQL logins; both runtime logins are non-owner,
+`NOSUPERUSER`, and `NOBYPASSRLS`, while only the worker is a member of the
+database-specific platform-scope capability. Web and worker are healthy from
+one immutable runtime image, and the worker publishes no host port.
+
+A fresh production bundle restored from its pre-cutover revision through
+`0084`, passed role/RLS/worker/web gates, rendered authenticated desktop and
+phone journeys, survived a runtime restart, and was destroyed by exact scratch
+project identity. Measured served RTO was 58.892 seconds. The health and
+ZITADEL DB+Login-PAT manifests both passed their checksums and have verified
+owner-only off-host copies; automatic S3/restic replication is not yet
+configured.
+
+Self-hosted ZITADEL API, PostgreSQL, Login V2, loopback Caddy, and its backup
+sidecar are healthy. A destructive identity DB+PAT restore and restart passed.
+The public Caddy profile is deployed but deliberately stopped: production
+Vitals remains in password mode until `auth.bugless.tech` has its normal DNS
+route, public HTTP/2/gRPC/browser gates pass, the Web OIDC application exists,
+and the owner completes the one-time federated binding. The latest complete
+fast suite at that gateway boundary passed 5,821 tests, skipped 211, and
+deselected 43.
 
 ## Delivered product boundaries
 
@@ -231,8 +263,11 @@ test and was rerun in its complete shard.
   receipt in one coordinator-owned transaction, and reconciles an uncertain
   commit through that authoritative receipt. It transports neither credentials
   nor a plaintext spool.
-- Multi-subject full installation backup and restore remain unimplemented; v2 is
-  a personal-record format, not an installation backup.
+- Personal portability v2 remains distinct from the shipped multi-subject
+  installation bundle. Production recovery pairs the complete PostgreSQL dump
+  with Garmin sessions, private files, and legacy uploads; ZITADEL has its own
+  independently restorable DB+Login-PAT bundle and separately escrowed master
+  key.
 
 ## Documentation file verdicts
 
@@ -247,11 +282,13 @@ verifiable GitHub pull request: the commercial history has only one merge
 commit. Keep this document as target/decision history and use this audit for the
 current state.
 
-The following roadmap targets are not shipped: the deliberately deferred
-professional invitation inbox, multi-subject full backup, broader support repair
-and operational dashboards, commercial registration opening, and final
-security/legal/operations readiness. The first repair, break-glass, canonical lab
-marker migration, private-byte relocation, and personal portability v2 are live.
+The following roadmap targets are not shipped: ZITADEL identity
+onboarding/recovery delivery, broader operational dashboards, commercial
+registration opening, and final security/legal/operations readiness. Vitals
+professional-link invitations, the multi-subject
+health-store bundle, separate identity bundle, first repair, break-glass,
+canonical lab marker migration, private-byte relocation, and personal
+portability v2 are live.
 
 ### `COMMERCIAL_OWNERSHIP_INVENTORY.md` — strong rationale, now exhaustive
 
@@ -279,7 +316,7 @@ cutover dossier, never as runtime status.
 
 ### `OWNERSHIP_CUTOVER_RUNBOOK.md` — corrected during this audit
 
-The 18-phase order, checkpoint model, 0049 non-null guard, 0050+ FORCE RLS, and
+The 19-phase order, checkpoint model, 0049 non-null guard, 0050+ FORCE RLS, and
 fresh-install migration path are real. The runbook now says FastAPI lifespan,
 not “the first request”, performs normal bootstrap and no longer tells an
 operator to start current runtime code on the intermediate 0048 schema. The
@@ -305,7 +342,7 @@ rehearsals remain operator gates that local unit tests cannot prove.
 ### `ARCHITECTURE.md` — mostly current method, incomplete generated sources
 
 Its reproducible-counter idea is right. The RLS source list and HTML counters
-are synchronized through revision `0081`. It documents the first bounded-context
+are synchronized through revision `0084`. It documents the first bounded-context
 moves, but the live flat-service debt is still substantial.
 
 ### `ARCHITECTURE.html` — synchronized during this audit

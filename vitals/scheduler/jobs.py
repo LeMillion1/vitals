@@ -2,8 +2,11 @@
 
 The scheduler framework (``scheduler.py``) only ships the keepalive heartbeat;
 each module attaches its jobs by calling :func:`register_job`. This module
-gathers those calls behind :func:`register_all_jobs`, invoked once from the web
-lifespan before :func:`setup_scheduler` reads the registry.
+gathers those calls behind :func:`register_all_jobs`. The standalone worker
+uses it before :func:`setup_scheduler` reads the registry; the compatibility
+combined process uses the same lifecycle. A web-only process prepares the same
+registry for health/manifest expectations but never starts it, and settings
+changes signal the worker to reload.
 
 Keeping registration here (not at model/service import time) means importing a
 service for a unit test never schedules anything — the test ``clear_jobs``

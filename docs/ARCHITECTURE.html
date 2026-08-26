@@ -345,14 +345,14 @@ tbody tr:hover td { background: var(--surface-2); }
 
 <header class="masthead">
   <h1>Vitals Architecture</h1>
-  <p class="standfirst">A self-hosted health-data service — fourteen domains, five external integration modules and one data lake — where every medical fact belongs to a named health subject and cross-subject access requires relationship consent, an exact support grant, or an independently approved read-only break-glass session.</p>
+  <p class="standfirst">A self-hosted health-data service — 14 domains, 5 external integration modules and one data lake — where every medical fact belongs to a named health subject and cross-subject access requires relationship consent, an exact support grant, or an independently approved read-only break-glass session.</p>
   <div class="meta">
     <span><b>88</b> tables</span>
-    <span><b>82</b> migrations</span>
+    <span><b>84</b> migrations · head 0084</span>
     <span><b>14</b> domains</span>
-    <span><b>101</b> application services</span>
+    <span><b>102</b> application services</span>
     <span><b>71</b> RLS tables</span>
-    <span>Reviewed <b>2026-08-26</b></span>
+    <span>Reviewed <b>2026-08-27</b></span>
   </div>
 </header>
 
@@ -381,8 +381,8 @@ tbody tr:hover td { background: var(--surface-2); }
 <section id="context">
   <p class="eyebrow">C4 · Level 1</p>
   <h2>What it is</h2>
-  <p>Vitals is a health-data service, self-hosted behind a VPN. It pulls from the devices and services that already hold fragments of a record, keeps every upstream response verbatim, and turns those into facts it can chart, compare and reason about.</p>
-  <p>The ownership conversion is in force: medical rows belong to <em>a named health subject</em>, explicitly and enforceably. Product work remains around onboarding, professional workflows, scoped external grants and operational hardening.</p>
+  <p>Vitals is a self-hosted health-data service served through HTTPS. Every account-protected route requires application authentication; anonymous routes are explicitly enumerated, and sensitive ones use a surface-specific token, signature or secret boundary. It pulls from the devices and services that already hold fragments of a record, keeps the complete current upstream input, and turns those responses into facts it can chart, compare and reason about.</p>
+  <p>The ownership conversion is in force: medical rows belong to <em>a named health subject</em>, explicitly and enforceably. The OIDC boundary and self-hosted ZITADEL stack are implemented; production remains on legacy password login only until the public identity DNS/TLS route, OIDC application and first-owner binding pass their cutover gates.</p>
 
   <figure>
     <div class="diagram">
@@ -400,9 +400,13 @@ flowchart TB
   hevy["Hevy<br/><span style='font-size:11px'>strength training</span>"]
   llm["OpenRouter<br/><span style='font-size:11px'>digests, parsing, briefs</span>"]
   mcp["MCP client<br/><span style='font-size:11px'>Claude, over a scoped grant</span>"]
+  idp["ZITADEL<br/><span style='font-size:11px'>identity, MFA, recovery</span>"]
 
-  owner -->|web UI| vitals
-  pro -.->|"consent-scoped read"| vitals
+  owner -.->|staged OIDC sign-in| idp
+  pro -.->|staged OIDC sign-in| idp
+  idp -.->|production cutover pending| vitals
+  owner -->|authenticated web UI| vitals
+  pro -.->|"authenticated consent-scoped read"| vitals
   vitals <-->|pull + weigh-in export| garmin
   vitals -->|pull| hevy
   vitals -->|"metered, quota'd"| llm
@@ -412,7 +416,7 @@ flowchart TB
   classDef ext fill:#eef2f2,stroke:#ccd6d8,color:#3d4a52
   classDef person fill:#ffffff,stroke:#12181f,color:#12181f
   class vitals sys
-  class garmin,hevy,llm,mcp ext
+  class garmin,hevy,llm,mcp,idp ext
   class owner,pro person
   style platform fill:none,stroke:none
 </pre>
@@ -425,30 +429,25 @@ flowchart TB
 <section id="containers">
   <p class="eyebrow">C4 · Level 2</p>
   <h2>Containers</h2>
-  <p>One FastAPI process serves the web UI, the MCP endpoint and the external read API. An APScheduler loop inside it runs sixteen jobs. Durable relational and control metadata is in PostgreSQL; medical file bytes live in private storage; Redis holds only what can be lost without consequence.</p>
+  <p>Production runs two independent processes from one immutable image. The web process serves FastAPI, HTMX, MCP and the external API but never starts APScheduler; the worker process publishes no HTTP port and owns all sixteen application jobs. One-shot migration and role-provisioning services run before either. Durable relational and control metadata is in PostgreSQL, medical file bytes live in private storage, and Redis carries recoverable coordination state.</p>
 
   <figure>
     <div class="diagram">
 <pre class="mermaid">
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"13px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
 flowchart LR
-  subgraph proc ["FastAPI process"]
-    direction TB
-    web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>34 routers, server-rendered</span>"]
-    mcpsrv["<b>MCP server</b><br/><span style='font-size:11px'>tools, resources, prompts</span>"]
-    api["<b>External read API</b><br/><span style='font-size:11px'>summary for other surfaces</span>"]
-    svc["<b>Application services</b><br/><span style='font-size:11px'>101 tracked modules · bounded-context migration active</span>"]
-    sched["<b>Scheduler</b><br/><span style='font-size:11px'>16 jobs: sync, digest, nudge,<br/>dispatch, reconcile, retention, sweep</span>"]
-  end
+  web["<b>Web process</b><br/><span style='font-size:11px'>34 routers · HTMX UI<br/>MCP + external API · no scheduler</span>"]
+  worker["<b>Worker process</b><br/><span style='font-size:11px'>16 APScheduler jobs · 11 fan-out<br/>no published HTTP port</span>"]
+  svc["<b>Shared core</b><br/><span style='font-size:11px'>102 tracked service modules<br/>authorization + business rules</span>"]
+  idp["<b>ZITADEL</b><br/><span style='font-size:11px'>PostgreSQL · API · Login V2<br/>separate recovery stream</span>"]
 
   pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>88 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
   redis[("<b>Redis</b><br/><span style='font-size:11px'>cache, rate limits,<br/>Garmin token, breaker</span>")]
   files[/"<b>Private files</b><br/><span style='font-size:11px'>photos, scans, PDFs<br/>opaque keys</span>"/]
 
   web --> svc
-  mcpsrv --> svc
-  api --> svc
-  sched --> svc
+  worker --> svc
+  web <-.->|staged OIDC| idp
   svc --> pg
   svc --> redis
   svc --> files
@@ -456,22 +455,21 @@ flowchart LR
   classDef box fill:#ffffff,stroke:#ccd6d8,color:#12181f
   classDef core fill:#dceaec,stroke:#0e7c86,color:#12181f,font-weight:600
   classDef store fill:#eef2f2,stroke:#5c6b72,color:#12181f
-  class web,mcpsrv,api,sched box
+  class web,worker,idp box
   class svc core
   class pg,redis,files store
-  style proc fill:#f7f8f7,stroke:#ccd6d8
 </pre>
     </div>
     <figcaption><b>Containers.</b> Business mutations and reusable authorization behavior go through domain services. Delivery adapters may retain narrow subject-scoped presentation queries, but they do not invent a second business-policy layer.</figcaption>
   </figure>
-  <p>Personal portability v2 is an owner-only encrypted archive boundary over this graph: it authenticates the archive, maps credential-free connection descriptors explicitly, stages verified private resources, and commits replacement plus an exact replay receipt atomically. It is not a multi-subject installation backup; that separate format remains unimplemented.</p>
+  <p>Personal portability v2 is an owner-only encrypted archive boundary over this graph: it authenticates the archive, maps credential-free connection descriptors explicitly, stages verified private resources, and commits replacement plus an exact replay receipt atomically. Installation recovery is separate and shipped: the health bundle pairs PostgreSQL, Garmin session, private files and legacy uploads, while ZITADEL uses an independent SQL+Login-PAT bundle and separately escrowed master key. Both destructive restore paths are rehearsed; automated offsite repositories remain operator-provided.</p>
 </section>
 
 <!-- ══════════════════════════════════════════════════════════════ -->
 <section id="ownership">
   <p class="eyebrow">The core of the conversion</p>
   <h2>The ownership graph</h2>
-  <p>Before, a row was simply <em>in the database</em>, and that was enough to identify it as the owner's. The conversion replaces that with four explicit roots, each answering a different question about a row.</p>
+  <p>Before, a row was simply <em>in the database</em>, and that was enough to identify it as the owner's. The conversion replaces that with five explicit provenance roots, each answering a different question about a row.</p>
 
   <div class="tablewrap">
     <table>
@@ -479,7 +477,8 @@ flowchart LR
       <tbody>
         <tr><td><code>subject_id</code></td><td>Whose health is this about?</td><td>Nothing — now mandatory on 60 tables</td></tr>
         <tr><td><code>actor_user_id</code></td><td>Which human entered it?</td><td>A system or scheduled job did</td></tr>
-        <tr><td><code>integration_connection_id</code></td><td>Which account did it arrive through?</td><td>Nobody's device — typed in by hand</td></tr>
+        <tr><td><code>integration_connection_id</code></td><td>Which subject-owned provider, import or channel root participated?</td><td>No such connection participated — for example a manual, file-backed or structured import path</td></tr>
+        <tr><td><code>platform_integration_connection_id</code></td><td>Which installation-funded gateway handled it?</td><td>No platform provider participated</td></tr>
         <tr><td><code>file_asset_id</code></td><td>Which private file is it a pointer to?</td><td>Not backed by a file</td></tr>
       </tbody>
     </table>
@@ -487,7 +486,7 @@ flowchart LR
 
   <div class="invariant">
     <span class="tag">Invariant</span>
-    <p>A null <em>actor</em> is legitimate — a migrated row or a scheduled sync genuinely has no human behind it. A row that names an actor but no subject is not old data, it is <strong>broken provenance</strong>, and every reader reports it rather than passing over it.</p>
+    <p>A null <em>actor</em> is legitimate — a migrated row or a scheduled sync genuinely has no human behind it. A subject-owned clinical fact that names an actor but no subject has <strong>broken provenance</strong>; platform, account and audit rows follow their own explicit ownership classes.</p>
   </div>
 
   <figure>
@@ -497,7 +496,9 @@ flowchart LR
 erDiagram
   USERS ||--o| HEALTH_SUBJECTS : "owns exactly one"
   USERS ||--o{ USER_ROLES : "additive, never a data grant"
-  HEALTH_SUBJECTS ||--o{ INTEGRATION_CONNECTIONS : "garmin, hevy, openrouter"
+  HEALTH_SUBJECTS ||--o{ INTEGRATION_CONNECTIONS : "garmin, hevy, legacy openrouter, telegram"
+  HEALTH_SUBJECTS ||--o{ AI_INVOCATIONS : "subject-owned request"
+  PLATFORM_INTEGRATION_CONNECTIONS ||--o{ AI_INVOCATIONS : "platform-funded AI"
   HEALTH_SUBJECTS ||--o{ FILE_ASSETS : "opaque private keys"
   HEALTH_SUBJECTS ||--o{ RAW_PAYLOADS : "the lake"
   HEALTH_SUBJECTS ||--o{ SUBJECT_DATA : "32 domain tables"
@@ -509,7 +510,7 @@ erDiagram
   USERS {
     uuid id PK
     text normalized_username UK
-    text status "active, suspended"
+    text status "pending, active, suspended"
     int session_version
   }
   HEALTH_SUBJECTS {
@@ -521,25 +522,30 @@ erDiagram
     uuid id PK
     uuid subject_id FK
     text provider
-    text connection_type "account, recipient"
-    text status "legacy, active, disabled, retired"
+    text connection_type "account, import, ai_gateway, recipient"
+    text status "legacy, pending, active, disabled, retired"
   }
   RAW_PAYLOADS {
     uuid subject_id FK "NOT NULL"
-    uuid integration_connection_id FK "null when hand-entered"
-    text external_id "scoped-unique per subject"
-    jsonb payload "verbatim upstream"
+    uuid integration_connection_id FK "optional subject connection"
+    text external_id "scoped lookup component"
+    jsonb payload "complete current JSON/input"
     timestamp processed_at "null = awaiting reparse"
   }
   SUBJECT_DATA {
     uuid subject_id FK "NOT NULL"
     uuid actor_user_id FK "null = system"
-    int raw_payload_id FK "provenance"
+    int raw_payload_id FK "when raw-backed"
     text source "manual, garmin_api, mcp, ..."
+  }
+  AI_INVOCATIONS {
+    uuid subject_id FK "NOT NULL"
+    uuid platform_integration_connection_id FK "NOT NULL"
+    text status "prepared, dispatching, succeeded, failed, ambiguous, cancelled"
   }
 </pre>
     </div>
-    <figcaption><b>Ownership roots.</b> <code>SUBJECT_DATA</code> stands for the 32 domain tables, which share this shape exactly. One user owns at most one health subject — the unique constraint is what makes "their own record" unambiguous rather than a guess.</figcaption>
+    <figcaption><b>Ownership roots.</b> <code>SUBJECT_DATA</code> stands for 32 tables whose common invariant is mandatory subject ownership; actor, raw, subject-connection and file provenance vary by table. <code>AI_INVOCATIONS</code> shows the separate platform-gateway root. One user owns at most one health subject — the unique constraint makes "their own record" unambiguous rather than a guess.</figcaption>
   </figure>
 
   <h3>Classification, not convention</h3>
@@ -571,14 +577,14 @@ erDiagram
 <section id="domains">
   <p class="eyebrow">The record</p>
   <h2>Fourteen domains</h2>
-  <p>Each domain owns its tables, its service module, its conflict resolver and its page. They share one write contract and one read contract; nothing else is common between them.</p>
+  <p>The enum has fourteen domains: thirteen consent-visible record sections plus internal <code>system</code>. Nine participate in the conflict engine; pages, tables and ingestion paths vary by domain. Reports are derived artifacts and delivery surfaces, not a separate <code>Domain</code> value.</p>
 
   <div class="tablewrap">
     <table>
       <thead><tr><th>Domain</th><th>Holds</th><th>Arrives from</th><th>Notable</th></tr></thead>
       <tbody>
         <tr><td><b>Weight</b></td><td><code>weight_logs</code>, <code>noise_markers</code>, <code>garmin_weight_exports</code></td><td>Manual, Garmin, MCP</td><td>One active weigh-in per day per subject; a priority table decides which source wins. Exports back to Garmin through a durable outbox.</td></tr>
-        <tr><td><b>Body composition</b></td><td><code>body_scans</code>, <code>body_scan_metrics</code>, <code>body_measurements</code>, <code>progress_photos</code></td><td>Scan PDFs, manual, photos</td><td>Scan documents are parsed by an LLM into a metric sheet; the original stays in the lake. Photos are pointers — the file is a <code>file_asset</code>.</td></tr>
+        <tr><td><b>Body composition</b></td><td><code>body_scans</code>, <code>body_scan_metrics</code>, <code>body_measurements</code>, <code>progress_photos</code></td><td>Scan PDFs, manual, photos</td><td>Scan documents are parsed by an LLM into a metric sheet; the original bytes stay in private file storage and the extracted JSON stays in <code>raw_payloads</code>. Photos are pointers — the file is a <code>file_asset</code>.</td></tr>
         <tr><td><b>GLP-1</b></td><td><code>glp1_injections</code>, <code>glp1_dose_phases</code>, <code>glp1_side_effects</code></td><td>Manual, MCP</td><td>Phases model a titration schedule; a plateau alert watches the weight domain across the boundary.</td></tr>
         <tr><td><b>HRT</b></td><td><code>hrt_cycles</code>, <code>hrt_doses</code>, <code>hrt_side_effects</code>, <code>hrt_cycle_templates</code></td><td>Manual, MCP</td><td>The largest graph: cycles hold items, items reference compounds, templates instantiate cycles. The compound catalog is <em>mixed</em> — curated entries are global, custom ones are one person's.</td></tr>
         <tr><td><b>Nutrition</b></td><td><code>meal_logs</code></td><td>Manual, MCP</td><td>A day-end job evaluates rules that only make sense once the day is over — a running total is trivially under target at breakfast.</td></tr>
@@ -589,8 +595,8 @@ erDiagram
         <tr><td><b>Garmin</b></td><td><code>garmin_daily</code>, <code>garmin_intraday</code>, <code>garmin_activities</code></td><td>Garmin API, Health Auto Export</td><td>Intraday holds ~2k samples per day — the reason the <code>NOT NULL</code> migration avoids a full-table lock. A daily bundle may carry a weigh-in, which crosses into the weight domain.</td></tr>
         <tr><td><b>Workouts</b></td><td><code>hevy_workouts</code>, <code>hevy_exercises</code>, <code>hevy_sets</code></td><td>Hevy API</td><td>A three-level tree; children inherit subject and connection from the workout through composite foreign keys.</td></tr>
         <tr><td><b>Milestones</b></td><td><code>milestones</code></td><td>Manual</td><td>Goals with progress computed from whichever domain the goal is about.</td></tr>
-        <tr><td><b>Timeline</b></td><td><code>annotations</code></td><td>Manual + derived</td><td>Hand-written notes merged with events derived from ten other domains into one feed.</td></tr>
-        <tr><td><b>Reports</b></td><td><code>weekly_digests</code>, <code>shared_reports</code></td><td>Generated</td><td>The one place data deliberately leaves the boundary. A share is a frozen snapshot behind a revocable token; a digest names the OpenRouter account that produced it.</td></tr>
+        <tr><td><b>Timeline</b></td><td><code>annotations</code></td><td>Manual + derived</td><td>Hand-written notes merged with events derived from eight source areas into one feed.</td></tr>
+        <tr><td><b>System</b></td><td><code>system_alerts</code> and internal scheduler/provider signals</td><td>Generated</td><td>Internal operational state is excluded from consent-visible clinical domain lists. Weekly digests belong to milestones; shared reports are frozen delivery artifacts without a domain column.</td></tr>
       </tbody>
     </table>
   </div>
@@ -600,30 +606,33 @@ erDiagram
 <section id="lake">
   <p class="eyebrow">Data lifecycle</p>
   <h2>Raw, fact, artifact</h2>
-  <p>Nothing upstream is discarded. Every provider response and every uploaded document lands in <code>raw_payloads</code> as JSONB before anything is derived from it, so a parser improved next year can recover columns this year's parser dropped — without a network call.</p>
+  <p>The complete current upstream payload is persisted before normalization. A repeated scoped external key refreshes that row rather than retaining every historical response version; the stored payload can still be reparsed later without a network call.</p>
 
   <figure>
     <div class="diagram">
 <pre class="mermaid">
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"13px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
 flowchart LR
-  ext["Provider response<br/>Uploaded PDF"]
-  raw[("<b>raw_payloads</b><br/><span style='font-size:11px'>verbatim JSONB · GIN index<br/>subject + connection stamped</span>")]
+  ext["Provider response<br/>Uploaded / structured import"]
+  file[("<b>file_assets</b><br/><span style='font-size:11px'>private uploaded bytes<br/>opaque storage key</span>")]
+  raw[("<b>raw_payloads</b><br/><span style='font-size:11px'>complete current JSONB · GIN index<br/>subject + optional connection / file</span>")]
   fact[("<b>Domain fact</b><br/><span style='font-size:11px'>typed columns<br/>links back to its raw</span>")]
   art[("<b>Artifact</b><br/><span style='font-size:11px'>digest, share, alert,<br/>notification</span>")]
 
-  ext -->|"upsert, scoped by<br/>(subject, connection, external_id)"| raw
+  ext -.->|"optional private bytes"| file
+  file -.->|"optional file_asset_id"| raw
+  ext -->|"lookup by subject + connection/null<br/>+ domain + source + external_id"| raw
   raw -->|parse| fact
   raw -.->|"reparse — no network"| fact
   fact -->|compose| art
 
   classDef store fill:#eef2f2,stroke:#0e7c86,color:#12181f
   classDef src fill:#ffffff,stroke:#ccd6d8,color:#3d4a52
-  class raw,fact,art store
+  class file,raw,fact,art store
   class ext src
 </pre>
     </div>
-    <figcaption><b>The lake.</b> <code>processed_at</code> is set when a raw becomes a fact and cleared whenever the payload is refreshed, so a sweeper can find everything still waiting. Reparse never re-fetches and never rewrites the original fetch time.</figcaption>
+    <figcaption><b>The lake.</b> A refresh replaces the stored full payload, advances <code>fetched_at</code>, and clears <code>processed_at</code>, so a sweeper can find everything waiting. A reparse reads the stored payload without network access and does not change <code>fetched_at</code>.</figcaption>
   </figure>
 
   <div class="invariant">
@@ -636,7 +645,7 @@ flowchart LR
 <section id="write">
   <p class="eyebrow">Write path</p>
   <h2>How a write happens</h2>
-  <p>A domain service will not accept a subject on its own. It takes the subject <em>and</em> the conflict decision that authorized the write, as one capability minted earlier in the same transaction. The signature enforces what a comment used to ask for.</p>
+  <p>A conflict-governed clinical service takes the subject <em>and</em> the conflict decision as one capability minted earlier in the same transaction. Other writes use their own typed boundary: care uses <code>AccessContext</code>, timeline mutations use <code>WriteIdentity</code>, and account/control operations use dedicated authenticated inputs rather than pretending every mutation has a clinical conflict rule.</p>
 
   <figure>
     <div class="diagram">
@@ -650,15 +659,15 @@ sequenceDiagram
   participant S as Domain service
   participant D as PostgreSQL
 
-  R->>O: resolve(actor_username)
-  O->>D: which subject does this actor own?
+  R->>O: resolve(authenticated user, selected subject)
+  O->>D: owner or exact live grant?
   O->>D: SET LOCAL vitals.subject_id
   Note over O,D: every later query is<br/>inside the policy from here
   O-->>R: identity + AccessContext
 
   R->>C: prepare_scoped_write(identity, date)
-  C->>D: governance lock → subject → connection
-  C->>C: evaluate rules across all domains
+  C->>D: governance lock → subject → relevant user rows
+  C->>C: evaluate registered conflict domains
   alt a hard block fires without override
     C-->>R: ConflictBlocked → 409 + violations
   else allowed, or overridden
@@ -676,14 +685,14 @@ sequenceDiagram
   </figure>
 
   <h3>Lock order</h3>
-  <p>Every write path takes the same locks in the same order — governance advisory, then the active-weight advisory, then the subject row, then the connection row, then the domain's own rows. The order is uniform because a Garmin daily bundle can carry a weigh-in, so two independent sync paths can reach the weight tables at once; the previous ordering produced a real deadlock under PostgreSQL.</p>
+  <p>Generic conflict preparation fixes the order governance advisory → subject row → relevant actor or owner rows. Weight writes insert the active-weight advisory after governance and before the subject; provider ingestion locks a validated connection and domain rows where that path requires them. These are reviewed partial orders, not one universal lock list. A Garmin daily bundle can carry a weigh-in, so two independent sync paths can reach weight tables at once; inconsistent ordering previously produced a real PostgreSQL deadlock.</p>
 </section>
 
 <!-- ══════════════════════════════════════════════════════════════ -->
 <section id="read">
   <p class="eyebrow">Read path</p>
   <h2>How a read is bounded</h2>
-  <p>Three boundaries, deliberately independent. Each would be sufficient on a good day; together they mean a mistake in one is not a breach.</p>
+  <p>Three gates bound an ordinary clinical read. Application authorization and scoped services prevent accidental widening in code; PostgreSQL RLS is the independent data boundary that also constrains an ad-hoc query.</p>
 
   <figure>
     <div class="diagram">
@@ -691,45 +700,43 @@ sequenceDiagram
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"13px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
 flowchart TB
   req["Request<br/><span style='font-size:11px'>authenticated principal</span>"]
-  ctx["<b>1 · AccessContext</b><br/><span style='font-size:11px'>principal · subject · owner<br/>roles · live grants</span>"]
-  pol{"<b>2 · Policy</b><br/><span style='font-size:11px'>is_allowed(context, request)</span>"}
-  svc["<b>3 · Scoped service</b><br/><span style='font-size:11px'>subject_id is mandatory<br/>in every signature</span>"]
-  rls["<b>4 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 71 tables<br/>every one with a subject</span>"]
+  ctx{"<b>1 · Application authorization</b><br/><span style='font-size:11px'>AccessContext + policy<br/>owner or exact live grant</span>"}
+  svc["<b>2 · Scoped service</b><br/><span style='font-size:11px'>subject_id required by<br/>clinical reader signatures</span>"]
+  rls["<b>3 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 71 tables<br/>for restricted runtime logins</span>"]
   rows[("rows")]
   deny["403<br/><span style='font-size:11px'>says nothing about<br/>whose record, or whether<br/>it exists</span>"]
 
-  req --> ctx --> pol
-  pol -->|"owner, or an exact live grant"| svc --> rls --> rows
-  pol -->|"anything else"| deny
+  req --> ctx
+  ctx -->|allowed| svc --> rls --> rows
+  ctx -->|anything else| deny
 
   classDef step fill:#ffffff,stroke:#ccd6d8,color:#12181f
   classDef guard fill:#dceaec,stroke:#0e7c86,color:#12181f,font-weight:600
   classDef bad fill:#f4e5da,stroke:#a6501e,color:#12181f
   class req,rows step
   class ctx,svc,rls guard
-  class pol guard
   class deny bad
 </pre>
     </div>
-    <figcaption><b>Four gates, three of them independent.</b> Application scoping is a property of the code that happens to be running. A policy is a property of the data, and it survives a query written in a hurry, a report assembled by hand, and a console session opened during an incident.</figcaption>
+    <figcaption><b>Three gates, two enforcement layers.</b> Access policy and scoped service signatures are application properties. PostgreSQL RLS is a property of the data and also constrains an ad-hoc query or console session that uses a restricted runtime login.</figcaption>
   </figure>
 
   <p>Break-glass is intentionally not unioned into this ordinary policy context. Its dedicated service verifies one exact session, holder, subject, two independent approvals, read-only domain scopes and TTL, then its own fixed projection binds that subject for RLS. No care consent, support grant, role, MCP capability, note, plan, conversation or file surface is inherited into the emergency decision.</p>
 
   <div class="invariant">
     <span class="tag">Fails closed</span>
-    <p>An unbound session sees <em>nothing</em>, not everything. <code>current_setting</code> returns NULL when the application forgot to say whose request it is serving, the policy comparison is NULL, and no row qualifies. Getting the boundary wrong shows up as an empty page, never as somebody else's data.</p>
+    <p>An unbound restricted runtime session sees no subject-protected rows. <code>current_setting</code> returns NULL when the application forgot to bind a subject, the policy comparison is NULL, and no protected row qualifies. Global catalogs and explicitly classified account/platform controls remain governed by their own boundaries.</p>
   </div>
 
-  <p><code>FORCE</code> is the operative word: PostgreSQL exempts a table's owner from its own policies, and the application connects as the owner. Roles that must see across subjects — the migration runner, the ownership backfill jobs, the platform control plane — are exempt by role attribute. That is deliberate: a backfill that could not see an unstamped row could not stamp it.</p>
+  <p><code>FORCE</code> is the operative word: production web and worker use distinct non-owner logins with neither <code>SUPERUSER</code> nor <code>BYPASSRLS</code>. The schema-owner login never enters a long-lived runtime; it is reserved for migration, backfill, role-provisioning, backup and bounded operator maintenance. Cross-subject worker transactions require both transaction-local <code>vitals.platform_scope=on</code> and membership in one database-specific <code>NOLOGIN</code> capability role; web has no such membership, so setting the GUC alone grants it nothing.</p>
 
   <h3>Work that belongs to nobody in particular</h3>
-  <p>Not every transaction is somebody's. A doctor opening a shared report has no account here and is not meant to need one — the token in the URL is the authorization, and the application checks it before reading anything. Five scheduled jobs are the same shape: the share purge, AI invocation reconciler, historical delivery reconciler, care-push dispatcher, and registration-admission retention job each sweep across subjects with no person to act as.</p>
+  <p>Not every transaction is somebody's. A shared-report URL token identifies one frozen artifact, but reading it additionally requires its report password and database-side token attestation. Five scheduled jobs are installation-wide by design: share purge, AI invocation reconciliation, delivery reconciliation, care-push dispatch, and registration-admission retention each sweep across subjects with no person to act as.</p>
   <p>Under the subject comparison alone, installation-wide jobs see nothing and report success. The RLS contract therefore admits a second explicit scope, <code>vitals.platform_scope</code>, alongside the subject policies. A contract test enumerates every application caller allowed to enter it.</p>
 
   <div class="invariant">
     <span class="tag">Narrow by construction</span>
-    <p>Transaction-local like the subject binding, so a scope that reads across everybody cannot ride a pooled connection into the next request. Asked for by name through <code>enter_platform_scope</code>, never drifted into. Opened only by the exact string <code>on</code>, so a stray or truncated value closes. And all twelve call sites are enumerated by a contract test — a thirteenth is something a reviewer reads, not something that accumulates.</p>
+    <p>Transaction-local like the subject binding, so a scope that reads across everybody cannot ride a pooled connection into the next request. Among restricted runtime logins it is effective only for the worker capability member. The AST contract enumerates 9 permitted caller functions; bounded owner/operator one-shots already run outside the restricted RLS boundary.</p>
   </div>
 
   <p>The line that keeps it honest: this is for work that <em>has</em> no subject, not work that failed to find one. A path that merely forgot to resolve its subject should see nothing — that is the boundary working — and its fix is to bind, never to declare itself the installation.</p>
@@ -739,7 +746,7 @@ flowchart TB
 <section id="conflicts">
   <p class="eyebrow">Cross-domain safety</p>
   <h2>The conflict engine</h2>
-  <p>Rules are data, not code. Each domain registers a resolver that reports its current state for one subject on one date; the engine evaluates active rules across domains before a write lands, and turns a violation into a block, a warning, or a passive alert.</p>
+  <p>Rules are data, not code. Each participating domain registers a resolver that reports its current state for one subject on one date; the engine evaluates active rules across the 9 registered conflict domains before a governed write lands, and turns a violation into a block, a warning, or a passive alert.</p>
 
   <figure>
     <div class="diagram">
@@ -811,7 +818,7 @@ flowchart LR
       <div class="n">PR-03</div>
       <div>
         <h4>Ownership expansion and backfill<span class="state done">merged</span></h4>
-        <p>Nullable ownership columns on every table, dual-write from every path, nineteen resumable backfill phases, then scoped unique keys installed beside the global ones and the global ones dropped. Two people can now share a weigh-in date.</p>
+        <p>Nullable ownership columns on every table, dual-write from every path, 19 resumable backfill phases, then scoped unique keys installed beside the global ones and the global ones dropped. Two people can now share a weigh-in date.</p>
       </div>
     </div>
     <div class="stage">
@@ -825,14 +832,14 @@ flowchart LR
       <div class="n">PR-05</div>
       <div>
         <h4>OIDC authentication and local sessions<span class="state done">merged</span></h4>
-        <p>OIDC Authorization Code + PKCE, immutable provider identities, revocable application sessions, upstream logout and recent-authentication step-up are implemented. The safe invitation-recipient handoff is merged; supported operator admission and delivery remain active work.</p>
+        <p>OIDC Authorization Code + PKCE, immutable provider identities, revocable sessions, upstream logout, recent-auth step-up, operator invitations/requests and bounded applicant retention are implemented. Production remains on legacy password login until public ZITADEL and the first-owner binding pass the cutover.</p>
       </div>
     </div>
     <div class="stage">
       <div class="n">PR-07 …</div>
       <div>
         <h4>Relationships, consent, professionals<span class="state done">merged</span></h4>
-        <p>Professional verification, invitations, relationships, versioned consent, records and patient-visible conversations now supply the grants evaluated by the policy engine. Workflow and UI completeness remain active work.</p>
+        <p>Professional verification, invitations, relationships, versioned consent and records supply the grants evaluated by the policy engine. Every live relationship resolves to one canonical conversation, created lazily on first access; historical topic threads remain readable. Provider-side identity invitation and recovery delivery are still operational steps.</p>
       </div>
     </div>
   </div>
@@ -854,8 +861,8 @@ flowchart LR
 <!-- ══════════════════════════════════════════════════════════════ -->
 <section id="cutover">
   <p class="eyebrow">Operations</p>
-  <h2>The cutover</h2>
-  <p>Upgrading an existing installation is not one <code>alembic upgrade head</code>. It is three parts, and the middle one is an application job rather than a migration.</p>
+  <h2>The ownership cutover</h2>
+  <p>For databases older than revision 0049, ownership conversion is not one <code>alembic upgrade head</code>. The historical three-part sequence below remains the required bridge. Current production has completed it, advanced through <code>0084</code>, split migration/web/worker database authority, and health-gated worker before web.</p>
 
   <figure>
     <div class="diagram">
@@ -863,9 +870,9 @@ flowchart LR
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"12.5px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
 flowchart TB
   a["<b>1 · alembic upgrade 0048</b><br/><span style='font-size:11px'>every ownership column exists,<br/>all still nullable · safe to stop here</span>"]
-  b["<b>2 · bootstrap, then nineteen phases</b><br/><span style='font-size:11px'>owner, resource roots, catalogs<br/>raw → facts → children → artifacts<br/>each resumable, each checkpointed</span>"]
+  b["<b>2 · bootstrap, then 19 phases</b><br/><span style='font-size:11px'>owner, resource roots, catalogs<br/>raw → facts → children → artifacts<br/>each resumable, each checkpointed</span>"]
   c{"every target column<br/>stamped?"}
-  d["<b>3 · alembic upgrade head</b><br/><span style='font-size:11px'>0049 NOT NULL · 0050 FORCE RLS</span>"]
+  d["<b>3 · upgrade through 0084</b><br/><span style='font-size:11px'>0049 NOT NULL · 0050+ FORCE RLS<br/>0081/82 attested handoffs · 0083 worker capability</span>"]
   e["<b>refused</b><br/><span style='font-size:11px'>names each table and how far behind<br/>nothing altered — run the phase, retry</span>"]
   f["<b>one-way from here</b><br/><span style='font-size:11px'>once a second subject writes,<br/>downgrade is forbidden</span>"]
 
@@ -883,7 +890,7 @@ flowchart TB
   class f stop
 </pre>
     </div>
-    <figcaption><b>Cutover.</b> The contract migration counts remaining nulls before it alters anything, so a skipped phase stops the upgrade rather than half-applying it. The phase order lives in <code>vitals/ownership_deploy.py</code>; the runbook is generated from it and a test compares the two, because an operator follows the document rather than the code.</figcaption>
+    <figcaption><b>Historical ownership bridge.</b> The contract migration counts remaining nulls before it alters anything, so a skipped phase stops the upgrade rather than half-applying it. The phase order lives in <code>vitals/ownership_deploy.py</code>; a test compares the runbook with source because an operator follows the document rather than the code.</figcaption>
   </figure>
 
   <p>On PostgreSQL each column is proven with a <code>NOT VALID</code> check that is then validated before <code>SET NOT NULL</code> takes over from it. Validation takes a weaker lock than the alter would, and PostgreSQL accepts the validated check as proof — the difference between a pause and an outage on a table holding a couple of thousand samples for every day ever synced.</p>
@@ -899,11 +906,11 @@ flowchart TB
     <table>
       <thead><tr><th>Invariant</th><th>Why it exists</th></tr></thead>
       <tbody>
-        <tr><td>A write names the subject <em>and</em> the conflict decision, together</td><td>Either alone is a write nobody authorized. The signature enforces it; a comment did not.</td></tr>
-        <tr><td>Actor null is fine; subject null with an actor is broken</td><td>Migration stamped subjects without inventing actors. Any <em>other</em> user's id is forged attribution and is refused.</td></tr>
+        <tr><td>A conflict-governed clinical write names the subject <em>and</em> its conflict decision</td><td>Either alone is insufficient for those mutations. Other write classes use their own typed authorization boundary.</td></tr>
+        <tr><td>Actor null is fine; a subject-owned clinical fact with an actor but no subject is broken</td><td>Migration stamped subjects without inventing actors. Platform/account/audit rows follow their explicit ownership classification.</td></tr>
         <tr><td>Resolving a context authorizes nothing</td><td>"May I reach that record?" has to be answerable without first entering its scope.</td></tr>
         <tr><td>A role is never a grant</td><td>A doctor is a doctor everywhere and a stranger to every record without a live, actor-bound, exactly-scoped one.</td></tr>
-        <tr><td>An unbound session sees nothing</td><td>Forgetting the boundary shows up as an empty page, never as somebody else's data.</td></tr>
+        <tr><td>An unbound restricted session sees no subject-protected rows</td><td>Forgetting the clinical boundary shows up as an empty record, never as somebody else's data.</td></tr>
         <tr><td>Curated catalog rows belong to nobody</td><td>A checked-in compound or conflict rule is the installation's. Only custom rows carry a subject.</td></tr>
         <tr><td>A fact and its raw payload name the same subject</td><td>Provenance that points elsewhere is not provenance.</td></tr>
         <tr><td>Mid-backfill, a reader shows exactly the stamped rows</td><td>An ownerless row attached to this subject's raw is not a broken chain — it is what a half-stamped table looks like.</td></tr>
@@ -912,7 +919,7 @@ flowchart TB
     </table>
   </div>
 
-  <p class="footnote">Generated from the source it describes: table counts and classifications from <code>vitals/ownership.py</code>, the phase order from <code>vitals/ownership_deploy.py</code>, domains from <code>vitals/enums.py</code>. Companion documents: <code>COMMERCIAL_OWNERSHIP_INVENTORY.md</code> for the per-table contract, <code>COMMERCIAL_MULTI_USER_ROADMAP.md</code> for the plan, <code>OWNERSHIP_CUTOVER_RUNBOOK.md</code> for the upgrade.</p>
+  <p class="footnote">Derived from the source it describes and manually verified on 2026-08-27: table counts and classifications from <code>vitals/ownership.py</code>, the phase order from <code>vitals/ownership_deploy.py</code>, domains from <code>vitals/enums.py</code>. Companion documents: <code>COMMERCIAL_OWNERSHIP_INVENTORY.md</code> for the per-table contract, <code>COMMERCIAL_MULTI_USER_ROADMAP.md</code> for the plan, <code>OWNERSHIP_CUTOVER_RUNBOOK.md</code> for the upgrade.</p>
 </section>
 
 </main>
