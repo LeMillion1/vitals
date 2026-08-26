@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 from tests.conftest import legacy_unenforced_write
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, event, func, select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from vitals.enums import (
@@ -363,6 +363,67 @@ async def test_stop_resume_preserves_data_timestamps_and_never_writes_actor(
             )
         )
     ) == 4
+
+
+@pytest.mark.asyncio
+async def test_intraday_page_uses_bounded_queries_instead_of_one_graph_load_per_row(
+    db_session,
+):
+    identity, connections, rows, timestamp = await _seed_reviewed_graph(db_session)
+    raw_id = rows[2].raw_payload_id
+    db_session.add_all(
+        [
+            GarminIntraday(
+                date=date(2026, 8, 2),
+                domain=Domain.GARMIN.value,
+                source=Source.GARMIN_API.value,
+                raw_payload_id=raw_id,
+                series_type="stress",
+                ts=datetime(2026, 8, 2, 10, 0) + timedelta(seconds=offset),
+                value=float(offset),
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            for offset in range(1, 251)
+        ]
+    )
+    await db_session.flush()
+
+    for expected_table in ("garmin_daily", "garmin_activities"):
+        result = await run_provider_raw_ownership_backfill_batch(
+            db_session, batch_size=1000
+        )
+        await db_session.commit()
+        assert result.batch_table == expected_table
+
+    statement_count = 0
+
+    def count_statement(*_args):
+        nonlocal statement_count
+        statement_count += 1
+
+    engine = db_session.bind
+    event.listen(engine.sync_engine, "before_cursor_execute", count_statement)
+    try:
+        result = await run_provider_raw_ownership_backfill_batch(
+            db_session, batch_size=1000
+        )
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", count_statement)
+
+    assert result.batch_table == "garmin_intraday"
+    assert result.batch_scanned_rows == 251
+    assert result.batch_updated_rows == 251
+    assert statement_count < 150
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(GarminIntraday)
+        .where(
+            GarminIntraday.subject_id == identity.subject_id,
+            GarminIntraday.integration_connection_id
+            == connections[IntegrationProvider.GARMIN.value].id,
+        )
+    ) == 251
 
 
 @pytest.mark.asyncio

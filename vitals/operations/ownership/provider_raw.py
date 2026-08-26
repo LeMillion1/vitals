@@ -1114,6 +1114,142 @@ async def _row_plan(
     return row, raw, changed
 
 
+async def _load_intraday_batch_graphs(
+    session: AsyncSession,
+    *,
+    spec: _TableSpec,
+    row_ids: list[int],
+) -> tuple[list[Any], dict[int, tuple[RawPayload, IntegrationConnection]]]:
+    """Load one locked intraday page and its repeated roots in bounded queries."""
+
+    rows = list(
+        await session.execute(
+            select(spec.table)
+            .where(spec.table.c.id.in_(row_ids))
+            .order_by(spec.table.c.id)
+        )
+    )
+    if [row._mapping["id"] for row in rows] != row_ids:
+        raise ProviderRawOwnershipBackfillStateError(
+            "an intraday row disappeared after its graph was locked"
+        )
+    raw_ids = sorted({row._mapping["raw_payload_id"] for row in rows})
+    if any(isinstance(raw_id, bool) or not isinstance(raw_id, int) for raw_id in raw_ids):
+        raise ProviderRawOwnershipBackfillProvenanceError(
+            "an intraday row lacks an exact raw payload link"
+        )
+    graph_rows = list(
+        await session.execute(
+            select(RawPayload, IntegrationConnection)
+            .join(
+                IntegrationConnection,
+                IntegrationConnection.id == RawPayload.integration_connection_id,
+            )
+            .where(RawPayload.id.in_(raw_ids))
+            .order_by(RawPayload.id)
+            .execution_options(populate_existing=True)
+        )
+    )
+    graphs = {raw.id: (raw, connection) for raw, connection in graph_rows}
+    if sorted(graphs) != raw_ids:
+        raise ProviderRawOwnershipBackfillProvenanceError(
+            "an intraday row has a missing raw/connection root"
+        )
+    return rows, graphs
+
+
+def _validate_intraday_batch(
+    *,
+    spec: _TableSpec,
+    rows: list[Any],
+    graphs: dict[int, tuple[RawPayload, IntegrationConnection]],
+    scope: _Scope,
+    historical: bool,
+) -> list[tuple[Any, RawPayload, bool]]:
+    plans: list[tuple[Any, RawPayload, bool]] = []
+    for row in rows:
+        raw, connection = graphs[row._mapping["raw_payload_id"]]
+        changed = _validate_graph(
+            spec=spec,
+            row=row,
+            raw=raw,
+            connection=connection,
+            scope=scope,
+            historical=historical,
+        )
+        plans.append((row, raw, changed))
+    return plans
+
+
+async def _run_locked_intraday_batch(
+    session: AsyncSession,
+    *,
+    spec: _TableSpec,
+    row_ids: list[int],
+    scope: _Scope,
+    before: str,
+    after: str,
+    ownership: str,
+) -> tuple[str, str, str, int, int]:
+    """Attribute a high-volume intraday page without per-sample round trips."""
+
+    rows, graphs = await _load_intraday_batch_graphs(
+        session, spec=spec, row_ids=row_ids
+    )
+    plans = _validate_intraday_batch(
+        spec=spec,
+        rows=rows,
+        graphs=graphs,
+        scope=scope,
+        historical=True,
+    )
+    update_groups: dict[tuple[uuid.UUID, uuid.UUID], list[int]] = {}
+    unchanged_rows = 0
+    for row, raw, changed in plans:
+        before = _extend_checksum(before, _data_envelope(spec, row))
+        if changed:
+            update_groups.setdefault(
+                (raw.subject_id, raw.integration_connection_id), []
+            ).append(row._mapping["id"])
+        else:
+            unchanged_rows += 1
+    for (subject_id, connection_id), ids in sorted(
+        update_groups.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))
+    ):
+        values: dict[str, Any] = {
+            "subject_id": subject_id,
+            "integration_connection_id": connection_id,
+        }
+        if "updated_at" in spec.table.c:
+            values["updated_at"] = spec.table.c.updated_at
+        await session.execute(
+            update(spec.table).where(spec.table.c.id.in_(ids)).values(**values)
+        )
+    after_rows, after_graphs = await _load_intraday_batch_graphs(
+        session, spec=spec, row_ids=row_ids
+    )
+    for row, _raw, still_changed in _validate_intraday_batch(
+        spec=spec,
+        rows=after_rows,
+        graphs=after_graphs,
+        scope=scope,
+        historical=True,
+    ):
+        if still_changed:
+            raise ProviderRawOwnershipBackfillStateError(
+                "intraday ownership update did not become strict"
+            )
+        after = _extend_checksum(after, _data_envelope(spec, row))
+        ownership = _extend_checksum(ownership, _ownership_envelope(spec, row))
+    return (
+        before,
+        after,
+        ownership,
+        sum(len(ids) for ids in update_groups.values()),
+        unchanged_rows,
+    )
+
+
 async def _lock_graph_for_ids(
     session: AsyncSession,
     *,
@@ -1409,15 +1545,31 @@ async def _verify_final_snapshot(
             break
         if for_update:
             await _lock_graph_for_ids(session, spec=spec, row_ids=ids)
-        for row_id in ids:
-            row, _raw, changed = await _row_plan(
-                session,
+        if spec.model is GarminIntraday:
+            rows, graphs = await _load_intraday_batch_graphs(
+                session, spec=spec, row_ids=ids
+            )
+            plans = _validate_intraday_batch(
                 spec=spec,
-                row_id=row_id,
+                rows=rows,
+                graphs=graphs,
                 scope=scope,
                 historical=True,
-                lock_children=for_update,
             )
+        else:
+            plans = []
+            for row_id in ids:
+                plans.append(
+                    await _row_plan(
+                        session,
+                        spec=spec,
+                        row_id=row_id,
+                        scope=scope,
+                        historical=True,
+                        lock_children=for_update,
+                    )
+                )
+        for row, _raw, changed in plans:
             if changed:
                 raise ProviderRawOwnershipBackfillStateError(
                     "a completed provider snapshot requires ownership repair"
@@ -1947,49 +2099,70 @@ async def run_provider_raw_ownership_backfill_batch(
     before = checkpoint.data_checksum_before
     after = checkpoint.data_checksum_after
     ownership = checkpoint.ownership_checksum_after
-    updated_rows = 0
-    unchanged_rows = 0
-    for row_id in batch_ids:
-        before_row, raw, changed = await _row_plan(
+    if target.spec.model is GarminIntraday:
+        (
+            before,
+            after,
+            ownership,
+            updated_rows,
+            unchanged_rows,
+        ) = await _run_locked_intraday_batch(
             session,
             spec=target.spec,
-            row_id=row_id,
+            row_ids=batch_ids,
             scope=scope,
-            historical=True,
-            lock_children=True,
+            before=before,
+            after=after,
+            ownership=ownership,
         )
-        before = _extend_checksum(before, _data_envelope(target.spec, before_row))
-        if changed:
-            values: dict[str, Any] = {
-                "subject_id": raw.subject_id,
-                "integration_connection_id": raw.integration_connection_id,
-            }
-            if "updated_at" in target.spec.table.c:
-                values["updated_at"] = before_row._mapping["updated_at"]
-            await session.execute(
-                update(target.spec.table)
-                .where(target.spec.table.c.id == row_id)
-                .values(**values)
+    else:
+        updated_rows = 0
+        unchanged_rows = 0
+        for row_id in batch_ids:
+            before_row, raw, changed = await _row_plan(
+                session,
+                spec=target.spec,
+                row_id=row_id,
+                scope=scope,
+                historical=True,
+                lock_children=True,
             )
-            updated_rows += 1
-        else:
-            unchanged_rows += 1
-        after_row, _raw, still_changed = await _row_plan(
-            session,
-            spec=target.spec,
-            row_id=row_id,
-            scope=scope,
-            historical=True,
-            lock_children=True,
-        )
-        if still_changed:
-            raise ProviderRawOwnershipBackfillStateError(
-                "provider ownership update did not become strict"
+            before = _extend_checksum(
+                before, _data_envelope(target.spec, before_row)
             )
-        after = _extend_checksum(after, _data_envelope(target.spec, after_row))
-        ownership = _extend_checksum(
-            ownership, _ownership_envelope(target.spec, after_row)
-        )
+            if changed:
+                values: dict[str, Any] = {
+                    "subject_id": raw.subject_id,
+                    "integration_connection_id": raw.integration_connection_id,
+                }
+                if "updated_at" in target.spec.table.c:
+                    values["updated_at"] = before_row._mapping["updated_at"]
+                await session.execute(
+                    update(target.spec.table)
+                    .where(target.spec.table.c.id == row_id)
+                    .values(**values)
+                )
+                updated_rows += 1
+            else:
+                unchanged_rows += 1
+            after_row, _raw, still_changed = await _row_plan(
+                session,
+                spec=target.spec,
+                row_id=row_id,
+                scope=scope,
+                historical=True,
+                lock_children=True,
+            )
+            if still_changed:
+                raise ProviderRawOwnershipBackfillStateError(
+                    "provider ownership update did not become strict"
+                )
+            after = _extend_checksum(
+                after, _data_envelope(target.spec, after_row)
+            )
+            ownership = _extend_checksum(
+                ownership, _ownership_envelope(target.spec, after_row)
+            )
     if before != after:
         raise ProviderRawOwnershipBackfillStateError(
             "provider data changed while ownership was backfilled"
