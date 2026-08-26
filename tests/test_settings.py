@@ -895,3 +895,38 @@ async def test_settings_save_proactive_no_adjusted_flag_in_range(auth_client):
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/settings?saved=proactive"
+
+
+async def test_web_only_schedule_save_is_honestly_deferred(
+    auth_client,
+    monkeypatch,
+):
+    from vitals.process_mode import ProcessMode
+    from web.routers import settings as settings_router
+
+    monkeypatch.setattr(
+        settings_router,
+        "load_process_mode",
+        lambda: ProcessMode.WEB,
+    )
+    monkeypatch.setattr(
+        settings_router,
+        "apply_schedule",
+        lambda app, settings: False,
+    )
+
+    response = await auth_client.post(
+        "/settings/proactive",
+        data={
+            "brief_time": "11:00",
+            "garmin_sync_hours": "6",
+            "pulse_seconds": "900",
+            "pulse_start_hour": "8",
+            "pulse_end_hour": "24",
+        },
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == (
+        "/settings?saved=proactive&deferred=1"
+    )

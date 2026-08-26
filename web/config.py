@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import urlsplit
 
 SESSION_COOKIE = "vitals_session"
@@ -138,20 +137,9 @@ def _env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 def get_web_config() -> WebConfig:
     """Build the web config from the environment. Raises ``RuntimeError`` when a
     required secret is missing — there's no safe default for the session secret."""
-    if _env_bool("VITALS_RUNTIME_ENV_ISOLATION_REQUIRED", False):
-        from vitals.runtime_env import (
-            RuntimeEnvIsolationError,
-            validate_runtime_environment,
-        )
+    from vitals.runtime_env import require_runtime_environment_isolation
 
-        runtime_env = Path(
-            os.getenv("VITALS_ENV_FILE")
-            or Path(__file__).resolve().parent.parent / ".env"
-        )
-        try:
-            validate_runtime_environment(runtime_env)
-        except RuntimeEnvIsolationError as exc:
-            raise RuntimeError(f"runtime environment isolation failed: {exc}") from exc
+    require_runtime_environment_isolation()
 
     session_secret = os.getenv("VITALS_SESSION_SECRET")
     if not session_secret:

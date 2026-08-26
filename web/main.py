@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.i18n import get_js_strings
 from vitals.persistence.rls import enter_platform_scope
+from vitals.process_mode import ProcessMode, load_process_mode
 from vitals.services import health_profile_service
 from vitals.services.access_resolution import AccessDeniedError
 from vitals.services.alerts_service import AlertLegacyBridgeError
@@ -265,6 +266,11 @@ _LEGACY_BOOTSTRAP_CLOSED = (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
+    process_mode = load_process_mode()
+    if process_mode is ProcessMode.WORKER:
+        raise RuntimeError(
+            "VITALS_PROCESS_MODE=worker must use the vitals.worker entry point"
+        )
     session_factory = get_session_factory()
     redis = None
     try:
@@ -272,14 +278,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Redis client could not be loaded at startup: %s", e)
 
-    # Scheduler setup
+    # Worker lifecycle setup. Combined mode remains the compatibility default;
+    # web mode prepares the registry for health reporting but never starts
+    # process-local background execution.
     from vitals.config import load_config
-    from vitals.scheduler.jobs import register_all_jobs
-    from vitals.scheduler.scheduler import seed_heartbeats, setup_scheduler
+    from vitals.scheduler.lifecycle import WorkerLifecycle
     from vitals.services import conflict_catalog, conflict_engine, hrt_catalog
-    from vitals.services.conflict_registrations import register_all_resolvers
 
     config = load_config()
+    worker_lifecycle = WorkerLifecycle(
+        session_factory=session_factory,
+        redis=redis,
+        timezone=config.timezone,
+    )
 
     def drill_stage(stage: str) -> None:
         if os.getenv("VITALS_RESTORE_DRILL") == "true":
@@ -301,16 +312,15 @@ async def lifespan(app: FastAPI):
         )
     drill_stage("identity_completed")
 
-    # Register cross-domain conflict resolvers (supplements/genetics/skincare/...).
-    register_all_resolvers()
     # Upsert the curated rule catalog (vitals/data/conflict_rules.yaml) — cheap,
     # idempotent, and keeps the DB in sync with the checked-in YAML on every
     # deploy without a data migration per rule change.
     drill_stage("catalogs_started")
     async with session_factory() as session:
-        # Job schedules come from the DB (Settings → proactive), so the registry is
-        # attached here rather than before the session opens.
-        register_all_jobs(
+        # Process-local conflict resolvers and job schedules are prepared
+        # together. A standalone worker uses the same boundary and therefore
+        # cannot start conflict-aware jobs with an empty resolver registry.
+        worker_lifecycle.prepare(
             preference_bundle.as_flat_dict()
             if preference_bundle is not None
             else None
@@ -361,13 +371,14 @@ async def lifespan(app: FastAPI):
     drill_stage("seed_completed")
 
     drill_stage("heartbeats_started")
-    if redis is not None:
-        await seed_heartbeats(redis)
+    if process_mode is ProcessMode.COMBINED:
+        await worker_lifecycle.seed_heartbeats()
     drill_stage("heartbeats_completed")
 
-    scheduler = setup_scheduler(session_factory, redis, timezone=config.timezone)
-    scheduler.start()
-    app.state.scheduler = scheduler
+    if process_mode is ProcessMode.COMBINED:
+        app.state.scheduler = worker_lifecycle.start()
+    else:
+        app.state.scheduler = None
     drill_stage("scheduler_completed")
 
     async with AsyncExitStack() as stack:
@@ -382,7 +393,7 @@ async def lifespan(app: FastAPI):
         yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
-    scheduler.shutdown()
+    worker_lifecycle.shutdown()
 
 
 app = FastAPI(

@@ -880,6 +880,11 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
         # subject before it can bind one. Its identity, connection, settings,
         # and preference reconciliation is bounded by one commit/rollback.
         ("web/main.py", "_bootstrap_legacy_identity"),
+        # The standalone worker has no authenticated user and must discover the
+        # exact-one compatibility preference scope before it can bind one. It
+        # returns only the flattened schedule and releases the read locks with a
+        # rollback before any scheduled job starts.
+        ("vitals/scheduler/lifecycle.py", "load_worker_settings"),
         # Housekeeping across every subject, with no person to act as.
         ("vitals/services/share_service.py", "purge_job"),
         ("vitals/services/ai_gateway_service.py", "reconciliation_job"),

@@ -55,6 +55,7 @@ RUNTIME_ENV_KEYS = frozenset(
         "VITALS_OPENROUTER_HTTP_REFERER",
         "VITALS_OPENROUTER_X_TITLE",
         "VITALS_PRIVATE_FILE_ROOT",
+        "VITALS_PROCESS_MODE",
         "VITALS_PUBLIC_URL",
         "VITALS_REDIS_URL",
         "VITALS_REGISTRATION_UNLOCKED",
@@ -92,6 +93,36 @@ _ASSIGNMENT = re.compile(
 
 class RuntimeEnvIsolationError(RuntimeError):
     """The application environment would cross the operator privilege boundary."""
+
+
+def runtime_environment_path(
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """The dotenv file mounted into a long-lived application process."""
+
+    values = os.environ if environ is None else environ
+    configured = (values.get("VITALS_ENV_FILE") or "").strip()
+    if configured:
+        return Path(configured)
+    return Path(__file__).resolve().parent.parent / ".env"
+
+
+def require_runtime_environment_isolation(
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Run the Compose privilege preflight when the process requires it."""
+
+    values = os.environ if environ is None else environ
+    required = (values.get("VITALS_RUNTIME_ENV_ISOLATION_REQUIRED") or "").strip()
+    if required.lower() not in {"1", "true", "yes", "on"}:
+        return
+    try:
+        validate_runtime_environment(
+            runtime_environment_path(values),
+            environ=values,
+        )
+    except RuntimeEnvIsolationError as exc:
+        raise RuntimeError(f"runtime environment isolation failed: {exc}") from exc
 
 
 def parse_assignment_lines(path: Path) -> list[tuple[str, str]]:

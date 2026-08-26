@@ -347,12 +347,22 @@ async def test_lab_upload_ignores_inactive_historical_subject_openrouter(
     assert calls == ["llm"]
 
 
+@pytest.mark.parametrize(
+    ("process_mode", "scheduler_started"),
+    [
+        ("combined", True),
+        ("web", False),
+    ],
+)
 async def test_startup_hormone_seed_receives_one_subject_system_capability(
     db_session,
     session_factory,
     legacy_owner_roots,
     monkeypatch,
+    process_mode,
+    scheduler_started,
 ):
+    from vitals.process_mode import ProcessMode
     from vitals.scheduler import jobs as jobs_module
     from vitals.scheduler import scheduler as scheduler_module
     from vitals.services import conflict_catalog, hrt_catalog, hrt_reminders
@@ -395,6 +405,11 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
             self.stopped = True
 
     scheduler_probe = SchedulerProbe()
+    monkeypatch.setattr(
+        web_main,
+        "load_process_mode",
+        lambda: ProcessMode(process_mode),
+    )
     monkeypatch.setattr(web_main, "get_session_factory", lambda: session_factory)
     monkeypatch.setattr(
         web_main,
@@ -414,9 +429,10 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
     app = SimpleNamespace(state=SimpleNamespace(mcp_lifespan=None))
 
     async with web_main.lifespan(app):
-        assert scheduler_probe.started is True
+        assert scheduler_probe.started is scheduler_started
+        assert (app.state.scheduler is scheduler_probe) is scheduler_started
 
-    assert scheduler_probe.stopped is True
+    assert scheduler_probe.stopped is scheduler_started
     assert calls == [
         (
             WriteIdentity(legacy_owner_roots.subject_id, None),

@@ -119,6 +119,24 @@ def test_web_config_enforces_runtime_boundary_when_compose_requires_it(
         get_web_config()
 
 
+def test_shared_runtime_preflight_rejects_privileged_worker_environment(tmp_path):
+    from vitals.runtime_env import require_runtime_environment_isolation
+
+    runtime = tmp_path / ".env.runtime"
+    runtime.write_text(
+        "VITALS_DATABASE_URL=postgresql+asyncpg://worker:run@db/vitals\n",
+        encoding="utf-8",
+    )
+    environ = {
+        "VITALS_RUNTIME_ENV_ISOLATION_REQUIRED": "true",
+        "VITALS_ENV_FILE": str(runtime),
+        "VITALS_MIGRATION_DATABASE_URL": "postgresql://owner",
+    }
+
+    with pytest.raises(RuntimeError, match="VITALS_MIGRATION_DATABASE_URL"):
+        require_runtime_environment_isolation(environ)
+
+
 def test_runtime_allowlist_covers_every_production_app_env_reference():
     """A new runtime setting must make an explicit privilege decision."""
 

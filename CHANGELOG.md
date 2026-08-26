@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — the scheduler has an explicit process lifecycle
+
+The default application process still runs FastAPI and APScheduler together for
+existing single-user deployments. Operators can now opt into a web-only process
+or run the scheduler through a separate worker entry point, with strict process
+mode validation and an explicit platform-scoped startup settings read. Compose
+remains on the compatibility default until the later deployment cutover. In
+the preparatory web-only mode, a schedule save is explicitly marked deferred
+until both processes restart; cross-process live reload is a separate gate.
+
 ### Added — production-copy restores are rehearsed in an isolated stack
 
 One bounded command now validates an exact five-file recovery manifest, stages

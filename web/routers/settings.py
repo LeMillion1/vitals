@@ -45,6 +45,7 @@ from vitals.i18n import t
 from vitals.integrations.garmin_client import login_breaker_state
 from vitals.models.identity import HealthSubject
 from vitals.operations.ownership import portability_v1
+from vitals.process_mode import ProcessMode, load_process_mode
 from vitals.services import (
     ai_gateway_service,
     credential_vault_service,
@@ -1375,7 +1376,7 @@ async def save_proactive(
     pulse_start_hour: int = Form(prefs.DEFAULTS["pulse_start_hour"]),
     pulse_end_hour: int = Form(prefs.DEFAULTS["pulse_end_hour"]),
 ):
-    """Save the proactive settings **and rebuild the schedule on the spot**.
+    """Save proactive settings and rebuild a process-local schedule when present.
 
     Everything else on this page writes ``.env`` and needs a restart; these are in
     the DB precisely so they don't. ``prefs.sanitize`` clamps whatever arrives —
@@ -1427,8 +1428,9 @@ async def save_proactive(
     )
     await db.commit()
 
+    schedule_applied = False
     if governs_schedule:
-        apply_schedule(request.app, settings)
+        schedule_applied = apply_schedule(request.app, settings)
     # prefs.sanitize() (called inside set_preferences_bundle) silently clamps
     # out-of-range
     # input — compare what was submitted to what actually got stored so the
@@ -1438,7 +1440,17 @@ async def save_proactive(
     query = "?saved=proactive"
     if adjusted:
         query += "&adjusted=1"
-    if not governs_schedule:
+    deferred = not governs_schedule
+    if (
+        governs_schedule
+        and load_process_mode() is ProcessMode.WEB
+        and not schedule_applied
+    ):
+        # The split worker cannot observe process memory. Until the Redis
+        # generation/reload protocol lands, be honest that both processes need
+        # a restart instead of claiming the live schedule changed.
+        deferred = True
+    if deferred:
         # Saved, and deliberately not applied to the running scheduler. A plain
         # "saved" here would be true about the row and false about the effect,
         # which is the worse of the two silences.
@@ -1446,7 +1458,7 @@ async def save_proactive(
     return _redirect(query)
 
 
-def apply_schedule(app, settings: dict) -> None:
+def apply_schedule(app, settings: dict) -> bool:
     """Re-register the jobs and push them onto the running scheduler.
 
     Best-effort on purpose: the settings *are* saved by the time this runs, so a
@@ -1460,12 +1472,14 @@ def apply_schedule(app, settings: dict) -> None:
 
     scheduler = getattr(app.state, "scheduler", None)
     if scheduler is None:
-        return
+        return False
     try:
         register_all_jobs(settings)
         apply_registry(scheduler, get_session_factory(), get_redis_client())
     except Exception:
         logger.exception("could not apply the new schedule; it takes effect on restart")
+        return False
+    return True
 
 
 @router.post("/language")
