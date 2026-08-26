@@ -86,6 +86,15 @@ def test_the_doctors_pages_fit_a_phone(sign_in, screen):
     assert page.status == 200
 
 
+def test_the_stable_conversation_fits_a_phone(sign_in):
+    conversation = (
+        sign_in("dr-ivanov", phone=True)
+        .record_of("timur")
+        .open_conversation()
+    )
+    assert conversation.says("Care conversation")
+
+
 def test_a_key_issued_on_the_settings_page_opens_the_external_api(sign_in):
     """The screen and the endpoint have to agree, which is the only thing that
     matters about a credential.

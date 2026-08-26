@@ -49,9 +49,13 @@
             <span class="v-text-label">{{ t("care.messages_title") }}</span>
             <p class="v-text-micro" style="color: var(--muted)">{{ t("care.messages_description") }}</p>
         </div>
-        <a href="{{ '/messages' if care.is_owner else '/care/' ~ care.subject_id ~ '/messages' }}" class="v-btn text-xs whitespace-nowrap">
-            {{ t("care.threads_title") }}
-        </a>
+        {% if care.is_owner %}
+        <a href="/messages" class="v-btn text-xs whitespace-nowrap">{{ t("care.threads_title") }}</a>
+        {% else %}
+        <form action="/care/{{ care.subject_id }}/messages/relationship/{{ care.relationship_id }}" method="POST">
+            <button type="submit" class="v-btn text-xs whitespace-nowrap">{{ t("care.relationship_thread_open") }}</button>
+        </form>
+        {% endif %}
     </div>
     {% endif %}
 

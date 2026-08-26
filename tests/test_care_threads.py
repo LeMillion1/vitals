@@ -12,10 +12,13 @@ Reading and sending are separately revocable. Nothing is deleted.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vitals.access import AccessScope, PolicyAction, PolicyResourceType
 from vitals.enums import (
@@ -32,9 +35,13 @@ from vitals.services.access_resolution import resolve_access_context
 
 
 async def _user(session, slug: str, *, roles=()) -> User:
+    email = f"{slug}@example.test"
     user = User(
         username=slug,
         normalized_username=slug,
+        email=email,
+        normalized_email=email,
+        email_verified_at=datetime.now(timezone.utc),
         password_hash="$synthetic-test-hash",
         status=UserStatus.ACTIVE.value,
     )
@@ -148,21 +155,29 @@ async def test_relationship_conversation_is_an_idempotent_exact_pair(db_session)
         slug="thread-pair-doctor",
     )
     owner_context = await _context(db_session, owner, subject)
+    doctor_context = await _context(db_session, doctor, subject)
+
+    # A pre-existing two-person topic thread is history, not something the
+    # stable relationship room may silently relabel or take over.
+    legacy = await threads.open_thread(
+        db_session, context=doctor_context, title="Earlier bloodwork"
+    )
 
     first = await threads.open_relationship_thread(
         db_session,
-        context=owner_context,
+        context=doctor_context,
         relationship_id=relationship.id,
-        title="Care conversation",
     )
     second = await threads.open_relationship_thread(
         db_session,
         context=owner_context,
         relationship_id=relationship.id,
-        title="Ignored on reuse",
     )
 
     assert second.id == first.id
+    assert first.id != legacy.id
+    assert first.canonical_relationship_id == relationship.id
+    assert legacy.canonical_relationship_id is None
     participants = list(
         await db_session.scalars(
             select(CareThreadParticipant).where(
@@ -177,6 +192,139 @@ async def test_relationship_conversation_is_an_idempotent_exact_pair(db_session)
     }
     professional = next(p for p in participants if p.user_id == doctor.id)
     assert professional.relationship_id == relationship.id
+
+
+@pytest.mark.integration
+async def test_postgres_concurrent_relationship_opens_converge_on_one_room(
+    db_session, monkeypatch
+):
+    """The relationship lock serializes the exact first-open race.
+
+    The first writer is held after inserting the room but before commit. The
+    second writer is allowed to issue its own ``FOR UPDATE`` and must wait there
+    rather than race the unique constraint. Once the first commits, both calls
+    return the same durable room without either transaction failing.
+    """
+
+    owner, subject = await _patient(db_session, "thread-pair-race")
+    doctor, relationship, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-pair-race-doctor",
+    )
+    owner_id = owner.id
+    professional_id = doctor.id
+    subject_id = subject.id
+    relationship_id = relationship.id
+    await db_session.commit()
+
+    assert db_session.bind is not None
+    factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+    original_create = threads._create_pair_thread
+    first_room_inserted = asyncio.Event()
+    release_first_writer = asyncio.Event()
+
+    async def hold_first_writer(*args, **kwargs):
+        room = await original_create(*args, **kwargs)
+        first_room_inserted.set()
+        await release_first_writer.wait()
+        return room
+
+    monkeypatch.setattr(threads, "_create_pair_thread", hold_first_writer)
+
+    lock_queries = 0
+    second_lock_issued = asyncio.Event()
+
+    def observe_relationship_lock(
+        _conn, _cursor, statement, _parameters, _context, _executemany
+    ) -> None:
+        nonlocal lock_queries
+        normalized = statement.lower()
+        if "from care_relationships" not in normalized or "for update" not in normalized:
+            return
+        lock_queries += 1
+        if lock_queries == 2:
+            second_lock_issued.set()
+
+    event.listen(
+        db_session.bind.sync_engine,
+        "before_cursor_execute",
+        observe_relationship_lock,
+    )
+
+    async def open_room() -> uuid.UUID:
+        async with factory() as session:
+            context = await resolve_access_context(
+                session,
+                user_id=owner_id,
+                subject_id=subject_id,
+            )
+            room = await threads.open_relationship_thread(
+                session,
+                context=context,
+                relationship_id=relationship_id,
+            )
+            await session.commit()
+            return room.id
+
+    first = asyncio.create_task(open_room())
+    second = None
+    try:
+        await asyncio.wait_for(first_room_inserted.wait(), timeout=5)
+        second = asyncio.create_task(open_room())
+        await asyncio.wait_for(second_lock_issued.wait(), timeout=5)
+        assert not second.done(), (
+            "the second writer did not wait on the relationship lock"
+        )
+        release_first_writer.set()
+        first_id, second_id = await asyncio.wait_for(
+            asyncio.gather(first, second),
+            timeout=5,
+        )
+    finally:
+        release_first_writer.set()
+        event.remove(
+            db_session.bind.sync_engine,
+            "before_cursor_execute",
+            observe_relationship_lock,
+        )
+        pending = [
+            task
+            for task in (first, second)
+            if task is not None and not task.done()
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    assert first_id == second_id
+    async with factory() as verify:
+        rooms = list(
+            await verify.scalars(
+                select(CareThread).where(
+                    CareThread.canonical_relationship_id == relationship_id
+                )
+            )
+        )
+        participants = list(
+            await verify.scalars(
+                select(CareThreadParticipant).where(
+                    CareThreadParticipant.thread_id == first_id,
+                    CareThreadParticipant.removed_at.is_(None),
+                )
+            )
+        )
+    assert len(rooms) == 1
+    assert {participant.user_id for participant in participants} == {
+        owner_id,
+        professional_id,
+    }
 
 
 async def test_doctor_and_trainer_get_separate_relationship_conversations(db_session):
@@ -200,13 +348,11 @@ async def test_doctor_and_trainer_get_separate_relationship_conversations(db_ses
         db_session,
         context=owner_context,
         relationship_id=doctor_relationship.id,
-        title="Doctor",
     )
     trainer_thread = await threads.open_relationship_thread(
         db_session,
         context=owner_context,
         relationship_id=trainer_relationship.id,
-        title="Trainer",
     )
 
     assert doctor_thread.id != trainer_thread.id
@@ -247,7 +393,6 @@ async def test_patient_cannot_open_pair_after_message_consent_is_paused(db_sessi
             db_session,
             context=owner_context,
             relationship_id=relationship.id,
-            title="Must stay closed",
         )
 
     assert await db_session.scalar(select(func.count()).select_from(CareThread)) == 0

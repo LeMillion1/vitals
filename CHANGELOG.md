@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — each care relationship has one stable conversation
+
+Doctors, trainers, and patients now open the same idempotent two-person room for
+an active care relationship instead of creating topic threads from the
+professional inbox. Existing topic conversations and every message, attachment,
+participant, author, and timestamp remain unchanged and readable as history.
+
 ### Fixed — role provisioning runs from its container command
 
 The database-role provisioner now bootstraps the repository import path before

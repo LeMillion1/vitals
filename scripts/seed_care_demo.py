@@ -182,7 +182,9 @@ async def _patient(
     return user, subject
 
 
-async def _seed_conversation(session, *, owner, subject, professional) -> None:
+async def _seed_conversation(
+    session, *, owner, subject, professional, relationship
+) -> None:
     """One care-team conversation with something in it.
 
     The screens for this shipped with nothing to look at, which is the same
@@ -197,20 +199,22 @@ async def _seed_conversation(session, *, owner, subject, professional) -> None:
     from vitals.services.care import threads
     from vitals.services.access_resolution import resolve_access_context
 
+    patient_context = await resolve_access_context(
+        session, user_id=owner.id, subject_id=subject.id
+    )
+    thread = await threads.open_relationship_thread(
+        session,
+        context=patient_context,
+        relationship_id=relationship.id,
+    )
     doctor_context = await resolve_access_context(
         session, user_id=professional.id, subject_id=subject.id
-    )
-    thread = await threads.open_thread(
-        session, context=doctor_context, title="Результаты анализов"
     )
     await threads.send_message(
         session,
         context=doctor_context,
         thread_id=thread.id,
         body="Ферритин ниже нормы. Сдайте повторно натощак через две недели.",
-    )
-    patient_context = await resolve_access_context(
-        session, user_id=owner.id, subject_id=subject.id
     )
     await threads.send_message(
         session,
@@ -468,7 +472,11 @@ async def build(
         )
         if index == 0:
             await _seed_conversation(
-                session, owner=owner, subject=subject, professional=doctor_a
+                session,
+                owner=owner,
+                subject=subject,
+                professional=doctor_a,
+                relationship=relationship,
             )
 
     # In care, no consent yet: the ordinary state right after accepting.

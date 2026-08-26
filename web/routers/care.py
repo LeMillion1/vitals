@@ -552,6 +552,14 @@ async def messages(
         )
     except care_threads.NotInTheConversation:
         thread_summaries = []
+    counterpart_names = await _professional_display_names(
+        db,
+        {
+            item.counterpart_user_id
+            for item in thread_summaries
+            if item.counterpart_user_id is not None
+        },
+    )
     return templates.TemplateResponse(
         request,
         "care/messages.html",
@@ -562,19 +570,44 @@ async def messages(
             "open_thread": None,
             "thread_messages": [],
             "participants": [],
+            "thread_counterpart_names": counterpart_names,
+            "has_historical_threads": any(
+                item.thread.canonical_relationship_id is None
+                for item in thread_summaries
+            ),
             "active_account_nav": (
                 "messages" if care.is_owner else "professional_care"
             ),
-            # Owners reply inside an existing professional conversation. The
-            # list page has no recipient selector, so letting them start here
-            # would create a room containing nobody but themselves.
-            "may_start_thread": not care.is_owner
-            and care.may(
-                resource_key=care_threads.MESSAGE_OPERATION,
-                action=care_threads.SEND_ACTION,
-                resource_type=PolicyResourceType.OPERATION,
-            ),
         },
+    )
+
+
+@router.post("/{subject_id}/messages/relationship/{relationship_id}")
+async def open_relationship_conversation(
+    relationship_id: uuid.UUID,
+    care: CareContext = Depends(require_care_context),
+    db: AsyncSession = Depends(get_session),
+):
+    """Open this professional's stable room with the named patient.
+
+    The subject remains in the path, so a stale roster or record tab cannot
+    retarget the action. The service also binds the relationship to the exact
+    caller and subject before reusing or creating anything.
+    """
+
+    try:
+        opened = await care_threads.open_relationship_thread(
+            db,
+            context=care.access,
+            relationship_id=relationship_id,
+        )
+    except care_threads.CareThreadError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    await db.commit()
+    return RedirectResponse(
+        url=f"/care/{care.subject_id}/messages/{opened.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -659,59 +692,6 @@ async def thread(
                 resource_type=PolicyResourceType.OPERATION,
             ),
         },
-    )
-
-
-@router.post("/{subject_id}/messages")
-async def open_conversation(
-    request: Request,
-    title: str = Form(""),
-    body: str = Form(""),
-    attachment: UploadFile | None = File(None),
-    care: CareContext = Depends(require_care_context),
-    db: AsyncSession = Depends(get_session),
-):
-    """Start a conversation with this patient — the one named in the path."""
-
-    document = await prepare_medical_document(attachment)
-    if document is not None and not body.strip():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An attachment needs a message",
-        )
-    try:
-        opened = await care_threads.open_thread(
-            db, context=care.access, title=title
-        )
-        if body.strip():
-            message = await care_threads.send_message(
-                db,
-                context=care.access,
-                thread_id=opened.id,
-                body=body,
-            )
-            if document is not None:
-                await _attach_private_document(
-                    db,
-                    care=care,
-                    message_id=message.id,
-                    document=document,
-                )
-    except care_threads.CareThreadValidationError as exc:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
-    except care_threads.CareThreadError:
-        await db.rollback()
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
-    # If commit's outcome is indeterminate, retain the private bytes. An orphan
-    # in an inaccessible volume can be reconciled; deleting bytes after the DB
-    # may have committed would turn a preserved clinical message into data loss.
-    await db.commit()
-    return RedirectResponse(
-        url=f"/care/{care.subject_id}/messages/{opened.id}",
-        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

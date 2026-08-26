@@ -25,7 +25,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.i18n import t
 from vitals.services.care import threads as care_threads
 from vitals.services.access_resolution import (
     AccessResolutionError,
@@ -77,7 +76,6 @@ async def open_relationship_conversation(
             db,
             context=access,
             relationship_id=relationship_id,
-            title=t("care.relationship_thread_title"),
         )
     except (AccessResolutionError, care_threads.CareThreadError):
         await db.rollback()

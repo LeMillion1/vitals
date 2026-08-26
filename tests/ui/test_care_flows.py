@@ -15,15 +15,16 @@ def test_a_doctor_and_a_patient_hold_a_conversation(sign_in):
     message it was answering.
     """
 
-    title = "Ferritin follow-up"
     first_message = "Ferritin is below range. Repeat fasting in two weeks."
     doctor = sign_in("dr-ivanov")
-    doctor.conversations_about("timur").start_a_thread(title, first_message)
+    doctor.record_of("timur").open_conversation().say(first_message)
 
     patient = sign_in("timur")
     mine = patient.my_conversations()
-    assert mine.lists(title), "the patient cannot see a thread about themselves"
-    conversation = mine.open_thread(title)
+    assert mine.says("Conversation with Dr Ivanov"), (
+        "the patient cannot identify who the stable conversation is with"
+    )
+    conversation = mine.open_stable_conversation()
     assert conversation.says("Ferritin is below range"), (
         "the patient cannot read what was said about them"
     )

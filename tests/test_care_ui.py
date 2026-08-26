@@ -26,7 +26,11 @@ from sqlalchemy import func, select
 
 from vitals.enums import ProfessionalKind, UserRoleName, UserStatus
 from vitals.models.identity import HealthSubject, User, UserRole
-from vitals.models.professional import ProfessionalNote, ProfessionalProfile
+from vitals.models.professional import (
+    CareRelationship,
+    ProfessionalNote,
+    ProfessionalProfile,
+)
 from vitals.services.care import invitations, professionals, relationships
 
 
@@ -104,6 +108,27 @@ async def _take_into_care(session, *, owner, subject, professional, consent=True
             session, relationship_id=relationship.id, actor_user_id=owner.id
         )
     return relationship
+
+
+async def _relationship_id(session, *, subject, professional) -> uuid.UUID:
+    relationship_id = await session.scalar(
+        select(CareRelationship.id).where(
+            CareRelationship.subject_id == subject.id,
+            CareRelationship.professional_user_id == professional.id,
+        )
+    )
+    assert relationship_id is not None
+    return relationship_id
+
+
+async def _open_professional_conversation(client, session, *, subject, professional):
+    relationship_id = await _relationship_id(
+        session, subject=subject, professional=professional
+    )
+    return await client.post(
+        f"/care/{subject.id}/messages/relationship/{relationship_id}",
+        follow_redirects=False,
+    )
 
 
 @pytest.fixture
@@ -516,21 +541,30 @@ async def test_the_roster_lists_both_patients(doctor_client):
     assert "consent v" not in response.text
 
 
-async def test_the_roster_puts_unread_patient_conversations_first(doctor_client):
+async def test_the_roster_puts_unread_patient_conversations_first(
+    doctor_client, db_session
+):
     client, doctor, (_owner_a, subject_a), (owner_b, subject_b) = doctor_client
-    opened_a = await client.post(
-        f"/care/{subject_a.id}/messages",
-        data={"title": "Routine", "body": "How are you?"},
-        follow_redirects=False,
+    opened_a = await _open_professional_conversation(
+        client, db_session, subject=subject_a, professional=doctor
     )
     assert opened_a.status_code == 303
-    opened_b = await client.post(
-        f"/care/{subject_b.id}/messages",
-        data={"title": "Knee", "body": "How is it today?"},
-        follow_redirects=False,
+    opened_b = await _open_professional_conversation(
+        client, db_session, subject=subject_b, professional=doctor
     )
     assert opened_b.status_code == 303
+    thread_a = opened_a.headers["location"].rsplit("/", 1)[1]
     thread_b = opened_b.headers["location"].rsplit("/", 1)[1]
+    await client.post(
+        f"/care/{subject_a.id}/messages/{thread_a}",
+        data={"body": "How are you?"},
+        follow_redirects=False,
+    )
+    await client.post(
+        f"/care/{subject_b.id}/messages/{thread_b}",
+        data={"body": "How is it today?"},
+        follow_redirects=False,
+    )
 
     from web.auth import create_session
     from web.config import SESSION_COOKIE
@@ -881,12 +915,10 @@ async def test_a_stale_tab_talks_to_the_patient_it_was_looking_at(
 
     from vitals.models.care_thread import CareMessage
 
-    client, _doctor, (_owner_a, subject_a), (_owner_b, subject_b) = doctor_client
+    client, doctor, (_owner_a, subject_a), (_owner_b, subject_b) = doctor_client
 
-    opened = await client.post(
-        f"/care/{subject_a.id}/messages",
-        data={"title": "Bloods"},
-        follow_redirects=False,
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject_a, professional=doctor
     )
     assert opened.status_code == 303
     thread_id = opened.headers["location"].rsplit("/", 1)[1]
@@ -903,38 +935,39 @@ async def test_a_stale_tab_talks_to_the_patient_it_was_looking_at(
     assert subject_b.id not in {row.subject_id for row in rows}
 
 
-async def test_a_conversation_starts_with_its_first_message(
+async def test_opening_the_stable_conversation_is_idempotent_and_message_free(
     doctor_client, db_session
 ):
-    """Starting a shared conversation is one action, not two screens."""
+    from vitals.models.care_thread import CareMessage, CareThread
 
-    from vitals.models.care_thread import CareMessage
-
-    client, _doctor, (_owner_a, subject_a), _b = doctor_client
-    opened = await client.post(
-        f"/care/{subject_a.id}/messages",
-        data={"title": "Bloods", "body": "Please fast for twelve hours."},
-        follow_redirects=False,
+    client, doctor, (_owner_a, subject_a), _b = doctor_client
+    first = await _open_professional_conversation(
+        client, db_session, subject=subject_a, professional=doctor
+    )
+    second = await _open_professional_conversation(
+        client, db_session, subject=subject_a, professional=doctor
     )
 
-    assert opened.status_code == 303
-    message = await db_session.scalar(select(CareMessage))
-    assert message is not None
-    assert message.subject_id == subject_a.id
-    assert message.body == "Please fast for twelve hours."
+    assert first.status_code == second.status_code == 303
+    assert first.headers["location"] == second.headers["location"]
+    assert await db_session.scalar(select(func.count()).select_from(CareThread)) == 1
+    assert await db_session.scalar(select(func.count()).select_from(CareMessage)) == 0
 
 
 async def test_the_patient_sees_new_until_the_conversation_is_opened(
-    doctor_client,
+    doctor_client, db_session
 ):
-    client, _doctor, (owner_a, subject_a), _b = doctor_client
-    opened = await client.post(
-        f"/care/{subject_a.id}/messages",
-        data={"title": "Bloods", "body": "Please fast for twelve hours."},
-        follow_redirects=False,
+    client, doctor, (owner_a, subject_a), _b = doctor_client
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject_a, professional=doctor
     )
     assert opened.status_code == 303
     thread_id = opened.headers["location"].rsplit("/", 1)[1]
+    await client.post(
+        f"/care/{subject_a.id}/messages/{thread_id}",
+        data={"body": "Please fast for twelve hours."},
+        follow_redirects=False,
+    )
 
     from web.auth import create_session
     from web.config import SESSION_COOKIE
@@ -966,12 +999,10 @@ async def test_the_patient_sees_new_until_the_conversation_is_opened(
 async def test_another_patients_thread_is_not_reachable_by_its_id(
     doctor_client, db_session
 ):
-    client, _doctor, (_owner_a, subject_a), (_owner_b, subject_b) = doctor_client
+    client, doctor, (_owner_a, subject_a), (_owner_b, subject_b) = doctor_client
 
-    opened = await client.post(
-        f"/care/{subject_a.id}/messages",
-        data={"title": "Bloods"},
-        follow_redirects=False,
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject_a, professional=doctor
     )
     thread_id = opened.headers["location"].rsplit("/", 1)[1]
 
@@ -1021,7 +1052,7 @@ async def test_patient_cannot_start_an_owner_only_conversation(
         data={"title": "Unaddressed", "body": "Can anyone see this?"},
         follow_redirects=False,
     )
-    assert direct.status_code == 400
+    assert direct.status_code == 405
     assert await db_session.scalar(select(func.count()).select_from(CareThread)) == 0
 
 
@@ -1061,8 +1092,21 @@ async def test_patient_opens_the_exact_professionals_shared_conversation(
         )
     )
     assert participants == {owner.id, doctor.id}
+    inbox = await client.get(
+        f"/care/{subject.id}/messages", headers={"Accept": "text/html"}
+    )
+    assert (
+        "Conversation with Dr Human Name" in inbox.text
+        or "Переписка с Dr Human Name" in inbox.text
+    )
 
     client.cookies.set(SESSION_COOKIE, create_session(doctor.username))
+    reopened = await client.post(
+        f"/care/{subject.id}/messages/relationship/{relationship_id}",
+        follow_redirects=False,
+    )
+    assert reopened.status_code == 303
+    assert reopened.headers["location"] == opened.headers["location"]
     shared = await client.get(
         opened.headers["location"], headers={"Accept": "text/html"}
     )
@@ -1092,7 +1136,7 @@ async def test_owner_record_does_not_offer_professional_write_forms(
 
 
 async def test_shared_care_pages_keep_role_relative_links_and_navigation(
-    doctor_client,
+    doctor_client, db_session
 ):
     """The path is shared; the resolved reader decides the surrounding shell."""
 
@@ -1106,7 +1150,13 @@ async def test_shared_care_pages_keep_role_relative_links_and_navigation(
     )
     assert professional_record.status_code == 200
     assert 'href="/care" class="v-btn-ghost text-xs"' in professional_record.text
-    assert f'href="/care/{subject.id}/messages"' in professional_record.text
+    relationship_id = await _relationship_id(
+        db_session, subject=subject, professional=doctor
+    )
+    assert (
+        f'action="/care/{subject.id}/messages/relationship/{relationship_id}"'
+        in professional_record.text
+    )
     assert re.search(
         r'<a href="/care" class="mh-rail-foot-link\s+is-active" aria-current="page">',
         professional_record.text,
@@ -1118,10 +1168,8 @@ async def test_shared_care_pages_keep_role_relative_links_and_navigation(
         professional_record.text,
     )
 
-    opened = await client.post(
-        f"/care/{subject.id}/messages",
-        data={"title": "Role-relative shell", "body": "Hello."},
-        follow_redirects=False,
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject, professional=doctor
     )
     client.cookies.set(SESSION_COOKIE, create_session(owner.username))
     patient_thread = await client.get(
@@ -1192,10 +1240,8 @@ async def test_the_conversation_page_renders_what_was_said(
     profile.display_name = "Dr Conversation Name"
     await db_session.commit()
 
-    opened = await client.post(
-        f"/care/{subject_a.id}/messages",
-        data={"title": "Bloods"},
-        follow_redirects=False,
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject_a, professional=doctor
     )
     thread_id = opened.headers["location"].rsplit("/", 1)[1]
     await client.post(
@@ -1215,7 +1261,7 @@ async def test_the_conversation_page_renders_what_was_said(
     assert "Dr Conversation Name" in page.text
     assert subject_a.display_name in page.text
     assert doctor.username not in page.text
-    assert "Bloods" in page.text
+    assert "Care conversation" in page.text or "Общение со специалистом" in page.text
     assert "All conversations" in page.text or "Все разговоры" in page.text
     assert f'href="/care/{subject_a.id}" class="v-btn-ghost text-xs"' in page.text
     assert f'href="/care/{subject_a.id}/messages"' in page.text
@@ -1223,16 +1269,21 @@ async def test_the_conversation_page_renders_what_was_said(
     assert "Начать разговор" not in page.text
 
 
-async def test_the_patient_conversation_uses_the_owners_perspective(doctor_client):
+async def test_the_patient_conversation_uses_the_owners_perspective(
+    doctor_client, db_session
+):
     """The shared screen speaks to its reader instead of calling them a patient."""
 
-    client, _doctor, (owner_a, subject_a), _b = doctor_client
-    opened = await client.post(
-        f"/care/{subject_a.id}/messages",
-        data={"title": "Check-in", "body": "How are you feeling?"},
-        follow_redirects=False,
+    client, doctor, (owner_a, subject_a), _b = doctor_client
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject_a, professional=doctor
     )
     thread_id = opened.headers["location"].rsplit("/", 1)[1]
+    await client.post(
+        f"/care/{subject_a.id}/messages/{thread_id}",
+        data={"body": "How are you feeling?"},
+        follow_redirects=False,
+    )
 
     from web.auth import create_session
     from web.config import SESSION_COOKIE
@@ -1263,20 +1314,70 @@ async def test_the_patient_conversation_uses_the_owners_perspective(doctor_clien
     assert 'href="/messages" class="v-btn-ghost text-xs"' in page.text
 
 
-async def test_the_conversation_list_renders(doctor_client):
-    client, _doctor, (_owner_a, subject_a), _b = doctor_client
+async def test_the_conversation_list_renders(doctor_client, db_session):
+    client, doctor, (_owner_a, subject_a), _b = doctor_client
 
-    await client.post(
-        f"/care/{subject_a.id}/messages",
-        data={"title": "Bloods"},
-        follow_redirects=False,
+    await _open_professional_conversation(
+        client, db_session, subject=subject_a, professional=doctor
     )
     page = await client.get(
         f"/care/{subject_a.id}/messages", headers={"Accept": "text/html"}
     )
     assert page.status_code == 200
-    assert "Bloods" in page.text
-    assert "Start conversation" in page.text or "Начать разговор" in page.text
+    assert "Care conversation" in page.text or "Общение со специалистом" in page.text
+    assert "Start conversation" not in page.text
+    assert "Начать разговор" not in page.text
+
+
+async def test_old_topic_threads_remain_history_without_a_new_topic_form(
+    doctor_client, db_session
+):
+    from vitals.services.access_resolution import resolve_access_context
+    from vitals.services.care import threads
+
+    client, doctor, (_owner_a, subject_a), _b = doctor_client
+    context = await resolve_access_context(
+        db_session, user_id=doctor.id, subject_id=subject_a.id
+    )
+    legacy = await threads.open_thread(
+        db_session, context=context, title="Earlier ferritin follow-up"
+    )
+    await threads.send_message(
+        db_session,
+        context=context,
+        thread_id=legacy.id,
+        body="This historical message must remain readable.",
+    )
+    await db_session.commit()
+    canonical = await _open_professional_conversation(
+        client, db_session, subject=subject_a, professional=doctor
+    )
+    assert canonical.status_code == 303
+
+    page = await client.get(
+        f"/care/{subject_a.id}/messages", headers={"Accept": "text/html"}
+    )
+    assert page.status_code == 200
+    assert "Earlier ferritin follow-up" in page.text
+    assert (
+        "Earlier topic-based conversations remain here as readable history."
+        in page.text
+        or "Предыдущие тематические разговоры" in page.text
+    )
+    assert 'name="title"' not in page.text
+
+    old_direct = await client.post(
+        f"/care/{subject_a.id}/messages",
+        data={"title": "A topic that must not be created"},
+        follow_redirects=False,
+    )
+    assert old_direct.status_code == 405
+    historical_page = await client.get(
+        f"/care/{subject_a.id}/messages/{legacy.id}",
+        headers={"Accept": "text/html"},
+    )
+    assert historical_page.status_code == 200
+    assert "This historical message must remain readable." in historical_page.text
 
 
 async def test_a_care_attachment_stays_private_and_follows_live_consent(
@@ -1304,9 +1405,14 @@ async def test_a_care_attachment_stays_private_and_follows_live_consent(
     subject_b_id = subject_b.id
     payload = b"%PDF-1.7\nsynthetic care document\n%%EOF\n"
 
-    opened = await client.post(
-        f"/care/{subject_a_id}/messages",
-        data={"title": "Bloods", "body": "Please review this result."},
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject_a, professional=doctor
+    )
+    assert opened.status_code == 303
+    thread_id = opened.headers["location"].rsplit("/", 1)[1]
+    sent = await client.post(
+        f"/care/{subject_a_id}/messages/{thread_id}",
+        data={"body": "Please review this result."},
         files={
             # The claimed content type is deliberately hostile. The server
             # derives its response type from validated content and extension.
@@ -1314,8 +1420,7 @@ async def test_a_care_attachment_stays_private_and_follows_live_consent(
         },
         follow_redirects=False,
     )
-    assert opened.status_code == 303
-    thread_id = opened.headers["location"].rsplit("/", 1)[1]
+    assert sent.status_code == 303
 
     attachment = await db_session.scalar(select(CareMessageAttachment))
     assert attachment is not None
@@ -1350,13 +1455,7 @@ async def test_a_care_attachment_stays_private_and_follows_live_consent(
     assert downloaded.headers["cache-control"] == "private, no-store"
     assert "attachment" in downloaded.headers["content-disposition"]
 
-    other = await client.post(
-        f"/care/{subject_a_id}/messages",
-        data={"title": "Another conversation"},
-        follow_redirects=False,
-    )
-    assert other.status_code == 303
-    other_thread_id = other.headers["location"].rsplit("/", 1)[1]
+    other_thread_id = uuid.uuid4()
     wrong_thread = await client.get(
         f"/care/{subject_a_id}/messages/{other_thread_id}/attachments/{attachment_id}"
     )
@@ -1406,7 +1505,12 @@ async def test_a_spoofed_care_attachment_is_rejected_before_writing_a_message(
     from vitals.models.care_thread import CareMessage, CareThread
 
     monkeypatch.setenv("VITALS_PRIVATE_FILE_ROOT", str(tmp_path / "private"))
-    client, _doctor, (_owner_a, subject_a), _b = doctor_client
+    client, doctor, (_owner_a, subject_a), _b = doctor_client
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject_a, professional=doctor
+    )
+    assert opened.status_code == 303
+    thread_id = opened.headers["location"].rsplit("/", 1)[1]
     threads_before = await db_session.scalar(
         select(func.count()).select_from(CareThread)
     )
@@ -1414,8 +1518,8 @@ async def test_a_spoofed_care_attachment_is_rejected_before_writing_a_message(
         select(func.count()).select_from(CareMessage)
     )
     response = await client.post(
-        f"/care/{subject_a.id}/messages",
-        data={"title": "Spoof", "body": "This must not persist."},
+        f"/care/{subject_a.id}/messages/{thread_id}",
+        data={"body": "This must not persist."},
         files={
             "attachment": (
                 "looks-like-a-report.pdf",

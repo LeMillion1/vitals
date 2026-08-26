@@ -34,7 +34,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -78,6 +78,7 @@ SEND_ACTION = PolicyAction.MESSAGE
 
 _MAX_BODY = 20000
 _MAX_TITLE = 200
+_CANONICAL_TITLE = "Care conversation"
 
 
 class CareThreadError(RuntimeError):
@@ -117,6 +118,7 @@ class CareThreadSummary:
     thread: CareThread
     last_message_at: datetime | None
     unread: bool
+    counterpart_user_id: uuid.UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,54 +286,73 @@ async def _require_participation(
     return participation
 
 
+async def _create_pair_thread(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    relationship: CareRelationship,
+    title: str,
+    canonical: bool,
+) -> CareThread:
+    """Create one patient-professional room under a proven relationship."""
+
+    thread = CareThread(
+        subject_id=context.subject_id,
+        title=title,
+        opened_by_user_id=context.principal.user_id,
+        status=CareThreadStatus.OPEN.value,
+        canonical_relationship_id=relationship.id if canonical else None,
+    )
+    session.add(thread)
+    await session.flush()
+
+    session.add_all(
+        [
+            CareThreadParticipant(
+                thread_id=thread.id,
+                subject_id=context.subject_id,
+                user_id=relationship.subject_owner_user_id,
+                relationship_id=None,
+            ),
+            CareThreadParticipant(
+                thread_id=thread.id,
+                subject_id=context.subject_id,
+                user_id=relationship.professional_user_id,
+                relationship_id=relationship.id,
+            ),
+        ]
+    )
+    await session.flush()
+    return thread
+
+
 async def open_thread(
     session: AsyncSession, *, context: AccessContext, title: str
 ) -> CareThread:
-    """Start a professional-patient conversation about this patient.
+    """Create a legacy topic thread for import/history compatibility.
 
     A professional in live care starts it and the subject is added as a
     participant in the same flush. Patient replies use the existing thread;
     without an explicit professional relationship there is no safe recipient
-    to infer, so an owner-only conversation is rejected. Never commits.
+    to infer, so an owner-only conversation is rejected. New product surfaces
+    use :func:`open_relationship_thread`; this primitive remains so historical
+    topic imports and fixtures can preserve their original shape. Never commits.
     """
 
     clean_title = _text(title, "title", limit=_MAX_TITLE)
     _require_scope(context, action=SEND_ACTION)
     relationship = await _live_relationship_or_none(session, context=context)
-    owner_id = await _subject_owner_id(session, context.subject_id)
     if relationship is None:
         raise CareThreadValidationError(
             "a conversation requires a professional recipient"
         )
-
-    thread = CareThread(
-        subject_id=context.subject_id,
+    return await _create_pair_thread(
+        session,
+        context=context,
+        relationship=relationship,
         title=clean_title,
-        opened_by_user_id=context.principal.user_id,
-        status=CareThreadStatus.OPEN.value,
+        canonical=False,
     )
-    session.add(thread)
-    await session.flush()
-
-    # The patient, always and first.
-    session.add(
-        CareThreadParticipant(
-            thread_id=thread.id,
-            subject_id=context.subject_id,
-            user_id=owner_id,
-            relationship_id=None,
-        )
-    )
-    session.add(
-        CareThreadParticipant(
-            thread_id=thread.id,
-            subject_id=context.subject_id,
-            user_id=context.principal.user_id,
-            relationship_id=relationship.id,
-        )
-    )
-    await session.flush()
-    return thread
 
 
 async def open_relationship_thread(
@@ -339,19 +360,17 @@ async def open_relationship_thread(
     *,
     context: AccessContext,
     relationship_id: uuid.UUID,
-    title: str,
 ) -> CareThread:
     """Return the stable two-person conversation for one care relationship.
 
-    The patient chooses the recipient by relationship id. Locking that exact
-    relationship serializes first-open races; an existing open pair thread is
-    reused, while topic/group threads and closed history remain untouched.
+    Either exact party may open it. Locking that relationship serializes
+    first-open races, and the explicit unique relationship link is the database
+    backstop. Historical topic/group threads have no such link and are never
+    guessed into becoming canonical from their title or participant shape.
     """
 
     _require_scope(context, action=SEND_ACTION)
     owner_id = await _subject_owner_id(session, context.subject_id)
-    if context.principal.user_id != owner_id:
-        raise NotInTheConversation("only the patient chooses this recipient")
 
     relationship = await session.scalar(
         select(CareRelationship)
@@ -360,6 +379,12 @@ async def open_relationship_thread(
             CareRelationship.subject_id == context.subject_id,
             CareRelationship.subject_owner_user_id == owner_id,
             CareRelationship.status == CareRelationshipStatus.ACTIVE.value,
+            or_(
+                CareRelationship.subject_owner_user_id
+                == context.principal.user_id,
+                CareRelationship.professional_user_id
+                == context.principal.user_id,
+            ),
         )
         .with_for_update()
     )
@@ -378,40 +403,22 @@ async def open_relationship_thread(
     _require_scope(professional_context, action=READ_ACTION)
     _require_scope(professional_context, action=SEND_ACTION)
 
-    active_participant_count = (
-        select(func.count(CareThreadParticipant.id))
-        .where(
-            CareThreadParticipant.thread_id == CareThread.id,
-            CareThreadParticipant.removed_at.is_(None),
-        )
-        .correlate(CareThread)
-        .scalar_subquery()
-    )
-    relationship_participant = aliased(CareThreadParticipant)
     existing = await session.scalar(
         select(CareThread)
-        .join(
-            relationship_participant,
-            relationship_participant.thread_id == CareThread.id,
-        )
         .where(
             CareThread.subject_id == context.subject_id,
-            CareThread.status == CareThreadStatus.OPEN.value,
-            relationship_participant.relationship_id == relationship.id,
-            relationship_participant.user_id == relationship.professional_user_id,
-            relationship_participant.removed_at.is_(None),
-            active_participant_count == 2,
+            CareThread.canonical_relationship_id == relationship.id,
         )
-        .order_by(CareThread.created_at, CareThread.id)
-        .limit(1)
     )
     if existing is not None:
         return existing
 
-    return await open_thread(
+    return await _create_pair_thread(
         session,
-        context=professional_context,
-        title=title,
+        context=context,
+        relationship=relationship,
+        title=_CANONICAL_TITLE,
+        canonical=True,
     )
 
 
@@ -775,12 +782,25 @@ async def list_thread_summaries(
         .correlate(CareThread, participation)
         .exists()
     )
+    counterpart_user_id = (
+        select(CareThreadParticipant.user_id)
+        .where(
+            CareThreadParticipant.thread_id == CareThread.id,
+            CareThreadParticipant.relationship_id.is_not(None),
+            CareThreadParticipant.removed_at.is_(None),
+        )
+        .order_by(CareThreadParticipant.joined_at, CareThreadParticipant.id)
+        .limit(1)
+        .correlate(CareThread)
+        .scalar_subquery()
+    )
     rows = (
         await session.execute(
             select(
                 CareThread,
                 last_message_at.label("last_message_at"),
                 has_unread.label("unread"),
+                counterpart_user_id.label("counterpart_user_id"),
             )
             .join(participation, participation.thread_id == CareThread.id)
             .where(
@@ -800,8 +820,9 @@ async def list_thread_summaries(
             thread=thread,
             last_message_at=message_at,
             unread=bool(unread),
+            counterpart_user_id=counterpart_id,
         )
-        for thread, message_at, unread in rows
+        for thread, message_at, unread, counterpart_id in rows
     ]
 
 

@@ -84,6 +84,14 @@ class CareThread(Base):
         # disagreeing: a message filed under a thread that belongs to somebody
         # else cannot exist.
         UniqueConstraint("id", "subject_id", name="uq_care_threads_id_subject"),
+        # Topic threads predate the stable pair conversation and intentionally
+        # leave this NULL. A non-NULL relationship names the one canonical room
+        # for that exact episode of care; the constraint makes first-open races
+        # unable to manufacture a second one.
+        UniqueConstraint(
+            "canonical_relationship_id",
+            name="uq_care_threads_canonical_relationship",
+        ),
         CheckConstraint(
             f"status IN ({_values(CareThreadStatus)})", name="ck_care_threads_status"
         ),
@@ -107,6 +115,11 @@ class CareThread(Base):
         Uuid(as_uuid=True),
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=False,
+    )
+    canonical_relationship_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("care_relationships.id", ondelete="RESTRICT"),
+        nullable=True,
     )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=CareThreadStatus.OPEN.value

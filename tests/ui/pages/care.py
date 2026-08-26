@@ -21,13 +21,13 @@ class CareRecordPage(Page):
     PATH = "/care/{}"
     NAME = "record"
 
-    CONVERSATIONS = 'a:has-text("Conversations")'
+    CONVERSATIONS = 'button:has-text("Open conversation")'
     NOTE_FORM = 'form[action$="/note"]'
     RESTRICTED = "Sections approved for this opening"
 
-    def open_conversations(self) -> "ConversationsPage":
+    def open_conversation(self) -> "ConversationPage":
         self._act(self.CONVERSATIONS)
-        return self._become(ConversationsPage)
+        return self._become(ConversationPage)
 
     @property
     def offers_the_note_form(self) -> bool:
@@ -53,20 +53,10 @@ class ConversationsPage(Page):
     PATH = "/care/{}/messages"
     NAME = "conversations"
 
-    TITLE = 'input[name="title"]'
-    FIRST_MESSAGE = 'textarea[name="body"]'
-    START = 'button:has-text("Start")'
+    STABLE_CONVERSATION = 'div.v-card a[href*="/messages/"]'
 
-    def start_a_thread(self, title: str, first_message: str) -> "ConversationPage":
-        title_field = self.page.locator(self.TITLE)
-        if not title_field.is_visible():
-            # A populated inbox keeps creation collapsed so current messages
-            # stay above the phone fold. Open the native disclosure just as a
-            # person must before interacting with the form.
-            title_field.locator("xpath=ancestor::details[1]/summary").click()
-        self.page.fill(self.TITLE, title)
-        self.page.fill(self.FIRST_MESSAGE, first_message)
-        self._act(self.START)
+    def open_stable_conversation(self) -> "ConversationPage":
+        self._act(self.STABLE_CONVERSATION)
         return self._become(ConversationPage)
 
     def open_thread(self, title: str) -> "ConversationPage":
