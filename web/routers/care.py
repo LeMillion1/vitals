@@ -615,6 +615,7 @@ async def open_relationship_conversation(
 async def thread(
     request: Request,
     thread_id: uuid.UUID,
+    state_changed: bool = False,
     care: CareContext = Depends(require_care_context),
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
@@ -686,6 +687,7 @@ async def thread(
             "active_account_nav": (
                 "messages" if care.is_owner else "professional_care"
             ),
+            "thread_state_changed": state_changed,
             "may_send": care.may(
                 resource_key=care_threads.MESSAGE_OPERATION,
                 action=care_threads.SEND_ACTION,
@@ -730,6 +732,114 @@ async def say(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     # See the first-message path above: never risk deleting a committed medical
     # file merely because the client did not observe a clean commit response.
+    await db.commit()
+    return RedirectResponse(
+        url=f"/care/{care.subject_id}/messages/{thread_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post(
+    "/{subject_id}/messages/{thread_id}/messages/{message_id}/revise"
+)
+async def revise_message(
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: str = Form(""),
+    care: CareContext = Depends(require_care_context),
+    db: AsyncSession = Depends(get_session),
+):
+    """Correct one message the caller authored in this exact conversation."""
+
+    try:
+        await care_threads.revise_message(
+            db,
+            context=care.access,
+            thread_id=thread_id,
+            message_id=message_id,
+            body=body,
+        )
+    except care_threads.CareThreadValidationError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except care_threads.ThreadStateChanged:
+        await db.rollback()
+        return RedirectResponse(
+            url=(
+                f"/care/{care.subject_id}/messages/{thread_id}"
+                "?state_changed=1"
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    except care_threads.CareThreadError:
+        await db.rollback()
+        # A message in another room, another patient's record, or written by
+        # somebody else is the same non-enumerating answer.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    await db.commit()
+    return RedirectResponse(
+        url=f"/care/{care.subject_id}/messages/{thread_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/{subject_id}/messages/{thread_id}/close")
+async def close_conversation(
+    thread_id: uuid.UUID,
+    care: CareContext = Depends(require_care_context),
+    db: AsyncSession = Depends(get_session),
+):
+    """Close an open conversation without deleting its record."""
+
+    try:
+        await care_threads.close_thread(
+            db, context=care.access, thread_id=thread_id
+        )
+    except care_threads.ThreadStateChanged:
+        await db.rollback()
+        return RedirectResponse(
+            url=(
+                f"/care/{care.subject_id}/messages/{thread_id}"
+                "?state_changed=1"
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    except care_threads.CareThreadError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    await db.commit()
+    return RedirectResponse(
+        url=f"/care/{care.subject_id}/messages/{thread_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/{subject_id}/messages/{thread_id}/reopen")
+async def reopen_conversation(
+    thread_id: uuid.UUID,
+    care: CareContext = Depends(require_care_context),
+    db: AsyncSession = Depends(get_session),
+):
+    """Resume a closed conversation for its current authorized participant."""
+
+    try:
+        await care_threads.reopen_thread(
+            db, context=care.access, thread_id=thread_id
+        )
+    except care_threads.ThreadStateChanged:
+        await db.rollback()
+        return RedirectResponse(
+            url=(
+                f"/care/{care.subject_id}/messages/{thread_id}"
+                "?state_changed=1"
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    except care_threads.CareThreadError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     await db.commit()
     return RedirectResponse(
         url=f"/care/{care.subject_id}/messages/{thread_id}",

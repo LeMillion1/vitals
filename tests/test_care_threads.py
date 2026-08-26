@@ -725,7 +725,7 @@ async def test_a_consent_that_reads_but_does_not_send(db_session):
     )
     context = await _context(db_session, doctor, subject)
     thread = await threads.open_thread(db_session, context=context, title="Bloods")
-    await threads.send_message(
+    message = await threads.send_message(
         db_session, context=context, thread_id=thread.id, body="While allowed."
     )
     await db_session.commit()
@@ -750,6 +750,18 @@ async def test_a_consent_that_reads_but_does_not_send(db_session):
     with pytest.raises(threads.NotInTheConversation):
         await threads.send_message(
             db_session, context=narrowed, thread_id=thread.id, body="Not any more."
+        )
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.revise_message(
+            db_session,
+            context=narrowed,
+            thread_id=thread.id,
+            message_id=message.id,
+            body="Still not allowed.",
+        )
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.close_thread(
+            db_session, context=narrowed, thread_id=thread.id
         )
 
 
@@ -921,6 +933,31 @@ async def test_only_the_author_may_correct_it(db_session):
         )
 
 
+async def test_a_correction_can_be_bound_to_the_exact_conversation(db_session):
+    owner, subject = await _patient(db_session, "thread-edit-room")
+    doctor, _rel, _grant = await _take_into_care(
+        db_session, subject=subject, owner=owner, slug="thread-edit-room-doc"
+    )
+    context = await _context(db_session, doctor, subject)
+    first = await threads.open_thread(db_session, context=context, title="First")
+    second = await threads.open_thread(db_session, context=context, title="Second")
+    message = await threads.send_message(
+        db_session, context=context, thread_id=first.id, body="Belongs in first."
+    )
+    await db_session.commit()
+
+    with pytest.raises(threads.NotTheAuthor):
+        await threads.revise_message(
+            db_session,
+            context=context,
+            thread_id=second.id,
+            message_id=message.id,
+            body="Must not move through a different URL.",
+        )
+    await db_session.refresh(message)
+    assert message.body == "Belongs in first."
+
+
 async def test_a_closed_thread_is_read_only_and_still_there(db_session):
     owner, subject = await _patient(db_session, "thread-close")
     doctor, _rel, _grant = await _take_into_care(
@@ -928,7 +965,7 @@ async def test_a_closed_thread_is_read_only_and_still_there(db_session):
     )
     context = await _context(db_session, doctor, subject)
     thread = await threads.open_thread(db_session, context=context, title="Bloods")
-    await threads.send_message(
+    message = await threads.send_message(
         db_session, context=context, thread_id=thread.id, body="Said."
     )
     await threads.close_thread(db_session, context=context, thread_id=thread.id)
@@ -939,6 +976,18 @@ async def test_a_closed_thread_is_read_only_and_still_there(db_session):
         await threads.send_message(
             db_session, context=context, thread_id=thread.id, body="More."
         )
+    with pytest.raises(threads.ThreadStateChanged):
+        await threads.revise_message(
+            db_session,
+            context=context,
+            thread_id=thread.id,
+            message_id=message.id,
+            body="A closed conversation cannot change.",
+        )
+    with pytest.raises(threads.ThreadStateChanged):
+        await threads.close_thread(
+            db_session, context=context, thread_id=thread.id
+        )
     _t, messages, _p = await threads.read_thread(
         db_session, context=context, thread_id=thread.id
     )
@@ -946,6 +995,10 @@ async def test_a_closed_thread_is_read_only_and_still_there(db_session):
 
     await threads.reopen_thread(db_session, context=context, thread_id=thread.id)
     await db_session.commit()
+    with pytest.raises(threads.ThreadStateChanged):
+        await threads.reopen_thread(
+            db_session, context=context, thread_id=thread.id
+        )
     await threads.send_message(
         db_session, context=context, thread_id=thread.id, body="More."
     )

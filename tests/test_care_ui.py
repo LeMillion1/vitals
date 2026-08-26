@@ -1314,6 +1314,200 @@ async def test_the_patient_conversation_uses_the_owners_perspective(
     assert 'href="/messages" class="v-btn-ghost text-xs"' in page.text
 
 
+async def test_message_corrections_and_thread_state_are_shared_actions(
+    doctor_client, db_session
+):
+    """Both sides use one screen, but only the author can correct their row."""
+
+    from vitals.models.care_thread import CareMessage, CareThread
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client, doctor, (owner, subject), _b = doctor_client
+    subject_id = subject.id
+    owner_username = owner.username
+    doctor_username = doctor.username
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject, professional=doctor
+    )
+    thread_id = uuid.UUID(opened.headers["location"].rsplit("/", 1)[1])
+    assert (
+        await client.post(
+            f"/care/{subject_id}/messages/{thread_id}",
+            data={"body": "Take this in the morning."},
+            follow_redirects=False,
+        )
+    ).status_code == 303
+
+    doctor_message = await db_session.scalar(
+        select(CareMessage).where(CareMessage.thread_id == thread_id)
+    )
+    assert doctor_message is not None
+    client.cookies.set(SESSION_COOKIE, create_session(owner_username))
+    assert (
+        await client.post(
+            f"/care/{subject_id}/messages/{thread_id}",
+            data={"body": "Understood."},
+            follow_redirects=False,
+        )
+    ).status_code == 303
+    patient_message = await db_session.scalar(
+        select(CareMessage).where(
+            CareMessage.thread_id == thread_id,
+            CareMessage.actor_user_id == owner.id,
+        )
+    )
+    assert patient_message is not None
+    doctor_message_id = doctor_message.id
+    patient_message_id = patient_message.id
+    patient_page = await client.get(
+        f"/care/{subject_id}/messages/{thread_id}",
+        headers={"Accept": "text/html"},
+    )
+    assert patient_page.status_code == 200
+    assert patient_page.text.count("data-care-message-editor") == 1
+    assert f"/messages/{patient_message_id}/revise" in patient_page.text
+    assert f"/messages/{doctor_message_id}/revise" not in patient_page.text
+
+    client.cookies.set(SESSION_COOKIE, create_session(doctor_username))
+    page = await client.get(
+        f"/care/{subject_id}/messages/{thread_id}",
+        headers={"Accept": "text/html"},
+    )
+    assert page.status_code == 200
+    assert page.text.count("data-care-message-editor") == 1
+    own_action = (
+        f"/care/{subject_id}/messages/{thread_id}/messages/"
+        f"{doctor_message_id}/revise"
+    )
+    other_action = (
+        f"/care/{subject_id}/messages/{thread_id}/messages/"
+        f"{patient_message_id}/revise"
+    )
+    assert f'action="{own_action}"' in page.text
+    assert f'action="{other_action}"' not in page.text
+    assert 'data-care-thread-action="close"' in page.text
+
+    corrected = await client.post(
+        own_action,
+        data={"body": "Take this with breakfast."},
+        follow_redirects=False,
+    )
+    assert corrected.status_code == 303
+    await db_session.refresh(doctor_message)
+    assert doctor_message.body == "Take this with breakfast."
+    assert doctor_message.edited_at is not None
+
+    not_the_author = await client.post(
+        other_action,
+        data={"body": "A professional cannot rewrite this."},
+        follow_redirects=False,
+    )
+    assert not_the_author.status_code == 404
+    await db_session.refresh(patient_message)
+    assert patient_message.body == "Understood."
+
+    closed = await client.post(
+        f"/care/{subject_id}/messages/{thread_id}/close",
+        follow_redirects=False,
+    )
+    assert closed.status_code == 303
+    conversation = await db_session.get(CareThread, thread_id)
+    await db_session.refresh(conversation)
+    assert conversation.status == "closed"
+    page = await client.get(
+        f"/care/{subject_id}/messages/{thread_id}",
+        headers={"Accept": "text/html"},
+    )
+    assert page.status_code == 200
+    assert 'data-care-thread-action="reopen"' in page.text
+    assert "data-care-message-editor" not in page.text
+
+    stale_edit = await client.post(
+        own_action,
+        data={"body": "This closed history must not change."},
+        follow_redirects=False,
+    )
+    assert stale_edit.status_code == 303
+    assert stale_edit.headers["location"].endswith("?state_changed=1")
+    await db_session.refresh(doctor_message)
+    assert doctor_message.body == "Take this with breakfast."
+
+    reopened = await client.post(
+        f"/care/{subject_id}/messages/{thread_id}/reopen",
+        follow_redirects=False,
+    )
+    assert reopened.status_code == 303
+    await db_session.refresh(conversation)
+    assert conversation.status == "open"
+
+
+async def test_message_actions_recheck_csrf_and_live_consent(
+    doctor_client, db_session
+):
+    from vitals.models.care_thread import CareMessage, CareThread
+
+    client, doctor, (owner, subject), _b = doctor_client
+    subject_id = subject.id
+    doctor_id = doctor.id
+    owner_id = owner.id
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject, professional=doctor
+    )
+    thread_id = uuid.UUID(opened.headers["location"].rsplit("/", 1)[1])
+    await client.post(
+        f"/care/{subject_id}/messages/{thread_id}",
+        data={"body": "Original."},
+        follow_redirects=False,
+    )
+    message = await db_session.scalar(
+        select(CareMessage).where(CareMessage.thread_id == thread_id)
+    )
+    thread = await db_session.get(CareThread, thread_id)
+    assert message is not None and thread is not None
+    message_id = message.id
+
+    forged = await client.post(
+        f"/care/{subject_id}/messages/{thread_id}/close",
+        headers={"Origin": "https://evil.example"},
+        follow_redirects=False,
+    )
+    assert forged.status_code == 403
+    await db_session.refresh(thread)
+    assert thread.status == "open"
+
+    relationship = await db_session.scalar(
+        select(CareRelationship).where(
+            CareRelationship.subject_id == subject_id,
+            CareRelationship.professional_user_id == doctor_id,
+        )
+    )
+    assert relationship is not None
+    await relationships.set_consent_paused(
+        db_session,
+        relationship_id=relationship.id,
+        actor_user_id=owner_id,
+        paused=True,
+    )
+    await db_session.commit()
+
+    close_after_pause = await client.post(
+        f"/care/{subject_id}/messages/{thread_id}/close",
+        follow_redirects=False,
+    )
+    revise_after_pause = await client.post(
+        f"/care/{subject_id}/messages/{thread_id}/messages/{message_id}/revise",
+        data={"body": "Consent must win."},
+        follow_redirects=False,
+    )
+    assert close_after_pause.status_code == 404
+    assert revise_after_pause.status_code == 404
+    await db_session.refresh(thread)
+    await db_session.refresh(message)
+    assert thread.status == "open"
+    assert message.body == "Original."
+
+
 async def test_the_conversation_list_renders(doctor_client, db_session):
     client, doctor, (_owner_a, subject_a), _b = doctor_client
 

@@ -95,6 +95,24 @@
             {{ active_participant_names | join(", ") }}
         </p>
 
+        {% if thread_state_changed %}
+        <div class="v-alert note">{{ t("care.thread_state_changed") }}</div>
+        {% endif %}
+
+        <div class="flex flex-wrap items-center justify-between gap-3">
+            <span class="v-chip v-chip-sm">
+                {{ t("care.thread_status_open" if open_thread.status == "open" else "care.thread_status_closed") }}
+            </span>
+            {% if may_send %}
+            <form action="/care/{{ care.subject_id }}/messages/{{ open_thread.id }}/{{ 'close' if open_thread.status == 'open' else 'reopen' }}"
+                  method="POST" data-care-thread-action="{{ 'close' if open_thread.status == 'open' else 'reopen' }}">
+                <button type="submit" class="v-btn-ghost text-xs">
+                    {{ t("care.thread_close" if open_thread.status == "open" else "care.thread_reopen") }}
+                </button>
+            </form>
+            {% endif %}
+        </div>
+
         {% if thread_messages %}
         <div class="space-y-3">
             {% for message in thread_messages %}
@@ -112,6 +130,26 @@
                    class="v-btn-ghost text-xs inline-flex mt-2" download>
                     {{ t("care.attachment_download", filename=message.attachment.original_filename) }}
                 </a>
+                {% endif %}
+                {% if is_own_message and may_send and open_thread.status == 'open' %}
+                <details class="pt-2" data-care-message-editor>
+                    <summary class="v-btn-ghost text-xs inline-flex cursor-pointer">
+                        {{ t("care.message_edit") }}
+                    </summary>
+                    <form action="/care/{{ care.subject_id }}/messages/{{ open_thread.id }}/messages/{{ message.id }}/revise"
+                          method="POST" class="space-y-3 pt-3">
+                        <label for="message-edit-{{ message.id }}" class="v-label">
+                            {{ t("care.message_edit_label") }}
+                        </label>
+                        <textarea id="message-edit-{{ message.id }}" name="body" rows="3"
+                                  class="v-textarea" required>{{ message.body }}</textarea>
+                        <div class="flex justify-end">
+                            <button type="submit" class="v-btn-ghost text-xs">
+                                {{ t("care.message_edit_save") }}
+                            </button>
+                        </div>
+                    </form>
+                </details>
                 {% endif %}
             </div>
             {% endfor %}

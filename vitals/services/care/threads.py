@@ -103,6 +103,10 @@ class ThreadNotFound(CareThreadError):
     """No such thread in this subject's scope."""
 
 
+class ThreadStateChanged(CareThreadError):
+    """The conversation no longer has the state the requested action needs."""
+
+
 class AttachmentNotFound(CareThreadError):
     """No downloadable attachment in this conversation and subject scope."""
 
@@ -596,30 +600,46 @@ async def revise_message(
     context: AccessContext,
     message_id: uuid.UUID,
     body: str,
+    thread_id: uuid.UUID | None = None,
 ) -> CareMessage:
-    """Correct what you said, keeping that you said it and that it changed."""
+    """Correct what you said in an open conversation. Never commits.
+
+    ``thread_id`` binds delivery-layer actions to the room named in their URL.
+    Older internal callers may omit it because the message row still binds the
+    subject and author; web callers should always supply it so a stale or
+    tampered path cannot retarget an otherwise valid message identifier.
+    """
 
     clean = _text(body, "body", limit=_MAX_BODY)
     _require_scope(context, action=SEND_ACTION)
 
+    conditions = [
+        CareMessage.id == message_id,
+        CareMessage.subject_id == context.subject_id,
+        # The author condition is in the ``WHERE``, so somebody else's
+        # message is indistinguishable from one that does not exist.
+        CareMessage.actor_user_id == context.principal.user_id,
+    ]
+    if thread_id is not None:
+        conditions.append(CareMessage.thread_id == thread_id)
     message = await session.scalar(
         select(CareMessage)
-        .where(
-            CareMessage.id == message_id,
-            CareMessage.subject_id == context.subject_id,
-            # The author condition is in the ``WHERE``, so somebody else's
-            # message is indistinguishable from one that does not exist.
-            CareMessage.actor_user_id == context.principal.user_id,
-        )
+        .where(*conditions)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
     if message is None:
         raise NotTheAuthor("no message of yours with that id in this record")
 
-    await _require_participation(
-        session, thread_id=message.thread_id, user_id=context.principal.user_id
+    thread = await _thread(
+        session, context=context, thread_id=message.thread_id, for_update=True
     )
+    await _require_participation(
+        session, thread_id=thread.id, user_id=context.principal.user_id
+    )
+    await _live_relationship_or_none(session, context=context)
+    if thread.status != CareThreadStatus.OPEN.value:
+        raise ThreadStateChanged("this conversation is no longer open")
     message.body = clean
     message.edited_at = await _now(session)
     await session.flush()
@@ -922,6 +942,9 @@ async def close_thread(
     await _require_participation(
         session, thread_id=thread.id, user_id=context.principal.user_id
     )
+    await _live_relationship_or_none(session, context=context)
+    if thread.status != CareThreadStatus.OPEN.value:
+        raise ThreadStateChanged("this conversation is no longer open")
     thread.status = CareThreadStatus.CLOSED.value
     await session.flush()
     return thread
@@ -937,6 +960,9 @@ async def reopen_thread(
     await _require_participation(
         session, thread_id=thread.id, user_id=context.principal.user_id
     )
+    await _live_relationship_or_none(session, context=context)
+    if thread.status != CareThreadStatus.CLOSED.value:
+        raise ThreadStateChanged("this conversation is no longer closed")
     thread.status = CareThreadStatus.OPEN.value
     await session.flush()
     return thread
@@ -988,6 +1014,7 @@ __all__ = [
     "READ_ACTION",
     "SEND_ACTION",
     "ThreadNotFound",
+    "ThreadStateChanged",
     "add_participant",
     "attach_file",
     "close_thread",

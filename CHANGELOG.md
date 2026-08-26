@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — care conversations have direct shared actions
+
+Patients and their current doctor or trainer can correct only their own message
+and close or resume the same conversation from its shared screen. Every action
+rechecks participation, live consent, thread state, patient scope, and CSRF;
+closed history remains readable and concurrent state changes return a clear
+localized prompt instead of silently overwriting the conversation.
+
 ### Fixed — ZITADEL uses one canonical issuer authority
 
 The loopback gateway, public gateway, Login V2, and setup URLs now send one
