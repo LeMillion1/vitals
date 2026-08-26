@@ -21,10 +21,18 @@ files:
 The encrypted offsite snapshot also contains the protected installation `.env`.
 Never treat a loose artifact without its matching manifest as a recovery point.
 
-The optional ZITADEL identity store is deliberately separate. The current
-health-store bundle does **not** include `vitals_idp_pgdata`. Do not enable the
-Compose `idp` profile in production until a separate ZITADEL PostgreSQL backup,
-master-key escrow, scratch restore, and OIDC discovery/login drill have passed.
+The optional ZITADEL identity store is deliberately separate. A complete
+identity-store recovery point lives below `backups/idp/` and has exactly:
+
+- `zitadel_<timestamp>.sql.gz`;
+- `zitadel_bundle_<timestamp>.sha256`, published last and containing the dump
+  checksum.
+
+The `idp` profile starts this backup sidecar only after the provider reports
+ready and the script refuses a database with no user tables. The health-store
+bundle does **not** include `vitals_idp_pgdata`, and a healthy identity backup
+does not make a health bundle complete. Starting a supported provider while
+Vitals still uses password login is preparation; enabling OIDC is the cutover.
 
 ## Recovery objectives
 
@@ -42,10 +50,12 @@ disaster-recovery boundary.
 
 ## Prepare the S3 restic repository
 
-Use a versioned S3-compatible bucket dedicated to this installation. Initialize
-the repository from a trusted administration machine, not from the production
-sidecar. Keep the repository password and an administrative recovery credential
-outside the VPS in two independently recoverable locations.
+Use versioned S3-compatible storage dedicated to this installation. Initialize
+the health and identity repositories separately from a trusted administration
+machine, not from either production sidecar. Separate repository passwords and
+S3 credentials make their encryption and failure boundaries real rather than
+mere restic tags. Keep both administrative recovery credentials outside the VPS
+in two independently recoverable locations.
 
 The production S3 credential needs list, read, and write access. Restic also
 needs to delete its own lock objects. Permit deletion only below the repository
@@ -60,6 +70,14 @@ Create four owner-only files below `.secrets/` on the production host:
 - `restic_password` — a unique high-entropy restic repository password;
 - `restic_s3_access_key` — exactly one non-empty line;
 - `restic_s3_secret_key` — exactly one non-empty line.
+
+Create another four, with different credentials and repository password, for
+the identity stream:
+
+- `idp_restic_repository`;
+- `idp_restic_password`;
+- `idp_restic_s3_access_key`;
+- `idp_restic_s3_secret_key`.
 
 The file paths may be overridden with the four `VITALS_RESTIC_*_FILE` variables
 shown in `.env.example`. Those variables contain paths only, never secret
@@ -105,13 +123,31 @@ docker compose --profile offsite logs --tail 50 vitals_offsite_backup
 - a trusted admin machine sees the `vitals-bundle:<timestamp>` tag;
 - a second unchanged run creates no duplicate snapshot.
 
+The identity stream uses a different process, repository, state volume, and
+schedule. Once a verified local identity manifest exists, start and inspect it
+without reconciling any other service:
+
+```bash
+docker compose --env-file .env --env-file .env.idp \
+  --profile idp-offsite up -d --no-deps vitals_idp_offsite_backup
+docker compose --env-file .env --env-file .env.idp \
+  --profile idp-offsite logs --tail 50 vitals_idp_offsite_backup
+```
+
+The trusted admin machine must see `vitals-idp-bundle:<timestamp>` in the
+identity repository. That snapshot contains only the dump and its manifest:
+neither the Vitals `.env` nor the IDP master key is included.
+
 ## Routine verification
 
 Use the administrative credential from a trusted machine, never the production
 credential, for destructive retention or repository-wide checks.
 
-- Daily: alert if either backup container is stopped/restarting or the newest
-  offsite timestamp exceeds the RPO plus replication delay.
+- Daily: alert if either local backup or offsite container is
+  stopped/restarting. Independently parse the UTC timestamp inside each latest
+  manifest and offsite marker and alert when either stream exceeds its RPO plus
+  replication delay. Container uptime and marker mtime are not freshness: an
+  unchanged restic cycle rewrites the marker with the same manifest name.
 - Monthly: run `restic check`.
 - Quarterly: run `restic check --read-data` and the full scratch restore below.
 - After every PostgreSQL, restic, Compose, storage-provider, schema, or private-
@@ -233,9 +269,86 @@ rollback path.
 
 ## Identity-provider gate
 
-Before enabling ZITADEL, add and test a separate identity-store backup with its
-own PostgreSQL dump/manifest/offsite tag. Escrow `VITALS_IDP_MASTERKEY` outside
-the VPS. A valid drill must restore ZITADEL into an empty PostgreSQL 15 instance,
-pass its health and OIDC discovery endpoints, and complete a synthetic login
-against a non-production Vitals stack. Health-store success alone never proves
-identity-store recoverability.
+The bundled `ghcr.io/zitadel/zitadel:v2.66.0` image is a disabled implementation
+reference, **not a production-approved provider**. It is obsolete, lacks an OCI
+digest pin here, and falls within published vulnerable ranges. Do not start the
+production `idp` profile until a supported provider/version and its licence have
+been chosen, the exact image digest is pinned, and Compose/OIDC/browser
+conformance has been repeated.
+
+Before the approved provider's first start, copy `.env.idp.example` to an
+owner-only `.env.idp` and escrow `VITALS_IDP_MASTERKEY` outside the VPS. Never
+put IDP control-plane secrets in the application `.env`: `vitals_app` mounts
+that file. The database password is not the encryption key; losing the master
+key can leave a successfully restored identity database unusable.
+
+For the current production checkout, preserve the exact project and overlay on
+every command:
+
+```bash
+test -f docker-compose.production.yml
+export COMPOSE_PROJECT_NAME=vitals_prod
+export COMPOSE_FILE=docker-compose.yml:docker-compose.production.yml
+docker compose --env-file .env --env-file .env.idp config >/dev/null
+docker compose --env-file .env --env-file .env.idp \
+  --profile idp up -d --wait vitals_idp_backup
+```
+
+`docker-compose.production.yml` is an owner-only, untracked host overlay on this
+installation. Before the first IDP start, its rendered config must map both
+`vitals_idp_backup:/backups` and `vitals_idp_offsite_backup:/backups/idp` to the
+protected `/root/vitals/backups` tree; the base checkout-relative mounts are not
+the production recovery directory.
+
+The named backup target pulls in only its IDP dependencies. Keep the four Vitals
+OIDC variables unset, so password login remains authoritative during this
+preparation stage. Configure a synthetic/operator identity and application,
+then wait for its first **non-empty** recovery point and select that exact
+manifest. To force another point, stop the persistent writer first, run the
+one-shot, and restart it; never run two writers against the directory:
+
+```bash
+docker compose --env-file .env --env-file .env.idp stop vitals_idp_backup
+docker compose --env-file .env --env-file .env.idp --profile idp run --rm \
+  --no-deps \
+  -e VITALS_IDP_BACKUP_RUN_ONCE=true vitals_idp_backup
+docker compose --env-file .env --env-file .env.idp --profile idp up -d \
+  --no-deps vitals_idp_backup
+cd backups/idp
+sha256sum -c zitadel_bundle_<timestamp>.sha256
+gzip -t zitadel_<timestamp>.sql.gz
+```
+
+Restore only into a new empty PostgreSQL 15 database with drill-only
+credentials:
+
+```bash
+gzip -dc zitadel_<timestamp>.sql.gz \
+  | psql -v ON_ERROR_STOP=1 <empty-zitadel-drill-database-url>
+```
+
+Start the exact approved image digest against that restored database with the
+escrowed master key and an isolated external URL. The valid drill must pass
+`/debug/healthz`, `/debug/ready`, OIDC discovery, and one synthetic Authorization
+Code + PKCE login against a non-production Vitals stack. Restart the restored
+provider and repeat discovery/login. Record only the manifest, snapshot ID,
+image digest, and pass/fail timings—never identities, claims, credentials, or
+provider rows.
+
+From the trusted restic administration machine, prove that the independent
+offsite stream can be selected and restored without the health snapshot:
+
+```bash
+export RESTIC_REPOSITORY_FILE=<identity-repository-file>
+export RESTIC_PASSWORD_FILE=<identity-password-file>
+restic snapshots --tag vitals-idp
+restic restore <identity-snapshot-id> --target <temporary-restore-root>
+```
+
+Health-store success alone never proves identity-store recoverability. Likewise,
+an identity restore does not authorize overwriting or merging the health store.
+After owner binding and every new account admission, immediately create both
+independent recovery points and record their compatible manifest/snapshot pair;
+the health store owns `(issuer, sub)` while the identity store owns that `sub`.
+An older identity restore can roll back MFA, sessions, revocations, and users,
+so keep it isolated until those states and linked accounts have been reviewed.

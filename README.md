@@ -579,7 +579,10 @@ curl -s http://127.0.0.1:8000/health
 репликации в отдельный версионируемый S3-репозиторий и обязательной scratch-
 репетиции следуйте [runbook резервного копирования и восстановления](docs/BACKUP_RESTORE_RUNBOOK.md).
 Профиль `offsite` не запускается автоматически. ZITADEL хранится отдельно и не
-должен включаться до появления отдельного проверенного backup/restore IdP.
+входит в health-bundle: профиль `idp` создаёт отдельный manifest, а профиль
+`idp-offsite` использует другой зашифрованный репозиторий и не читает `.env`
+Vitals. Текущий reference-образ ZITADEL устарел; production-профиль нельзя
+запускать до выбора поддерживаемого OCI digest и полной restore/OIDC-репетиции.
 
 #### 7. Проактивный слой (опционально)
 
@@ -678,6 +681,7 @@ curl -s http://127.0.0.1:8000/health
 | `VITALS_REDIS_URL` | Redis для кэша и локов | `redis://vitals_redis:6379/0` |
 | `VITALS_TIMEZONE` | Зона пользователя | `Europe/Chisinau` |
 | `VITALS_BACKUP_RETENTION_DAYS` | Сколько дней хранить авто-бэкапы | `7` |
+| `VITALS_IDP_BACKUP_RETENTION_DAYS` | Сколько дней хранить отдельные ZITADEL-бэкапы | `7` |
 
 Тонкая настройка пула соединений и таймаутов (`VITALS_DB_POOL_SIZE`, `VITALS_DB_MAX_OVERFLOW`, `VITALS_DB_POOL_TIMEOUT`, `VITALS_DB_POOL_RECYCLE`, `VITALS_DB_STATEMENT_TIMEOUT_MS`) — с рабочими дефолтами в `.env.example`, трогать не обязательно.
 </details>
@@ -1359,8 +1363,11 @@ succeed. A copy on the same VPS is not disaster recovery. Follow the
 [backup and restore runbook](docs/BACKUP_RESTORE_RUNBOOK.md) for encrypted
 replication to a separate versioned S3 repository and the mandatory scratch
 restore drill. The `offsite` profile never starts automatically. ZITADEL remains
-separate and must not be enabled until its own verified IdP backup/restore path
-exists.
+outside the health bundle: `idp` creates a separate manifest, while
+`idp-offsite` uses different encrypted-repository credentials and cannot read
+the Vitals `.env`. Its current reference image is obsolete; do not start the
+production profile until a supported OCI digest and the full restore/OIDC drill
+have been approved.
 
 #### 7. Proactive layer (optional)
 
@@ -1461,6 +1468,7 @@ A traditional setup using Nginx as a reverse proxy.
 | `VITALS_REDIS_URL` | Redis for cache and locks | `redis://vitals_redis:6379/0` |
 | `VITALS_TIMEZONE` | User timezone | `Europe/Chisinau` |
 | `VITALS_BACKUP_RETENTION_DAYS` | How many days of automatic backups to keep | `7` |
+| `VITALS_IDP_BACKUP_RETENTION_DAYS` | How many days of separate ZITADEL backups to keep | `7` |
 
 Connection-pool and timeout tuning (`VITALS_DB_POOL_SIZE`, `VITALS_DB_MAX_OVERFLOW`, `VITALS_DB_POOL_TIMEOUT`, `VITALS_DB_POOL_RECYCLE`, `VITALS_DB_STATEMENT_TIMEOUT_MS`) ships with working defaults in `.env.example` — you don't need to touch it.
 </details>

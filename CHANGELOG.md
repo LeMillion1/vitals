@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — separately restorable identity-provider backups
+
+The opt-in `idp` profile can publish checksum-verified, non-empty ZITADEL
+PostgreSQL recovery points only after provider readiness. A second hardened
+sidecar replicates only those artifacts into independent restic/S3 credentials;
+it cannot read the Vitals environment or health-store bundle. The provider
+profile remains production-blocked until its obsolete reference image is
+replaced by a supported, reviewed OCI digest and the full restore/login drill
+passes.
+
 ### Fixed — mobile sign-in touch targets
 
 Password, username, one-time-code, and reveal controls now keep a 44 px touch

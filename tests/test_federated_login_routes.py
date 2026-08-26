@@ -1871,13 +1871,27 @@ def test_the_compose_file_keeps_the_provider_behind_a_profile():
     compose = yaml.safe_load(
         (Path(__file__).resolve().parent.parent / "docker-compose.yml").read_text()
     )
-    for name in ("vitals_idp_config_check", "vitals_idp", "vitals_idp_db"):
+    for name in (
+        "vitals_idp_config_check",
+        "vitals_idp",
+        "vitals_idp_db",
+        "vitals_idp_backup",
+    ):
         assert compose["services"][name]["profiles"] == ["idp"], name
 
     for name in ("vitals_idp", "vitals_idp_db"):
         assert compose["services"][name]["depends_on"][
             "vitals_idp_config_check"
         ]["condition"] == "service_completed_successfully"
+
+    assert compose["services"]["vitals_idp"]["healthcheck"]["test"] == [
+        "CMD",
+        "/app/zitadel",
+        "ready",
+    ]
+    assert compose["services"]["vitals_idp_backup"]["depends_on"] == {
+        "vitals_idp": {"condition": "service_healthy"}
+    }
 
     # Its own volume, so restoring the health store and restoring the identity
     # store are separate decisions.
@@ -1926,7 +1940,10 @@ def test_the_provider_profile_replaces_the_known_first_admin_password():
         "${VITALS_IDP_ADMIN_PASSWORD:-}"
     )
     assert "Password1!" not in source
-    for document in (root / ".env.example", root / "docs" / "OIDC_SETUP.md"):
+    for document in (
+        root / ".env.idp.example",
+        root / "docs" / "OIDC_SETUP.md",
+    ):
         assert "VITALS_IDP_ADMIN_PASSWORD" in document.read_text()
 
 

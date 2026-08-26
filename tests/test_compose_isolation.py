@@ -105,3 +105,66 @@ def test_offsite_backup_is_opt_in_pinned_and_least_privileged():
     assert "./backups:/backups:ro" in service["volumes"]
     assert "./.env:/source/vitals.env:ro" in service["volumes"]
     assert not any("docker.sock" in volume for volume in service["volumes"])
+
+
+def test_idp_backup_waits_for_provider_and_has_only_database_authority():
+    compose = _compose()
+    service = compose["services"]["vitals_idp_backup"]
+
+    assert service["profiles"] == ["idp"]
+    assert service["depends_on"] == {
+        "vitals_idp": {"condition": "service_healthy"}
+    }
+    assert service["read_only"] is True
+    assert service["cap_drop"] == ["ALL"]
+    assert service["security_opt"] == ["no-new-privileges:true"]
+    assert set(service["environment"]) == {
+        "TZ",
+        "PGHOST",
+        "PGUSER",
+        "PGPASSWORD",
+        "PGDATABASE",
+        "VITALS_IDP_BACKUP_RETENTION_DAYS",
+    }
+    source = str(service)
+    for forbidden in (
+        "VITALS_IDP_MASTERKEY",
+        "VITALS_IDP_ADMIN_PASSWORD",
+        "VITALS_OIDC_CLIENT_SECRET",
+        "VITALS_DB_PASSWORD",
+        ".env",
+        "docker.sock",
+    ):
+        assert forbidden not in source
+
+
+def test_idp_offsite_is_a_separate_secret_and_failure_domain():
+    compose = _compose()
+    service = compose["services"]["vitals_idp_offsite_backup"]
+
+    assert service["profiles"] == ["idp-offsite"]
+    assert "depends_on" not in service
+    assert service["read_only"] is True
+    assert service["cap_drop"] == ["ALL"]
+    assert service["security_opt"] == ["no-new-privileges:true"]
+    assert service["entrypoint"] == [
+        "/bin/sh",
+        "/usr/local/bin/idp_offsite_backup.sh",
+    ]
+    assert set(service["secrets"]) == {
+        "idp_restic_repository",
+        "idp_restic_password",
+        "idp_restic_s3_access_key",
+        "idp_restic_s3_secret_key",
+    }
+    assert "./backups/idp:/backups/idp:ro" in service["volumes"]
+    assert not any(".env" in volume for volume in service["volumes"])
+    assert not any("docker.sock" in volume for volume in service["volumes"])
+    assert not {"PGHOST", "PGUSER", "PGPASSWORD", "PGDATABASE"}.intersection(
+        service["environment"]
+    )
+
+    health_backup = compose["services"]["vitals_backup"]
+    health_offsite = compose["services"]["vitals_offsite_backup"]
+    assert "vitals_idp" not in str(health_backup)
+    assert "vitals_idp" not in str(health_offsite)

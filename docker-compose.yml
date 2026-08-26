@@ -93,8 +93,9 @@ services:
   # after its complete OIDC application group is configured. Read
   # docs/OIDC_SETUP.md before either step.
   #
-  # The pinned ZITADEL v2.66.0 tag is Apache-2.0. Re-check the exact tag's
-  # licence before upgrading; a later release may use different terms.
+  # SECURITY GATE: v2.66.0 is an obsolete implementation reference, not an
+  # approved production image. Keep this profile off until a supported release
+  # is reviewed, tested, and pinned by OCI digest; see docs/OIDC_SETUP.md.
   vitals_idp_config_check:
     image: postgres:15-alpine
     profiles: ["idp"]
@@ -137,7 +138,7 @@ services:
       # `docker compose up` does not demand IDP secrets. The IDP containers
       # themselves are guarded by the profile's runtime preflight above.
       ZITADEL_MASTERKEY: ${VITALS_IDP_MASTERKEY:-}
-      # v2.66.0 otherwise creates a first administrator with a known default.
+      # The reference image otherwise creates an administrator with a known default.
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${VITALS_IDP_ADMIN_PASSWORD:-}
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: "true"
       # Vitals provisions and links every account explicitly. ZITADEL defaults
@@ -160,6 +161,12 @@ services:
       # Same reasoning as the app: bound to loopback, because this is the door
       # to the health record and belongs behind the same VPN.
       - "127.0.0.1:${VITALS_IDP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "/app/zitadel", "ready"]
+      interval: 10s
+      timeout: 30s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   # Its own database rather than a schema in the app's. They have different
@@ -184,6 +191,33 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # A separate recovery stream for the identity store. Health-store success
+  # cannot prove that anybody will be able to log in after a disaster, and the
+  # two databases must be restorable on independent timelines.
+  vitals_idp_backup:
+    image: postgres:15-alpine
+    profiles: ["idp"]
+    depends_on:
+      vitals_idp:
+        condition: service_healthy
+    environment:
+      TZ: Europe/Chisinau
+      PGHOST: vitals_idp_db
+      PGUSER: zitadel
+      PGPASSWORD: ${VITALS_IDP_DB_PASSWORD:-}
+      PGDATABASE: zitadel
+      VITALS_IDP_BACKUP_RETENTION_DAYS: ${VITALS_IDP_BACKUP_RETENTION_DAYS:-7}
+    volumes:
+      - ./scripts/idp_backup.sh:/usr/local/bin/idp_backup.sh:ro
+      - ./backups:/backups
+    entrypoint: ["/bin/sh", "/usr/local/bin/idp_backup.sh"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    restart: unless-stopped
 
   vitals_backup:
     image: postgres:15-alpine
@@ -251,6 +285,40 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=128m
     restart: unless-stopped
 
+  # Identity replication is a separate failure domain and encrypted repository.
+  # It deliberately cannot read the Vitals .env or any health-store artifact.
+  # Start it only after initializing and escrowing the dedicated repository:
+  # docker compose --profile idp-offsite up -d --no-deps vitals_idp_offsite_backup.
+  vitals_idp_offsite_backup:
+    image: ghcr.io/restic/restic:0.19.1@sha256:2f0373803493361f9304a57150d464677f69a9dad487afec202105aafb2592f2
+    profiles: ["idp-offsite"]
+    hostname: ${VITALS_IDP_OFFSITE_HOSTNAME:-vitals-identity}
+    environment:
+      RESTIC_REPOSITORY_FILE: /run/secrets/idp_restic_repository
+      RESTIC_PASSWORD_FILE: /run/secrets/idp_restic_password
+      VITALS_IDP_RESTIC_S3_ACCESS_KEY_FILE: /run/secrets/idp_restic_s3_access_key
+      VITALS_IDP_RESTIC_S3_SECRET_KEY_FILE: /run/secrets/idp_restic_s3_secret_key
+      AWS_EC2_METADATA_DISABLED: "true"
+      RESTIC_CACHE_DIR: /tmp/restic-cache
+      VITALS_IDP_OFFSITE_HOSTNAME: ${VITALS_IDP_OFFSITE_HOSTNAME:-vitals-identity}
+      VITALS_IDP_OFFSITE_INTERVAL_SECONDS: ${VITALS_IDP_OFFSITE_INTERVAL_SECONDS:-900}
+    secrets:
+      - idp_restic_repository
+      - idp_restic_password
+      - idp_restic_s3_access_key
+      - idp_restic_s3_secret_key
+    volumes:
+      - ./scripts/idp_offsite_backup.sh:/usr/local/bin/idp_offsite_backup.sh:ro
+      - ./backups/idp:/backups/idp:ro
+      - vitals_idp_offsite_state:/state
+    entrypoint: ["/bin/sh", "/usr/local/bin/idp_offsite_backup.sh"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+    restart: unless-stopped
+
 volumes:
   vitals_pgdata:
   vitals_redis_data:
@@ -258,6 +326,7 @@ volumes:
   vitals_private_files:
   vitals_idp_pgdata:
   vitals_offsite_state:
+  vitals_idp_offsite_state:
 
 secrets:
   restic_repository:
@@ -268,3 +337,11 @@ secrets:
     file: ${VITALS_RESTIC_S3_ACCESS_KEY_FILE:-.secrets/restic_s3_access_key}
   restic_s3_secret_key:
     file: ${VITALS_RESTIC_S3_SECRET_KEY_FILE:-.secrets/restic_s3_secret_key}
+  idp_restic_repository:
+    file: ${VITALS_IDP_RESTIC_REPOSITORY_FILE:-.secrets/idp_restic_repository}
+  idp_restic_password:
+    file: ${VITALS_IDP_RESTIC_PASSWORD_FILE:-.secrets/idp_restic_password}
+  idp_restic_s3_access_key:
+    file: ${VITALS_IDP_RESTIC_S3_ACCESS_KEY_FILE:-.secrets/idp_restic_s3_access_key}
+  idp_restic_s3_secret_key:
+    file: ${VITALS_IDP_RESTIC_S3_SECRET_KEY_FILE:-.secrets/idp_restic_s3_secret_key}

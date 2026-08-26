@@ -1,6 +1,6 @@
 # Federated login: setting it up, and the order to do it in
 
-Last reviewed: 2026-08-23
+Last reviewed: 2026-08-26
 
 Vitals stops authenticating passwords once the complete OIDC group is set:
 `VITALS_OIDC_ISSUER`, `VITALS_OIDC_CLIENT_ID`,
@@ -20,8 +20,20 @@ done properly.
 
 ## Before you start
 
-Before the provider's first start, generate three independent secrets and put
-them in `.env`:
+> [!CAUTION]
+> Do not start the bundled ZITADEL `v2.66.0` profile in production. That tag is
+> obsolete, is not pinned by OCI digest here, and falls within published
+> vulnerable ranges, including the official
+> [critical IDOR advisory](https://github.com/zitadel/zitadel/security/advisories/GHSA-f3gh-529w-v32x)
+> and [MFA bypass advisory](https://github.com/zitadel/zitadel/security/advisories/GHSA-cfjq-28r2-4jv5).
+> First select a supported provider/version under its documented
+> [lifecycle](https://github.com/zitadel/zitadel/discussions/9417), review the
+> exact release's licence, pin its digest, and repeat the provider, backup,
+> restore, OIDC, and browser conformance gates.
+
+Before an approved provider's first start, generate three independent secrets
+and put them in a separate owner-only `.env.idp`, copied from
+`.env.idp.example`:
 
 ```bash
 # Exactly 32 characters. Back it up: changing it later loses access to data
@@ -38,12 +50,37 @@ Store the results as `VITALS_IDP_MASTERKEY`, `VITALS_IDP_DB_PASSWORD`, and
 selected; its preflight refuses to start with a missing value or a master key
 whose length is not 32 characters.
 
+Never put these three values in the application `.env`. Compose mounts that
+file into `vitals_app`; `.env.idp` is passed only to explicit provider commands
+and is never mounted into the application.
+
+The profile also starts `vitals_idp_backup`, which writes a separate verified
+PostgreSQL recovery stream below `backups/idp/`. Before the first production
+start, follow the identity-provider gate in `BACKUP_RESTORE_RUNBOOK.md` against
+a disposable ZITADEL database. Confirm that the production Compose override
+mounts the same protected host backup directory into this sidecar and the
+offsite sidecar. Shipping the script is not proof that its restore works.
+
+For the current production checkout, every provider command must preserve its
+project and production overlay:
+
+```bash
+test -f docker-compose.production.yml
+export COMPOSE_PROJECT_NAME=vitals_prod
+export COMPOSE_FILE=docker-compose.yml:docker-compose.production.yml
+```
+
+That overlay is an untracked, owner-only production file. Before startup, render
+the config and prove that both IDP sidecars use `/root/vitals/backups`, not the
+checkout-relative base path.
+
 You then need four OIDC values from the provider, and the owner subject can only
 be read after you have logged into it once. Work through this with the provider
 running and Vitals still on password login.
 
 ```bash
-docker compose --profile idp up -d
+docker compose --env-file .env --env-file .env.idp \
+  --profile idp up -d --wait vitals_idp_backup
 ```
 
 ZITADEL comes up on `127.0.0.1:8080`, bound to loopback for the same reason the
@@ -72,6 +109,12 @@ must not offer a register/sign-up action.
 An identity accidentally created through provider self-registration still has
 no Vitals account and cannot enter a health record. Remove or retain it under
 your identity-retention policy; never bind it merely because its email matches.
+
+Before issuing a Vitals registration link, an operator must also create or
+invite that same person in the provider and give them a verified recovery/login
+path. The current Vitals invitation proves local admission; it does not create
+a ZITADEL user or send provider mail. Keep public registration disabled until
+that provider-side onboarding step is implemented or operationally documented.
 
 ## 2. Create the application in ZITADEL
 
@@ -231,17 +274,19 @@ The ones you are most likely to hit while setting this up:
 There is no password fallback — that was the point of a hard cutover. What there
 is:
 
-1. Bring the provider back. It is a container beside the app with its own
-   database; `docker compose --profile idp up -d` and its volume are the whole
-   of it.
-2. If its data is gone, restore `vitals_idp_pgdata` from backup. The identity
-   store is separate from the health store on purpose: they have different
-   restore rhythms, and one dump holding both invites restoring both when you
-   meant one.
-3. If you must reach the record without the provider at all, unset
-   `VITALS_OIDC_ISSUER` and restart. Password login returns. That is a break-
-   glass action, not a mode: it re-opens a door that the cutover closed, and
-   the environment variable is the only thing holding it shut.
+1. Bring the provider back with the same project, overlay, two env files, and
+   approved image digest used at cutover. Its identity volume is independent.
+2. If its data is gone, verify an exact `zitadel_bundle_<timestamp>.sha256`,
+   restore its `zitadel_<timestamp>.sql.gz` into a new empty PostgreSQL 15
+   database/new volume with `ON_ERROR_STOP`, then run the provider readiness,
+   discovery, restart, and login checks from the restore runbook. The artifact
+   is a logical SQL dump, not a copy of `vitals_idp_pgdata`.
+3. If you must reach the record without the provider at all, atomically remove
+   `VITALS_OIDC_ISSUER`, `VITALS_OIDC_CLIENT_ID`, `VITALS_OIDC_CLIENT_SECRET`,
+   `VITALS_OIDC_REDIRECT_URL`, and `VITALS_OIDC_BOOTSTRAP_SUBJECT`, rotate
+   `VITALS_SESSION_SECRET`, and restart only the app. Removing just one variable
+   is an invalid partial configuration and intentionally fails startup. This is
+   a break-glass action, not a steady mode: it re-opens the password door.
 
 ## Revoking a session
 
@@ -251,11 +296,11 @@ live row, so every session the account holds stops at its next request rather
 than waiting for cookie expiry. A cookie issued a minute ago and one issued last
 month stop working together.
 
-## The licence question
+## The provider/version/licence gate
 
-The image is pinned to ZITADEL `v2.66.0`, whose exact tagged source carries the
-[Apache License 2.0](https://github.com/zitadel/zitadel/blob/v2.66.0/LICENSE).
-The previous version of this runbook incorrectly described that tag as AGPLv3.
-Do not copy either statement forward when changing the image: inspect the
-licence and notices on the exact replacement tag, then review distribution and
-attribution obligations for that version. This is not legal advice.
+The old `v2.66.0` tag remains in Compose only as a disabled implementation
+reference. It is not approved for production. Current ZITADEL lines changed
+runtime/login behavior and licence posture; a number-only edit is not a safe
+upgrade. Select the provider and version explicitly, inspect that exact release
+and notices, pin the verified OCI digest, and repeat the whole conformance and
+restore drill before changing this warning. This is not legal advice.
