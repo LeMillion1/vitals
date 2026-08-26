@@ -43,6 +43,20 @@ def test_support_console_explains_the_three_separate_approvals():
     )
 
 
+def test_live_settings_saved_copy_does_not_request_a_restart():
+    from vitals.i18n import STRINGS
+
+    for lang in ("en", "ru"):
+        for key in (
+            "settings.saved.profile",
+            "settings.saved.hevy",
+            "settings.saved.mcp",
+        ):
+            message = STRINGS[lang][key].lower()
+            assert "restart" not in message
+            assert "перезап" not in message
+
+
 def test_plurals():
     # English plurals: 2 forms (1 vs other)
     current_lang.set("en")

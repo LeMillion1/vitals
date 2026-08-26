@@ -8,6 +8,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — live settings no longer ask for a container restart
+
+Profile, Hevy, and MCP save confirmations now state that changes are already
+active instead of incorrectly instructing the user to restart the application.
+
 ### Fixed — architecture evidence follows the current runtime tree
 
 The generated architecture reference and current-state audit now count the
