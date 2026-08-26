@@ -196,6 +196,51 @@ async def _bootstrap_legacy_identity(
             raise
 
 
+async def _load_oidc_identity_state(
+    session_factory,
+) -> ProactivePreferencesBundle:
+    """Validate the OIDC destination without consulting legacy credentials.
+
+    The compatibility bootstrap is intentionally absent here: after cutover,
+    neither a username nor a bcrypt hash in the process environment may create,
+    repair, or select an account. Existing exact-one proactive preferences are
+    still read so the first cutover does not unexpectedly change job cadence.
+    Once the installation has multiple subjects, scheduled jobs use their
+    per-subject/default paths just as the closed legacy bridge already requires.
+    """
+
+    from vitals.services.authentication.startup import validate_oidc_startup_state
+    from vitals.services.proactive import prefs
+    from web.config import get_web_config
+
+    web_config = get_web_config()
+    async with session_factory() as session:
+        try:
+            await validate_oidc_startup_state(
+                session,
+                issuer=web_config.oidc_issuer,
+                bootstrap_subject=web_config.oidc_bootstrap_subject,
+            )
+            preference_scope = await prefs.resolve_legacy_preferences_scope(
+                session,
+                actor_username=None,
+            )
+            return await prefs.get_exact_one_preferences_bundle(
+                session,
+                scope=preference_scope,
+            )
+        except _LEGACY_BOOTSTRAP_CLOSED:
+            await session.rollback()
+            logger.info(
+                "OIDC identity state is valid; exact-one startup preferences "
+                "are unavailable on this multi-subject installation."
+            )
+            return None
+        except Exception:
+            await session.rollback()
+            raise
+
+
 #: Every "this needs exactly one health subject" refusal, from the several
 #: compatibility bridges that each grew their own. They share no base class,
 #: which is why this is a list rather than a catch — and the list is useful as
@@ -236,13 +281,19 @@ async def lifespan(app: FastAPI):
 
     config = load_config()
 
-    # Fail startup closed if the legacy credential cannot be reconciled with the
-    # durable identity.  This runs before catalogs, scheduler registration, or
-    # connector work so a partially initialized process never serves requests.
-    preference_bundle = await _bootstrap_legacy_identity(
-        session_factory,
-        timezone=config.timezone,
-    )
+    # Fail startup closed before catalogs, scheduler registration, or connector
+    # work. Password mode reconciles its environment credential; OIDC mode
+    # proves that the configured issuer has a safe durable destination without
+    # reading or mutating legacy password material.
+    from web.config import get_web_config
+
+    if get_web_config().oidc_enabled:
+        preference_bundle = await _load_oidc_identity_state(session_factory)
+    else:
+        preference_bundle = await _bootstrap_legacy_identity(
+            session_factory,
+            timezone=config.timezone,
+        )
 
     # Register cross-domain conflict resolvers (supplements/genetics/skincare/...).
     register_all_resolvers()

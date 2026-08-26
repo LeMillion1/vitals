@@ -16,7 +16,7 @@ from vitals.services.identity_bootstrap import LegacyOwnerIdentityMismatchError
 from vitals.services.proactive import prefs
 from vitals.services.scoped_settings_service import ScopedSettingKey
 from vitals.utils.passwords import hash_password
-from web.main import _bootstrap_legacy_identity
+from web.main import _bootstrap_legacy_identity, _load_oidc_identity_state
 
 
 async def _count(session, model: type) -> int:
@@ -73,3 +73,36 @@ async def test_startup_boundary_rolls_back_and_propagates_identity_mismatch(
     assert await _count(db_session, User) == 1
     assert await _count(db_session, UserRole) == 0
     assert await _count(db_session, HealthSubject) == 0
+
+
+async def test_oidc_startup_needs_no_legacy_environment_credential(
+    db_session,
+    session_factory,
+    monkeypatch,
+):
+    expected = await _bootstrap_legacy_identity(
+        session_factory,
+        timezone="Asia/Almaty",
+    )
+    persisted_hash = await db_session.scalar(select(User.password_hash))
+
+    for name, value in (
+        ("VITALS_OIDC_ISSUER", "https://idp.example.test"),
+        ("VITALS_OIDC_CLIENT_ID", "vitals"),
+        ("VITALS_OIDC_CLIENT_SECRET", "synthetic-secret"),
+        (
+            "VITALS_OIDC_REDIRECT_URL",
+            "https://vitals.example.test/auth/callback",
+        ),
+        ("VITALS_OIDC_BOOTSTRAP_SUBJECT", "provider-owner-subject"),
+        ("VITALS_PUBLIC_URL", "https://vitals.example.test"),
+    ):
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("VITALS_AUTH_USERNAME", raising=False)
+    monkeypatch.delenv("VITALS_AUTH_PASSWORD_HASH", raising=False)
+
+    actual = await _load_oidc_identity_state(session_factory)
+
+    assert actual == expected
+    assert await _count(db_session, User) == 1
+    assert await db_session.scalar(select(User.password_hash)) == persisted_hash

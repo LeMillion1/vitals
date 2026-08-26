@@ -579,20 +579,45 @@ async def _mcp_actor_username(session=None) -> str:
     honoured only where there is no choice to make.
     """
 
-    from vitals.models.identity import HealthSubject
+    from vitals.enums import UserStatus
+    from vitals.models.identity import HealthSubject, User
+
+    async def _configured_or_single_owner(active_session) -> str:
+        config = get_web_config()
+        if not config.oidc_enabled:
+            # Password mode retains its exact legacy behavior: the environment
+            # credential names the installation owner.
+            return config.auth_username
+        records = tuple(
+            (
+                await active_session.execute(
+                    select(User.username, User.status)
+                    .select_from(HealthSubject)
+                    .join(User, User.id == HealthSubject.owner_user_id)
+                    .limit(2)
+                )
+            ).all()
+        )
+        if len(records) != 1 or records[0].status != UserStatus.ACTIVE.value:
+            raise McpActorUnresolved(
+                "this OIDC installation does not have exactly one active record "
+                "owner for an unattributed legacy connector; reconnect it to mint "
+                "a subject-bound token"
+            )
+        return records[0].username
 
     actor = _current_actor()
     if actor is not None and actor != ANONYMOUS_TOKEN:
         await _require_live_account(session, actor)
         return actor
     if actor is None:
-        # No request: a direct call, a scheduled job, a test. Unchanged, and
-        # deliberately not narrowed — the environment names an account and the
-        # resolver returns that account's own record, which is a fact about one
-        # person rather than an assumption about how many there are.
-        return get_web_config().auth_username
-
-
+        # No request: a direct call, a scheduled job, a test. The transitional
+        # environment name remains authoritative when present; after OIDC
+        # retirement the exact-one active owner graph is the only safe fallback.
+        if session is None:
+            async with get_session_factory()() as opened:
+                return await _configured_or_single_owner(opened)
+        return await _configured_or_single_owner(session)
     if session is None:
         # The two sync tools hold a factory rather than a session. Counting
         # subjects is a read of its own and must not join whatever transaction
@@ -611,7 +636,10 @@ async def _mcp_actor_username(session=None) -> str:
             "installation holds more than one. Reconnect the connector to mint a "
             "token that names its record."
         )
-    return get_web_config().auth_username
+    if session is None:
+        async with get_session_factory()() as opened:
+            return await _configured_or_single_owner(opened)
+    return await _configured_or_single_owner(session)
 
 
 async def _mcp_v1_legacy_owner(session):

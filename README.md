@@ -692,8 +692,8 @@ Vitals. Текущий reference-образ ZITADEL устарел; production-�
 | Переменная | Описание | Дефолт |
 | :--- | :--- | :--- |
 | `VITALS_SESSION_SECRET` | Ключ подписи сессий | *Обязательный* |
-| `VITALS_AUTH_USERNAME` | Имя пользователя | *Обязательный* |
-| `VITALS_AUTH_PASSWORD_HASH` | Bcrypt-хеш пароля | *Обязательный* |
+| `VITALS_AUTH_USERNAME` | Имя пользователя для password-mode | *До OIDC обязателен; после привязки опционален* |
+| `VITALS_AUTH_PASSWORD_HASH` | Bcrypt-хеш для password-mode | *До OIDC обязателен; после привязки опционален* |
 | `VITALS_SESSION_TTL` | Время жизни сессии (сек) | `2592000` (30 дней) |
 | `VITALS_COOKIE_SECURE` | Флаг Secure для кук | `true` |
 | `VITALS_COOKIE_SAMESITE` | Политика SameSite | `lax` |
@@ -1479,8 +1479,8 @@ Connection-pool and timeout tuning (`VITALS_DB_POOL_SIZE`, `VITALS_DB_MAX_OVERFL
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `VITALS_SESSION_SECRET` | Session cookie signing key | *Required* |
-| `VITALS_AUTH_USERNAME` | Dashboard username | *Required* |
-| `VITALS_AUTH_PASSWORD_HASH` | Bcrypt password hash | *Required* |
+| `VITALS_AUTH_USERNAME` | Password-mode dashboard username | *Required before OIDC; optional after binding* |
+| `VITALS_AUTH_PASSWORD_HASH` | Password-mode bcrypt hash | *Required before OIDC; optional after binding* |
 | `VITALS_SESSION_TTL` | Session duration (seconds) | `2592000` (30 days) |
 | `VITALS_COOKIE_SECURE` | Secure cookie flag | `true` |
 | `VITALS_COOKIE_SAMESITE` | SameSite policy | `lax` |

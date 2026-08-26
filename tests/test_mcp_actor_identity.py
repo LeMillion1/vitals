@@ -318,6 +318,73 @@ async def test_a_token_without_an_identity_still_works_for_one_record(
         mcp_router._MCP_ACTOR.reset(restore)
 
 
+async def test_oidc_single_record_legacy_token_ignores_stale_env_owner(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    """The DB graph can attribute a singleton token after password retirement."""
+
+    for name, value in (
+        ("VITALS_OIDC_ISSUER", "https://idp.example.test"),
+        ("VITALS_OIDC_CLIENT_ID", "vitals"),
+        ("VITALS_OIDC_CLIENT_SECRET", "synthetic-secret"),
+        (
+            "VITALS_OIDC_REDIRECT_URL",
+            "https://vitals.example.test/auth/callback",
+        ),
+        ("VITALS_PUBLIC_URL", "https://vitals.example.test"),
+    ):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("VITALS_AUTH_USERNAME", "stale-wrong-owner")
+    monkeypatch.delenv("VITALS_AUTH_PASSWORD_HASH", raising=False)
+
+    db_session.add(
+        WeightLog(
+            subject_id=legacy_owner_roots.subject_id,
+            domain=Domain.WEIGHT.value,
+            source=Source.MANUAL.value,
+            date=date.today(),
+            weight_kg=OWNER_WEIGHT,
+        )
+    )
+    await db_session.commit()
+
+    restore = _acting_as(mcp_router.ANONYMOUS_TOKEN)
+    try:
+        assert _weights(await mcp_router.get_weight_logs(limit=10)) == [OWNER_WEIGHT]
+    finally:
+        mcp_router._MCP_ACTOR.reset(restore)
+
+
+async def test_oidc_direct_call_refuses_two_subjects_when_one_owner_is_inactive(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    for name, value in (
+        ("VITALS_OIDC_ISSUER", "https://idp.example.test"),
+        ("VITALS_OIDC_CLIENT_ID", "vitals"),
+        ("VITALS_OIDC_CLIENT_SECRET", "synthetic-secret"),
+        (
+            "VITALS_OIDC_REDIRECT_URL",
+            "https://vitals.example.test/auth/callback",
+        ),
+        ("VITALS_PUBLIC_URL", "https://vitals.example.test"),
+    ):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("VITALS_AUTH_USERNAME", "stale-wrong-owner")
+
+    second = await _second_person(db_session, "inactive-second")
+    second_owner = await db_session.get(User, second.owner_user_id)
+    second_owner.status = UserStatus.SUSPENDED.value
+    await db_session.commit()
+
+    assert mcp_router._MCP_ACTOR.get() is None
+    with pytest.raises(mcp_router.McpActorUnresolved):
+        await mcp_router._mcp_actor_username(db_session)
+
+
 async def test_a_direct_call_is_not_a_token_and_keeps_working(
     db_session, legacy_owner_roots
 ):

@@ -238,15 +238,15 @@ async def _bootstrap_owner(
             "owner binding cannot run again"
         )
 
-    users = list(await session.scalars(select(User).order_by(User.created_at).limit(2)))
-    if len(users) != 1:
-        raise BootstrapRefused(
-            "the one-time owner binding needs exactly one existing user; found "
-            f"{len(users)}"
-        )
-    owner = users[0]
-    if owner.status != UserStatus.ACTIVE.value:
-        raise InactiveAccount("the existing owner's account is not active")
+    from vitals.services.authentication.startup import (
+        OidcOwnerBootstrapGraphError,
+        require_oidc_owner_bootstrap_graph,
+    )
+
+    try:
+        owner = await require_oidc_owner_bootstrap_graph(session)
+    except OidcOwnerBootstrapGraphError as exc:
+        raise BootstrapRefused(str(exc)) from exc
 
     await _link(
         session,

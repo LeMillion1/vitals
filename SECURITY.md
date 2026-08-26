@@ -134,6 +134,14 @@ restart. Until database sessions land, rotate `VITALS_SESSION_SECRET` as a
 separate step when already issued browser/MCP credentials must be invalidated.
 Never make bootstrap overwrite one side automatically.
 
+The complete OIDC configuration disables that bridge at process startup. The
+application does not read legacy username/hash values to create, select, repair,
+or update an identity in this mode. It instead requires either the exact safe
+one-owner graph for the explicit first binding or an active federated platform
+administrator with an owned health subject for the configured issuer. Password
+mode still requires the trusted legacy credential pair; retain it separately if
+provider-independent break-glass rollback is part of the recovery policy.
+
 ## Inbound Endpoints
 
 There is no webhook. `POST /tg/<path>` — the Telegram bot's endpoint, and the

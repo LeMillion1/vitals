@@ -1796,6 +1796,30 @@ async def test_after_the_cutover_enrolling_a_second_factor_here_is_gone(
     assert response.status_code == 404, path
 
 
+async def test_after_the_cutover_changing_a_local_password_is_gone(
+    auth_client,
+    federated,
+    db_session,
+    legacy_owner_roots,
+):
+    await _set_owner_federated_cookie(
+        auth_client,
+        db_session,
+        legacy_owner_roots,
+    )
+
+    response = await auth_client.post(
+        "/settings/password",
+        data={
+            "old_password": "old-password",
+            "new_password": "new-password",
+            "new_password_confirm": "new-password",
+        },
+    )
+
+    assert response.status_code == 404
+
+
 async def test_after_the_cutover_the_settings_page_stops_offering_sign_in(
     auth_client, federated, db_session, legacy_owner_roots
 ):
@@ -1959,6 +1983,38 @@ def test_oidc_origin_comparison_treats_default_https_port_semantically(monkeypat
         monkeypatch.setenv(name, value)
 
     assert get_web_config().oidc_enabled is True
+
+
+def test_oidc_configuration_does_not_require_legacy_credentials(monkeypatch):
+    from web.config import get_web_config
+
+    for name, value in (
+        ("VITALS_OIDC_ISSUER", ISSUER),
+        ("VITALS_OIDC_CLIENT_ID", "configured-client"),
+        ("VITALS_OIDC_CLIENT_SECRET", "configured-secret"),
+        ("VITALS_OIDC_REDIRECT_URL", REDIRECT),
+        ("VITALS_PUBLIC_URL", "https://vitals.example.test"),
+    ):
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("VITALS_AUTH_USERNAME", raising=False)
+    monkeypatch.delenv("VITALS_AUTH_PASSWORD_HASH", raising=False)
+
+    config = get_web_config()
+
+    assert config.oidc_enabled is True
+    assert config.auth_username == ""
+    assert config.auth_password_hash == ""
+
+
+def test_password_mode_still_requires_legacy_username(monkeypatch):
+    from web.config import OIDC_REQUIRED_ENV, get_web_config
+
+    for name in OIDC_REQUIRED_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("VITALS_AUTH_USERNAME", raising=False)
+
+    with pytest.raises(RuntimeError, match="VITALS_AUTH_USERNAME is not set"):
+        get_web_config()
 
 
 def test_the_compose_file_keeps_the_provider_behind_a_profile():

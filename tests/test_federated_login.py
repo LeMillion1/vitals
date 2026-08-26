@@ -16,8 +16,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from vitals.enums import UserStatus
-from vitals.models.identity import User, UserFederatedIdentity
+from vitals.enums import UserRoleName, UserStatus
+from vitals.models.identity import (
+    HealthSubject,
+    User,
+    UserFederatedIdentity,
+    UserRole,
+)
 from vitals.services.authentication.federation import (
     BootstrapRefused,
     FederatedLoginError,
@@ -40,6 +45,28 @@ async def _user(db_session, label: str, *, status=UserStatus.ACTIVE) -> User:
     db_session.add(user)
     await db_session.flush()
     return user
+
+
+async def _bootstrap_owner_graph(
+    db_session,
+    *,
+    with_roles: bool = True,
+    with_subject: bool = True,
+) -> User:
+    owner = await _user(db_session, "owner")
+    if with_roles:
+        for role in (UserRoleName.MEMBER, UserRoleName.PLATFORM_SUPERADMIN):
+            db_session.add(UserRole(user_id=owner.id, role=role.value))
+    if with_subject:
+        db_session.add(
+            HealthSubject(
+                owner_user_id=owner.id,
+                display_name=owner.username,
+                timezone="Asia/Almaty",
+            )
+        )
+    await db_session.flush()
+    return owner
 
 
 # ── The closed door ──────────────────────────────────────────────────────────
@@ -249,7 +276,7 @@ async def test_a_suspended_account_cannot_log_in_through_the_provider(db_session
 # ── The one-time binding ─────────────────────────────────────────────────────
 
 async def test_the_operator_named_subject_binds_the_existing_owner_once(db_session):
-    owner = await _user(db_session, "owner")
+    owner = await _bootstrap_owner_graph(db_session)
 
     resolved = await resolve_federated_user(
         db_session,
@@ -277,6 +304,34 @@ async def test_the_binding_needs_exactly_one_existing_user(db_session):
     await _user(db_session, "second")
 
     with pytest.raises(BootstrapRefused, match="exactly one"):
+        await resolve_federated_user(
+            db_session,
+            issuer=ISSUER,
+            subject=OWNER_SUBJECT,
+            bootstrap_subject=OWNER_SUBJECT,
+        )
+
+
+@pytest.mark.parametrize(
+    ("with_roles", "with_subject", "message"),
+    (
+        (False, True, "platform_superadmin"),
+        (True, False, "one health subject"),
+    ),
+)
+async def test_the_binding_rechecks_the_privileged_owner_graph(
+    db_session,
+    with_roles,
+    with_subject,
+    message,
+):
+    await _bootstrap_owner_graph(
+        db_session,
+        with_roles=with_roles,
+        with_subject=with_subject,
+    )
+
+    with pytest.raises(BootstrapRefused, match=message):
         await resolve_federated_user(
             db_session,
             issuer=ISSUER,

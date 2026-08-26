@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — OIDC startup no longer depends on the legacy password
+
+With the complete OIDC configuration enabled, application startup now validates
+the durable identity graph instead of reconciling `VITALS_AUTH_USERNAME` and
+`VITALS_AUTH_PASSWORD_HASH`. A first cutover requires one active privileged
+owner, that owner's one health subject, and the explicit bootstrap subject;
+later startups require a reachable privileged identity bound to the configured
+issuer. Password mode is unchanged, and a singleton legacy MCP token remains
+attributable from the database after the optional environment username is
+removed.
+
 ### Fixed — OIDC cutover rejects password-era browser sessions
 
 Enabling OIDC now makes every legacy password-session envelope unusable at the

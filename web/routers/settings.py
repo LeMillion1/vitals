@@ -1517,6 +1517,10 @@ async def change_password(
     from web.config import get_web_config
 
     cfg = get_web_config()
+    if cfg.oidc_enabled:
+        # Password authentication no longer exists on this installation. Keep
+        # the hidden form endpoint aligned with the login and 2FA endpoints.
+        raise HTTPException(status_code=404)
 
     if not authenticate(cfg.auth_username, old_password):
         return await _page(request, username, db=db, redis=redis, error="wrong_password")

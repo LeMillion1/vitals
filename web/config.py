@@ -1,9 +1,9 @@
-"""Web-panel configuration (single-user).
+"""Web-panel configuration.
 
 Adds the few web-only knobs the core doesn't care about: the session signing
-secret, cookie flags/lifetime, and the single account's credentials. Read lazily
-(not at import) so the test suite can set env first and a missing secret only
-blows up when the web app actually starts.
+secret, cookie flags/lifetime, and transitional password credentials. Read
+lazily (not at import) so the test suite can set env first and a missing secret
+only blows up when the web app actually starts.
 """
 from __future__ import annotations
 
@@ -141,12 +141,6 @@ def get_web_config() -> WebConfig:
     if not session_secret:
         raise RuntimeError("VITALS_SESSION_SECRET is not set")
 
-    username = os.getenv("VITALS_AUTH_USERNAME")
-    if not username:
-        raise RuntimeError("VITALS_AUTH_USERNAME is not set")
-
-    password_hash = os.getenv("VITALS_AUTH_PASSWORD_HASH", "")
-
     oidc_values = {name: os.getenv(name, "").strip() for name in OIDC_REQUIRED_ENV}
     if any(oidc_values.values()) and not all(oidc_values.values()):
         missing = ", ".join(
@@ -156,8 +150,18 @@ def get_web_config() -> WebConfig:
             "OIDC configuration is incomplete; set all required values or "
             f"unset all of them. Missing: {missing}"
         )
+    oidc_enabled = all(oidc_values.values())
+
+    # These credentials are the authority only before OIDC cutover. Keeping
+    # them optional afterwards lets the application remove the environment
+    # copy instead of retaining a dormant second authentication system.
+    username = os.getenv("VITALS_AUTH_USERNAME") or ""
+    password_hash = os.getenv("VITALS_AUTH_PASSWORD_HASH", "")
+    if not oidc_enabled and not username:
+        raise RuntimeError("VITALS_AUTH_USERNAME is not set")
+
     public_url = os.getenv("VITALS_PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/")
-    if all(oidc_values.values()):
+    if oidc_enabled:
         from vitals.services.authentication.oidc import (
             OidcConfigurationError,
             OidcSettings,

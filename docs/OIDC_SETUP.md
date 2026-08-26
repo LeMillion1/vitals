@@ -18,6 +18,15 @@ inside Vitals. Both move to the provider, which is where password hashing,
 reset, recovery codes, TOTP, WebAuthn and rotation already live and are already
 done properly.
 
+OIDC startup does not require `VITALS_AUTH_USERNAME` or
+`VITALS_AUTH_PASSWORD_HASH`. Before the first federated identity is linked, it
+instead fails closed unless the database has exactly one active owner with the
+member and platform-superadmin roles, exactly that owner's one health subject,
+and an explicit `VITALS_OIDC_BOOTSTRAP_SUBJECT`. After the first owner login,
+startup requires an active platform administrator with an owned subject bound
+to the configured issuer. A typo or unplanned provider switch therefore cannot
+start a process that has no usable recovery administrator.
+
 ## Before you start
 
 > [!CAUTION]
@@ -286,12 +295,24 @@ is:
    database/new volume with `ON_ERROR_STOP`, then run the provider readiness,
    discovery, restart, and login checks from the restore runbook. The artifact
    is a logical SQL dump, not a copy of `vitals_idp_pgdata`.
-3. If you must reach the record without the provider at all, atomically remove
-   `VITALS_OIDC_ISSUER`, `VITALS_OIDC_CLIENT_ID`, `VITALS_OIDC_CLIENT_SECRET`,
-   `VITALS_OIDC_REDIRECT_URL`, and `VITALS_OIDC_BOOTSTRAP_SUBJECT`, rotate
-   `VITALS_SESSION_SECRET`, and restart only the app. Removing just one variable
-   is an invalid partial configuration and intentionally fails startup. This is
-   a break-glass action, not a steady mode: it re-opens the password door.
+3. If you must reach the record without the provider at all, first restore the
+   exact trusted `VITALS_AUTH_USERNAME` and `VITALS_AUTH_PASSWORD_HASH` pair
+   consistent with the database. In the same owner-only configuration change,
+   remove `VITALS_OIDC_ISSUER`, `VITALS_OIDC_CLIENT_ID`,
+   `VITALS_OIDC_CLIENT_SECRET`, `VITALS_OIDC_REDIRECT_URL`, and
+   `VITALS_OIDC_BOOTSTRAP_SUBJECT`, rotate `VITALS_SESSION_SECRET`, and restart
+   only the app. Removing just one OIDC variable is an invalid partial
+   configuration and intentionally fails startup. This is a break-glass action,
+   not a steady mode: it re-opens the password door and invalidates browser and
+   MCP credentials, which must then be reconnected.
+
+Keep the legacy username/hash in an owner-only recovery store through the
+cutover observation window; password mode needs the exact pair consistent with
+the database for that break-glass rollback. Once the owner binding and an IDP
+restore have both been rehearsed, the running OIDC application may omit them.
+A singleton legacy MCP token remains attributable from the database, but it
+must be reconnected with an explicit account/subject binding before a second
+health subject is added; otherwise it deliberately fails closed.
 
 ## Revoking a session
 
