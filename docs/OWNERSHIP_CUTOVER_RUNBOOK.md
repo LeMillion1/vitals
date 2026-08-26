@@ -155,9 +155,15 @@ two exact operator-file fields without printing the replacement:
 
 ```bash
 docker compose run --rm --no-deps \
-  --volume "$PWD/.env:/operator/.env" vitals_migrate \
+  --volume "$PWD:/operator" vitals_migrate \
   python scripts/rotate_migration_db_password.py --env-file /operator/.env
 ```
+
+The directory bind is deliberate: the helper stages and fsyncs a sibling file,
+then renames it over `.env`. A bind of the file alone is a mount point and Linux
+correctly refuses that atomic replacement. The short-lived migration container
+already has owner authority; it must exit immediately after this bounded
+operation and must never be reused as the web image.
 
 Then recreate the backup sidecar so its container environment receives the new
 password, and prove the migration/role chain using the new credential:

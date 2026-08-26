@@ -205,20 +205,27 @@ def main() -> int:
     args = parser.parse_args()
     try:
         result = asyncio.run(rotate_migration_password(args.env_file))
-    except (MigrationPasswordRotationError, OSError, sa.exc.SQLAlchemyError):
-        print(
-            json.dumps(
-                {
-                    "operation": "rotate_migration_db_password",
-                    "result": "error",
-                },
-                sort_keys=True,
-            ),
-            file=sys.stderr,
-        )
-        return 1
-    print(json.dumps(result, sort_keys=True))
-    return 0
+    except MigrationPasswordRotationError as exc:
+        reason = str(exc)
+    except OSError:
+        reason = "operator_file_io_error"
+    except sa.exc.SQLAlchemyError:
+        reason = "database_error"
+    else:
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    print(
+        json.dumps(
+            {
+                "operation": "rotate_migration_db_password",
+                "reason": reason,
+                "result": "error",
+            },
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+    )
+    return 1
 
 
 if __name__ == "__main__":

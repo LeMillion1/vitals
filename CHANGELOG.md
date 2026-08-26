@@ -14,7 +14,9 @@ The one-shot migration image can now rotate its PostgreSQL owner password and
 atomically update only `VITALS_DB_PASSWORD` plus
 `VITALS_MIGRATION_DATABASE_URL` in the host operator file without printing the
 replacement. It verifies the connected role/database and restores the old
-database password if publishing the staged operator file fails.
+database password if publishing the staged operator file fails. The documented
+container invocation mounts the operator directory so the same-filesystem
+atomic rename cannot be defeated by a single-file bind mount.
 
 ### Fixed — the web process no longer receives the database-owner credential
 

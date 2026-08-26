@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import sys
 
 import pytest
 import sqlalchemy as sa
@@ -11,6 +12,7 @@ from dotenv import dotenv_values
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import scripts.rotate_migration_db_password as rotation_module
 from scripts.rotate_migration_db_password import (
     MigrationPasswordRotationError,
     _migration_url,
@@ -112,6 +114,25 @@ def test_operator_update_never_accepts_newlines():
                 "VITALS_MIGRATION_DATABASE_URL": "postgresql+asyncpg://safe",
             },
         )
+
+
+def test_cli_reports_only_a_bounded_reason_code(monkeypatch, capsys, tmp_path):
+    def fail(_coroutine):
+        _coroutine.close()
+        raise MigrationPasswordRotationError("operator_env_publish_failed")
+
+    monkeypatch.setattr(rotation_module.asyncio, "run", fail)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rotate", "--env-file", str(tmp_path / ".env")],
+    )
+
+    assert rotation_module.main() == 1
+    assert capsys.readouterr().err.strip() == (
+        '{"operation": "rotate_migration_db_password", '
+        '"reason": "operator_env_publish_failed", "result": "error"}'
+    )
 
 
 @pytest.mark.integration
