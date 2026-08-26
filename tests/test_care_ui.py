@@ -941,6 +941,35 @@ async def test_the_patient_reaches_their_own_conversations_without_an_id(
     )
 
 
+async def test_patient_cannot_start_an_owner_only_conversation(
+    doctor_client, db_session
+):
+    """The inbox never promises a care-team recipient it cannot add."""
+
+    from vitals.models.care_thread import CareThread
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client, _doctor, (owner, subject), _b = doctor_client
+    client.cookies.set(SESSION_COOKIE, create_session(owner.username))
+
+    inbox = await client.get(
+        f"/care/{subject.id}/messages", headers={"Accept": "text/html"}
+    )
+    assert inbox.status_code == 200
+    assert f'action="/care/{subject.id}/messages"' not in inbox.text
+    assert "Start conversation" not in inbox.text
+    assert "Начать разговор" not in inbox.text
+
+    direct = await client.post(
+        f"/care/{subject.id}/messages",
+        data={"title": "Unaddressed", "body": "Can anyone see this?"},
+        follow_redirects=False,
+    )
+    assert direct.status_code == 400
+    assert await db_session.scalar(select(func.count()).select_from(CareThread)) == 0
+
+
 async def test_owner_record_does_not_offer_professional_write_forms(
     client, legacy_owner_roots
 ):

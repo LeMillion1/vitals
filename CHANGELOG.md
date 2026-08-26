@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — patient messages always have a real recipient
+
+The patient inbox no longer offers a new-conversation form that could create a
+thread containing only the patient. New threads now require the initiating
+professional's live relationship; patients continue to reply in the shared
+conversation where its participants are explicit.
+
 ### Fixed — patient record no longer offers professional-only actions
 
 A patient viewing their own shared-care record can still read notes and plans,

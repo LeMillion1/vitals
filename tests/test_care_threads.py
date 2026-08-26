@@ -15,6 +15,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import func, select
 
 from vitals.access import AccessScope, PolicyAction, PolicyResourceType
 from vitals.enums import (
@@ -24,7 +25,7 @@ from vitals.enums import (
     UserRoleName,
     UserStatus,
 )
-from vitals.models.care_thread import CareThreadParticipant
+from vitals.models.care_thread import CareThread, CareThreadParticipant
 from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.services.care import invitations, professionals, relationships, threads
 from vitals.services.access_resolution import resolve_access_context
@@ -119,6 +120,23 @@ async def _context(session, user, subject):
 
 
 # ── The patient is in the room ───────────────────────────────────────────────
+
+
+async def test_patient_cannot_open_a_conversation_without_a_recipient(db_session):
+    owner, subject = await _patient(db_session, "thread-owner-only")
+    owner_context = await _context(db_session, owner, subject)
+
+    with pytest.raises(
+        threads.CareThreadValidationError,
+        match="requires a professional recipient",
+    ):
+        await threads.open_thread(
+            db_session,
+            context=owner_context,
+            title="Who receives this?",
+        )
+
+    assert await db_session.scalar(select(func.count()).select_from(CareThread)) == 0
 
 
 async def test_a_thread_a_professional_opens_has_the_patient_in_it(db_session):

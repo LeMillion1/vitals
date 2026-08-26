@@ -531,7 +531,11 @@ async def messages(
             "open_thread": None,
             "thread_messages": [],
             "participants": [],
-            "may_send": care.may(
+            # Owners reply inside an existing professional conversation. The
+            # list page has no recipient selector, so letting them start here
+            # would create a room containing nobody but themselves.
+            "may_start_thread": not care.is_owner
+            and care.may(
                 resource_key=care_threads.MESSAGE_OPERATION,
                 action=care_threads.SEND_ACTION,
                 resource_type=PolicyResourceType.OPERATION,

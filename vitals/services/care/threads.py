@@ -287,17 +287,22 @@ async def _require_participation(
 async def open_thread(
     session: AsyncSession, *, context: AccessContext, title: str
 ) -> CareThread:
-    """Start a conversation about this patient, with this patient in it.
+    """Start a professional-patient conversation about this patient.
 
-    Either the patient or a professional in live care may start one. The subject
-    is added as a participant in the same flush as the thread itself, so a
-    thread they are not in does not exist even briefly. Never commits.
+    A professional in live care starts it and the subject is added as a
+    participant in the same flush. Patient replies use the existing thread;
+    without an explicit professional relationship there is no safe recipient
+    to infer, so an owner-only conversation is rejected. Never commits.
     """
 
     clean_title = _text(title, "title", limit=_MAX_TITLE)
     _require_scope(context, action=SEND_ACTION)
     relationship = await _live_relationship_or_none(session, context=context)
     owner_id = await _subject_owner_id(session, context.subject_id)
+    if relationship is None:
+        raise CareThreadValidationError(
+            "a conversation requires a professional recipient"
+        )
 
     thread = CareThread(
         subject_id=context.subject_id,
@@ -317,15 +322,14 @@ async def open_thread(
             relationship_id=None,
         )
     )
-    if relationship is not None:
-        session.add(
-            CareThreadParticipant(
-                thread_id=thread.id,
-                subject_id=context.subject_id,
-                user_id=context.principal.user_id,
-                relationship_id=relationship.id,
-            )
+    session.add(
+        CareThreadParticipant(
+            thread_id=thread.id,
+            subject_id=context.subject_id,
+            user_id=context.principal.user_id,
+            relationship_id=relationship.id,
         )
+    )
     await session.flush()
     return thread
 
