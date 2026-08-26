@@ -67,6 +67,17 @@ SECTIONS: tuple[_Section, ...] = (
     _Section("garmin", Domain.GARMIN, "garmin"),
     _Section("hevy", Domain.WORKOUTS, "hevy"),
 )
+CARE_DOMAINS: tuple[Domain, ...] = tuple(section.domain for section in SECTIONS)
+
+
+def enabled_care_domains(enabled_modules: Mapping[str, bool]) -> tuple[Domain, ...]:
+    """Domains this installation can actually render to a professional."""
+
+    return tuple(
+        section.domain
+        for section in SECTIONS
+        if bool(enabled_modules.get(section.module, False))
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -562,4 +573,10 @@ async def assemble_record_projection(
     )
 
 
-__all__ = ["RecordProjection", "SECTIONS", "assemble_record_projection"]
+__all__ = [
+    "CARE_DOMAINS",
+    "RecordProjection",
+    "SECTIONS",
+    "assemble_record_projection",
+    "enabled_care_domains",
+]

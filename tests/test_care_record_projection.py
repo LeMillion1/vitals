@@ -37,6 +37,23 @@ from vitals.services.care import record_projection
 from vitals.services import genetics_service, labs_service, weight_service
 
 
+def test_care_consent_domains_come_from_the_projection_registry():
+    enabled = {section.module: True for section in record_projection.SECTIONS}
+    enabled["skincare"] = False
+    enabled["timeline"] = True
+
+    domains = record_projection.enabled_care_domains(enabled)
+
+    assert Domain.SKINCARE not in domains
+    assert Domain.TIMELINE not in domains
+    assert Domain.MILESTONES not in domains
+    assert domains == tuple(
+        section.domain
+        for section in record_projection.SECTIONS
+        if section.module != "skincare"
+    )
+
+
 def _professional_context(*domains: Domain) -> AccessContext:
     now = datetime.now(timezone.utc)
     professional_id = uuid.uuid4()

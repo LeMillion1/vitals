@@ -867,6 +867,12 @@ reuses that exact two-person room. Do not describe this pair chat as a message
 to an unspecified «team». Historical topic threads remain readable, while any
 future group conversation must be introduced as a separate explicit feature.
 
+Consent may offer only domains present in
+`vitals.services.care.record_projection.SECTIONS` and enabled for that patient.
+The form, its recommended preset, the stored summary, and the professional
+projection all derive from this one registry; never promise a section the care
+screen cannot render or a module the patient switched off.
+
 Attachments are optional supporting material, not a second composer. Keep the
 standard `.v-file-drop` inside a native disclosure below the message field so
 the ordinary text exchange stays visually primary. Render an uploaded file as

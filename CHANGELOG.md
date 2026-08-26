@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — care consent matches the record a professional can see
+
+Consent choices and the recommended grant now come from the same care-section
+registry as the professional record projection. Disabled modules and the
+unimplemented timeline/milestone projections are no longer offered or silently
+stored as if they were visible.
+
 ### Added — patients can open a conversation with one chosen professional
 
 Each active care-team card now opens an idempotent two-person conversation for

@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy import func, select
 
 from vitals.enums import (
+    Domain,
     ProfessionalKind,
     ProfessionalVerificationStatus,
     UserRoleName,
@@ -42,6 +43,14 @@ def test_policy_actions_collapse_to_one_visible_record_section():
     }
 
     assert _shared_domains(rows) == ["labs"]
+
+    historical_disabled = rows | {
+        (PolicyResourceType.DOMAIN.value, "skincare", PolicyAction.READ.value)
+    }
+    assert _shared_domains(
+        historical_disabled,
+        visible_domains=(Domain.LABS,),
+    ) == ["labs"]
 
 
 @asynccontextmanager
@@ -301,6 +310,18 @@ async def test_the_patient_selects_exact_consent_scopes(patient_client, db_sessi
         assert accepted.status_code == 303
         relationship_id = await db_session.scalar(select(CareRelationship.id))
 
+        disabled = await owner_client.post(
+            "/settings/modules",
+            data={"module": "skincare", "enabled": "false"},
+        )
+        assert disabled.status_code == 200
+        team = await owner_client.get(
+            "/settings/care", headers={"Accept": "text/html"}
+        )
+        assert 'value="skincare"' not in team.text
+        assert 'value="timeline"' not in team.text
+        assert 'value="milestones"' not in team.text
+
         empty = await owner_client.post(
             f"/settings/care/{relationship_id}/grant",
             data={"custom": "1"},
@@ -312,6 +333,12 @@ async def test_the_patient_selects_exact_consent_scopes(patient_client, db_sessi
             data={"custom": "1", "domains": "not-a-record-section"},
         )
         assert unknown.status_code == 400
+
+        disabled_domain = await owner_client.post(
+            f"/settings/care/{relationship_id}/grant",
+            data={"custom": "1", "domains": "skincare"},
+        )
+        assert disabled_domain.status_code == 400
 
         granted = await owner_client.post(
             f"/settings/care/{relationship_id}/grant",
@@ -379,6 +406,33 @@ async def in_care(patient_client, db_session):
         )
         assert response.status_code in (200, 303), response.text
         yield owner_client, doctor_client, subject_id, relationship_id
+
+
+async def test_recommended_consent_grants_only_enabled_care_view_domains(
+    in_care, db_session
+):
+    from vitals.models.professional import ConsentScope
+    from vitals.services import modules_service
+    from vitals.services.care import record_projection
+
+    _owner_client, _doctor_client, subject_id, _relationship_id = in_care
+    enabled = await modules_service.get_enabled_modules(
+        db_session, subject_id=subject_id
+    )
+    expected = {
+        domain.value for domain in record_projection.enabled_care_domains(enabled)
+    }
+    granted = set(
+        await db_session.scalars(
+            select(ConsentScope.resource_key).where(
+                ConsentScope.resource_type == "domain"
+            )
+        )
+    )
+
+    assert granted == expected
+    assert "timeline" not in granted
+    assert "milestones" not in granted
 
 
 async def test_the_patient_opens_and_closes_their_own_record(in_care, db_session):
