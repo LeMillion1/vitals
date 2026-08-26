@@ -49,8 +49,11 @@ def test_subprocess_failure_surfaces_only_a_bounded_error_code(monkeypatch):
     completed = subprocess.CompletedProcess(
         ["synthetic"],
         1,
-        stdout=b'{"result":"error","error_code":"subject_data_missing"}\n',
-        stderr=b"sensitive database diagnostics",
+        stdout=b"",
+        stderr=(
+            b"compose prefix \x1b[31m"
+            b'{"result":"error","error_code":"subject_data_missing"}\x1b[0m\n'
+        ),
     )
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
 

@@ -109,6 +109,30 @@ class Context:
     docker_mutated: bool = False
 
 
+def _json_lines(*streams: bytes) -> list[dict[str, Any]]:
+    """Return only standalone JSON objects; never surface surrounding output."""
+
+    payloads: list[dict[str, Any]] = []
+    ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+    for stream in streams:
+        try:
+            lines = stream.decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            continue
+        for line in lines:
+            candidate = ansi.sub("", line).strip()
+            opening = candidate.find("{")
+            if opening < 0:
+                continue
+            try:
+                payload = json.loads(candidate[opening:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                payloads.append(payload)
+    return payloads
+
+
 def _fail(code: str) -> NoReturn:
     if re.fullmatch(r"[a-z0-9_]+", code) is None:
         code = "internal_error"
@@ -343,16 +367,11 @@ def _run(
         _fail(code)
     if result.returncode != 0:
         detail = ""
-        try:
-            lines = result.stdout.decode("utf-8").splitlines()
-            payload = json.loads(
-                next(line for line in reversed(lines) if line.startswith("{"))
-            )
+        for payload in reversed(_json_lines(result.stdout, result.stderr)):
             candidate = payload.get("error_code", "")
             if isinstance(candidate, str) and re.fullmatch(r"[a-z0-9_]+", candidate):
                 detail = candidate
-        except (UnicodeDecodeError, StopIteration, json.JSONDecodeError):
-            pass
+                break
         _fail(f"{code}_{detail}" if detail else code)
     return result
 
@@ -631,11 +650,10 @@ def _project_absent(project: str) -> None:
 
 
 def _json_from_output(result: subprocess.CompletedProcess[bytes], *, code: str) -> dict:
-    try:
-        lines = result.stdout.decode("utf-8").splitlines()
-        payload = json.loads(next(line for line in reversed(lines) if line.startswith("{")))
-    except (UnicodeDecodeError, StopIteration, json.JSONDecodeError):
+    payloads = _json_lines(result.stdout, result.stderr)
+    if not payloads:
         _fail(code)
+    payload = payloads[-1]
     if payload.get("result") not in ("ok", None) and payload.get("status") != "completed":
         _fail(code)
     return payload
