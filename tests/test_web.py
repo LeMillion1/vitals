@@ -1788,6 +1788,23 @@ async def test_settings_page_renders_modules_card(auth_client):
     assert "базовый" in r.text                         # core badge
 
 
+async def test_care_team_management_is_always_discoverable(auth_client):
+    """The permanent care hub is reachable without waiting for a task banner."""
+
+    settings = await auth_client.get("/settings", headers={"Accept": "text/html"})
+    assert settings.status_code == 200
+    assert 'href="/settings/care"' in settings.text
+    assert "Управлять командой" in settings.text
+
+    more = await auth_client.get("/more", headers={"Accept": "text/html"})
+    assert more.status_code == 200
+    assert 'href="/settings/care"' in more.text
+
+    today = await auth_client.get("/today", headers={"Accept": "text/html"})
+    rail = today.text.split('id="primary-nav-masthead"')[1].split("</aside>")[0]
+    assert 'href="/settings/care"' in rail
+
+
 async def test_disabled_module_route_redirects(auth_client):
     """A disabled Optional module's page redirects to the dashboard (browser GET)."""
     await auth_client.post("/settings/modules", data={"module": "glp1", "enabled": "false"})

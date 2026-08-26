@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — the care team is a permanent destination
+
+Patients can now reach invitations and professional-access controls directly
+from the desktop rail, the phone's More screen, and Settings. Managing the care
+team no longer depends on knowing a hidden URL or catching a temporary consent
+banner.
+
 ### Fixed — patient messages always have a real recipient
 
 The patient inbox no longer offers a new-conversation form that could create a

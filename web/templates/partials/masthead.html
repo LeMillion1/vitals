@@ -165,9 +165,11 @@
             <a href="/settings/platform/registration" class="mh-rail-foot-link {% if current_path.startswith('/settings/platform/registration') or current_path.startswith('/settings/platform/professionals') %}is-active{% endif %}">{{ t('registration.operator.heading') }}</a>
             {% endif %}
             {% if request.state.has_own_record %}
-            {# The patient's door into the conversations about their own record.
-               Offered only to somebody who has one: a professional reaches the
-               same screens through the patient they are about, from /care. #}
+            {# The persistent patient-side care hub. Invitations and access
+               controls must remain discoverable before, during, and after a
+               relationship rather than appearing only in a temporary banner. #}
+            <a href="/settings/care" class="mh-rail-foot-link {% if current_path.startswith('/settings/care') %}is-active{% endif %}">{{ t('care.team_heading') }}</a>
+            {# The patient's door into conversations about their own record. #}
             <a href="/messages" class="mh-rail-foot-link {% if current_path.startswith('/messages') %}is-active{% endif %}">
                 <span>{{ t('care.messages_title') }}</span>
                 {% if request.state.care_unread_count %}
@@ -175,7 +177,7 @@
                 {% endif %}
             </a>
             <a href="/share" class="mh-rail-foot-link {% if current_path.startswith('/share') %}is-active{% endif %}">{{ t('share.heading') }}</a>
-            <a href="/settings" class="mh-rail-foot-link {% if current_path.startswith('/settings') %}is-active{% endif %}">{{ t('nav.settings') }}</a>
+            <a href="/settings" class="mh-rail-foot-link {% if current_path.startswith('/settings') and not current_path.startswith('/settings/care') %}is-active{% endif %}">{{ t('nav.settings') }}</a>
             {% endif %}
         </div>
         <form action="/logout" method="POST" hx-boost="false" class="contents">

@@ -848,6 +848,12 @@ phone rules don't already give, and costs the desktop layout.
 
 ### 5.6 Care conversations stay one shared screen
 
+The patient-side «Care team» destination is permanent navigation, not a link
+that exists only while a consent task is pending. It is reachable from the
+desktop rail, the phone's More screen, and Settings before the first invitation
+and after the last relationship ends. Messages are a separate immediate task;
+access, invitations, pause, and end controls belong in the team hub.
+
 Patient and professional read the same conversation template. The subject and
 authorization basis stay visible above it, active participants are named in the
 thread, and opening a thread replaces the inbox/new-thread form rather than

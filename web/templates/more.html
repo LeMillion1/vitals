@@ -57,6 +57,12 @@
             <span class="mh-more-name">{{ t('registration.operator.heading') }}</span>
         </a>
         {% endif %}
+        {% if request.state.has_own_record %}
+        <a href="/settings/care" class="mh-more-row">
+            <span class="mh-more-ico">{{ mh_icon('patients') }}</span>
+            <span class="mh-more-name">{{ t('care.team_heading') }}</span>
+        </a>
+        {% endif %}
         <a href="/messages" class="mh-more-row">
             <span class="mh-more-ico">{{ mh_icon('messages') }}</span>
             <span class="mh-more-name">{{ t('care.messages_title') }}</span>
