@@ -488,6 +488,13 @@ async def legacy_owner_roots(db_session):
         subject_id=identity.subject_id,
     )
     await db_session.commit()
+    # Production closes the startup session before accepting any web request.
+    # This fixture reuses ``db_session`` for focused service assertions, so do
+    # not let startup's remembered subject scope masquerade as request authority.
+    from vitals.persistence import rls
+
+    db_session.info.pop(rls._SUBJECT_KEY, None)
+    db_session.info.pop(rls._PLATFORM_KEY, None)
     return identity
 
 

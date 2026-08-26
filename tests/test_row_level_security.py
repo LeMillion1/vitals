@@ -615,6 +615,226 @@ async def test_real_postgres_binding_survives_a_commit_and_refuses_a_switch(
         await admin.dispose()
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_real_postgres_member_provisioning_binds_only_its_new_subject(
+    db_session,
+    monkeypatch,
+):
+    """Runtime admission needs one new subject, never installation authority."""
+
+    from alembic.config import Config as AlembicConfig
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from vitals.models.identity import (
+        AuditEvent,
+        HealthSubject,
+        User,
+        UserFederatedIdentity,
+        UserRole,
+    )
+    from vitals.models.scoped_settings import SubjectSetting
+    from vitals.models.tenancy import IntegrationConnection
+    from vitals.persistence.rls import bound_subject, in_platform_scope
+    from vitals.services.authentication import federation, registration
+    from vitals.services.authentication.provisioning import (
+        provision_account,
+        provision_bound_account,
+    )
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
+    monkeypatch.setenv(registration.REGISTRATION_UNLOCK_ENV, "1")
+    await db_session.close()
+
+    admin = await _migrated_engine(
+        database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
+    )
+    restricted = await restricted_engine(database_url)
+    admin_factory = async_sessionmaker(
+        admin, expire_on_commit=False, class_=AsyncSession
+    )
+    restricted_factory = async_sessionmaker(
+        restricted, expire_on_commit=False, class_=AsyncSession
+    )
+    try:
+        async with admin_factory() as seed:
+            other = await provision_account(
+                seed,
+                username="rls-existing-member",
+            )
+            await registration.set_stored_mode(
+                seed,
+                registration.RegistrationMode.OPEN,
+            )
+            await seed.commit()
+
+        async with restricted_factory() as admitting:
+            assert await admitting.scalar(
+                sa.select(sa.func.count()).select_from(IntegrationConnection)
+            ) == 0
+            assert await admitting.scalar(
+                sa.select(sa.func.count()).select_from(SubjectSetting)
+            ) == 0
+
+            admitted_user = await federation.resolve_federated_user(
+                admitting,
+                issuer="https://rls-idp.example.test",
+                subject="rls-admitted-member",
+                email="rls-admitted-member@example.test",
+                email_verified=True,
+                preferred_username="rls-admitted-member",
+            )
+            admitted_subject_id = await admitting.scalar(
+                sa.select(HealthSubject.id).where(
+                    HealthSubject.owner_user_id == admitted_user.id
+                )
+            )
+            assert admitted_subject_id is not None
+            assert bound_subject(admitting) == admitted_subject_id
+            assert not in_platform_scope(admitting)
+            assert await admitting.scalar(
+                sa.text("SELECT current_setting('vitals.platform_scope', true)")
+            ) != "on"
+            assert await admitting.scalar(
+                sa.select(sa.func.count()).select_from(IntegrationConnection)
+            ) == 4
+            assert await admitting.scalar(
+                sa.select(sa.func.count()).select_from(SubjectSetting)
+            ) == 1
+            assert await admitting.scalar(
+                sa.select(sa.func.count()).select_from(AuditEvent).where(
+                    AuditEvent.subject_id == admitted_subject_id,
+                    AuditEvent.event_type
+                    == "tenancy.legacy_resource_roots.bootstrap",
+                )
+            ) == 1
+            assert await admitting.scalar(
+                sa.select(sa.func.count()).select_from(AuditEvent).where(
+                    AuditEvent.subject_id == admitted_subject_id,
+                    AuditEvent.event_type == "registration.account.provisioned",
+                )
+            ) == 1
+            assert await admitting.scalar(
+                sa.select(sa.func.count()).select_from(UserFederatedIdentity).where(
+                    UserFederatedIdentity.user_id == admitted_user.id,
+                    UserFederatedIdentity.subject == "rls-admitted-member",
+                )
+            ) == 1
+            assert await admitting.scalar(
+                sa.select(sa.func.count()).select_from(UserRole).where(
+                    UserRole.user_id == admitted_user.id,
+                    UserRole.role == "member",
+                )
+            ) == 1
+            await admitting.commit()
+            admitted_user_id = admitted_user.id
+
+        async with restricted_factory() as unbound_again:
+            assert bound_subject(unbound_again) is None
+            assert not in_platform_scope(unbound_again)
+            assert await unbound_again.scalar(
+                sa.select(sa.func.count()).select_from(IntegrationConnection)
+            ) == 0
+            assert await unbound_again.scalar(
+                sa.select(sa.func.count()).select_from(SubjectSetting)
+            ) == 0
+
+        async with admin_factory() as verification:
+            assert await verification.scalar(
+                sa.select(sa.func.count()).select_from(IntegrationConnection).where(
+                    IntegrationConnection.subject_id == admitted_subject_id
+                )
+            ) == 4
+            assert await verification.scalar(
+                sa.select(sa.func.count()).select_from(IntegrationConnection).where(
+                    IntegrationConnection.subject_id == other.subject_id
+                )
+            ) == 4
+            assert await verification.scalar(
+                sa.select(sa.func.count()).select_from(User).where(
+                    User.id == admitted_user_id
+                )
+            ) == 1
+
+        async with restricted_factory() as operator:
+            operator_account = await provision_bound_account(
+                operator,
+                username="rls-operator-record",
+                roles=("doctor", "trainer"),
+            )
+            assert operator_account.subject_id is not None
+            assert bound_subject(operator) == operator_account.subject_id
+            assert not in_platform_scope(operator)
+            await operator.commit()
+
+        async with admin_factory() as verification:
+            assert await verification.scalar(
+                sa.select(sa.func.count()).select_from(IntegrationConnection).where(
+                    IntegrationConnection.subject_id == operator_account.subject_id
+                )
+            ) == 4
+            assert await verification.scalar(
+                sa.select(sa.func.count()).select_from(UserRole).where(
+                    UserRole.user_id == operator_account.user_id
+                )
+            ) == 2
+
+        async with restricted_factory() as rolled_back:
+            transient_user = await federation.resolve_federated_user(
+                rolled_back,
+                issuer="https://rls-idp.example.test",
+                subject="rls-rolled-back-member",
+                email="rls-rolled-back-member@example.test",
+                email_verified=True,
+                preferred_username="rls-rolled-back-member",
+            )
+            transient_user_id = transient_user.id
+            transient_subject_id = await rolled_back.scalar(
+                sa.select(HealthSubject.id).where(
+                    HealthSubject.owner_user_id == transient_user.id
+                )
+            )
+            assert transient_subject_id is not None
+            await rolled_back.rollback()
+
+        async with admin_factory() as verification:
+            assert await verification.scalar(
+                sa.select(sa.func.count()).select_from(User).where(
+                    User.id == transient_user_id
+                )
+            ) == 0
+            assert await verification.scalar(
+                sa.select(sa.func.count()).select_from(HealthSubject).where(
+                    HealthSubject.id == transient_subject_id
+                )
+            ) == 0
+            assert await verification.scalar(
+                sa.select(sa.func.count()).select_from(IntegrationConnection).where(
+                    IntegrationConnection.subject_id == transient_subject_id
+                )
+            ) == 0
+            assert await verification.scalar(
+                sa.select(sa.func.count()).select_from(SubjectSetting).where(
+                    SubjectSetting.subject_id == transient_subject_id
+                )
+            ) == 0
+            assert await verification.scalar(
+                sa.select(sa.func.count()).select_from(UserFederatedIdentity).where(
+                    UserFederatedIdentity.user_id == transient_user_id
+                )
+            ) == 0
+            assert await verification.scalar(
+                sa.select(sa.func.count()).select_from(AuditEvent).where(
+                    AuditEvent.subject_id == transient_subject_id
+                )
+            ) == 0
+    finally:
+        await restricted.dispose()
+        await admin.dispose()
+
+
 # ── The tables revision 0050 deliberately left out ───────────────────────────
 
 def _extension_module():
@@ -1457,14 +1677,6 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
         # authorization, checked by share_service itself before anything is read.
         ("vitals/services/share_service.py", "resolve_public"),
         ("vitals/services/share_service.py", "register_open"),
-        # An admitted member has no subject-bound session yet. This helper is
-        # reached only after an already locked, single-use invitation/request
-        # proof has passed, and uses the scope only to materialize that one new
-        # account and subject graph; it is not a cross-subject reader.
-        (
-            "vitals/services/authentication/admission/_shared.py",
-            "provision_and_link",
-        ),
         # The compatibility startup transaction must discover the sole durable
         # subject before it can bind one. Its identity, connection, settings,
         # and preference reconciliation is bounded by one commit/rollback.

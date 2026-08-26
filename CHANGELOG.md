@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — member admission binds its new subject instead of opening the platform
+
+Invitation, administrator-approved, and open-registration member provisioning
+now creates the unscoped identity root, binds the transaction to that exact new
+health subject, and only then materializes its integration roots, module map,
+and subject-owned audit. A pre-bound or platform-scoped admission transaction
+fails before the first identity mutation. Doctor and trainer accounts remain
+unbound unless an operator explicitly gives them a record. The one-shot account
+CLI uses the same narrow binding under the runtime database role, while
+privileged batch/demo provisioning retains explicit multi-subject behavior.
+
 ### Fixed — invitation acceptance no longer opens the platform scope
 
 Accepting a doctor or trainer invitation now crosses the unbound-to-subject

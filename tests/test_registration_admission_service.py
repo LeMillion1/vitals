@@ -32,7 +32,7 @@ from vitals.models.identity import (
     UserRole,
 )
 from vitals.models.registration import RegistrationInvitation, RegistrationRequest
-from vitals.persistence.rls import in_platform_scope
+from vitals.persistence.rls import bound_subject, in_platform_scope
 from vitals.services.authentication import admission
 from vitals.services.authentication import registration as registration_policy
 from vitals.services.authentication.admission import retention as retention_service
@@ -390,36 +390,43 @@ async def test_consumption_maps_kind_to_one_role_and_the_right_record_shape(
     assert link.last_authenticated_at is not None
     assert _utc(link.last_authenticated_at) == authenticated_at
     assert (subject_id is not None) is has_record
+    assert bound_subject(db_session) == (subject_id if has_record else None)
+    assert not in_platform_scope(db_session)
     assert issued.invitation.status == RegistrationInvitationStatus.CONSUMED.value
     assert issued.invitation.consumed_by_user_id == result.user.id
 
 
+@pytest.mark.parametrize(
+    ("slug", "preferred_username", "taken_username"),
+    [
+        ("fallback-taken", "claimed-name", "claimed-name"),
+        ("fallback-invalid", "invalid\x00claim", None),
+    ],
+)
 async def test_invalid_or_taken_username_uses_an_opaque_stable_fallback(
-    db_session, legacy_owner_roots, monkeypatch
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    slug,
+    preferred_username,
+    taken_username,
 ):
-    await _user(db_session, "claimed-name")
-    _actor, first = await _issued(db_session, monkeypatch, slug="fallback-a")
-    first_result = await _consume_invitation(
+    """Each admission is one request and therefore one subject-bound session."""
+
+    if taken_username is not None:
+        await _user(db_session, taken_username)
+    _actor, issued = await _issued(db_session, monkeypatch, slug=slug)
+    result = await _consume_invitation(
         db_session,
-        token=first.token,
+        token=issued.token,
         issuer=ISSUER,
-        subject="fallback-a",
-        verified_email="fallback-a@example.test",
-        preferred_username="claimed-name",
-    )
-    _actor, second = await _issued(db_session, monkeypatch, slug="fallback-b")
-    second_result = await _consume_invitation(
-        db_session,
-        token=second.token,
-        issuer=ISSUER,
-        subject="fallback-b",
-        verified_email="fallback-b@example.test",
-        preferred_username="invalid\x00claim",
+        subject=slug,
+        verified_email=f"{slug}@example.test",
+        preferred_username=preferred_username,
     )
 
-    assert first_result.user.normalized_username != "claimed-name"
-    assert second_result.user.normalized_username != "invalid\x00claim"
-    assert first_result.user.normalized_username != second_result.user.normalized_username
+    expected = f"member-{issued.invitation.id.hex[:24]}"
+    assert result.user.normalized_username == expected
 
 
 async def test_unknown_expired_replayed_wrong_and_unverified_invites_refuse_uniformly(
@@ -775,6 +782,8 @@ async def test_approve_provisions_one_member_graph_with_human_role_provenance(
     assert role.assigned_by_user_id == reviewer.id
     assert link is not None and link.issuer == ISSUER
     assert record is not None
+    assert bound_subject(db_session) == record.id
+    assert not in_platform_scope(db_session)
     assert result.user.email is None
     assert result.user.normalized_email is None
     assert result.user.email_verified_at is None

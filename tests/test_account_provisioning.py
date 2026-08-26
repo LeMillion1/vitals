@@ -88,6 +88,94 @@ async def test_a_provisioned_subject_is_not_one_row(db_session, legacy_owner_roo
     assert modules is not None
 
 
+async def test_web_member_provisioning_binds_before_subject_roots(
+    db_session, legacy_owner_roots, monkeypatch
+):
+    """The runtime path narrows to its new subject before any RLS-owned insert."""
+
+    from vitals.persistence.rls import bound_subject, in_platform_scope
+    from vitals.services import tenancy_bootstrap
+
+    original = tenancy_bootstrap.bootstrap_legacy_resource_roots
+    observed: list[object] = []
+
+    async def assert_bound_before_roots(session, *, subject_id, **kwargs):
+        observed.append(bound_subject(session))
+        assert bound_subject(session) == subject_id
+        assert not in_platform_scope(session)
+        return await original(session, subject_id=subject_id, **kwargs)
+
+    monkeypatch.setattr(
+        tenancy_bootstrap,
+        "bootstrap_legacy_resource_roots",
+        assert_bound_before_roots,
+    )
+
+    provisioned = await account_provisioning_service.provision_bound_member_account(
+        db_session,
+        username="subject-bound-member",
+    )
+
+    assert observed == [provisioned.subject_id]
+    assert bound_subject(db_session) == provisioned.subject_id
+    assert not in_platform_scope(db_session)
+    assert await db_session.scalar(
+        select(func.count()).select_from(IntegrationConnection).where(
+            IntegrationConnection.subject_id == provisioned.subject_id
+        )
+    ) == 4
+    assert await db_session.scalar(
+        select(func.count()).select_from(SubjectSetting).where(
+            SubjectSetting.subject_id == provisioned.subject_id
+        )
+    ) == 1
+    assert await db_session.scalar(
+        select(func.count()).select_from(AuditEvent).where(
+            AuditEvent.subject_id == provisioned.subject_id,
+            AuditEvent.event_type == "tenancy.legacy_resource_roots.bootstrap",
+        )
+    ) == 1
+
+
+@pytest.mark.parametrize("ambient_scope", ["subject", "platform"])
+async def test_web_member_provisioning_rejects_ambient_authority_before_mutation(
+    db_session, legacy_owner_roots, ambient_scope
+):
+    from vitals.persistence.rls import bind_session_subject, enter_platform_scope
+
+    before = await db_session.scalar(select(func.count()).select_from(User))
+    if ambient_scope == "subject":
+        await bind_session_subject(db_session, legacy_owner_roots.subject_id)
+    else:
+        await enter_platform_scope(db_session)
+
+    with pytest.raises(account_provisioning_service.AccountProvisioningScopeError):
+        await account_provisioning_service.provision_bound_member_account(
+            db_session,
+            username=f"refused-{ambient_scope}-member",
+        )
+
+    assert await db_session.scalar(select(func.count()).select_from(User)) == before
+
+
+async def test_operator_provisioning_can_create_multiple_subjects_without_binding(
+    db_session, legacy_owner_roots
+):
+    """CLI/demo provisioning retains its caller-managed, multi-subject contract."""
+
+    from vitals.persistence.rls import bound_subject
+
+    first = await account_provisioning_service.provision_account(
+        db_session, username="operator-first-member"
+    )
+    second = await account_provisioning_service.provision_account(
+        db_session, username="operator-second-member"
+    )
+
+    assert first.subject_id != second.subject_id
+    assert bound_subject(db_session) is None
+
+
 async def test_unconfigured_subject_proactive_jobs_are_clean_noops(
     db_session,
     legacy_owner_roots,

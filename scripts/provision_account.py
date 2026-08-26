@@ -106,15 +106,27 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         async with factory() as session:
             try:
-                provisioned = await account_provisioning_service.provision_account(
-                    session,
-                    username=args.username,
-                    email=args.email,
-                    display_name=args.display_name,
-                    timezone=args.timezone,
-                    roles=roles,
-                    with_health_record=owns_record,
-                )
+                if owns_record:
+                    provisioned = (
+                        await account_provisioning_service.provision_bound_account(
+                            session,
+                            username=args.username,
+                            email=args.email,
+                            display_name=args.display_name,
+                            timezone=args.timezone,
+                            roles=roles,
+                        )
+                    )
+                else:
+                    provisioned = await account_provisioning_service.provision_account(
+                        session,
+                        username=args.username,
+                        email=args.email,
+                        display_name=args.display_name,
+                        timezone=args.timezone,
+                        roles=roles,
+                        with_health_record=False,
+                    )
             except account_provisioning_service.AccountProvisioningError as exc:
                 await session.rollback()
                 print(str(exc), file=sys.stderr)

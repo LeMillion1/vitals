@@ -21,12 +21,12 @@ from vitals.enums import (
 )
 from vitals.models.identity import AuditEvent, User, UserFederatedIdentity, UserRole
 from vitals.models.registration import RegistrationInvitation, RegistrationRequest
-from vitals.persistence.rls import enter_platform_scope
 from vitals.services.authentication.provisioning import (
     AccountAlreadyExists,
     AccountProvisioningError,
     ProvisionedAccount,
     provision_account,
+    provision_bound_member_account,
 )
 from vitals.services.authentication.registration import (
     RegistrationMode,
@@ -390,21 +390,23 @@ async def provision_and_link(
         seed=admission_id,
         prefix=account_kind_value.value,
     )
-    # A member account materializes strict subject-owned roots before a subject
-    # session can exist. Enter only after every proof, collision check, input
-    # validation, and local-name allocation has succeeded. Professional-only
-    # accounts create no subject graph and never need the broad scope.
-    if with_record:
-        await enter_platform_scope(session)
     try:
-        account = await provision_account(
-            session,
-            username=username,
-            email=mailbox.display if persist_email_proof else None,
-            display_name=username,
-            roles=(role.value,),
-            with_health_record=with_record,
-        )
+        if with_record:
+            account = await provision_bound_member_account(
+                session,
+                username=username,
+                email=mailbox.display if persist_email_proof else None,
+                display_name=username,
+            )
+        else:
+            account = await provision_account(
+                session,
+                username=username,
+                email=mailbox.display if persist_email_proof else None,
+                display_name=username,
+                roles=(role.value,),
+                with_health_record=False,
+            )
     except AccountAlreadyExists as exc:
         raise AdmissionRefused("this admission proof does not open an account") from exc
     except AccountProvisioningError as exc:

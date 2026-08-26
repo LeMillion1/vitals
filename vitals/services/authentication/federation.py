@@ -317,7 +317,7 @@ async def _provision_if_registration_is_open(
         candidate = f"user-{subject[:24]}"
 
     try:
-        provisioned = await provisioning.provision_account(
+        provisioned = await provisioning.provision_bound_member_account(
             session,
             username=candidate,
             # The provider's display claim may name the account, but only a

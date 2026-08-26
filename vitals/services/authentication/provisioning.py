@@ -64,6 +64,10 @@ class AccountProvisioningValidationError(AccountProvisioningError):
     """The username, timezone or role set is not one this can act on."""
 
 
+class AccountProvisioningScopeError(AccountProvisioningError):
+    """A web admission transaction already carries incompatible RLS authority."""
+
+
 @dataclass(frozen=True, slots=True)
 class ProvisionedAccount:
     user_id: uuid.UUID
@@ -136,6 +140,105 @@ async def provision_account(
     password can ever verify against — and under the cutover ``authenticate()``
     refuses before it reaches the column at all.
     """
+
+    return await _provision_account(
+        session,
+        username=username,
+        email=email,
+        password_hash=password_hash,
+        display_name=display_name,
+        timezone=timezone,
+        roles=roles,
+        with_health_record=with_health_record,
+        bind_new_subject=False,
+    )
+
+
+async def provision_bound_member_account(
+    session: AsyncSession,
+    *,
+    username: str,
+    email: str | None = None,
+    password_hash: str | None = None,
+    display_name: str | None = None,
+    timezone: str = DEFAULT_TIMEZONE,
+) -> ProvisionedAccount:
+    """Create one member and bind the transaction to its new record.
+
+    This is the web-admission boundary.  Identity rows and the health-subject
+    root do not carry ``subject_id`` and can be created by an unbound runtime
+    role.  Immediately after that root is flushed, this function binds the
+    session to its exact id *before* creating integration roots, subject
+    settings, or subject-owned audit rows.  No installation-wide RLS scope is
+    needed and no other subject can become visible.
+
+    A transaction that is already subject-bound or platform-scoped is rejected
+    before validation or mutation.  Admission is one request for one new
+    person; accepting ambient authority here would make the safety of the
+    bootstrap depend on whichever route happened to call it.
+    """
+
+    return await provision_bound_account(
+        session,
+        username=username,
+        email=email,
+        password_hash=password_hash,
+        display_name=display_name,
+        timezone=timezone,
+        roles=(UserRoleName.MEMBER.value,),
+    )
+
+
+async def provision_bound_account(
+    session: AsyncSession,
+    *,
+    username: str,
+    email: str | None = None,
+    password_hash: str | None = None,
+    display_name: str | None = None,
+    timezone: str = DEFAULT_TIMEZONE,
+    roles: tuple[str, ...] = (UserRoleName.MEMBER.value,),
+) -> ProvisionedAccount:
+    """Create one record-owning account in a fresh subject-bound transaction.
+
+    The one-shot operator CLI uses this broader sibling of member admission so
+    a doctor or trainer may explicitly own a record without receiving platform
+    authority. Batch/demo importers that already use a migration-owner session
+    retain :func:`provision_account` and its caller-managed multi-subject scope.
+    """
+
+    from vitals.persistence.rls import bound_subject, in_platform_scope
+
+    if bound_subject(session) is not None or in_platform_scope(session):
+        raise AccountProvisioningScopeError(
+            "record provisioning requires a fresh unbound transaction"
+        )
+    return await _provision_account(
+        session,
+        username=username,
+        email=email,
+        password_hash=password_hash,
+        display_name=display_name,
+        timezone=timezone,
+        roles=roles,
+        with_health_record=True,
+        bind_new_subject=True,
+    )
+
+
+async def _provision_account(
+    session: AsyncSession,
+    *,
+    username: str,
+    email: str | None,
+    password_hash: str | None,
+    display_name: str | None,
+    timezone: str,
+    roles: tuple[str, ...],
+    with_health_record: bool,
+    bind_new_subject: bool,
+) -> ProvisionedAccount:
+    """Validated implementation shared by operator and web admission paths."""
 
     try:
         normalized = normalize_username(username)
@@ -217,6 +320,10 @@ async def provision_account(
         session.add(subject)
         await session.flush()
         subject_id = subject.id
+        if bind_new_subject:
+            from vitals.persistence.rls import bind_session_subject
+
+            await bind_session_subject(session, subject_id)
         await _materialize_subject_roots(session, subject_id=subject_id)
 
     return ProvisionedAccount(
@@ -261,8 +368,11 @@ async def _materialize_subject_roots(
 __all__ = [
     "AccountAlreadyExists",
     "AccountProvisioningError",
+    "AccountProvisioningScopeError",
     "AccountProvisioningValidationError",
     "LOCKED_PASSWORD_HASH",
     "ProvisionedAccount",
     "provision_account",
+    "provision_bound_account",
+    "provision_bound_member_account",
 ]
