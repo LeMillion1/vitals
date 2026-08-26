@@ -808,7 +808,9 @@ async def test_legacy_subject_connection_and_platform_invocation_rows_validate_t
     db_session.add(
         WeeklyDigest(
             subject_id=legacy_owner_roots.subject_id,
-            actor_user_id=legacy_owner_roots.user_id,
+            # Stage-3R can prove the historical subject but deliberately does
+            # not invent the missing actor on a pre-tenancy manual artifact.
+            actor_user_id=None,
             integration_connection_id=legacy_connection_id,
             ai_invocation_id=None,
             date=date(2026, 8, 13),

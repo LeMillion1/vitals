@@ -2846,7 +2846,12 @@ def _validate_source_actor(
     if source not in _DIGEST_SOURCES:
         raise DigestOwnershipError(f"unsupported digest source {source!r}")
     if source in {Source.MANUAL.value, Source.MCP.value}:
-        if actor_user_id != owner_user_id:
+        # Stage-3R deliberately preserves the absent actor on pre-tenancy
+        # manual/MCP artifacts: the sole subject was provable, the originating
+        # human was not. Live writers always stamp their actor, but read-time
+        # validation must not turn that reviewed historical NULL into a forged
+        # owner attribution merely to make the artifact readable.
+        if actor_user_id not in {None, owner_user_id}:
             raise DigestOwnershipError(
                 "human digest source requires the current owner actor"
             )
