@@ -4,9 +4,14 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 STATE_FILE="$SCRIPT_DIR/.vitals-deploy-state"
+DEPLOY_LOCK_FILE="$SCRIPT_DIR/.vitals-deploy.lock"
 DEPLOY_PHASE="preflight"
 ROLLBACK_SHA=""
 STATE_TEMP=""
+DEPLOY_LOCK_FD=""
+COMPOSE_CONFIG_ID=""
+COMPOSE_SNAPSHOT=""
+BACKUP_COMPOSE_SNAPSHOT=""
 
 die() {
   echo "deploy: $*" >&2
@@ -27,16 +32,51 @@ on_error() {
 }
 trap on_error ERR
 
-cleanup_state_temp() {
+cleanup_private_temps() {
   if [[ -n "$STATE_TEMP" && -f "$STATE_TEMP" && ! -L "$STATE_TEMP" ]]; then
     rm -f -- "$STATE_TEMP"
   fi
   STATE_TEMP=""
+  if [[ -n "$COMPOSE_SNAPSHOT" && -f "$COMPOSE_SNAPSHOT" && ! -L "$COMPOSE_SNAPSHOT" ]]; then
+    rm -f -- "$COMPOSE_SNAPSHOT"
+  fi
+  COMPOSE_SNAPSHOT=""
+  if [[ -n "$BACKUP_COMPOSE_SNAPSHOT" && -f "$BACKUP_COMPOSE_SNAPSHOT" && ! -L "$BACKUP_COMPOSE_SNAPSHOT" ]]; then
+    rm -f -- "$BACKUP_COMPOSE_SNAPSHOT"
+  fi
+  BACKUP_COMPOSE_SNAPSHOT=""
 }
-trap cleanup_state_temp EXIT
+trap cleanup_private_temps EXIT
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command is unavailable: $1"
+}
+
+acquire_deploy_lock() {
+  if [[ -e "$DEPLOY_LOCK_FILE" || -L "$DEPLOY_LOCK_FILE" ]]; then
+    [[ -f "$DEPLOY_LOCK_FILE" && ! -L "$DEPLOY_LOCK_FILE" ]] || die \
+      "deploy lock must be a regular non-symlink file"
+  else
+    (umask 077; : >"$DEPLOY_LOCK_FILE") || die "deploy lock could not be created"
+  fi
+  chmod 600 "$DEPLOY_LOCK_FILE"
+  python3 - "$DEPLOY_LOCK_FILE" <<'PY' || die "deploy lock must be owner-only mode 0600"
+import os
+from pathlib import Path
+import stat
+import sys
+
+metadata = Path(sys.argv[1]).lstat()
+raise SystemExit(
+    0
+    if stat.S_ISREG(metadata.st_mode)
+    and metadata.st_uid == os.geteuid()
+    and stat.S_IMODE(metadata.st_mode) == 0o600
+    else 1
+)
+PY
+  exec {DEPLOY_LOCK_FD}<>"$DEPLOY_LOCK_FILE"
+  flock -n "$DEPLOY_LOCK_FD" || die "another Vitals deploy or rollback is already running"
 }
 
 validate_sha() {
@@ -47,8 +87,21 @@ validate_project() {
   [[ "$1" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
 }
 
+source_compose() {
+  docker compose --project-name "$COMPOSE_PROJECT_NAME" \
+    --project-directory "$SCRIPT_DIR" "$@"
+}
+
 compose() {
-  docker compose "$@"
+  [[ -n "$COMPOSE_SNAPSHOT" ]] || die "immutable Compose snapshot is unavailable"
+  docker compose --project-name "$COMPOSE_PROJECT_NAME" \
+    --project-directory "$SCRIPT_DIR" --file "$COMPOSE_SNAPSHOT" "$@"
+}
+
+backup_compose() {
+  [[ -n "$BACKUP_COMPOSE_SNAPSHOT" ]] || die "immutable backup Compose snapshot is unavailable"
+  docker compose --project-name "$COMPOSE_PROJECT_NAME" \
+    --project-directory "$SCRIPT_DIR" --file "$BACKUP_COMPOSE_SNAPSHOT" "$@"
 }
 
 runtime_image() {
@@ -210,8 +263,144 @@ if any(one_mount(app, target) != one_mount(worker, target) for target in targets
 ' || die "web and worker data mounts must resolve to identical sources and access modes"
 }
 
+assert_existing_data_mounts() {
+  compose config --format json | python3 -c '
+import json
+from pathlib import Path
+import os
+import subprocess
+import sys
+
+payload = json.load(sys.stdin)
+services = payload.get("services", {})
+volumes = payload.get("volumes", {})
+project = os.environ["COMPOSE_PROJECT_NAME"]
+targets = {
+    "vitals_db": ("/var/lib/postgresql/data",),
+    "vitals_redis": ("/data",),
+    "vitals_app": (
+        "/run/vitals-runtime",
+        "/data/garmin_session",
+        "/app/web/static/uploads",
+        "/data/private_files",
+    ),
+    "vitals_worker": (
+        "/run/vitals-runtime",
+        "/data/garmin_session",
+        "/app/web/static/uploads",
+        "/data/private_files",
+    ),
+}
+
+def overlaps(left, right):
+    left_path = Path(left)
+    right_path = Path(right)
+    return left_path == right_path or left_path.is_relative_to(right_path) or right_path.is_relative_to(left_path)
+
+def mount_descriptor(mount):
+    kind = mount.get("type")
+    source = mount.get("source")
+    if kind == "volume":
+        volume = volumes.get(source, {})
+        source = volume.get("name")
+    elif kind == "bind":
+        source = str(Path(str(source)).resolve(strict=False))
+    else:
+        raise SystemExit(1)
+    if not isinstance(source, str) or not source:
+        raise SystemExit(1)
+    return kind, source, not bool(mount.get("read_only", False))
+
+def expected_mounts(service_name, protected_targets):
+    result = {}
+    for mount in services.get(service_name, {}).get("volumes", []):
+        target = mount.get("target")
+        if not isinstance(target, str) or not any(
+            overlaps(target, protected) for protected in protected_targets
+        ):
+            continue
+        if target in result:
+            raise SystemExit(1)
+        result[target] = mount_descriptor(mount)
+    if any(target not in result for target in protected_targets):
+        raise SystemExit(1)
+    return result
+
+def actual_mounts(service_name):
+    ids = subprocess.check_output(
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+            "--filter",
+            f"label=com.docker.compose.service={service_name}",
+            "--format",
+            "{{.ID}}",
+        ],
+        text=True,
+    ).splitlines()
+    ids = [value.strip() for value in ids if value.strip()]
+    if len(ids) != 1:
+        raise SystemExit(1)
+    records = json.loads(
+        subprocess.check_output(["docker", "inspect", ids[0]], text=True)
+    )
+    if len(records) != 1:
+        raise SystemExit(1)
+    result = {}
+    for mount in records[0].get("Mounts", []):
+        target = mount.get("Destination")
+        kind = mount.get("Type")
+        if kind == "volume":
+            source = mount.get("Name")
+        elif kind == "bind":
+            source = str(Path(str(mount.get("Source", ""))).resolve(strict=False))
+        else:
+            continue
+        if target in result:
+            raise SystemExit(1)
+        result[target] = (kind, source, bool(mount.get("RW")))
+    return result
+
+for service_name, service_targets in targets.items():
+    actual = actual_mounts(service_name)
+    actual_relevant = {
+        target: descriptor
+        for target, descriptor in actual.items()
+        if any(overlaps(target, protected) for protected in service_targets)
+    }
+    if actual_relevant != expected_mounts(service_name, service_targets):
+        raise SystemExit(1)
+' || die "rendered deploy would replace an existing runtime data mount; use the reviewed migration runbook"
+}
+
+rendered_config_id() {
+  python3 - "$COMPOSE_SNAPSHOT" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+}
+
+assert_compose_authority() {
+  [[ -f "$COMPOSE_SNAPSHOT" && ! -L "$COMPOSE_SNAPSHOT" ]] || die \
+    "immutable Compose snapshot is missing or unsafe"
+  [[ -n "$COMPOSE_CONFIG_ID" ]] || die "rendered Compose authority was not recorded"
+  [[ "$(rendered_config_id)" == "$COMPOSE_CONFIG_ID" ]] || die \
+    "immutable Compose snapshot changed during deploy"
+}
+
+assert_mutation_authority() {
+  assert_compose_authority
+  assert_existing_data_mounts
+}
+
 assert_backup_data_mounts() {
-  compose --profile offsite config --format json | python3 -c '
+  backup_compose --profile offsite config --format json | python3 -c '
 import json
 import sys
 
@@ -254,30 +443,67 @@ if (
 ' || die "backup inputs and offsite source must match the exact runtime data paths"
 }
 
+create_compose_snapshots() {
+  [[ -z "$COMPOSE_SNAPSHOT" && -z "$BACKUP_COMPOSE_SNAPSHOT" ]] || die \
+    "Compose snapshots were already created"
+  COMPOSE_SNAPSHOT="$(umask 077; mktemp "/tmp/vitals-compose.snapshot.XXXXXX")"
+  BACKUP_COMPOSE_SNAPSHOT="$(umask 077; mktemp "/tmp/vitals-compose.snapshot.XXXXXX")"
+  source_compose --profile "*" config --format json >"$COMPOSE_SNAPSHOT"
+  source_compose --profile offsite config --format json >"$BACKUP_COMPOSE_SNAPSHOT"
+  chmod 400 "$COMPOSE_SNAPSHOT" "$BACKUP_COMPOSE_SNAPSHOT"
+  python3 - "$COMPOSE_SNAPSHOT" "$BACKUP_COMPOSE_SNAPSHOT" <<'PY' || die \
+    "Compose snapshots must be owner-only regular files"
+import os
+from pathlib import Path
+import stat
+import sys
+
+for value in sys.argv[1:]:
+    metadata = Path(value).lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o400
+    ):
+        raise SystemExit(1)
+PY
+  COMPOSE_CONFIG_ID="$(rendered_config_id)"
+}
+
 compose_preflight() {
   DEPLOY_PHASE="compose preflight"
+  source_compose --profile "*" config --quiet
+  source_compose --profile offsite config --quiet
+  create_compose_snapshots
+  assert_compose_authority
   compose config --quiet
   assert_shared_runtime_image
   assert_runtime_config_mounts
   assert_runtime_data_mounts
+  assert_existing_data_mounts
   assert_backup_data_mounts
+  assert_compose_authority
 }
 
 start_data_services() {
   DEPLOY_PHASE="database and Redis readiness"
+  assert_mutation_authority
   compose up -d --wait --wait-timeout 90 --no-build vitals_db vitals_redis
 }
 
 run_schema_and_roles() {
   DEPLOY_PHASE="schema migration"
+  assert_mutation_authority
   compose run --rm --no-deps vitals_migrate
   DEPLOY_PHASE="runtime role provisioning"
+  assert_mutation_authority
   compose run --rm --no-deps vitals_db_roles
 }
 
 switch_runtime_service() {
   service="$1"
   DEPLOY_PHASE="$service switch"
+  assert_mutation_authority
   compose up -d --wait --wait-timeout 180 --no-deps --no-build \
     --force-recreate "$service"
 }
@@ -396,7 +622,9 @@ main() {
   require_command docker
   require_command python3
   require_command curl
+  require_command flock
   require_command mktemp
+  acquire_deploy_lock
 
   action="${1:-deploy}"
   case "$action" in

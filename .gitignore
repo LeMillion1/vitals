@@ -92,3 +92,4 @@ local_vitals.db
 # Successful split-runtime deploy/rollback anchor for this exact Compose project.
 .vitals-deploy-state
 .vitals-deploy-state.tmp.*
+.vitals-deploy.lock

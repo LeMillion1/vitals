@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — deploy cannot silently switch production data volumes
+
+Before migration or container recreation, deployment now compares PostgreSQL,
+Redis, runtime-config, Garmin-session, upload, and private-file mounts from the
+rendered Compose model with the exact existing web/worker/data containers. A
+missing production overlay therefore fails closed instead of creating empty
+project-local volumes. The validated runtime and offsite Compose models are then
+kept in private immutable snapshots for the entire locked deploy, preventing a
+configuration change between validation and container mutation.
+
 ### Added — production OIDC cutover is attested and crash-recoverable
 
 An operator-only host coordinator now verifies the exact Compose project,

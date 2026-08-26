@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +74,7 @@ def test_deploy_fast_forwards_and_builds_one_immutable_shared_image():
     assert "assert_shared_runtime_image" in source
     assert "assert_runtime_config_mounts" in _function(source, "compose_preflight")
     assert "assert_runtime_data_mounts" in _function(source, "compose_preflight")
+    assert "assert_existing_data_mounts" in _function(source, "compose_preflight")
     assert "assert_backup_data_mounts" in _function(source, "compose_preflight")
     assert "vitals.worker_health import check_configured_worker_health" in source
 
@@ -106,6 +110,28 @@ def test_deploy_orders_data_migration_roles_worker_web_and_smoke():
 
     positions = [deploy.index(step) for step in ordered]
     assert positions == sorted(positions)
+
+
+def test_every_container_mutation_rechecks_locked_compose_and_mount_authority():
+    source = _script()
+    for name in ("start_data_services", "switch_runtime_service"):
+        function = _function(source, name)
+        assert "assert_mutation_authority" in function
+        assert function.index("assert_mutation_authority") < function.index("compose ")
+    schema_and_roles = _function(source, "run_schema_and_roles")
+    assert schema_and_roles.count("assert_mutation_authority") == 2
+    first_guard = schema_and_roles.index("assert_mutation_authority")
+    migration = schema_and_roles.index("compose run --rm --no-deps vitals_migrate")
+    second_guard = schema_and_roles.index(
+        "assert_mutation_authority", first_guard + 1
+    )
+    roles = schema_and_roles.index("compose run --rm --no-deps vitals_db_roles")
+    assert first_guard < migration < second_guard < roles
+    main = _function(source, "main")
+    assert main.index("acquire_deploy_lock") < main.index('action="${1:-deploy}"')
+    lock = _function(source, "acquire_deploy_lock")
+    assert "flock -n" in lock
+    assert "mode 0600" in lock
 
 
 def test_runtime_rollback_is_split_compatible_and_never_changes_schema():
@@ -169,13 +195,19 @@ def test_deploy_state_is_published_only_after_both_health_gates():
     assert 'mktemp "$SCRIPT_DIR/.vitals-deploy-state.tmp.XXXXXX"' in write_state
     assert 'mv -f -- "$STATE_TEMP" "$STATE_FILE"' in write_state
     assert 'STATE_TEMP=""' in write_state
-    assert 'rm -f -- "$STATE_TEMP"' in _function(
-        source, "cleanup_state_temp"
-    )
-    assert "trap cleanup_state_temp EXIT" in source
+    cleanup = _function(source, "cleanup_private_temps")
+    assert 'rm -f -- "$STATE_TEMP"' in cleanup
+    assert 'rm -f -- "$COMPOSE_SNAPSHOT"' in cleanup
+    assert 'rm -f -- "$BACKUP_COMPOSE_SNAPSHOT"' in cleanup
+    assert "trap cleanup_private_temps EXIT" in source
     ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "\n.vitals-deploy-state\n" in ignored
     assert "\n.vitals-deploy-state.tmp.*\n" in ignored
+    assert "\n.vitals-deploy.lock\n" in ignored
+    snapshots = _function(source, "create_compose_snapshots")
+    assert 'mktemp "/tmp/vitals-compose.snapshot.XXXXXX"' in snapshots
+    assert 'mktemp "$SCRIPT_DIR/' not in snapshots
+    assert 'source_compose --profile "*" config --format json' in snapshots
 
 
 def test_failed_state_publish_removes_its_exact_temporary_file(tmp_path):
@@ -432,6 +464,338 @@ assert_runtime_data_mounts
     assert "identical sources and access modes" in rejected_access.stderr
 
 
+def test_deploy_refuses_to_replace_existing_runtime_data_mounts(tmp_path):
+    runtime = tmp_path / "runtime"
+    uploads = tmp_path / "uploads"
+    runtime.mkdir()
+    uploads.mkdir()
+    payload = {
+        "services": {
+            "vitals_db": {
+                "volumes": [
+                    {
+                        "type": "volume",
+                        "source": "pgdata",
+                        "target": "/var/lib/postgresql/data",
+                    }
+                ]
+            },
+            "vitals_redis": {
+                "volumes": [
+                    {"type": "volume", "source": "redis", "target": "/data"}
+                ]
+            },
+        },
+        "volumes": {
+            "pgdata": {"name": "legacy-pgdata"},
+            "redis": {"name": "legacy-redis"},
+            "garmin": {"name": "legacy-garmin"},
+            "private": {"name": "legacy-private"},
+        },
+    }
+    app_mounts = [
+        {
+            "type": "bind",
+            "source": str(runtime),
+            "target": "/run/vitals-runtime",
+            "read_only": False,
+        },
+        {
+            "type": "volume",
+            "source": "garmin",
+            "target": "/data/garmin_session",
+        },
+        {
+            "type": "bind",
+            "source": str(uploads),
+            "target": "/app/web/static/uploads",
+            "read_only": True,
+        },
+        {
+            "type": "volume",
+            "source": "private",
+            "target": "/data/private_files",
+        },
+    ]
+    payload["services"]["vitals_app"] = {"volumes": app_mounts}
+    payload["services"]["vitals_worker"] = {"volumes": [dict(mount) for mount in app_mounts]}
+    payload["services"]["vitals_worker"]["volumes"][0]["read_only"] = True
+
+    inspections = {
+        "vitals_db": [
+            {
+                "Type": "volume",
+                "Name": "legacy-pgdata",
+                "Destination": "/var/lib/postgresql/data",
+                "RW": True,
+            }
+        ],
+        "vitals_redis": [
+            {
+                "Type": "volume",
+                "Name": "legacy-redis",
+                "Destination": "/data",
+                "RW": True,
+            }
+        ],
+    }
+
+    def runtime_mounts(*, read_only):
+        return [
+            {
+                "Type": "bind",
+                "Source": str(runtime),
+                "Destination": "/run/vitals-runtime",
+                "RW": not read_only,
+            },
+            {
+                "Type": "volume",
+                "Name": "legacy-garmin",
+                "Destination": "/data/garmin_session",
+                "RW": True,
+            },
+            {
+                "Type": "bind",
+                "Source": str(uploads),
+                "Destination": "/app/web/static/uploads",
+                "RW": False,
+            },
+            {
+                "Type": "volume",
+                "Name": "legacy-private",
+                "Destination": "/data/private_files",
+                "RW": True,
+            },
+        ]
+
+    inspections["vitals_app"] = runtime_mounts(read_only=False)
+    inspections["vitals_worker"] = runtime_mounts(read_only=True)
+    compose_json = tmp_path / "compose.json"
+    inspect_json = tmp_path / "inspections.json"
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    inspect_json.write_text(json.dumps(inspections), encoding="utf-8")
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+if args[0] == "ps":
+    service = next(value.rsplit("=", 1)[1] for value in args if "compose.service=" in value)
+    print(f"{service}-id")
+elif args[0] == "inspect":
+    service = args[1].removesuffix("-id")
+    mounts = json.loads(Path(os.environ["FAKE_INSPECTIONS"]).read_text())[service]
+    print(json.dumps([{"Mounts": mounts}]))
+else:
+    raise SystemExit(2)
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    shell = r"""
+source "$1"
+export COMPOSE_PROJECT_NAME=vitals_prod
+compose() { cat "$COMPOSE_JSON"; }
+assert_existing_data_mounts
+"""
+    environment = os.environ.copy()
+    environment["COMPOSE_JSON"] = str(compose_json)
+    environment["FAKE_INSPECTIONS"] = str(inspect_json)
+    environment["PATH"] = f"{tmp_path}:{environment['PATH']}"
+
+    accepted = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+    payload["volumes"]["pgdata"]["name"] = "new-empty-pgdata"
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    rejected = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode != 0
+    assert "would replace an existing runtime data mount" in rejected.stderr
+
+    payload["volumes"]["pgdata"]["name"] = "legacy-pgdata"
+    inspections["vitals_db"].append(
+        {
+            "Type": "volume",
+            "Name": "legacy-pg-wal",
+            "Destination": "/var/lib/postgresql/data/pg_wal",
+            "RW": True,
+        }
+    )
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    inspect_json.write_text(json.dumps(inspections), encoding="utf-8")
+    nested_mount = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert nested_mount.returncode != 0
+    assert "would replace an existing runtime data mount" in nested_mount.stderr
+
+
+def test_compose_authority_rejects_input_changes(tmp_path):
+    compose_json = tmp_path / "compose.json"
+    compose_json.write_text('{"services":{"vitals_app":{"image":"first"}}}', encoding="utf-8")
+    shell = r"""
+source "$1"
+COMPOSE_SNAPSHOT="$COMPOSE_JSON"
+COMPOSE_CONFIG_ID="$(rendered_config_id)"
+assert_compose_authority
+"""
+    environment = os.environ.copy()
+    environment["COMPOSE_JSON"] = str(compose_json)
+    accepted = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+    compose_json.write_text(
+        '{"services":{"vitals_app":{"image":"first"}}}', encoding="utf-8"
+    )
+    shell = shell.replace(
+        "assert_compose_authority",
+        "printf '%s' '{\"services\":{\"vitals_app\":{\"image\":\"second\"}}}' >\"$COMPOSE_SNAPSHOT\"\nassert_compose_authority",
+    )
+    changed = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert changed.returncode != 0
+    assert "snapshot changed during deploy" in changed.stderr
+
+
+def test_compose_mutations_use_the_validated_private_snapshot(tmp_path):
+    source_json = tmp_path / "source.json"
+    backup_json = tmp_path / "backup.json"
+    source_json.write_text('{"name":"vitals_prod","services":{"vitals_app":{"image":"first"}}}', encoding="utf-8")
+    backup_json.write_text('{"name":"vitals_prod","services":{}}', encoding="utf-8")
+    observed = tmp_path / "observed.json"
+    snapshot_paths = tmp_path / "snapshot-paths"
+    shell = r'''
+source "$1"
+SCRIPT_DIR="$2"
+export COMPOSE_PROJECT_NAME=vitals_prod
+source_compose() {
+  if [[ " $* " == *" --profile offsite "* ]]; then
+    cat "$BACKUP_JSON"
+  else
+    cat "$SOURCE_JSON"
+  fi
+}
+docker() {
+  snapshot=""
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--file" ]]; then
+      snapshot="$2"
+      shift 2
+      continue
+    fi
+    shift
+  done
+  [[ -n "$snapshot" && "$snapshot" == "$COMPOSE_SNAPSHOT" ]] || return 9
+  cp "$snapshot" "$OBSERVED_JSON"
+}
+create_compose_snapshots
+printf '%s\n%s\n' "$COMPOSE_SNAPSHOT" "$BACKUP_COMPOSE_SNAPSHOT" >"$SNAPSHOT_PATHS"
+printf '%s' '{"name":"vitals_prod","services":{"vitals_app":{"image":"second"}}}' >"$SOURCE_JSON"
+assert_compose_authority
+compose up vitals_app
+'''
+    environment = os.environ.copy()
+    environment.update(
+        SOURCE_JSON=str(source_json),
+        BACKUP_JSON=str(backup_json),
+        OBSERVED_JSON=str(observed),
+        SNAPSHOT_PATHS=str(snapshot_paths),
+    )
+    result = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT), str(tmp_path)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(observed.read_text(encoding="utf-8"))["services"][
+        "vitals_app"
+    ]["image"] == "first"
+    assert all(
+        not Path(value).exists()
+        for value in snapshot_paths.read_text(encoding="utf-8").splitlines()
+    )
+
+
+def test_deploy_lock_excludes_a_second_process(tmp_path):
+    if shutil.which("flock") is None:
+        pytest.skip("flock is unavailable on this platform")
+    shell = r'''
+source "$1"
+SCRIPT_DIR="$2"
+DEPLOY_LOCK_FILE="$SCRIPT_DIR/.vitals-deploy.lock"
+acquire_deploy_lock
+printf 'locked\n'
+read -r _
+'''
+    first = subprocess.Popen(
+        ["bash", "-c", shell, "test", str(SCRIPT), str(tmp_path)],
+        cwd=ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert first.stdout is not None
+        assert first.stdout.readline().strip() == "locked"
+        second = subprocess.run(
+            ["bash", "-c", shell, "test", str(SCRIPT), str(tmp_path)],
+            cwd=ROOT,
+            input="release\n",
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        assert second.returncode != 0
+        assert "already running" in second.stderr
+    finally:
+        if first.stdin is not None:
+            first.stdin.write("release\n")
+            first.stdin.flush()
+        first.communicate(timeout=5)
+
+
 def test_backup_mount_helper_requires_exact_read_only_runtime_sources(tmp_path):
     target_pairs = (
         ("/data/garmin_session", "/garmin_session"),
@@ -486,7 +850,7 @@ def test_backup_mount_helper_requires_exact_read_only_runtime_sources(tmp_path):
     compose_json.write_text(json.dumps(payload), encoding="utf-8")
     shell = r'''
 source "$1"
-compose() { cat "$COMPOSE_JSON"; }
+backup_compose() { cat "$COMPOSE_JSON"; }
 assert_backup_data_mounts
 '''
     environment = os.environ.copy()
@@ -549,7 +913,7 @@ assert_backup_data_mounts
 def test_backup_mount_helper_renders_the_offsite_profile():
     source = SCRIPT.read_text(encoding="utf-8")
 
-    assert "compose --profile offsite config --format json" in _function(
+    assert "backup_compose --profile offsite config --format json" in _function(
         source, "assert_backup_data_mounts"
     )
 
