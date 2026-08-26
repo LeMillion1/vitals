@@ -442,10 +442,24 @@ def create_federated_session(
     )
 
 
+def session_allowed_in_current_auth_mode(claims: SessionClaims | None) -> bool:
+    """Whether parsed claims came from the configured authentication authority."""
+
+    if (
+        claims is not None
+        and get_web_config().oidc_enabled
+        and claims.auth_source != _OIDC_AUTH_SOURCE
+    ):
+        # A correctly signed pre-cutover password cookie is still the wrong
+        # authority after OIDC becomes the configured authentication source.
+        return False
+    return claims is not None
+
+
 def read_session(token: str | None) -> Optional[str]:
-    """Return the username from a valid browser session, preserving the public API."""
+    """Return a username only from a session valid in the current auth mode."""
     claims = decode_session(token)
-    return claims.username if claims is not None else None
+    return claims.username if session_allowed_in_current_auth_mode(claims) else None
 
 
 def create_session(username: str) -> str:

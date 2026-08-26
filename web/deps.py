@@ -101,11 +101,15 @@ async def require_auth(
     # Lazy import breaks the web.auth ↔ web.deps cycle: auth.py imports the login
     # rate-limiter (web.ratelimit → web.deps), so deps must not import auth at
     # module-load time.
-    from web.auth import decode_session, session_issued_at
+    from web.auth import (
+        decode_session,
+        session_allowed_in_current_auth_mode,
+        session_issued_at,
+    )
 
     token = request.cookies.get(SESSION_COOKIE)
     claims = decode_session(token)
-    if claims is None:
+    if not session_allowed_in_current_auth_mode(claims):
         raise NotAuthenticated()
 
     if claims.user_id is not None:

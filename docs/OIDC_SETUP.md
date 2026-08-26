@@ -157,6 +157,8 @@ VITALS_OIDC_BOOTSTRAP_SUBJECT=...                   # the ID from step 3
 Restart the app. From this point:
 
 - `/login` redirects to the provider, keeping wherever you were going.
+- Every pre-cutover password-session cookie is rejected even though its old
+  signature remains valid, so it cannot skip the first provider binding.
 - The password and TOTP routes answer 404.
 - `authenticate()` refuses before it reads the stored hash, so the bcrypt value
   still sitting in the column is not a second way in.

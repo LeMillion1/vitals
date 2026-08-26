@@ -100,12 +100,14 @@ regular non-symlink file and stream that same open descriptor, so a path cannot
 be replaced between verification and delivery. Responses use private
 `no-store`, `nosniff`, and one indistinguishable not-found boundary.
 
-Browser cookies are signed, not encrypted. New compatibility cookies carry only
-a format version, token type, legacy auth source, and username; roles, subjects,
+Browser cookies are signed, not encrypted. Compatibility cookies carry only a
+format version, token type, legacy auth source, and username; roles, subjects,
 grants, credentials, and PHI are deliberately excluded. Existing signed
-bare-username cookies remain accepted only for their configured lifetime. The
-current version marker prepares the later database-session cutover; it does not
-yet make legacy cookies individually revocable.
+bare-username cookies remain accepted only while password authentication is the
+configured mode and within their lifetime. Enabling OIDC rejects every legacy
+browser envelope even when its signature is still valid; federated cookies are
+revalidated against the database session version. Installation secret rotation
+remains necessary when MCP credentials must also be invalidated.
 
 Account-invitation bearers use a separate browser boundary. The emailed link
 places the bearer in `#token=...`, so it is not sent in the HTTP request, proxy

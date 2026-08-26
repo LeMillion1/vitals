@@ -173,6 +173,24 @@ async def _enable_admin_approval(db_session, monkeypatch) -> None:
     await db_session.commit()
 
 
+async def _set_owner_federated_cookie(client, db_session, legacy_owner_roots):
+    from vitals.models.identity import User
+    from web.auth import create_federated_session
+
+    user = await db_session.get(User, legacy_owner_roots.user_id)
+    assert user is not None
+    client.cookies.set(
+        SESSION_COOKIE,
+        create_federated_session(
+            username=user.username,
+            user_id=user.id,
+            session_version=user.session_version,
+            authenticated_at=int(time.time()),
+            subject_id=legacy_owner_roots.subject_id,
+        ),
+    )
+
+
 async def _open_request_status(client, callback, *, expected_status: int):
     """Follow the clean signed handoff without preserving OAuth parameters."""
 
@@ -549,6 +567,34 @@ async def test_invitation_forces_fresh_provider_login_even_with_a_local_session(
     assert handoff["invitation_id"] == issued.invitation.id
     assert issued.token not in response.headers["location"]
     assert issued.token not in response.cookies[OIDC_HANDOFF_COOKIE]
+
+
+async def test_pre_cutover_cookie_cannot_skip_or_enter_oidc_mode(
+    client, federated, db_session
+):
+    from starlette.requests import Request
+
+    from web.auth import create_session, read_session
+    from web.deps import NotAuthenticated, require_auth
+
+    token = create_session("legacy-owner")
+    assert read_session(token) is None
+
+    request = Request(
+        {
+            "type": "http",
+            "headers": [
+                (b"cookie", f"{SESSION_COOKIE}={token}".encode("ascii")),
+            ],
+        }
+    )
+    with pytest.raises(NotAuthenticated):
+        await require_auth(request, db_session)
+
+    client.cookies.set(SESSION_COOKIE, token)
+    response = await client.get("/auth/start", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"].startswith(f"{ISSUER}/authorize?")
 
 
 async def test_step_up_ignores_an_invitation_claim(
@@ -1733,7 +1779,7 @@ async def test_after_the_cutover_the_password_paths_are_gone(
     ["/settings/2fa/start", "/settings/2fa/enable", "/settings/2fa/disable"],
 )
 async def test_after_the_cutover_enrolling_a_second_factor_here_is_gone(
-    auth_client, federated, path
+    auth_client, federated, db_session, legacy_owner_roots, path
 ):
     """Authenticated, so the 404 is the cutover rather than the session guard.
 
@@ -1741,6 +1787,11 @@ async def test_after_the_cutover_enrolling_a_second_factor_here_is_gone(
     about whether the route still exists.
     """
 
+    await _set_owner_federated_cookie(
+        auth_client,
+        db_session,
+        legacy_owner_roots,
+    )
     response = await auth_client.post(path, data={"code": "123456"})
     assert response.status_code == 404, path
 
@@ -1768,6 +1819,12 @@ async def test_after_the_cutover_the_settings_page_stops_offering_sign_in(
         )
     )
     await db_session.commit()
+
+    await _set_owner_federated_cookie(
+        auth_client,
+        db_session,
+        legacy_owner_roots,
+    )
 
     response = await auth_client.get("/settings", headers={"Accept": "text/html"})
     assert response.status_code == 200

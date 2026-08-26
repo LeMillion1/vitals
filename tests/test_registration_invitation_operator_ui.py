@@ -22,7 +22,7 @@ from vitals.services.authentication import admission
 from vitals.services.authentication import registration as registration_policy
 from vitals.services.authentication.admission import console as console_service
 from vitals.utils.timeutils import to_local_naive
-from web.auth import create_federated_session, create_session
+from web.auth import create_federated_session
 from web.config import SESSION_COOKIE
 
 
@@ -44,7 +44,16 @@ async def _user(db_session, slug: str, *, admin: bool = False) -> User:
 
 
 def _sign_in(client, user: User) -> None:
-    client.cookies.set(SESSION_COOKIE, create_session(user.username))
+    client.cookies.set(
+        SESSION_COOKIE,
+        create_federated_session(
+            username=user.username,
+            user_id=user.id,
+            session_version=user.session_version,
+            authenticated_at=int(datetime.now(timezone.utc).timestamp()),
+            subject_id=None,
+        ),
+    )
 
 
 def _configure_oidc(monkeypatch) -> None:

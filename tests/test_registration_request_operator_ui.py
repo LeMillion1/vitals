@@ -13,7 +13,7 @@ from vitals.models.registration import RegistrationRequest
 from vitals.services.authentication import admission
 from vitals.services.authentication import registration as registration_policy
 from vitals.services.authentication.admission import console as console_service
-from web.auth import create_federated_session, create_session
+from web.auth import create_federated_session
 from web.config import SESSION_COOKIE
 
 ISSUER = "https://idp.example.test"
@@ -67,7 +67,16 @@ async def _request(db_session, *, suffix: str, issuer: str = ISSUER):
 
 
 def _sign_in(client, user: User) -> None:
-    client.cookies.set(SESSION_COOKIE, create_session(user.username))
+    client.cookies.set(
+        SESSION_COOKIE,
+        create_federated_session(
+            username=user.username,
+            user_id=user.id,
+            session_version=user.session_version,
+            authenticated_at=int(datetime.now(timezone.utc).timestamp()),
+            subject_id=None,
+        ),
+    )
 
 
 async def test_operator_sees_only_redacted_request_and_approves_member(

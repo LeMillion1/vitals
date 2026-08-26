@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — OIDC cutover rejects password-era browser sessions
+
+Enabling OIDC now makes every legacy password-session envelope unusable at the
+shared authentication boundary and login redirect, even when its signature and
+TTL remain valid. Federated sessions continue their live database-version
+checks, while MCP credentials remain separately revocable.
+
 ### Fixed — fail-closed OIDC endpoint configuration
 
 OIDC issuer and callback settings now reject embedded credentials, malformed
