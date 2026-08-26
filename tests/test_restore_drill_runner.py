@@ -198,6 +198,7 @@ def _context(tmp_path: Path) -> runner.Context:
     database = f"vitals_drill_{run_id}"
     owner = f"vitals_drill_owner_{run_id}"
     runtime_role = f"vitals_drill_runtime_{run_id}"
+    worker_role = f"vitals_drill_worker_{run_id}"
     compose_env = {
         "VITALS_APP_PORT": "18080",
         "VITALS_DB_NAME": f"vitals_drill_{run_id}",
@@ -218,6 +219,10 @@ def _context(tmp_path: Path) -> runner.Context:
             f"postgresql+asyncpg://{owner}:owner-secret@vitals_db:5432/{database}"
         ),
         "VITALS_RUNTIME_ENV_FILE": str(run_dir / "runtime.env"),
+        "VITALS_WORKER_DATABASE_URL": (
+            f"postgresql+asyncpg://{worker_role}:worker-secret@"
+            f"vitals_db:5432/{database}"
+        ),
     }
     return runner.Context(
         run_id=run_id,
@@ -237,6 +242,7 @@ def _context(tmp_path: Path) -> runner.Context:
         database=database,
         owner_role=owner,
         runtime_role=runtime_role,
+        worker_role=worker_role,
         compose_env=compose_env,
     )
 

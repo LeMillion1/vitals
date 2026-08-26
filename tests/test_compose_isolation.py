@@ -45,6 +45,12 @@ def test_schema_migration_and_runtime_roles_are_separate_startup_steps():
     assert roles["depends_on"]["vitals_migrate"]["condition"] == (
         "service_completed_successfully"
     )
+    assert roles["environment"]["VITALS_DATABASE_URL"].startswith(
+        "${VITALS_DATABASE_URL:"
+    )
+    assert roles["environment"]["VITALS_WORKER_DATABASE_URL"].startswith(
+        "${VITALS_WORKER_DATABASE_URL:"
+    )
     assert roles["command"] == ["python", "scripts/provision_runtime_db_role.py"]
     assert app["depends_on"]["vitals_db_roles"]["condition"] == (
         "service_completed_successfully"

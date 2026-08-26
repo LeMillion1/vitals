@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security — distinct PostgreSQL logins for web and worker
+
+Runtime-role provisioning now converges two different restricted logins against
+the same database. The web login alone receives the exact invitation and public
+report authorization routines; the scheduler worker receives ordinary RLS-bound
+DML and no `SECURITY DEFINER` capability. Both roles remain non-owner,
+`NOSUPERUSER`, `NOINHERIT`, and `NOBYPASSRLS`. Compose and the restore drill now
+require and audit the separate worker DSN before the process topology cutover.
+
 ### Security — platform controls leave personal settings
 
 Container restart, full-installation backup/restore, support and admission

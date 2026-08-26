@@ -57,6 +57,7 @@ OPERATOR_ENV_KEYS = (
     "VITALS_DRILL_RUNTIME_ENV_FILE",
     "VITALS_MIGRATION_DATABASE_URL",
     "VITALS_RUNTIME_ENV_FILE",
+    "VITALS_WORKER_DATABASE_URL",
 )
 MARKER_NAME = ".vitals-restore-drill"
 STATE_NAME = "state.json"
@@ -105,6 +106,7 @@ class Context:
     database: str
     owner_role: str
     runtime_role: str
+    worker_role: str
     compose_env: dict[str, str]
     docker_mutated: bool = False
 
@@ -960,6 +962,7 @@ def _context_from_state(run_dir: Path) -> tuple[Context, dict[str, Any]]:
     database = values.get("VITALS_DB_NAME", "")
     owner = values.get("VITALS_DB_USER", "")
     runtime_url = values.get("VITALS_DATABASE_URL", "")
+    worker_url = values.get("VITALS_WORKER_DATABASE_URL", "")
     migration_url = values.get("VITALS_MIGRATION_DATABASE_URL", "")
     runtime_match = re.fullmatch(
         r"postgresql\+asyncpg://([^:]+):[^@]+@vitals_db:5432/([^/?#]+)",
@@ -969,13 +972,19 @@ def _context_from_state(run_dir: Path) -> tuple[Context, dict[str, Any]]:
         r"postgresql\+asyncpg://([^:]+):[^@]+@vitals_db:5432/([^/?#]+)",
         migration_url,
     )
-    if runtime_match is None or migration_match is None:
+    worker_match = re.fullmatch(
+        r"postgresql\+asyncpg://([^:]+):[^@]+@vitals_db:5432/([^/?#]+)",
+        worker_url,
+    )
+    if runtime_match is None or worker_match is None or migration_match is None:
         _fail("run_operator_env_invalid")
     if (
         database != f"vitals_drill_{run_id}"
         or owner != f"vitals_drill_owner_{run_id}"
         or runtime_match.group(1) != f"vitals_drill_runtime_{run_id}"
         or runtime_match.group(2) != database
+        or worker_match.group(1) != f"vitals_drill_worker_{run_id}"
+        or worker_match.group(2) != database
         or migration_match.groups() != (owner, database)
         or values.get("VITALS_APP_PORT") != str(port)
         or values.get("VITALS_DRILL_GARMIN_DIR") != str(run_dir / "garmin")
@@ -1006,6 +1015,7 @@ def _context_from_state(run_dir: Path) -> tuple[Context, dict[str, Any]]:
         database=database,
         owner_role=owner,
         runtime_role=runtime_match.group(1),
+        worker_role=worker_match.group(1),
         compose_env=values,
         docker_mutated=True,
     )
@@ -1042,8 +1052,10 @@ def _build_context(bundle: Bundle, scratch_parent: Path, port: int) -> Context:
         database = f"vitals_drill_{run_id}"
         owner = f"vitals_drill_owner_{run_id}"
         runtime = f"vitals_drill_runtime_{run_id}"
+        worker = f"vitals_drill_worker_{run_id}"
         owner_password = secrets.token_urlsafe(24)
         runtime_password = secrets.token_urlsafe(24)
+        worker_password = secrets.token_urlsafe(24)
         compose_env = {
             "VITALS_APP_PORT": str(port),
             "VITALS_DATABASE_URL": (
@@ -1065,6 +1077,10 @@ def _build_context(bundle: Bundle, scratch_parent: Path, port: int) -> Context:
                 f"vitals_db:5432/{database}"
             ),
             "VITALS_RUNTIME_ENV_FILE": str(run_dir / "runtime.env"),
+            "VITALS_WORKER_DATABASE_URL": (
+                f"postgresql+asyncpg://{worker}:{worker_password}@"
+                f"vitals_db:5432/{database}"
+            ),
         }
         context = Context(
             run_id=run_id,
@@ -1084,6 +1100,7 @@ def _build_context(bundle: Bundle, scratch_parent: Path, port: int) -> Context:
             database=database,
             owner_role=owner,
             runtime_role=runtime,
+            worker_role=worker,
             compose_env=compose_env,
         )
         _write_owner_only(
@@ -1229,8 +1246,16 @@ def run_drill(args: argparse.Namespace) -> dict[str, Any]:
             "role_settings",
             "extra_privileges",
         )
-        if role_payload.get("status") != "completed" or any(
-            role_payload.get(key) != 0 for key in required_zero
+        role_states = (role_payload.get("web", {}), role_payload.get("worker", {}))
+        if (
+            role_payload.get("status") != "completed"
+            or any(
+                state.get(key) != 0
+                for state in role_states
+                for key in required_zero
+            )
+            or role_states[0].get("runtime_role") != context.runtime_role
+            or role_states[1].get("runtime_role") != context.worker_role
         ):
             _fail("runtime_role_provision_failed")
         rls_payload = _json_from_output(

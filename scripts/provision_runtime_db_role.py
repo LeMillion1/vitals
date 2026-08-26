@@ -1,4 +1,4 @@
-"""Provision the least-privileged PostgreSQL role used by the web runtime.
+"""Provision the least-privileged PostgreSQL roles used by web and worker.
 
 The migration connection owns the schema and may bypass row-level security.
 The runtime connection must be a different login: it receives ordinary DML
@@ -25,6 +25,7 @@ RUNTIME_EXECUTE_ROUTINES: tuple[str, ...] = (
     "public.authorize_and_lock_professional_invitation(text,uuid,text)",
     "public.attest_shared_report_token(text)",
 )
+WORKER_EXECUTE_ROUTINES: tuple[str, ...] = ()
 _REQUIRED_ROUTINE_CONFIG = frozenset(
     {"search_path=pg_catalog, pg_temp", "row_security=off"}
 )
@@ -167,6 +168,7 @@ async def _converge_privileges(
     migration_role: str,
     runtime_role: str,
     database: str,
+    execute_routines: tuple[str, ...],
 ) -> None:
     runtime_ident = _quoted_identifier(connection, runtime_role)
     migration_ident = _quoted_identifier(connection, migration_role)
@@ -176,7 +178,7 @@ async def _converge_privileges(
     # changing any grants if the migration-owned bridge at that address was
     # replaced, made invoker-rights, given an unsafe search path, or exposed to
     # PUBLIC.  The whole provisioning transaction rolls back on this refusal.
-    for routine_signature in RUNTIME_EXECUTE_ROUTINES:
+    for routine_signature in execute_routines:
         routine = (
             await connection.execute(
                 sa.text(
@@ -372,7 +374,7 @@ async def _converge_privileges(
         "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES "
         f"IN SCHEMA public TO {runtime_ident}"
     )
-    for routine_signature in RUNTIME_EXECUTE_ROUTINES:
+    for routine_signature in execute_routines:
         await connection.exec_driver_sql(
             f"GRANT EXECUTE ON FUNCTION {routine_signature} TO {runtime_ident}"
         )
@@ -413,6 +415,7 @@ async def _runtime_role_state(
     *,
     migration_role: str,
     runtime_role: str,
+    execute_routines: tuple[str, ...],
 ) -> dict:
     attributes = (
         await connection.execute(
@@ -562,7 +565,7 @@ async def _runtime_role_state(
                 "extra_default_privileges"
             ),
             {
-                "allowed_routines": list(RUNTIME_EXECUTE_ROUTINES),
+                "allowed_routines": list(execute_routines),
                 "migration_role": migration_role,
                 "role": runtime_role,
             },
@@ -604,7 +607,12 @@ async def _runtime_role_state(
     return state
 
 
-async def provision_runtime_role(*, migration_url: URL, runtime_url: URL) -> dict:
+async def provision_runtime_role(
+    *,
+    migration_url: URL,
+    runtime_url: URL,
+    execute_routines: tuple[str, ...] = RUNTIME_EXECUTE_ROUTINES,
+) -> dict:
     migration_role = migration_url.username
     runtime_role = runtime_url.username
     if migration_role == runtime_role:
@@ -655,11 +663,13 @@ async def provision_runtime_role(*, migration_url: URL, runtime_url: URL) -> dic
                 migration_role=migration_role,
                 runtime_role=runtime_role,
                 database=database,
+                execute_routines=execute_routines,
             )
             state = await _runtime_role_state(
                 connection,
                 migration_role=migration_role,
                 runtime_role=runtime_role,
+                execute_routines=execute_routines,
             )
     finally:
         await engine.dispose()
@@ -692,14 +702,58 @@ async def provision_runtime_role(*, migration_url: URL, runtime_url: URL) -> dic
     }
 
 
+async def provision_runtime_roles(
+    *,
+    migration_url: URL,
+    web_url: URL,
+    worker_url: URL,
+) -> dict:
+    """Converge distinct web and worker logins against one database."""
+
+    roles = (migration_url.username, web_url.username, worker_url.username)
+    if len(set(roles)) != len(roles):
+        raise RuntimeError("migration, web, and worker database roles must be distinct")
+    migration_target = (
+        migration_url.host,
+        migration_url.port or 5432,
+        migration_url.database,
+    )
+    for label, url in (("web", web_url), ("worker", worker_url)):
+        target = (url.host, url.port or 5432, url.database)
+        if target != migration_target:
+            raise RuntimeError(
+                f"migration and {label} URLs must select the same database"
+            )
+
+    web = await provision_runtime_role(
+        migration_url=migration_url,
+        runtime_url=web_url,
+        execute_routines=RUNTIME_EXECUTE_ROUTINES,
+    )
+    worker = await provision_runtime_role(
+        migration_url=migration_url,
+        runtime_url=worker_url,
+        execute_routines=WORKER_EXECUTE_ROUTINES,
+    )
+    return {
+        "status": "completed",
+        "database": migration_url.database,
+        "migration_role": migration_url.username,
+        "web": web,
+        "worker": worker,
+    }
+
+
 def main() -> None:
     load_dotenv()
     migration_url = _postgres_url("VITALS_MIGRATION_DATABASE_URL")
-    runtime_url = _postgres_url("VITALS_DATABASE_URL")
+    web_url = _postgres_url("VITALS_DATABASE_URL")
+    worker_url = _postgres_url("VITALS_WORKER_DATABASE_URL")
     result = asyncio.run(
-        provision_runtime_role(
+        provision_runtime_roles(
             migration_url=migration_url,
-            runtime_url=runtime_url,
+            web_url=web_url,
+            worker_url=worker_url,
         )
     )
     print(json.dumps(result, sort_keys=True))

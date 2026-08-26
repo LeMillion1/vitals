@@ -43,6 +43,7 @@ services:
     environment:
       VITALS_MIGRATION_DATABASE_URL: ${VITALS_MIGRATION_DATABASE_URL:?VITALS_MIGRATION_DATABASE_URL must be set}
       VITALS_DATABASE_URL: ${VITALS_DATABASE_URL:?VITALS_DATABASE_URL must be set}
+      VITALS_WORKER_DATABASE_URL: ${VITALS_WORKER_DATABASE_URL:?VITALS_WORKER_DATABASE_URL must be set}
     command: ["python", "scripts/provision_runtime_db_role.py"]
     restart: "no"
 

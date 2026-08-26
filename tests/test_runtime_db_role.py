@@ -13,7 +13,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from scripts.provision_runtime_db_role import (
     RUNTIME_EXECUTE_ROUTINES,
+    WORKER_EXECUTE_ROUTINES,
     provision_runtime_role,
+    provision_runtime_roles,
 )
 
 
@@ -284,6 +286,76 @@ async def test_runtime_role_cannot_equal_migration_role():
 
     with pytest.raises(RuntimeError, match="must be different"):
         await provision_runtime_role(migration_url=url, runtime_url=url)
+
+
+@pytest.mark.asyncio
+async def test_distinct_web_and_worker_logins_have_exact_routine_sets():
+    raw_admin_url = os.getenv("VITALS_TEST_DATABASE_URL")
+    if not raw_admin_url or not raw_admin_url.startswith("postgresql+asyncpg://"):
+        pytest.skip("integration test requires VITALS_TEST_DATABASE_URL")
+
+    admin_url = make_url(raw_admin_url)
+    suffix = secrets.token_hex(6)
+    web_role = f"vitals_web_test_{suffix}"
+    worker_role = f"vitals_worker_test_{suffix}"
+    web_url = admin_url.set(username=web_role, password=secrets.token_urlsafe(24))
+    worker_url = admin_url.set(
+        username=worker_role,
+        password=secrets.token_urlsafe(24),
+    )
+    admin = create_async_engine(admin_url)
+    engines = []
+    try:
+        result = await provision_runtime_roles(
+            migration_url=admin_url,
+            web_url=web_url,
+            worker_url=worker_url,
+        )
+        assert result["web"]["runtime_role"] == web_role
+        assert result["worker"]["runtime_role"] == worker_role
+        assert WORKER_EXECUTE_ROUTINES == ()
+
+        for url, expected_routines in (
+            (web_url, RUNTIME_EXECUTE_ROUTINES),
+            (worker_url, WORKER_EXECUTE_ROUTINES),
+        ):
+            engine = create_async_engine(url)
+            engines.append(engine)
+            async with engine.connect() as connection:
+                for routine in RUNTIME_EXECUTE_ROUTINES:
+                    assert bool(
+                        await connection.scalar(
+                            sa.text(
+                                "SELECT has_function_privilege("
+                                "current_user, :routine, 'EXECUTE')"
+                            ),
+                            {"routine": routine},
+                        )
+                    ) is (routine in expected_routines)
+                attributes = (
+                    await connection.execute(
+                        sa.text(
+                            "SELECT rolsuper, rolbypassrls, rolinherit "
+                            "FROM pg_roles WHERE rolname=current_user"
+                        )
+                    )
+                ).one()
+                assert tuple(attributes) == (False, False, False)
+    finally:
+        for engine in engines:
+            await engine.dispose()
+        async with admin.begin() as connection:
+            for role in (web_role, worker_role):
+                if await connection.scalar(
+                    sa.text(
+                        "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=:role)"
+                    ),
+                    {"role": role},
+                ):
+                    role_ident = connection.dialect.identifier_preparer.quote(role)
+                    await connection.exec_driver_sql(f"DROP OWNED BY {role_ident}")
+                    await connection.exec_driver_sql(f"DROP ROLE {role_ident}")
+        await admin.dispose()
 
 
 @pytest.mark.asyncio

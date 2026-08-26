@@ -23,6 +23,7 @@ def _operator_env(path: Path) -> None:
             (
                 "# synthetic operator file",
                 "VITALS_DATABASE_URL=postgresql+asyncpg://runtime:run@db/vitals",
+                "VITALS_WORKER_DATABASE_URL=postgresql+asyncpg://worker:run@db/vitals",
                 "VITALS_MIGRATION_DATABASE_URL=postgresql+asyncpg://admin:own@db/vitals",
                 "VITALS_DB_PASSWORD=owner-password",
                 "VITALS_DB_USER=vitals_admin",
@@ -51,6 +52,7 @@ def test_runtime_file_is_allowlisted_private_and_never_overwritten(tmp_path):
     assert "VITALS_SESSION_SECRET=" in content
     assert "VITALS_HEVY_API_KEY=" in content
     assert "VITALS_MIGRATION_DATABASE_URL" not in content
+    assert "VITALS_WORKER_DATABASE_URL" not in content
     assert "VITALS_DB_PASSWORD" not in content
     assert "VITALS_DB_USER" not in content
     assert "VITALS_APP_PORT" not in content
