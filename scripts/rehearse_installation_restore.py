@@ -1144,7 +1144,7 @@ def run_drill(args: argparse.Namespace) -> dict[str, Any]:
             _service_run(
                 context,
                 "vitals_db_roles",
-                ["python", "scripts/validate_runtime_rls.py"],
+                ["python", "scripts/run_restore_validator.py", "runtime-rls"],
                 code="runtime_rls_validation_failed",
             ),
             code="runtime_rls_validation_failed",
@@ -1177,7 +1177,7 @@ def run_drill(args: argparse.Namespace) -> dict[str, Any]:
             _service_run(
                 context,
                 "vitals_db_roles",
-                ["python", "scripts/validate_runtime_rls.py"],
+                ["python", "scripts/run_restore_validator.py", "runtime-rls"],
                 code="restart_rls_validation_failed",
             ),
             code="restart_rls_validation_failed",
@@ -1325,7 +1325,7 @@ def restart_run(run_dir: Path) -> dict[str, Any]:
         _service_run(
             context,
             "vitals_db_roles",
-            ["python", "scripts/validate_runtime_rls.py"],
+            ["python", "scripts/run_restore_validator.py", "runtime-rls"],
             code="restart_rls_validation_failed",
         ),
         code="restart_rls_validation_failed",
