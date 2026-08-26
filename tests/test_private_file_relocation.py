@@ -11,13 +11,18 @@ import pytest
 from sqlalchemy import func, select
 
 from vitals.enums import (
+    Domain,
     FileAssetPurpose,
     FileAssetStatus,
     FileStorageBackend,
+    IntegrationConnectionStatus,
+    IntegrationProvider,
     Source,
 )
+from vitals.models.body_scan import BodyScan
 from vitals.models.identity import AuditEvent
-from vitals.models.tenancy import FileAsset
+from vitals.models.raw_payload import RawPayload
+from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import ProgressPhoto
 from vitals.operations import file_storage_relocation as relocation
 from vitals.persistence import file_storage
@@ -215,6 +220,133 @@ async def test_relocation_precommit_failure_removes_destination(
     stored = await db_session.get(FileAsset, asset_id, populate_existing=True)
     assert stored.storage_backend == FileStorageBackend.LEGACY_LOCAL.value
     assert os.path.isfile(source)
+    assert not [path for path in private_root.rglob("*") if path.is_file()]
+
+
+async def _legacy_body_scan_alias(
+    session,
+    roots,
+    *,
+    static_dir: Path,
+    actor_user_id=None,
+) -> tuple[FileAsset, RawPayload, BodyScan, IntegrationConnection]:
+    body = b"synthetic-legacy-body-scan-document"
+    storage_ref = "body/legacy-body-scan.png"
+    source = static_dir / "uploads" / storage_ref
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(body)
+    asset = await file_asset_service.register_legacy_local(
+        session,
+        subject_id=roots.subject_id,
+        uploaded_by_user_id=roots.user_id,
+        purpose=FileAssetPurpose.BODY_SCAN_DOCUMENT,
+        storage_ref=storage_ref,
+        media_type="image/png",
+        size_bytes=len(body),
+        content_sha256=hashlib.sha256(body).hexdigest(),
+    )
+    connection = await session.scalar(
+        select(IntegrationConnection).where(
+            IntegrationConnection.subject_id == roots.subject_id,
+            IntegrationConnection.provider == IntegrationProvider.OPENROUTER.value,
+        )
+    )
+    assert connection is not None
+    assert connection.status == IntegrationConnectionStatus.LEGACY.value
+    raw = RawPayload(
+        subject_id=roots.subject_id,
+        actor_user_id=actor_user_id,
+        integration_connection_id=connection.id,
+        file_asset_id=None,
+        domain=Domain.BODY_COMPOSITION.value,
+        source=Source.BODY_SCAN.value,
+        external_id=storage_ref,
+        payload={"synthetic": True},
+    )
+    session.add(raw)
+    await session.flush()
+    scan = BodyScan(
+        subject_id=roots.subject_id,
+        actor_user_id=roots.user_id,
+        file_asset_id=asset.id,
+        date=date(2026, 8, 25),
+        domain=Domain.BODY_COMPOSITION.value,
+        source=Source.BODY_SCAN.value,
+        file_key=storage_ref,
+        raw_payload_id=raw.id,
+    )
+    session.add(scan)
+    await session.commit()
+    return asset, raw, scan, connection
+
+
+async def test_relocation_moves_reviewed_historical_parser_alias(
+    db_session,
+    session_factory,
+    legacy_owner_roots,
+    tmp_path,
+):
+    static_dir = tmp_path / "static"
+    private_root = tmp_path / "private"
+    asset, raw, scan, connection = await _legacy_body_scan_alias(
+        db_session,
+        legacy_owner_roots,
+        static_dir=static_dir,
+    )
+    asset_id = asset.id
+    raw_id = raw.id
+    scan_id = scan.id
+    connection_id = connection.id
+
+    result = await relocation.relocate(
+        session_factory,
+        static_dir=str(static_dir),
+        private_root=str(private_root),
+        batch_size=1,
+    )
+
+    assert result.relocated_assets == 1
+    stored_asset = await db_session.get(FileAsset, asset_id, populate_existing=True)
+    stored_raw = await db_session.get(RawPayload, raw_id, populate_existing=True)
+    stored_scan = await db_session.get(BodyScan, scan_id, populate_existing=True)
+    assert stored_asset.storage_backend == FileStorageBackend.PRIVATE_LOCAL.value
+    assert stored_raw.external_id == stored_asset.storage_ref
+    assert stored_scan.file_key == stored_asset.storage_ref
+    assert stored_raw.file_asset_id is None
+    assert stored_raw.actor_user_id is None
+    assert stored_raw.integration_connection_id == connection_id
+
+
+async def test_relocation_refuses_unreviewed_parser_alias(
+    db_session,
+    session_factory,
+    legacy_owner_roots,
+    tmp_path,
+):
+    static_dir = tmp_path / "static"
+    private_root = tmp_path / "private"
+    asset, raw, _scan, _connection = await _legacy_body_scan_alias(
+        db_session,
+        legacy_owner_roots,
+        static_dir=static_dir,
+        actor_user_id=legacy_owner_roots.user_id,
+    )
+    asset_id = asset.id
+    raw_id = raw.id
+    original_storage_ref = asset.storage_ref
+
+    with pytest.raises(relocation.FileStorageRelocationError, match="ambiguous"):
+        await relocation.relocate(
+            session_factory,
+            static_dir=str(static_dir),
+            private_root=str(private_root),
+            batch_size=1,
+        )
+
+    stored_asset = await db_session.get(FileAsset, asset_id, populate_existing=True)
+    stored_raw = await db_session.get(RawPayload, raw_id, populate_existing=True)
+    assert stored_asset.storage_backend == FileStorageBackend.LEGACY_LOCAL.value
+    assert stored_raw.external_id == original_storage_ref
     assert not [path for path in private_root.rglob("*") if path.is_file()]
 
 

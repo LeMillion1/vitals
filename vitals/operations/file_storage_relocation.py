@@ -22,11 +22,15 @@ from vitals.enums import (
     FileAssetPurpose,
     FileAssetStatus,
     FileStorageBackend,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    Source,
 )
 from vitals.models.body_scan import BodyScan
 from vitals.models.identity import AuditEvent
 from vitals.models.raw_payload import RawPayload
-from vitals.models.tenancy import FileAsset
+from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import ProgressPhoto
 from vitals.persistence.file_storage import (
     copy_legacy_file_to_private,
@@ -200,23 +204,72 @@ async def _lock_and_validate_graph(
     else:  # pragma: no cover - filtered in the selecting query
         raise FileStorageRelocationError("file purpose is not eligible")
 
-    # A locator owned by another F is an unresolved historical alias. Rewriting
-    # only one side would silently split one physical object into two identities.
-    raw_alias = await session.scalar(
-        select(RawPayload.id)
-        .where(
-            RawPayload.external_id == asset.storage_ref,
-            or_(
-                RawPayload.file_asset_id.is_(None),
-                RawPayload.file_asset_id != asset.id,
-            ),
-            RawPayload.domain.in_(
-                (Domain.LABS.value, Domain.BODY_COMPOSITION.value)
-            ),
+    # Old subject-funded OpenRouter parses predate FileAsset linkage.  Their raw
+    # row and the later registered document can legitimately name the same
+    # physical legacy object while retaining different provenance roots.  Move
+    # that reviewed alias with the document, but never forge a FileAsset link or
+    # replace its historical integration connection.
+    raw_aliases = list(
+        await session.scalars(
+            select(RawPayload)
+            .where(
+                RawPayload.external_id == asset.storage_ref,
+                or_(
+                    RawPayload.file_asset_id.is_(None),
+                    RawPayload.file_asset_id != asset.id,
+                ),
+                RawPayload.domain.in_(
+                    (Domain.LABS.value, Domain.BODY_COMPOSITION.value)
+                ),
+            )
+            .order_by(RawPayload.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
-        .limit(1)
-        .with_for_update()
     )
+    expected_raw_pair = {
+        FileAssetPurpose.LAB_DOCUMENT.value: (
+            Domain.LABS.value,
+            Source.LAB_PARSER.value,
+        ),
+        FileAssetPurpose.BODY_SCAN_DOCUMENT.value: (
+            Domain.BODY_COMPOSITION.value,
+            Source.BODY_SCAN.value,
+        ),
+    }.get(asset.purpose)
+    connection_ids = {
+        row.integration_connection_id
+        for row in raw_aliases
+        if row.integration_connection_id is not None
+    }
+    connections = {
+        row.id: row
+        for row in await session.scalars(
+            select(IntegrationConnection)
+            .where(IntegrationConnection.id.in_(connection_ids))
+            .with_for_update()
+        )
+    }
+    for alias in raw_aliases:
+        connection = connections.get(alias.integration_connection_id)
+        reviewed_historical_alias = (
+            expected_raw_pair is not None
+            and (alias.domain, alias.source) == expected_raw_pair
+            and alias.subject_id == asset.subject_id
+            and alias.actor_user_id is None
+            and alias.file_asset_id is None
+            and connection is not None
+            and connection.subject_id == asset.subject_id
+            and connection.provider == IntegrationProvider.OPENROUTER.value
+            and connection.connection_type
+            == IntegrationConnectionType.AI_GATEWAY.value
+            and connection.status == IntegrationConnectionStatus.LEGACY.value
+        )
+        if not reviewed_historical_alias:
+            raise FileStorageRelocationError(
+                "legacy locator has an ambiguous alias"
+            )
+
     scan_alias = await session.scalar(
         select(BodyScan.id)
         .where(
@@ -238,9 +291,9 @@ async def _lock_and_validate_graph(
         .limit(1)
         .with_for_update()
     )
-    if any(value is not None for value in (raw_alias, scan_alias, photo_alias)):
+    if any(value is not None for value in (scan_alias, photo_alias)):
         raise FileStorageRelocationError("legacy locator has an ambiguous alias")
-    return raw_rows, scans, photos
+    return [*raw_rows, *raw_aliases], scans, photos
 
 
 async def _prepare_one(
