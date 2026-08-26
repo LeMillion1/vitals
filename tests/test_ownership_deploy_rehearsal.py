@@ -401,6 +401,9 @@ def test_the_runbook_lists_the_phases_in_the_sequence_order():
 
     bootstrap_script = REPOSITORY_ROOT / "scripts" / "bootstrap_ownership_roots.py"
     assert bootstrap_script.is_file()
+    bootstrap_source = bootstrap_script.read_text()
+    assert "_REPOSITORY_ROOT" in bootstrap_source
+    assert "sys.path.insert(0, str(_REPOSITORY_ROOT))" in bootstrap_source
     assert "scripts/bootstrap_ownership_roots.py" in runbook
     assert "docker compose run --rm --no-deps" in runbook
 
