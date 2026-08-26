@@ -211,7 +211,7 @@ if any(one_mount(app, target) != one_mount(worker, target) for target in targets
 }
 
 assert_backup_data_mounts() {
-  compose config --format json | python3 -c '
+  compose --profile offsite config --format json | python3 -c '
 import json
 import sys
 

@@ -546,6 +546,14 @@ assert_backup_data_mounts
     assert "exact runtime data paths" in offsite_drift.stderr
 
 
+def test_backup_mount_helper_renders_the_offsite_profile():
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "compose --profile offsite config --format json" in _function(
+        source, "assert_backup_data_mounts"
+    )
+
+
 def test_operator_docs_preserve_project_and_first_cutover_boundary():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     ownership = (ROOT / "docs" / "OWNERSHIP_CUTOVER_RUNBOOK.md").read_text(
