@@ -144,6 +144,19 @@ def _seed_revision_0034(connection: sa.Connection) -> None:
             }
         ],
     )
+    # Revision 0077 adds canonical lab-marker columns. The ownership backfill
+    # deliberately runs at 0048, so a real pre-existing marker proves that the
+    # operator phase materializes only columns available at that revision.
+    insert(
+        "lab_markers",
+        [
+            {
+                "domain": "labs",
+                "name": "synthetic-deploy-marker",
+                "tier": 2,
+            }
+        ],
+    )
     insert(
         "system_alerts",
         [

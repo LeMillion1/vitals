@@ -21,7 +21,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
-from sqlalchemy import Table, func, select, update
+from sqlalchemy import Table, func, inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
@@ -1140,12 +1140,14 @@ def _extend_checksum(previous: str, envelope: Any) -> str:
 
 
 def _data_envelope(spec: _TableSpec, row: Any) -> list[Any]:
+    present_columns = row._mapping
     return [
         spec.name,
         [
             [column.name, _canonical_value(row._mapping[column.name])]
             for column in spec.table.columns
-            if column.name not in {"subject_id", "actor_user_id"}
+            if column.name in present_columns
+            and column.name not in {"subject_id", "actor_user_id"}
         ],
     ]
 
@@ -1170,8 +1172,27 @@ async def _load_full_row(
     row_id: int,
     for_update: bool,
 ) -> Any:
+    cache_key = f"normalized_ownership.materialized_columns.{spec.name}"
+    columns = session.info.get(cache_key)
+    if columns is None:
+        connection = await session.connection()
+        column_names = await connection.run_sync(
+            lambda sync_connection: {
+                column["name"]
+                for column in inspect(sync_connection).get_columns(spec.name)
+            }
+        )
+        columns = tuple(
+            column for column in spec.table.columns if column.name in column_names
+        )
+        required_columns = {"id", "subject_id", "actor_user_id"}
+        if not required_columns.issubset(column.name for column in columns):
+            raise NormalizedOwnershipBackfillStateError(
+                "a reviewed table is missing required ownership columns"
+            )
+        session.info[cache_key] = columns
     stmt = (
-        select(spec.table)
+        select(*columns)
         .where(spec.table.c.id == row_id)
         .limit(_FULL_ROW_MATERIALIZATION_SIZE)
     )
