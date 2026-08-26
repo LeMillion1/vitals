@@ -18,6 +18,14 @@ The one-shot creator supports a validated, non-destructive migration from the
 legacy `.env.runtime`, restore drills use their own read-only scratch directory,
 and encrypted offsite backup still receives the exact runtime file.
 
+### Security — runtime settings use owner-only atomic writes
+
+Runtime environment updates are now staged in a unique sibling file created
+with exclusive owner access, flushed before publication, and atomically renamed
+over the prior file. The writer rejects symlink/non-regular destinations and
+fails closed if publication is unavailable instead of truncating the live secret
+file; failed writes also remove their unpublished temporary copy.
+
 ### Changed — production deploys gate worker before web
 
 The production deploy helper now requires and attests the exact existing Compose

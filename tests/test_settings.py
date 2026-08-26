@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 
 import pytest
 
@@ -89,6 +90,118 @@ def test_env_writer_write_multiple_keys(tmp_path, monkeypatch):
     assert "VITALS_A=new_a" in content
     assert "VITALS_B=new_b" in content
     assert "VITALS_C=new_c" in content
+
+
+def test_env_writer_write_publishes_owner_only_file(tmp_path, monkeypatch):
+    """The replacement is mode 0600 and both file and directory are synced."""
+
+    env_file = tmp_path / ".env.runtime"
+    env_file.write_text("VITALS_A=old\n", encoding="utf-8")
+    env_file.chmod(0o644)
+    # Make the legacy predictable temporary path permissive too, so this test
+    # is independent of the pytest process's umask.
+    legacy_tmp = env_file.with_suffix(".env.tmp")
+    legacy_tmp.write_text("stale", encoding="utf-8")
+    legacy_tmp.chmod(0o644)
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+
+    from web.services import env_writer
+
+    sync_targets: list[bool] = []
+    real_fsync = env_writer.os.fsync
+
+    def record_fsync(descriptor):
+        sync_targets.append(stat.S_ISDIR(os.fstat(descriptor).st_mode))
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(env_writer.os, "fsync", record_fsync)
+
+    env_writer.write_keys({"VITALS_A": "new"})
+
+    assert env_file.read_text(encoding="utf-8") == "VITALS_A=new\n"
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    assert sync_targets == [False, True]
+
+
+def test_env_writer_ignores_predictable_temp_symlink(tmp_path, monkeypatch):
+    """A legacy ``.env.tmp`` symlink cannot redirect a secret-file write."""
+
+    env_file = tmp_path / ".env.runtime"
+    env_file.write_text("VITALS_A=old\n", encoding="utf-8")
+    victim = tmp_path / "victim"
+    victim.write_text("do not touch\n", encoding="utf-8")
+    legacy_tmp = env_file.with_suffix(".env.tmp")
+    legacy_tmp.symlink_to(victim)
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+
+    from web.services.env_writer import write_keys
+
+    write_keys({"VITALS_A": "new"})
+
+    assert env_file.read_text(encoding="utf-8") == "VITALS_A=new\n"
+    assert victim.read_text(encoding="utf-8") == "do not touch\n"
+    assert legacy_tmp.is_symlink()
+
+
+def test_env_writer_rejects_symlink_destination(tmp_path, monkeypatch):
+    """The existing env source itself must be a regular non-symlink file."""
+
+    victim = tmp_path / "victim"
+    victim.write_text("VITALS_A=protected\n", encoding="utf-8")
+    env_file = tmp_path / ".env.runtime"
+    env_file.symlink_to(victim)
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+
+    from web.services.env_writer import write_keys
+
+    with pytest.raises(OSError):
+        write_keys({"VITALS_A": "new"})
+
+    assert env_file.is_symlink()
+    assert victim.read_text(encoding="utf-8") == "VITALS_A=protected\n"
+
+
+def test_env_writer_rejects_symlink_parent(tmp_path, monkeypatch):
+    """A directory link cannot redirect creation of the runtime secret file."""
+
+    real_parent = tmp_path / "real-runtime"
+    real_parent.mkdir()
+    linked_parent = tmp_path / "runtime-link"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    env_file = linked_parent / "vitals.env"
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+
+    from web.services.env_writer import write_keys
+
+    with pytest.raises(OSError):
+        write_keys({"VITALS_A": "new"})
+
+    assert not (real_parent / "vitals.env").exists()
+
+
+def test_env_writer_replace_failure_preserves_original_and_cleans_temp(
+    tmp_path,
+    monkeypatch,
+):
+    """A failed publish neither truncates the old file nor leaves secrets."""
+
+    env_file = tmp_path / ".env.runtime"
+    original = "VITALS_A=old\n"
+    env_file.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+
+    from web.services import env_writer
+
+    def fail_replace(_source, _destination, **_kwargs):
+        raise OSError("simulated bind-mount EBUSY")
+
+    monkeypatch.setattr(env_writer.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="simulated bind-mount EBUSY"):
+        env_writer.write_keys({"VITALS_A": "new-secret"})
+
+    assert env_file.read_text(encoding="utf-8") == original
+    assert list(tmp_path.glob(f".{env_file.name}.*.tmp")) == []
 
 
 # ── settings page integration tests ──────────────────────────────────────────
