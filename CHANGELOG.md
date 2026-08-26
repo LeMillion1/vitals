@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — ZITADEL application setup matches the Vitals token exchange
+
+The production runbook now requires Client Secret POST alongside PKCE S256 and
+signed user information inside the ID token. It also keeps the Login V2 PAT at
+its narrow login-client authority instead of suggesting that a long-lived UI
+credential provision projects or applications.
+
 ### Added — public ZITADEL TLS is an explicit cutover profile
 
 Self-hosted identity now has a separate hardened Caddy profile for the normal

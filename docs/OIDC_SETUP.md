@@ -170,19 +170,38 @@ that provider-side onboarding step is implemented or operationally documented.
 
 ## 2. Create the application in ZITADEL
 
-In the ZITADEL console, create a project and inside it a **Web** application
-with authentication method **Code**, and:
+In the ZITADEL console, create a project named **Vitals**. Keep authorization,
+project-access, and role assertions off: record authorization remains in
+Vitals, not in provider project roles. Inside it create a **Web** application
+named **Vitals Web** with response/grant type **Authorization Code**, and:
 
 - **Redirect URI**: exactly the URL you will put in `VITALS_OIDC_REDIRECT_URL`,
   which is your Vitals origin plus `/auth/callback`. It must match character for
   character; a trailing slash is a different URI.
 - **PKCE**: on. Vitals refuses a provider that does not offer S256, so this is
   not optional.
+- **Client authentication**: **Client Secret POST**. Vitals sends the client ID,
+  client secret, and PKCE verifier in the token-request body. Do not choose
+  Basic or the public `None/PKCE` method; PKCE supplements confidential-client
+  authentication rather than replacing it.
 - **Post-logout redirect**: your Vitals origin, including the trailing slash
   (for example `https://vitals.example.com/`). Vitals sends this exact URI with
   its client ID to the provider's discovered `end_session_endpoint`.
+- **User Info inside ID Token**: on. Vitals intentionally validates and reads
+  `email`, `email_verified`, and `preferred_username` from the signed ID token;
+  it does not make a second request to `userinfo`. This is required for later
+  invitation and admission flows.
+- **Development mode**: off; access-token and ID-token role assertions: off.
 
 Copy the **client ID** and **client secret**.
+
+The setup-generated Login V2 PAT is not an application-provisioning credential.
+Its `IAM_LOGIN_CLIENT` role may read the first user's immutable ID, but it lacks
+`project.create` and `project.app.write`. Never promote that long-lived PAT to
+owner: Login V2 holds it in memory. Create this one application from the Console
+after the first human administrator has changed the initial password; a fully
+API-driven alternative would require a separate short-lived privileged service
+account and therefore creates more recovery and revocation work, not less.
 
 ## 3. Find your own subject
 

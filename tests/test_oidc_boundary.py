@@ -499,6 +499,8 @@ async def test_the_verifier_is_sent_to_the_token_endpoint(provider):
     )
     assert fake.last_token_request["code_verifier"] == request.code_verifier
     assert fake.last_token_request["grant_type"] == "authorization_code"
+    assert fake.last_token_request["client_id"] == CLIENT_ID
+    assert fake.last_token_request["client_secret"] == "s3cret"
 
 
 # ── The two classic JWT holes ────────────────────────────────────────────────

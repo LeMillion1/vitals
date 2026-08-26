@@ -1919,6 +1919,20 @@ def test_the_setup_document_names_the_variables_the_code_actually_reads():
         assert name in document, f"{name} is read but nothing documents it"
 
 
+def test_the_setup_document_matches_the_oidc_client_protocol_contract():
+    from pathlib import Path
+
+    document = (
+        Path(__file__).resolve().parent.parent / "docs" / "OIDC_SETUP.md"
+    ).read_text()
+
+    assert "Client Secret POST" in document
+    assert "User Info inside ID Token" in document
+    assert "it does not make a second request to `userinfo`" in document
+    assert "project.create" in document
+    assert "project.app.write" in document
+
+
 @pytest.mark.parametrize(
     "only_name",
     (
