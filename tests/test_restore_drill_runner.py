@@ -40,9 +40,43 @@ login = _load_script(
 STAMP = "20260826T120000Z"
 
 
-def _assert_drill_error(code: str, function, *args, **kwargs) -> None:
-    with pytest.raises(runner.DrillError, match=f"^{code}$"):
+def _assert_drill_error(expected_code: str, function, *args, **kwargs) -> None:
+    with pytest.raises(runner.DrillError, match=f"^{expected_code}$"):
         function(*args, **kwargs)
+
+
+def test_subprocess_failure_surfaces_only_a_bounded_error_code(monkeypatch):
+    completed = subprocess.CompletedProcess(
+        ["synthetic"],
+        1,
+        stdout=b'{"result":"error","error_code":"subject_data_missing"}\n',
+        stderr=b"sensitive database diagnostics",
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+
+    _assert_drill_error(
+        "runtime_rls_validation_failed_subject_data_missing",
+        runner._run,
+        ["synthetic"],
+        code="runtime_rls_validation_failed",
+    )
+
+
+def test_subprocess_failure_rejects_unbounded_error_detail(monkeypatch):
+    completed = subprocess.CompletedProcess(
+        ["synthetic"],
+        1,
+        stdout=b'{"result":"error","error_code":"dsn=secret"}\n',
+        stderr=b"sensitive database diagnostics",
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+
+    _assert_drill_error(
+        "runtime_rls_validation_failed",
+        runner._run,
+        ["synthetic"],
+        code="runtime_rls_validation_failed",
+    )
 
 
 def _bundle(tmp_path: Path) -> runner.Bundle:

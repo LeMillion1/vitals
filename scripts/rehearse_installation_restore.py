@@ -342,7 +342,18 @@ def _run(
     except OSError:
         _fail(code)
     if result.returncode != 0:
-        _fail(code)
+        detail = ""
+        try:
+            lines = result.stdout.decode("utf-8").splitlines()
+            payload = json.loads(
+                next(line for line in reversed(lines) if line.startswith("{"))
+            )
+            candidate = payload.get("error_code", "")
+            if isinstance(candidate, str) and re.fullmatch(r"[a-z0-9_]+", candidate):
+                detail = candidate
+        except (UnicodeDecodeError, StopIteration, json.JSONDecodeError):
+            pass
+        _fail(f"{code}_{detail}" if detail else code)
     return result
 
 
