@@ -52,6 +52,24 @@ def test_schema_migration_and_runtime_roles_are_separate_startup_steps():
     assert "alembic upgrade" not in dockerfile
 
 
+def test_app_mounts_only_the_allowlisted_runtime_environment():
+    app = _compose()["services"]["vitals_app"]
+
+    runtime_mount = next(
+        mount
+        for mount in app["volumes"]
+        if isinstance(mount, dict) and mount["target"] == "/app/.env"
+    )
+    assert runtime_mount == {
+        "type": "bind",
+        "source": "${VITALS_RUNTIME_ENV_FILE:-.env.runtime}",
+        "target": "/app/.env",
+        "bind": {"create_host_path": False},
+    }
+    assert app["environment"]["VITALS_RUNTIME_ENV_ISOLATION_REQUIRED"] == "true"
+    assert ".env:/app/.env" not in str(app)
+
+
 def test_configurable_app_port_is_documented_in_both_operator_languages():
     example = (ROOT / ".env.example").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -104,6 +122,16 @@ def test_offsite_backup_is_opt_in_pinned_and_least_privileged():
     }
     assert "./backups:/backups:ro" in service["volumes"]
     assert "./.env:/source/vitals.env:ro" in service["volumes"]
+    assert {
+        "type": "bind",
+        "source": "${VITALS_RUNTIME_ENV_FILE:-.env.runtime}",
+        "target": "/source/vitals.runtime.env",
+        "read_only": True,
+        "bind": {"create_host_path": False},
+    } in service["volumes"]
+    assert service["environment"]["VITALS_OFFSITE_RUNTIME_ENV_FILE"] == (
+        "/source/vitals.runtime.env"
+    )
     assert not any("docker.sock" in volume for volume in service["volumes"])
 
 

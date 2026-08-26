@@ -551,6 +551,17 @@ VITALS_COOKIE_SECURE=false
 VITALS_MCP_CLIENT_SECRET="ещё-один-случайный-секрет"
 ```
 
+Когда `.env` полностью заполнен, один раз создайте отдельный файл для web-
+процесса. Команда переносит только разрешённые runtime-настройки, ставит права
+`0600` и отказывается перезаписывать файл, который позднее изменяет Settings:
+
+```bash
+python3 scripts/create_runtime_env.py
+```
+
+Host-only `.env` с migration DSN и паролем владельца PostgreSQL никогда не
+монтируется в `vitals_app`.
+
 #### 4. Запустите
 
 ```bash
@@ -1335,6 +1346,17 @@ VITALS_COOKIE_SECURE=false
 # OAuth secret for connecting Claude.ai over MCP
 VITALS_MCP_CLIENT_SECRET="another-random-secret"
 ```
+
+After `.env` is final, create the separate web-process file once. The command
+copies only allowlisted runtime settings, sets mode `0600`, and refuses to
+overwrite the file that Settings subsequently owns:
+
+```bash
+python3 scripts/create_runtime_env.py
+```
+
+The host-only `.env`, including the migration DSN and PostgreSQL owner password,
+is never mounted into `vitals_app`.
 
 #### 4. Launch
 

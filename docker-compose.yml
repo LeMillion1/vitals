@@ -55,6 +55,9 @@ services:
         condition: service_started
     environment:
       TZ: Europe/Chisinau
+      # Compose deployments fail startup if the mounted application file
+      # contains a DB-owner/control-plane key or if one is injected directly.
+      VITALS_RUNTIME_ENV_ISOLATION_REQUIRED: "true"
     # No `env_file:` here on purpose: it would inject a snapshot of .env as
     # container-level env vars at creation time, which then permanently shadows
     # the live bind-mounted file below (python-dotenv's load_dotenv() never
@@ -63,7 +66,15 @@ services:
     # full recreate. The bind mount alone is enough: every process start reads
     # the file fresh.
     volumes:
-      - .env:/app/.env
+      # Never mount the host operator .env here: it contains the migration DSN
+      # and PostgreSQL owner password. Settings writes this separate allowlisted
+      # application file. create_host_path=false refuses a missing file instead
+      # of silently creating a directory at /app/.env.
+      - type: bind
+        source: ${VITALS_RUNTIME_ENV_FILE:-.env.runtime}
+        target: /app/.env
+        bind:
+          create_host_path: false
       # Persist the Garmin (garth) OAuth token session across rebuilds/restarts so
       # we don't re-login every deploy — frequent logins risk a captcha/MFA prompt
       # and a temporary block. Matches VITALS_GARMIN_TOKEN_DIR (default below).
@@ -271,6 +282,7 @@ services:
       RESTIC_CACHE_DIR: /tmp/restic-cache
       VITALS_OFFSITE_HOSTNAME: ${VITALS_OFFSITE_HOSTNAME:-vitals-installation}
       VITALS_OFFSITE_INTERVAL_SECONDS: ${VITALS_OFFSITE_INTERVAL_SECONDS:-900}
+      VITALS_OFFSITE_RUNTIME_ENV_FILE: /source/vitals.runtime.env
     secrets:
       - restic_repository
       - restic_password
@@ -280,6 +292,12 @@ services:
       - ./scripts/offsite_backup.sh:/usr/local/bin/offsite_backup.sh:ro
       - ./backups:/backups:ro
       - ./.env:/source/vitals.env:ro
+      - type: bind
+        source: ${VITALS_RUNTIME_ENV_FILE:-.env.runtime}
+        target: /source/vitals.runtime.env
+        read_only: true
+        bind:
+          create_host_path: false
       - vitals_offsite_state:/state
     entrypoint: ["/bin/sh", "/usr/local/bin/offsite_backup.sh"]
     read_only: true

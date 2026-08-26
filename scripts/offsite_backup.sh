@@ -15,6 +15,7 @@ umask 077
 BACKUP_DIR="${VITALS_BACKUP_DIR:-/backups}"
 STATE_DIR="${VITALS_OFFSITE_STATE_DIR:-/state}"
 SOURCE_ENV="${VITALS_OFFSITE_ENV_FILE:-/source/vitals.env}"
+SOURCE_RUNTIME_ENV="${VITALS_OFFSITE_RUNTIME_ENV_FILE:-/source/vitals.runtime.env}"
 INTERVAL_SECONDS="${VITALS_OFFSITE_INTERVAL_SECONDS:-900}"
 RUN_ONCE="${VITALS_OFFSITE_RUN_ONCE:-false}"
 BACKUP_HOSTNAME="${VITALS_OFFSITE_HOSTNAME:-vitals-installation}"
@@ -74,10 +75,12 @@ if ! AWS_SECRET_ACCESS_KEY="$(
     exit 2
 fi
 export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
-if [ ! -f "$SOURCE_ENV" ]; then
-    echo "[offsite] ERROR: the protected installation environment file is missing" >&2
-    exit 2
-fi
+for source_file in "$SOURCE_ENV" "$SOURCE_RUNTIME_ENV"; do
+    if [ ! -f "$source_file" ]; then
+        echo "[offsite] ERROR: a protected installation environment file is missing" >&2
+        exit 2
+    fi
+done
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
 
@@ -160,7 +163,8 @@ replicate_latest() {
         "$BACKUP_DIR/$garmin_name" \
         "$BACKUP_DIR/$private_name" \
         "$BACKUP_DIR/$legacy_upload_name" \
-        "$SOURCE_ENV"; then
+        "$SOURCE_ENV" \
+        "$SOURCE_RUNTIME_ENV"; then
         echo "[offsite] ERROR: encrypted replication failed" >&2
         return 1
     fi

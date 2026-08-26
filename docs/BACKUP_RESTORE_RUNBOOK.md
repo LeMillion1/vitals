@@ -18,8 +18,11 @@ files:
 - `vitals_bundle_<timestamp>.sha256`, published last and containing the four
   artifact checksums.
 
-The encrypted offsite snapshot also contains the protected installation `.env`.
-Never treat a loose artifact without its matching manifest as a recovery point.
+The encrypted offsite snapshot also contains the protected host/operator `.env`
+and the application-only `.env.runtime`. The first holds the database-owner
+authority and must never be mounted into the web process; the second is the
+allowlisted file Settings updates. Never treat a loose artifact without its
+matching manifest as a recovery point.
 
 The optional ZITADEL identity store is deliberately separate. A complete
 identity-store recovery point lives below `backups/idp/` and has exactly:
@@ -174,10 +177,12 @@ restic check
 restic restore <snapshot-id> --target <temporary-restore-root>
 ```
 
-The restored tree contains `backups/` and `source/vitals.env`. Do not `source`
-the restored environment file. Review it offline, provision fresh drill-only
-credentials, and rotate production credentials after any suspected repository
-or backup-host compromise.
+The restored tree contains `backups/`, `source/vitals.env`, and
+`source/vitals.runtime.env`. Do not `source` either restored environment file.
+Review them offline, provision fresh drill-only credentials, and rotate
+production credentials after any suspected repository or backup-host
+compromise. The drill app must receive a newly generated runtime file and never
+the restored operator file.
 
 ### 2. Validate the bundle before extraction
 

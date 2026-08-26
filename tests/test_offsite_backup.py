@@ -51,11 +51,16 @@ def _fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
     access_key = secret_dir / "s3-access-key"
     secret_key = secret_dir / "s3-secret-key"
     environment = tmp_path / "vitals.env"
+    runtime_environment = tmp_path / "vitals.runtime.env"
     repository.write_text("s3:https://example.invalid/vitals\n", encoding="utf-8")
     password.write_text("synthetic-restic-password\n", encoding="utf-8")
     access_key.write_text("synthetic-access-key\n", encoding="utf-8")
     secret_key.write_text("synthetic-secret-key\n", encoding="utf-8")
     environment.write_text("VITALS_SYNTHETIC_ONLY=true\n", encoding="utf-8")
+    runtime_environment.write_text(
+        "VITALS_DATABASE_URL=postgresql+asyncpg://runtime:synthetic@db/vitals\n",
+        encoding="utf-8",
+    )
 
     _write_executable(
         fake_bin / "restic",
@@ -81,6 +86,7 @@ esac
         "VITALS_BACKUP_DIR": str(backup_dir),
         "VITALS_OFFSITE_STATE_DIR": str(state_dir),
         "VITALS_OFFSITE_ENV_FILE": str(environment),
+        "VITALS_OFFSITE_RUNTIME_ENV_FILE": str(runtime_environment),
         "VITALS_OFFSITE_HOSTNAME": "synthetic-vitals",
         "VITALS_OFFSITE_INTERVAL_SECONDS": "60",
         "VITALS_OFFSITE_RUN_ONCE": "true",
@@ -120,6 +126,7 @@ def test_complete_set_uses_restic_idempotency_and_advances_marker(tmp_path):
     assert f"private_files_{STAMP}.tar.gz" in commands[1]
     assert f"legacy_uploads_{STAMP}.tar.gz" in commands[1]
     assert env["VITALS_OFFSITE_ENV_FILE"] in commands[1]
+    assert env["VITALS_OFFSITE_RUNTIME_ENV_FILE"] in commands[1]
 
     second = _run(env)
     assert second.returncode == 0
@@ -193,6 +200,24 @@ def test_failed_backup_is_retried_and_only_success_advances_marker(tmp_path):
     assert commands[1].startswith(
         "backup --skip-if-unchanged --host synthetic-vitals --tag vitals"
     )
+
+
+@pytest.mark.parametrize(
+    "environment_file",
+    ["VITALS_OFFSITE_ENV_FILE", "VITALS_OFFSITE_RUNTIME_ENV_FILE"],
+)
+def test_missing_operator_or_runtime_environment_fails_closed(
+    tmp_path,
+    environment_file,
+):
+    env, state_dir, log = _fixture(tmp_path)
+    Path(env[environment_file]).unlink()
+
+    result = _run(env)
+
+    assert result.returncode == 2
+    assert not log.exists()
+    assert not (state_dir / "last-successful-manifest").exists()
 
 
 @pytest.mark.parametrize(

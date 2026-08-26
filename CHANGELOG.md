@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — the web process no longer receives the database-owner credential
+
+Compose now mounts an application-only `.env.runtime` into `vitals_app` instead
+of the host/operator `.env` that contains the migration DSN and PostgreSQL owner
+password. A one-shot allowlist generator creates the runtime file, startup fails
+closed on any control-plane key or directly injected privileged credential, and
+encrypted offsite recovery now preserves both configuration files without
+collapsing their authority boundaries.
+
 ### Fixed — the identity profile has no runnable obsolete image
 
 The optional ZITADEL profile no longer names the vulnerable tag-only v2.66.0
