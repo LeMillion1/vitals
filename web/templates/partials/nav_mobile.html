@@ -51,7 +51,7 @@
    to find their work and never loses the sign-out action. #}
 {% macro mobile_role_nav() %}
 {% set current_path = request.url.path if request else '' %}
-{% set role_slots = (1 if request.state.is_professional else 0) + (2 if request.state.is_platform_admin else 0) + 1 %}
+{% set role_slots = (1 if request.state.is_professional else 0) + (1 if request.state.is_platform_admin else 0) + 1 %}
 <nav id="mobile-bottom-nav"
     class="md:hidden v-bottom-nav mh-bnav mh-role-bnav-{{ role_slots }}"
     style="padding-bottom: max(env(safe-area-inset-bottom), var(--sab, 0px)); min-height: calc(56px + max(env(safe-area-inset-bottom), var(--sab, 0px)))">
@@ -62,13 +62,9 @@
     </a>
     {% endif %}
     {% if request.state.is_platform_admin %}
-    <a href="/settings/platform/support" class="v-bnav-link {% if current_path.startswith('/settings/platform/support') %}is-active{% endif %}"{% if current_path.startswith('/settings/platform/support') %} aria-current="page"{% endif %}>
+    <a href="/settings/platform" class="v-bnav-link {% if current_path.startswith('/settings/platform') %}is-active{% endif %}"{% if current_path.startswith('/settings/platform') %} aria-current="page"{% endif %}>
         <span class="v-nav-ico">{{ mh_icon('settings') }}</span>
-        <span class="mh-bnav-label">{{ t('support.console_heading') }}</span>
-    </a>
-    <a href="/settings/platform/registration" class="v-bnav-link {% if current_path.startswith('/settings/platform/registration') or current_path.startswith('/settings/platform/professionals') %}is-active{% endif %}"{% if current_path.startswith('/settings/platform/registration') or current_path.startswith('/settings/platform/professionals') %} aria-current="page"{% endif %}>
-        <span class="v-nav-ico">{{ mh_icon('patients') }}</span>
-        <span class="mh-bnav-label">{{ t('registration.operator.heading') }}</span>
+        <span class="mh-bnav-label">{{ t('settings.platform.heading') }}</span>
     </a>
     {% endif %}
     <form action="/logout" method="POST" hx-boost="false" class="contents">

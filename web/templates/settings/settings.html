@@ -7,14 +7,7 @@
 <div class="v-page v-page-settings px-6 py-7 max-w-6xl mx-auto space-y-8">
 
     <div class="v-settings-sections max-w-4xl space-y-8">
-    {% call masthead_header('settings', t('settings.heading'), []) %}
-        <button type="button" onclick="triggerRestart()" class="v-btn-ghost whitespace-nowrap flex items-center gap-2 text-xs">
-            <svg style="width: 1rem; height: 1rem;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
-            </svg>
-            {{ t("settings.restart_btn") }}
-        </button>
-    {% endcall %}
+    {{ masthead_header('settings', t('settings.heading'), []) }}
     <p class="v-settings-intro v-text-body max-w-2xl">{{ t("settings.description") }}</p>
 
     <!-- Saved / Error banners -->
@@ -31,8 +24,6 @@
     <div class="v-alert info">{{ t("settings.saved.mcp") }}</div>
     {% elif saved == 'password' %}
     <div class="v-alert info">{{ t("settings.saved.password") }}</div>
-    {% elif saved == 'restart' %}
-    <div class="v-alert good">{{ t("settings.saved.restart") }}</div>
     {% elif saved == 'language' %}
     <div class="v-alert info">{{ t("settings.saved.language") }}</div>
     {% elif saved == 'proactive' %}
@@ -212,75 +203,6 @@
             </a>
         </div>
     </div>
-
-    <!-- ─── AI / OPENROUTER ────────────────────────────────────────────────── -->
-    {% if can_manage_openrouter %}
-    <div class="v-card v-setting-row p-6 space-y-5">
-        {{ card_header(t("settings.ai_title")) }}
-        <p class="v-text-body" style="color: var(--muted)">
-            {{ t("settings.ai_description") }}
-        </p>
-        <div class="flex flex-wrap justify-end gap-3">
-            <a href="/settings/platform/support" class="v-btn-ghost text-xs">
-                {{ t("support.console_heading") }}
-            </a>
-            <a href="/settings/platform/ai" class="v-btn-ghost text-xs">
-                {{ t("settings.platform_ai.manage") }}
-            </a>
-        </div>
-        <form action="/settings/ai" method="POST" class="space-y-4">
-            <div class="space-y-1.5">
-                <label for="s-or-key" class="v-label">
-                    {{ t("settings.api_key") }}
-                    {% if openrouter_api_key_set %}
-                    <span class="v-chip v-chip-sm good ml-1.5">{{ t("settings.key_set") }}</span>
-                    {% else %}
-                    <span class="v-chip v-chip-sm bad ml-1.5">{{ t("settings.key_not_set") }}</span>
-                    {% endif %}
-                </label>
-                <input id="s-or-key" name="openrouter_api_key" type="password"
-                       value="" class="v-input font-mono"
-                       placeholder="{{ t('settings.key_placeholder_set') if openrouter_api_key_set else 'sk-or-...' }}"
-                       autocomplete="new-password">
-                {% if openrouter_api_key_set %}
-                <p class="v-text-micro mt-1">{{ t("settings.keep_hint") }}</p>
-                {% endif %}
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div class="space-y-1.5">
-                    <label for="s-digest-model" class="v-label">{{ t("settings.digest_model") }}</label>
-                    <input id="s-digest-model" name="llm_model_digest" type="text"
-                           value="{{ llm_model_digest }}" class="v-input font-mono"
-                           placeholder="anthropic/claude-sonnet-4.6">
-                    <p class="v-text-micro mt-1">{{ t("settings.digest_model_hint") }}</p>
-                </div>
-                <div class="space-y-1.5">
-                    <label for="s-parser-model" class="v-label">{{ t("settings.parser_model") }}</label>
-                    <input id="s-parser-model" name="llm_model_parser" type="text"
-                           value="{{ llm_model_parser }}" class="v-input font-mono"
-                           placeholder="google/gemini-2.5-flash">
-                    <p class="v-text-micro mt-1">{{ t("settings.parser_model_hint") }}</p>
-                </div>
-                <div class="space-y-1.5">
-                    <label for="s-brief-model" class="v-label">{{ t("settings.brief_model") }}</label>
-                    <input id="s-brief-model" name="llm_model_brief" type="text"
-                           value="{{ llm_model_brief }}" class="v-input font-mono"
-                           placeholder="{{ llm_model_digest }}">
-                    <p class="v-text-micro mt-1">{{ t("settings.brief_model_hint") }}</p>
-                </div>
-            </div>
-            <div class="space-y-1.5">
-                <label for="s-or-url" class="v-label">{{ t("settings.base_url") }}</label>
-                <input id="s-or-url" name="openrouter_base_url" type="url"
-                       value="{{ openrouter_base_url }}" class="v-input font-mono"
-                       placeholder="https://openrouter.ai/api/v1">
-            </div>
-            <div class="flex justify-end pt-1">
-                <button type="submit" class="v-btn text-xs">{{ t("settings.save_ai") }}</button>
-            </div>
-        </form>
-    </div>
-    {% endif %}
 
     <!-- ─── HEVY ───────────────────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
@@ -595,26 +517,6 @@
             </div>
         </div>
 
-        {% if can_manage_openrouter %}
-        <details class="v-card-inset p-4">
-            <summary class="v-text-card cursor-pointer">{{ t("settings.portability_legacy_title") }}</summary>
-            <p class="v-text-micro mt-2" style="color: var(--muted)">
-                {{ t("settings.portability_legacy_hint") }}
-            </p>
-            <div class="flex flex-col sm:flex-row gap-3 mt-3">
-                <a href="/settings/export" class="v-btn-ghost text-xs text-center" download hx-boost="false">
-                    {{ t("settings.export_full") }}
-                </a>
-            </div>
-            <form hx-post="/settings/import" hx-encoding="multipart/form-data"
-                  hx-confirm="{{ t('settings.import_confirm') }}"
-                  hx-target="#import-result" hx-swap="innerHTML" class="space-y-3 mt-3">
-                <input type="file" name="backup_file" accept=".json,application/json" required class="v-input">
-                <button type="submit" class="v-btn-ghost text-xs">{{ t("settings.import_submit") }}</button>
-            </form>
-            <div id="import-result"></div>
-        </details>
-        {% endif %}
     </div>
 
     <!-- ─── SIGNING IN: password + two-factor ──────────────────────────────── -->
@@ -797,68 +699,5 @@
     });
 })();
 
-async function triggerRestart() {
-    if (!(await window.vitalsConfirm({{ t("settings.restart_confirm") | tojson | safe }}, {{ t("settings.restart_btn") | tojson | safe }}))) {
-        return;
-    }
-
-    // Show global loader overlay
-    const loader = document.getElementById('global-loader');
-    const titleEl = document.getElementById('loader-title');
-    const textEl = document.getElementById('loader-text');
-
-    if (loader && titleEl && textEl) {
-        titleEl.textContent = window.t('loader.restart_title');
-        textEl.textContent = window.t('loader.restart_text');
-        loader.classList.add('is-active');
-    }
-
-    // A fixed countdown was always wrong: a plain restart needs ~7s, a rebuild
-    // (deploy) far more, so the reload landed on a dead port and showed an error
-    // page. Poll /health instead and reload the moment the app answers again.
-    function waitForAppThenReload() {
-        const deadline = Date.now() + 180000;  // give up after 3 min, reload anyway
-        let sawDown = false;                   // the old process is still serving for ~0.5s
-        (function poll() {
-            fetch('/health', { cache: 'no-store' })
-                .then(r => r.ok)
-                .catch(() => false)
-                .then(up => {
-                    if (up && sawDown) {
-                        window.location.href = '/settings?saved=restart';
-                        return;
-                    }
-                    if (!up) sawDown = true;
-                    if (Date.now() > deadline) {
-                        window.location.href = '/settings?saved=restart';
-                        return;
-                    }
-                    setTimeout(poll, 1000);
-                });
-        })();
-    }
-
-    // Send POST request
-    fetch('/settings/restart', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        }
-    })
-    .then(response => {
-        // A rejected request (not signed in, restart refused) used to run the same
-        // countdown as a successful one, so the user was told the container had
-        // restarted when nothing had happened. Drop the overlay and say so instead.
-        if (!response.ok) {
-            if (loader) loader.classList.remove('is-active');
-            if (window.vitalsToast) window.vitalsToast(window.t('error.generic'), 'error');
-            return;
-        }
-        waitForAppThenReload();
-    })
-    // A dropped connection here is the *expected* case — the container is going
-    // down mid-response — so keep waiting rather than reporting an error.
-    .catch(waitForAppThenReload);
-}
 </script>
 {% endblock %}

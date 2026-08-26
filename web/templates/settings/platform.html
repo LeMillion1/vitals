@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+
+{% block title %}{{ t("settings.platform.page_title") }}{% endblock %}
+
+{% block content %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
+<div class="v-page v-page-settings px-6 py-7 max-w-4xl mx-auto space-y-8">
+    {{ masthead_header('settings', t('settings.platform.heading'), []) }}
+
+    <p class="v-text-body max-w-3xl" style="color: var(--muted)">
+        {{ t("settings.platform.description") }}
+    </p>
+
+    {% if saved == 'restart' %}
+    <div class="v-alert info">{{ t("settings.saved.restart") }}</div>
+    {% endif %}
+
+    <div class="v-card p-6 space-y-5">
+        {{ card_header(t("settings.ai_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("settings.ai_description") }}
+        </p>
+        <div class="flex justify-end">
+            <a href="/settings/platform/ai" class="v-btn-ghost text-xs">
+                {{ t("settings.platform_ai.manage") }}
+            </a>
+        </div>
+    </div>
+
+    <div class="v-card p-6 space-y-5">
+        {{ card_header(t("settings.platform.identity_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("settings.platform.identity_description") }}
+        </p>
+        <div class="flex flex-wrap justify-end gap-3">
+            <a href="/settings/platform/support" class="v-btn-ghost text-xs">
+                {{ t("support.console_heading") }}
+            </a>
+            <a href="/settings/platform/registration" class="v-btn-ghost text-xs">
+                {{ t("registration.operator.heading") }}
+            </a>
+        </div>
+    </div>
+
+    <div class="v-card p-6 space-y-5">
+        {{ card_header(t("settings.platform.operations_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("settings.platform.operations_description") }}
+        </p>
+
+        <div class="v-card-inset p-4 space-y-4">
+            <div class="space-y-1">
+                <h2 class="v-text-card">{{ t("settings.portability_legacy_title") }}</h2>
+                <p class="v-text-micro" style="color: var(--muted)">
+                    {{ t("settings.portability_legacy_hint") }}
+                </p>
+            </div>
+            <div class="flex justify-end">
+                <a href="/settings/export" class="v-btn-ghost text-xs text-center"
+                   download hx-boost="false">
+                    {{ t("settings.export_full") }}
+                </a>
+            </div>
+            <form hx-post="/settings/import" hx-encoding="multipart/form-data"
+                  hx-confirm="{{ t('settings.import_confirm') }}"
+                  hx-target="#platform-import-result" hx-swap="innerHTML"
+                  class="space-y-3">
+                <label class="v-file-drop cursor-pointer"
+                       x-data='{ hint: {{ t("settings.platform.backup_file_hint")|tojson }} }'>
+                    <input type="file" name="backup_file"
+                           accept=".json,application/json" required class="sr-only"
+                           data-fallback="{{ t('settings.platform.backup_file_hint') }}"
+                           @change="hint = $el.files[0] ? $el.files[0].name : $el.dataset.fallback">
+                    <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                    </svg>
+                    <span class="v-file-drop__text">{{ t("settings.platform.choose_backup") }}</span>
+                    <span class="v-file-drop__hint" x-text="hint"></span>
+                </label>
+                <div class="flex justify-end">
+                    <button type="submit" class="v-btn-danger text-xs">
+                        {{ t("settings.import_submit") }}
+                    </button>
+                </div>
+            </form>
+            <div id="platform-import-result"></div>
+        </div>
+
+        <div class="v-card-inset p-4 space-y-4">
+            <div class="space-y-1">
+                <h2 class="v-text-card">{{ t("settings.platform.restart_title") }}</h2>
+                <p class="v-text-micro" style="color: var(--muted)">
+                    {{ t("settings.platform.restart_description") }}
+                </p>
+            </div>
+            <div class="flex justify-end">
+                <button type="button" onclick="triggerRestart()"
+                        class="v-btn-ghost whitespace-nowrap flex items-center gap-2 text-xs">
+                    <svg style="width: 1rem; height: 1rem;" fill="none"
+                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                    </svg>
+                    {{ t("settings.restart_btn") }}
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+async function triggerRestart() {
+    if (!(await window.vitalsConfirm(
+        {{ t("settings.restart_confirm") | tojson | safe }},
+        {{ t("settings.restart_btn") | tojson | safe }}
+    ))) {
+        return;
+    }
+
+    const loader = document.getElementById('global-loader');
+    const titleEl = document.getElementById('loader-title');
+    const textEl = document.getElementById('loader-text');
+    if (loader && titleEl && textEl) {
+        titleEl.textContent = window.t('loader.restart_title');
+        textEl.textContent = window.t('loader.restart_text');
+        loader.classList.add('is-active');
+    }
+
+    function waitForAppThenReload() {
+        const deadline = Date.now() + 180000;
+        let sawDown = false;
+        (function poll() {
+            fetch('/health', { cache: 'no-store' })
+                .then(response => response.ok)
+                .catch(() => false)
+                .then(up => {
+                    if (up && sawDown) {
+                        window.location.href = '/settings/platform?saved=restart';
+                        return;
+                    }
+                    if (!up) sawDown = true;
+                    if (Date.now() > deadline) {
+                        window.location.href = '/settings/platform?saved=restart';
+                        return;
+                    }
+                    setTimeout(poll, 1000);
+                });
+        })();
+    }
+
+    fetch('/settings/restart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => {
+        if (!response.ok) {
+            if (loader) loader.classList.remove('is-active');
+            if (window.vitalsToast) {
+                window.vitalsToast(window.t('error.generic'), 'error');
+            }
+            return;
+        }
+        waitForAppThenReload();
+    })
+    .catch(waitForAppThenReload);
+}
+</script>
+{% endblock %}

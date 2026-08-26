@@ -157,12 +157,9 @@
             <a href="/care" class="mh-rail-foot-link {% if current_path.startswith('/care') %}is-active{% endif %}">{{ t('care.roster_heading') }}</a>
             {% endif %}
             {% if request.state.is_platform_admin %}
-            {# The support console. Here rather than only on /settings, because
-               a superadmin usually keeps no record of their own and /settings
-               refuses them outright — this was the one link in the product
-               whose intended audience could not reach it. #}
-            <a href="/settings/platform/support" class="mh-rail-foot-link {% if current_path.startswith('/settings/platform/support') %}is-active{% endif %}">{{ t('support.console_heading') }}</a>
-            <a href="/settings/platform/registration" class="mh-rail-foot-link {% if current_path.startswith('/settings/platform/registration') or current_path.startswith('/settings/platform/professionals') %}is-active{% endif %}">{{ t('registration.operator.heading') }}</a>
+            {# One control-plane destination. A superadmin often keeps no
+               personal record, so platform controls cannot live in /settings. #}
+            <a href="/settings/platform" class="mh-rail-foot-link {% if current_path.startswith('/settings/platform') %}is-active{% endif %}">{{ t('settings.platform.heading') }}</a>
             {% endif %}
             {% if request.state.has_own_record %}
             {# The persistent patient-side care hub. Invitations and access

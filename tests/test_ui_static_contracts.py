@@ -198,7 +198,15 @@ def test_no_transition_all_outside_the_tailwind_bundle():
 # ── Tappable surfaces have a pressed state ───────────────────────────────────
 
 @pytest.mark.parametrize(
-    "selector", [".v-btn", ".v-btn-ghost", ".v-icon-btn", ".v-pill", ".v-bnav-link"]
+    "selector",
+    [
+        ".v-btn",
+        ".v-btn-ghost",
+        ".v-btn-danger",
+        ".v-icon-btn",
+        ".v-pill",
+        ".v-bnav-link",
+    ],
 )
 def test_tappable_surfaces_have_an_active_state(selector):
     assert f"{selector}:active" in VITALS_CSS

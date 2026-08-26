@@ -613,6 +613,7 @@ a.v-card:focus-visible {
    telling the browser that up front skips the ~300ms delay before click. */
 .v-btn,
 .v-btn-ghost,
+.v-btn-danger,
 .v-icon-btn,
 .v-pill,
 .v-seg-btn,
@@ -637,17 +638,27 @@ a.v-card:focus-visible {
 }
 
 .v-btn-danger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: .5rem;
     background: var(--bad);
     color: #2a0d07;
     font-weight: 650;
+    font-size: var(--text-body);
+    padding: .7rem 1.15rem;
     border-radius: var(--radius);
     border: 1px solid transparent;
     cursor: pointer;
-    transition: filter .15s ease;
+    transition: filter .15s ease, transform .12s ease;
 }
 
 .v-btn-danger:hover {
     filter: brightness(1.08);
+}
+
+.v-btn-danger:active {
+    transform: translateY(1px);
 }
 
 /* Small square icon action (edit / delete / archive in row corners) */
@@ -1647,7 +1658,8 @@ a.v-seg-btn {
     }
 
     /* ── Buttons — minimum 44px touch targets ── */
-    .v-btn {
+    .v-btn,
+    .v-btn-danger {
         min-height: 2.75rem;
         padding: 0.75rem 1rem;
     }

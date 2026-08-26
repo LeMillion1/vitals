@@ -102,11 +102,13 @@ async def test_settings_page_requires_auth(client):
 
 
 async def test_settings_page_renders(auth_client):
-    """GET /settings renders all four config sections."""
+    """GET /settings renders personal controls and no platform operations."""
     r = await auth_client.get("/settings", headers={"Accept": "text/html"})
     assert r.status_code == 200
     assert "Профиль пользователя" in r.text
-    assert "OpenRouter" in r.text
+    assert 'action="/settings/ai"' not in r.text
+    assert "triggerRestart" not in r.text
+    assert "fetch('/settings/restart'" not in r.text
     assert "Hevy" in r.text
     assert "Garmin Connect" in r.text
     # Password and two-factor share one card — "signing in", not two neighbours

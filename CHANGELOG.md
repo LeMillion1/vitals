@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security — platform controls leave personal settings
+
+Container restart, full-installation backup/restore, support and admission
+consoles, and the OpenRouter gateway now live behind one explicit Platform hub.
+Personal Settings no longer renders their controls or reads platform AI values.
+Restart authority is carried only by an active `platform_superadmin`, never
+inferred from owning the installation's sole health record; restart and every
+OpenRouter mutation also require recent authentication. Desktop, phone, and
+More navigation expose the hub only to an active platform administrator, while
+the backend continues to revalidate that role on every direct request.
+
 ### Fixed — public report links attest one subject before binding it
 
 Anonymous report reads and open counters no longer enable the installation-wide

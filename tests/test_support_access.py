@@ -2534,13 +2534,11 @@ async def test_the_clinical_conversation_is_not_opened_by_a_support_grant(
 async def test_the_console_has_a_link_somebody_can_actually_click(
     client, db_session, legacy_owner_roots
 ):
-    """And it is in the rail, because /settings refuses the account it is for.
+    """The rail leads a recordless administrator to one platform hub.
 
     A platform superadmin usually keeps no record of their own, so ``/settings``
-    and ``/more`` both answer 409 — and the console's only link lived on
-    ``/settings``. The one account the console exists for could reach it by
-    typing the URL and no other way, which is the same defect as shipping no
-    console at all.
+    answers 409.  The hub must remain reachable without a health subject and
+    lead to each narrower operator console.
     """
 
     await _admin(db_session, "rail-admin")
@@ -2551,8 +2549,16 @@ async def test_the_console_has_a_link_somebody_can_actually_click(
     # refused by every personal page, and this one is what they can open.
     page = await client.get("/care", headers={"Accept": "text/html"})
     assert page.status_code == 200
-    assert "/settings/platform/support" in page.text
-    assert "/settings/platform/registration" in page.text
+    assert 'href="/settings/platform"' in page.text
+
+    hub = await client.get("/settings/platform", headers={"Accept": "text/html"})
+    assert hub.status_code == 200
+    assert 'action="/logout"' in hub.text
+    assert 'class="mh-rail-foot-link is-active"' in hub.text
+    assert 'href="/settings/platform/support"' in hub.text
+    assert 'href="/settings/platform/registration"' in hub.text
+    assert 'href="/settings/platform/ai"' in hub.text
+    assert "fetch('/settings/restart'" in hub.text
     del legacy_owner_roots
 
 
@@ -2566,8 +2572,9 @@ async def test_the_console_link_is_not_offered_to_anybody_else(
 
     _sign_in(client, "rail-member")
     page = await client.get("/weight", headers={"Accept": "text/html"})
-    assert "/settings/platform/support" not in page.text
-    assert "/settings/platform/registration" not in page.text
+    assert 'href="/settings/platform"' not in page.text
+    hub = await client.get("/settings/platform", headers={"Accept": "text/html"})
+    assert hub.status_code == 403
     del legacy_owner_roots
 
 

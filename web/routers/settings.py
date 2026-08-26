@@ -1,23 +1,18 @@
-"""Settings panel: read and persist VITALS_* configuration via the web UI.
+"""Personal settings and the separately authorized platform control plane.
 
 GET  /settings          — render the settings page
 POST /settings/profile  — save profile block (height, sex, age, timezone, program, goals)
-POST /settings/ai       — save AI / OpenRouter block (api key, model slugs)
 POST /settings/hevy     — save Hevy API key
 POST /settings/garmin   — save Garmin credentials (email + password)
 POST /settings/password — change the login password (requires old password)
+GET  /settings/platform — platform-superadmin operations hub
+POST /settings/platform/ai/* — control the installation OpenRouter gateway
 
-Most writes here go to the .env file via ``web.services.env_writer``, and the
-app shows a banner asking the user to restart the container so the new values
-are picked up by ``load_config()`` / ``get_web_config()``.
-
-**The profile block is the exception, and the direction of travel.** Age, sex,
-height, the programme, the goals, the nutrition targets and the timezone belong
-to a person rather than to the installation, so they are stored on the health
-subject and take effect immediately. ``.env`` should hold only what the
-installation owns — the database, Redis, the session secret, the identity
-provider, the AI gateway — and the remaining blocks above are what is left to
-move.
+Personal provider credentials are encrypted per subject and take effect in the
+running process.  Installation-owned configuration such as the AI gateway is
+absent from the personal page, requires an active ``platform_superadmin`` role,
+and every mutation requires recent authentication.  The historical ``/ai``
+POST remains only as a role-checked compatibility alias.
 
 Sensitive inputs (API keys, passwords) are always shown masked in the form.
 """
@@ -383,10 +378,6 @@ async def _page(
             HealthSubject.id == preference_scope.subject_id
         )
     ) or load_config().timezone
-    can_manage_openrouter = await platform_admin_service.is_active_platform_admin(
-        db,
-        actor_username=username,
-    )
     proactive = (
         await prefs.get_preferences_bundle(
             db,
@@ -473,36 +464,6 @@ async def _page(
         # Handed straight through from the redirect. Shown once and stored
         # nowhere: only the hash reaches the database.
         "issued_external_token": issued_external_token,
-        # AI
-        "can_manage_openrouter": can_manage_openrouter,
-        "openrouter_api_key_set": (
-            bool(read_key("VITALS_OPENROUTER_API_KEY"))
-            if can_manage_openrouter
-            else False
-        ),
-        "openrouter_base_url": (
-            read_key("VITALS_OPENROUTER_BASE_URL")
-            or "https://openrouter.ai/api/v1"
-            if can_manage_openrouter
-            else ""
-        ),
-        "llm_model_digest": (
-            read_key("VITALS_LLM_MODEL_DIGEST")
-            or "anthropic/claude-sonnet-4.6"
-            if can_manage_openrouter
-            else ""
-        ),
-        "llm_model_parser": (
-            read_key("VITALS_LLM_MODEL_PARSER")
-            or "google/gemini-2.5-flash"
-            if can_manage_openrouter
-            else ""
-        ),
-        # Empty = "use the digest model", which is what keeps the brief working
-        # before this is ever set. Placeholder, not a pre-filled default.
-        "llm_model_brief": (
-            read_key("VITALS_LLM_MODEL_BRIEF") if can_manage_openrouter else ""
-        ),
         # Hevy
         "hevy_api_key_set": bool(hevy_account and hevy_account.configured),
         # Garmin
@@ -817,6 +778,23 @@ async def revoke_external_api_token(
     return _redirect("?saved=external_api_revoked")
 
 
+@router.get("/platform", response_class=HTMLResponse)
+async def platform_settings_page(
+    request: Request,
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+    saved: Optional[str] = None,
+):
+    """Render installation controls outside every personal record."""
+
+    await _prepare_platform_admin_or_403(db, username=username)
+    return templates.TemplateResponse(
+        request,
+        "settings/platform.html",
+        {"username": username, "saved": saved},
+    )
+
+
 @router.get("/platform/ai", response_class=HTMLResponse)
 async def platform_ai_page(
     request: Request,
@@ -834,6 +812,7 @@ async def platform_ai_page(
         request,
         "settings/platform_ai.html",
         {
+            "username": username,
             "saved": saved,
             "error": error,
             "gateway": snapshot.gateway,
@@ -857,7 +836,7 @@ async def platform_ai_page(
 @router.post("/platform/ai/configuration")
 async def save_ai(
     request: Request,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
     openrouter_api_key: str = Form(""),
     openrouter_base_url: str = Form(""),
@@ -942,7 +921,7 @@ async def save_ai(
 
 @router.post("/platform/ai/enable")
 async def enable_platform_ai(
-    username: str = Depends(require_auth),
+    username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
     prepared_admin = await _prepare_platform_admin_or_403(db, username=username)
@@ -979,7 +958,7 @@ async def enable_platform_ai(
 
 @router.post("/platform/ai/disable")
 async def disable_platform_ai(
-    username: str = Depends(require_auth),
+    username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
     prepared_admin = await _prepare_platform_admin_or_403(db, username=username)
@@ -1003,7 +982,7 @@ async def disable_platform_ai(
 
 @router.post("/platform/ai/quota")
 async def configure_platform_ai_quota(
-    username: str = Depends(require_auth),
+    username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
     subject_id: str = Form(...),
     period_start: date = Form(...),
@@ -1854,7 +1833,7 @@ async def import_subject_record(
 @router.post("/restart")
 async def restart_container(
     request: Request,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
     import asyncio

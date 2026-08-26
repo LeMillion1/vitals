@@ -22,11 +22,11 @@ def test_a_superadmin_on_a_personal_page_gets_a_page_not_a_sentence(sign_in):
 
 
 def test_the_console_link_is_offered_to_an_administrator(sign_in):
-    """In the rail, because ``/settings`` refuses the account it is for."""
+    """The rail exposes one platform hub to an administrator."""
 
     admin = sign_in("admin")
-    assert admin.roster().offers("/settings/platform/support"), (
-        "the administrator has no link to their own console"
+    assert admin.roster().offers("/settings/platform"), (
+        "the administrator has no link to the platform hub"
     )
 
 
@@ -34,7 +34,7 @@ def test_the_console_link_is_offered_to_an_administrator(sign_in):
 def test_nobody_else_is_offered_a_console_they_cannot_open(sign_in, who):
     """A link that answers 403 is worse than no link."""
 
-    assert not sign_in(who).visit("/weight").offers("/settings/platform/support")
+    assert not sign_in(who).visit("/weight").offers("/settings/platform")
 
 
 def test_two_patients_keep_separate_profiles(sign_in):

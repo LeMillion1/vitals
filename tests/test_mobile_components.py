@@ -103,6 +103,13 @@ def test_primary_button_shadow_stays_off_its_neighbours():
     assert offset + blur - spread <= 6
 
 
+def test_danger_button_is_a_complete_mobile_control():
+    rule = _rule(APP_CSS, ".v-btn-danger")
+    assert "display: inline-flex;" in rule
+    assert "padding: .7rem 1.15rem;" in rule
+    assert "min-height: 2.75rem;" in rule
+
+
 def test_scrollbars_are_thin_everywhere_not_per_element():
     """A 15px platform bar inside a card sits on the last table column and on
     the right end of every divider in a scrolling list."""

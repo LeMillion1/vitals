@@ -1,6 +1,7 @@
 """Superadmin-only OpenRouter configuration boundaries."""
 from __future__ import annotations
 
+import inspect
 import json
 
 import pytest
@@ -51,7 +52,11 @@ async def test_non_admin_cannot_write_or_see_openrouter_configuration(
     page = await auth_client.get("/settings")
     assert page.status_code == 200
     assert 'action="/settings/ai"' not in page.text
+    assert "triggerRestart" not in page.text
     assert "synthetic-existing" not in page.text
+
+    platform = await auth_client.get("/settings/platform")
+    assert platform.status_code == 403
 
     response = await auth_client.post(
         "/settings/ai",
@@ -73,6 +78,25 @@ async def test_non_admin_cannot_write_or_see_openrouter_configuration(
             == "platform.openrouter.configuration.updated"
         )
     ) is None
+
+
+def test_platform_mutations_require_recent_authentication():
+    from web.deps import require_recent_auth
+    from web.routers import settings
+
+    for endpoint in (
+        settings.save_ai,
+        settings.enable_platform_ai,
+        settings.disable_platform_ai,
+        settings.configure_platform_ai_quota,
+        settings.restart_container,
+    ):
+        dependencies = {
+            parameter.default.dependency
+            for parameter in inspect.signature(endpoint).parameters.values()
+            if hasattr(parameter.default, "dependency")
+        }
+        assert require_recent_auth in dependencies, endpoint.__name__
 
 
 async def test_platform_admin_save_is_value_free_in_audit(
