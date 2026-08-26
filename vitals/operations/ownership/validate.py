@@ -557,6 +557,27 @@ async def _run_checks(
         for column_name, parent_name in parents:
             parent = Base.metadata.tables[parent_name]
             column = table.columns[column_name]
+            parent_spec = OWNERSHIP_REGISTRY[parent_name]
+            # Subject-owned facts may reference a platform catalog row. The
+            # global parent deliberately has no subject; equality applies only
+            # to a subject-owned custom catalog row. A mixed-catalog child is
+            # different: its subject must always inherit the catalog parent's
+            # subject, including the global/null case.
+            allows_global_catalog_parent = (
+                parent_spec.subject is TargetColumn.MIXED
+                and spec.ownership is not OwnershipClass.MIXED_CATALOG_CHILD
+            )
+            subject_mismatch = and_(
+                table.columns["subject_id"].is_not(None),
+                parent.c.subject_id.is_distinct_from(
+                    table.columns["subject_id"]
+                ),
+            )
+            if allows_global_catalog_parent:
+                subject_mismatch = and_(
+                    subject_mismatch,
+                    parent.c.subject_id.is_not(None),
+                )
             checks += 1
             if await _count(
                 session,
@@ -564,12 +585,7 @@ async def _run_checks(
                 .select_from(table.join(parent, column == parent.c.id))
                 .where(
                     or_(
-                        and_(
-                            table.columns["subject_id"].is_not(None),
-                            parent.c.subject_id.is_distinct_from(
-                                table.columns["subject_id"]
-                            ),
-                        ),
+                        subject_mismatch,
                         and_(
                             table.columns["subject_id"].is_(None),
                             parent.c.subject_id.is_not(None),
