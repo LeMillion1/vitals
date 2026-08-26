@@ -45,6 +45,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
+from urllib.parse import unquote, urlsplit
 
 import httpx
 import jwt
@@ -80,6 +81,58 @@ class OidcTokenError(OidcError):
     """The ID token failed a check that a genuine token would pass."""
 
 
+def _validate_https_or_localhost_url(
+    value: str,
+    *,
+    field_name: str,
+    required_path: str | None = None,
+) -> None:
+    """Reject ambiguous or remotely interceptable OIDC configuration URLs."""
+
+    if (
+        value != value.strip()
+        or "\\" in value
+        or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in value)
+    ):
+        raise OidcConfigurationError(
+            f"{field_name} contains whitespace, controls, or a backslash"
+        )
+    try:
+        parsed = urlsplit(value)
+        # Accessing ``port`` is what detects malformed/non-numeric ports.
+        port = parsed.port
+    except ValueError as exc:
+        raise OidcConfigurationError(f"{field_name} is not a valid URL") from exc
+
+    if not parsed.hostname or parsed.username is not None or parsed.password is not None:
+        raise OidcConfigurationError(
+            f"{field_name} must have a host and no embedded credentials"
+        )
+    if parsed.netloc.endswith(":") or (port is not None and not 1 <= port <= 65535):
+        raise OidcConfigurationError(f"{field_name} has an invalid port")
+    if parsed.query or parsed.fragment:
+        raise OidcConfigurationError(
+            f"{field_name} must not contain a query string or fragment"
+        )
+    decoded_path = unquote(parsed.path)
+    if "\\" in decoded_path or any(
+        segment in (".", "..") for segment in decoded_path.split("/")
+    ):
+        raise OidcConfigurationError(f"{field_name} contains an ambiguous path")
+    if parsed.scheme == "https":
+        pass
+    elif parsed.scheme == "http" and parsed.hostname == "localhost":
+        pass
+    else:
+        raise OidcConfigurationError(
+            f"{field_name} must be https, or http on exact localhost for development"
+        )
+    if required_path is not None and parsed.path != required_path:
+        raise OidcConfigurationError(
+            f"{field_name} path must be exactly {required_path}"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class OidcSettings:
     """What this deployment was told about its provider."""
@@ -96,14 +149,12 @@ class OidcSettings:
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise OidcConfigurationError(f"{field_name} must be a non-empty string")
-        if not self.issuer.startswith("https://") and not self.issuer.startswith(
-            "http://localhost"
-        ):
-            # http is allowed only where it cannot be intercepted, which in
-            # practice means a developer's own machine.
-            raise OidcConfigurationError(
-                "issuer must be https, or http on localhost for development"
-            )
+        _validate_https_or_localhost_url(self.issuer, field_name="issuer")
+        _validate_https_or_localhost_url(
+            self.redirect_url,
+            field_name="redirect_url",
+            required_path="/auth/callback",
+        )
         if "openid" not in self.scopes:
             raise OidcConfigurationError("the openid scope is not optional")
 

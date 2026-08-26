@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — fail-closed OIDC endpoint configuration
+
+OIDC issuer and callback settings now reject embedded credentials, malformed
+ports, queries/fragments, deceptive `localhost` hostnames, non-TLS remote URLs,
+and callback paths other than the registered `/auth/callback` route during
+startup configuration loading.
+
 ### Added — separately restorable identity-provider backups
 
 The opt-in `idp` profile can publish checksum-verified, non-empty ZITADEL

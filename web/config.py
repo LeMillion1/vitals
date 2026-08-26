@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 SESSION_COOKIE = "vitals_session"
 DEFAULT_SESSION_TTL = 30 * 24 * 3600  # 30 days
@@ -155,6 +156,61 @@ def get_web_config() -> WebConfig:
             "OIDC configuration is incomplete; set all required values or "
             f"unset all of them. Missing: {missing}"
         )
+    public_url = os.getenv("VITALS_PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/")
+    if all(oidc_values.values()):
+        from vitals.services.authentication.oidc import (
+            OidcConfigurationError,
+            OidcSettings,
+        )
+
+        try:
+            OidcSettings(
+                issuer=oidc_values["VITALS_OIDC_ISSUER"],
+                client_id=oidc_values["VITALS_OIDC_CLIENT_ID"],
+                client_secret=oidc_values["VITALS_OIDC_CLIENT_SECRET"],
+                redirect_url=oidc_values["VITALS_OIDC_REDIRECT_URL"],
+            )
+        except OidcConfigurationError as exc:
+            raise RuntimeError(f"OIDC configuration is invalid: {exc}") from exc
+
+        try:
+            public = urlsplit(public_url)
+            redirect = urlsplit(oidc_values["VITALS_OIDC_REDIRECT_URL"])
+            public_port = public.port or (443 if public.scheme == "https" else 80)
+            redirect_port = redirect.port or (
+                443 if redirect.scheme == "https" else 80
+            )
+        except ValueError as exc:
+            raise RuntimeError("VITALS_PUBLIC_URL is not a valid URL") from exc
+        if (
+            public_url != public_url.strip()
+            or "\\" in public_url
+            or any(
+                ord(char) <= 0x20 or ord(char) == 0x7F for char in public_url
+            )
+            or public.scheme not in ("http", "https")
+            or not public.hostname
+            or public.username is not None
+            or public.password is not None
+            or public.netloc.endswith(":")
+            or not 1 <= public_port <= 65535
+            or public.path not in ("", "/")
+            or public.query
+            or public.fragment
+        ):
+            raise RuntimeError("VITALS_PUBLIC_URL must be an http(s) origin")
+        if (
+            public.scheme,
+            public.hostname,
+            public_port,
+        ) != (
+            redirect.scheme,
+            redirect.hostname,
+            redirect_port,
+        ):
+            raise RuntimeError(
+                "VITALS_OIDC_REDIRECT_URL must use the VITALS_PUBLIC_URL origin"
+            )
 
     private_file_root_raw = os.getenv(
         "VITALS_PRIVATE_FILE_ROOT", DEFAULT_PRIVATE_FILE_ROOT
@@ -175,7 +231,7 @@ def get_web_config() -> WebConfig:
         session_ttl=_env_pos_int("VITALS_SESSION_TTL", DEFAULT_SESSION_TTL),
         cookie_secure=_env_bool("VITALS_COOKIE_SECURE", True),
         cookie_samesite=os.getenv("VITALS_COOKIE_SAMESITE", "lax"),
-        public_url=os.getenv("VITALS_PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/"),
+        public_url=public_url,
         mcp_client_id=os.getenv("VITALS_MCP_CLIENT_ID", "vitals-claude-connector"),
         mcp_client_secret=os.getenv("VITALS_MCP_CLIENT_SECRET", ""),
         mcp_redirect_hosts=tuple(

@@ -177,7 +177,10 @@ governance lock. Every login after that finds the link and does not need the
 variable — you can remove it, and should.
 
 The issuer must be `https` unless it is `http://localhost`, which is allowed
-only because a machine talking to itself cannot be intercepted.
+only because a machine talking to itself cannot be intercepted. Startup rejects
+userinfo, invalid ports, query/fragment components, ambiguous paths, deceptive
+`localhost` suffixes, and any callback that is not the exact
+`VITALS_PUBLIC_URL` origin plus `/auth/callback`.
 
 ## Adding another person by invitation
 

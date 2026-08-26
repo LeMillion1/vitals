@@ -204,6 +204,81 @@ def test_localhost_over_http_is_allowed_for_development():
     assert settings.issuer.startswith("http://localhost")
 
 
+@pytest.mark.parametrize(
+    "bad_issuer",
+    (
+        "http://localhost.evil.test",
+        "http://localhost@evil.test",
+        "http://localhost:bad-port",
+        "https://idp.example.test:",
+        "https://idp.example.test:0",
+        "https://idp.example.test:65536",
+        "https://user@idp.example.test",
+        "https://idp.example.test?tenant=one",
+        "https://idp.example.test#fragment",
+        "https://idp.example.test/a/../b",
+        "https://idp.example.test/a/%2e%2e/b",
+        "https://idp.example.test\\@evil.test",
+        " https://idp.example.test",
+    ),
+)
+def test_ambiguous_or_credentialed_issuer_is_refused(bad_issuer):
+    with pytest.raises(OidcConfigurationError):
+        OidcSettings(
+            issuer=bad_issuer,
+            client_id=CLIENT_ID,
+            client_secret="s",
+            redirect_url=REDIRECT,
+        )
+
+
+@pytest.mark.parametrize(
+    "bad_redirect",
+    (
+        "http://vitals.example.test/auth/callback",
+        "http://localhost.evil.test/auth/callback",
+        "http://localhost@evil.test/auth/callback",
+        "https://user@vitals.example.test/auth/callback",
+        "https://vitals.example.test/not-the-callback",
+        "https://vitals.example.test/auth/callback?next=/",
+        "https://vitals.example.test/auth/callback#fragment",
+        "https://vitals.example.test:bad/auth/callback",
+        "https://vitals.example.test:/auth/callback",
+        "https://vitals.example.test:0/auth/callback",
+    ),
+)
+def test_unsafe_or_inexact_redirect_url_is_refused(bad_redirect):
+    with pytest.raises(OidcConfigurationError):
+        OidcSettings(
+            issuer=ISSUER,
+            client_id=CLIENT_ID,
+            client_secret="s",
+            redirect_url=bad_redirect,
+        )
+
+
+def test_exact_localhost_callback_is_allowed_for_development():
+    settings = OidcSettings(
+        issuer="http://localhost:8080",
+        client_id=CLIENT_ID,
+        client_secret="s",
+        redirect_url="http://localhost:8000/auth/callback",
+    )
+
+    assert settings.redirect_url == "http://localhost:8000/auth/callback"
+
+
+def test_https_issuer_may_use_a_tenant_path_and_valid_nondefault_port():
+    settings = OidcSettings(
+        issuer="https://idp.example.test:8443/realms/vitals",
+        client_id=CLIENT_ID,
+        client_secret="s",
+        redirect_url=REDIRECT,
+    )
+
+    assert settings.issuer.endswith("/realms/vitals")
+
+
 def test_dropping_the_openid_scope_is_refused():
     with pytest.raises(OidcConfigurationError, match="openid"):
         OidcSettings(

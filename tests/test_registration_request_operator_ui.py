@@ -40,7 +40,11 @@ def _configure_oidc(monkeypatch, *, issuer: str = ISSUER) -> None:
     monkeypatch.setenv("VITALS_OIDC_ISSUER", issuer)
     monkeypatch.setenv("VITALS_OIDC_CLIENT_ID", "synthetic-client")
     monkeypatch.setenv("VITALS_OIDC_CLIENT_SECRET", "synthetic-secret")
-    monkeypatch.setenv("VITALS_OIDC_REDIRECT_URL", "http://test/auth/callback")
+    monkeypatch.setenv(
+        "VITALS_OIDC_REDIRECT_URL",
+        "https://vitals.example.test/auth/callback",
+    )
+    monkeypatch.setenv("VITALS_PUBLIC_URL", "https://vitals.example.test")
 
 
 async def _enable(db_session, monkeypatch) -> None:

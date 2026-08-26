@@ -107,6 +107,7 @@ def federated(monkeypatch):
         ("VITALS_OIDC_CLIENT_SECRET", "s3cret"),
         ("VITALS_OIDC_REDIRECT_URL", REDIRECT),
         ("VITALS_OIDC_BOOTSTRAP_SUBJECT", OWNER_SUBJECT),
+        ("VITALS_PUBLIC_URL", "https://vitals.example.test"),
     ):
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(web.auth, "_provider_cache", None, raising=False)
@@ -1855,6 +1856,52 @@ def test_a_partial_oidc_cutover_fails_closed(monkeypatch, only_name):
 
     with pytest.raises(RuntimeError, match="OIDC configuration is incomplete"):
         get_web_config()
+
+
+def test_an_unsafe_oidc_url_fails_during_configuration_load(monkeypatch):
+    from web.config import get_web_config
+
+    for name, value in (
+        ("VITALS_OIDC_ISSUER", "http://localhost.evil.test"),
+        ("VITALS_OIDC_CLIENT_ID", "configured-client"),
+        ("VITALS_OIDC_CLIENT_SECRET", "configured-secret"),
+        ("VITALS_OIDC_REDIRECT_URL", REDIRECT),
+    ):
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(RuntimeError, match="OIDC configuration is invalid"):
+        get_web_config()
+
+
+def test_oidc_callback_must_use_the_public_origin(monkeypatch):
+    from web.config import get_web_config
+
+    for name, value in (
+        ("VITALS_OIDC_ISSUER", ISSUER),
+        ("VITALS_OIDC_CLIENT_ID", "configured-client"),
+        ("VITALS_OIDC_CLIENT_SECRET", "configured-secret"),
+        ("VITALS_OIDC_REDIRECT_URL", "https://evil.test/auth/callback"),
+        ("VITALS_PUBLIC_URL", "https://vitals.example.test"),
+    ):
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(RuntimeError, match="must use the VITALS_PUBLIC_URL origin"):
+        get_web_config()
+
+
+def test_oidc_origin_comparison_treats_default_https_port_semantically(monkeypatch):
+    from web.config import get_web_config
+
+    for name, value in (
+        ("VITALS_OIDC_ISSUER", ISSUER),
+        ("VITALS_OIDC_CLIENT_ID", "configured-client"),
+        ("VITALS_OIDC_CLIENT_SECRET", "configured-secret"),
+        ("VITALS_OIDC_REDIRECT_URL", REDIRECT),
+        ("VITALS_PUBLIC_URL", "https://vitals.example.test:443"),
+    ):
+        monkeypatch.setenv(name, value)
+
+    assert get_web_config().oidc_enabled is True
 
 
 def test_the_compose_file_keeps_the_provider_behind_a_profile():

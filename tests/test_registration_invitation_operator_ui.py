@@ -51,8 +51,11 @@ def _configure_oidc(monkeypatch) -> None:
     monkeypatch.setenv("VITALS_OIDC_ISSUER", "https://idp.example.test")
     monkeypatch.setenv("VITALS_OIDC_CLIENT_ID", "synthetic-client")
     monkeypatch.setenv("VITALS_OIDC_CLIENT_SECRET", "synthetic-secret")
-    monkeypatch.setenv("VITALS_OIDC_REDIRECT_URL", "http://test/auth/callback")
-    monkeypatch.setenv("VITALS_PUBLIC_URL", "http://test")
+    monkeypatch.setenv(
+        "VITALS_OIDC_REDIRECT_URL",
+        "https://vitals.example.test/auth/callback",
+    )
+    monkeypatch.setenv("VITALS_PUBLIC_URL", "https://vitals.example.test")
 
 
 def _nonce(page_text: str) -> str:
@@ -97,7 +100,8 @@ async def test_operator_issues_one_redacted_non_replayable_link(
     assert response.status_code == 200
     assert "location" not in response.headers
     match = re.search(
-        r"http://test/register/invite#token=([A-Za-z0-9_-]+)", response.text
+        r"https://vitals\.example\.test/register/invite#token=([A-Za-z0-9_-]+)",
+        response.text,
     )
     assert match is not None
     token = match.group(1)
