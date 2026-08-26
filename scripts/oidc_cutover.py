@@ -309,6 +309,124 @@ async def _validate_password_rollback(
             await engine.dispose()
 
 
+async def _revoke_subject_mcp_tokens(
+    session,
+    *,
+    subject_id,
+    revoked_at: datetime,
+) -> int:
+    """Revoke one subject's live connectors inside the caller's transaction."""
+
+    import sqlalchemy as sa
+
+    from vitals.models.identity import McpAccessToken
+    from vitals.persistence.rls import SUBJECT_SETTING
+
+    if session.get_bind().dialect.name == "postgresql":
+        # The web database role has no installation-wide RLS capability.  Move
+        # the transaction-local subject setting deliberately instead of
+        # escalating the cutover helper to the migration or worker role.
+        await session.execute(
+            sa.text("SELECT set_config(:name, :value, true)"),
+            {"name": SUBJECT_SETTING, "value": str(subject_id)},
+        )
+    result = await session.execute(
+        sa.update(McpAccessToken)
+        .where(
+            McpAccessToken.subject_id == subject_id,
+            McpAccessToken.revoked_at.is_(None),
+            McpAccessToken.expires_at > revoked_at,
+        )
+        .values(revoked_at=revoked_at)
+        .execution_options(synchronize_session=False)
+    )
+    remaining = await session.scalar(
+        sa.select(sa.func.count())
+        .select_from(McpAccessToken)
+        .where(
+            McpAccessToken.subject_id == subject_id,
+            McpAccessToken.revoked_at.is_(None),
+            McpAccessToken.expires_at > revoked_at,
+        )
+    )
+    if remaining:
+        raise OidcCutoverError("MCP connector revocation did not reach a stable state")
+    return int(result.rowcount or 0)
+
+
+async def _revoke_live_mcp_tokens(*, runtime_env: Path) -> int:
+    """Durably disconnect every live MCP connector before session rotation.
+
+    The runtime database role is intentionally subject-scoped.  All subjects
+    are therefore updated one at a time under the production RLS setting, but
+    within one database transaction.  PostgreSQL also locks the token table so
+    no concurrent issuance can slip between the subject inventory and commit.
+
+    This commit precedes the owner-only runtime-file update.  The two stores
+    cannot share a physical transaction; if the later file write fails, leaving
+    connectors revoked while restoring the previous auth configuration is the
+    safe, retryable direction.  The reverse ordering could publish a new signing
+    key while durable Settings rows still claimed those connectors were live.
+    """
+
+    import sqlalchemy as sa
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from vitals.models.identity import HealthSubject
+
+    database_url = read_env_key(
+        runtime_env,
+        "VITALS_DATABASE_URL",
+        require_existing=True,
+        require_owner_only=True,
+    ).strip()
+    engine = None
+    try:
+        engine = create_async_engine(database_url)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session, session.begin():
+            if session.get_bind().dialect.name == "postgresql":
+                # SHARE ROW EXCLUSIVE conflicts with token INSERT/UPDATE/DELETE,
+                # while remaining available to the restricted web role through
+                # its ordinary table privileges.  The host coordinator has
+                # already stopped web, but this also makes direct helper use
+                # deterministic rather than merely timing-dependent.
+                await session.execute(
+                    sa.text(
+                        "LOCK TABLE mcp_access_tokens IN SHARE ROW EXCLUSIVE MODE"
+                    )
+                )
+                revoked_at = await session.scalar(sa.select(sa.func.current_timestamp()))
+            else:
+                revoked_at = datetime.now(timezone.utc)
+            if revoked_at is None:  # pragma: no cover - database contract
+                raise OidcCutoverError("database did not provide an MCP revocation time")
+            if revoked_at.tzinfo is None:
+                revoked_at = revoked_at.replace(tzinfo=timezone.utc)
+            subject_ids = list(
+                (
+                    await session.scalars(
+                        sa.select(HealthSubject.id).order_by(HealthSubject.id)
+                    )
+                ).all()
+            )
+            revoked = 0
+            for subject_id in subject_ids:
+                revoked += await _revoke_subject_mcp_tokens(
+                    session,
+                    subject_id=subject_id,
+                    revoked_at=revoked_at,
+                )
+        return revoked
+    except OidcCutoverError:
+        raise
+    except Exception as exc:
+        raise OidcCutoverError("could not revoke live MCP connectors") from exc
+    finally:
+        if engine is not None:
+            await engine.dispose()
+
+
 async def _require_bound_owner(
     *,
     runtime_env: Path,
@@ -547,6 +665,7 @@ async def _enable(args: argparse.Namespace) -> dict[str, object]:
     proposed = await _enable_preflight(args)
     updates = dict(proposed)
     updates[SESSION_SECRET_KEY] = secrets.token_urlsafe(64)
+    revoked_connectors = await _revoke_live_mcp_tokens(runtime_env=args.runtime_env)
     _publish_runtime_state(
         args.runtime_env,
         updates,
@@ -561,6 +680,7 @@ async def _enable(args: argparse.Namespace) -> dict[str, object]:
         "operation": "oidc_cutover_enable",
         "readback": state,
         "result": "ok",
+        "mcp_connectors_revoked": revoked_connectors,
         "session_secret_rotated": True,
     }
 
@@ -613,6 +733,7 @@ async def _rollback(args: argparse.Namespace) -> dict[str, object]:
     )
     updates = {key: "" for key in OIDC_REQUIRED_KEYS + (OIDC_BOOTSTRAP_KEY,)}
     updates[SESSION_SECRET_KEY] = secrets.token_urlsafe(64)
+    revoked_connectors = await _revoke_live_mcp_tokens(runtime_env=args.runtime_env)
     _publish_runtime_state(
         args.runtime_env,
         updates,
@@ -624,6 +745,7 @@ async def _rollback(args: argparse.Namespace) -> dict[str, object]:
         "operation": "oidc_cutover_rollback",
         "readback": state,
         "result": "ok",
+        "mcp_connectors_revoked": revoked_connectors,
         "session_secret_rotated": True,
     }
 
@@ -690,6 +812,7 @@ async def _retire_legacy(args: argparse.Namespace) -> dict[str, object]:
         }
     updates = {key: "" for key in LEGACY_AUTH_KEYS}
     updates[SESSION_SECRET_KEY] = secrets.token_urlsafe(64)
+    revoked_connectors = await _revoke_live_mcp_tokens(runtime_env=args.runtime_env)
     _publish_runtime_state(
         args.runtime_env,
         updates,
@@ -703,6 +826,7 @@ async def _retire_legacy(args: argparse.Namespace) -> dict[str, object]:
         "readback": "oidc_bound",
         "result": "ok",
         "already_retired": False,
+        "mcp_connectors_revoked": revoked_connectors,
         "session_secret_rotated": True,
     }
 

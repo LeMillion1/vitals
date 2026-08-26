@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — OIDC signing-key rotation disconnects MCP grants truthfully
+
+Enable, rollback, and legacy-password retirement now revoke every live MCP
+connector in one subject-bound FORCE-RLS transaction before publishing a new
+session signing key. Database failure leaves runtime authentication untouched;
+a later file failure keeps the safe revocation, so the connector registry never
+labels an unusable pre-rotation token active.
+
 ### Fixed — MCP discovery fails closed on module-state errors
 
 Connector scopes are now applied before optional-module visibility is read.

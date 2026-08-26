@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import secrets
 
 import pytest
+import sqlalchemy as sa
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from scripts import oidc_cutover
+from scripts.provision_runtime_db_role import provision_runtime_role
+from vitals.models.base import Base
+from vitals.models.identity import HealthSubject, McpAccessToken, User
 from vitals.runtime_env import read_env_key, write_env_keys
 from vitals.services.authentication.oidc import OidcSettings
 from vitals.utils.passwords import hash_password
@@ -71,6 +79,80 @@ def _value(path: Path, key: str) -> str:
         require_existing=True,
         require_owner_only=True,
     )
+
+
+async def _seed_connector_database(database_url: str) -> tuple[list, list, list]:
+    """Create two subjects with live, expired, and already-revoked connectors."""
+
+    engine = create_async_engine(database_url)
+    now = datetime.now(timezone.utc)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session, session.begin():
+            users = [
+                User(
+                    username=f"owner-{index}",
+                    normalized_username=f"owner-{index}",
+                    password_hash="$synthetic",
+                    status="active",
+                )
+                for index in range(2)
+            ]
+            session.add_all(users)
+            await session.flush()
+            subjects = [
+                HealthSubject(
+                    owner_user_id=user.id,
+                    display_name=f"Subject {index}",
+                    timezone="Asia/Almaty",
+                )
+                for index, user in enumerate(users)
+            ]
+            session.add_all(subjects)
+            await session.flush()
+            live = [
+                McpAccessToken(
+                    user_id=user.id,
+                    subject_id=subject.id,
+                    client_id="connector",
+                    audience="https://vitals.example.test/mcp",
+                    issued_at=now - timedelta(days=1),
+                    expires_at=now + timedelta(days=30),
+                )
+                for user, subject in zip(users, subjects, strict=True)
+            ]
+            expired = [
+                McpAccessToken(
+                    user_id=users[0].id,
+                    subject_id=subjects[0].id,
+                    client_id="expired",
+                    audience="https://vitals.example.test/mcp",
+                    issued_at=now - timedelta(days=30),
+                    expires_at=now - timedelta(days=1),
+                )
+            ]
+            revoked = [
+                McpAccessToken(
+                    user_id=users[1].id,
+                    subject_id=subjects[1].id,
+                    client_id="already-revoked",
+                    audience="https://vitals.example.test/mcp",
+                    issued_at=now - timedelta(days=1),
+                    expires_at=now + timedelta(days=30),
+                    revoked_at=now - timedelta(hours=1),
+                )
+            ]
+            session.add_all([*live, *expired, *revoked])
+            await session.flush()
+            return (
+                [row.id for row in live],
+                [row.id for row in expired],
+                [row.id for row in revoked],
+            )
+    finally:
+        await engine.dispose()
 
 
 def test_container_runtime_file_is_the_safe_default():
@@ -178,6 +260,105 @@ async def test_provider_contract_requires_explicit_post_and_s256(monkeypatch, me
 
 
 @pytest.mark.asyncio
+async def test_session_rotation_revokes_only_live_mcp_rows_across_subjects(tmp_path):
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'connectors.db'}"
+    live_ids, expired_ids, revoked_ids = await _seed_connector_database(database_url)
+    runtime = _runtime(tmp_path)
+    write_env_keys(
+        runtime,
+        {"VITALS_DATABASE_URL": database_url},
+        require_existing=True,
+        require_owner_only=True,
+    )
+
+    assert await oidc_cutover._revoke_live_mcp_tokens(runtime_env=runtime) == 2
+
+    engine = create_async_engine(database_url)
+    try:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            rows = {
+                row.id: row
+                for row in (
+                    await session.scalars(sa.select(McpAccessToken))
+                ).all()
+            }
+        assert all(rows[row_id].revoked_at is not None for row_id in live_ids)
+        assert all(rows[row_id].revoked_at is None for row_id in expired_ids)
+        assert all(rows[row_id].revoked_at is not None for row_id in revoked_ids)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mcp_revocation_rolls_back_every_subject_on_midway_failure(
+    tmp_path, monkeypatch
+):
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'rollback.db'}"
+    live_ids, _expired_ids, _revoked_ids = await _seed_connector_database(database_url)
+    runtime = _runtime(tmp_path)
+    write_env_keys(
+        runtime,
+        {"VITALS_DATABASE_URL": database_url},
+        require_existing=True,
+        require_owner_only=True,
+    )
+    original = oidc_cutover._revoke_subject_mcp_tokens
+    calls = 0
+
+    async def fail_second(session, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("synthetic second-subject failure")
+        return await original(session, **kwargs)
+
+    monkeypatch.setattr(oidc_cutover, "_revoke_subject_mcp_tokens", fail_second)
+    with pytest.raises(oidc_cutover.OidcCutoverError, match="could not revoke"):
+        await oidc_cutover._revoke_live_mcp_tokens(runtime_env=runtime)
+
+    engine = create_async_engine(database_url)
+    try:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            rows = {
+                row.id: row
+                for row in (
+                    await session.scalars(
+                        sa.select(McpAccessToken).where(McpAccessToken.id.in_(live_ids))
+                    )
+                ).all()
+            }
+        assert all(rows[row_id].revoked_at is None for row_id in live_ids)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_enable_does_not_publish_if_mcp_revocation_fails(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path)
+    secret = _secret(tmp_path)
+    before = runtime.read_bytes()
+
+    async def accepted(*_args, **_kwargs):
+        return None
+
+    async def refused(**_kwargs):
+        raise oidc_cutover.OidcCutoverError("could not revoke live MCP connectors")
+
+    monkeypatch.setattr(oidc_cutover, "_validate_provider", accepted)
+    monkeypatch.setattr(oidc_cutover, "_validate_database_bootstrap", accepted)
+    monkeypatch.setattr(oidc_cutover, "_revoke_live_mcp_tokens", refused)
+
+    with pytest.raises(oidc_cutover.OidcCutoverError, match="could not revoke"):
+        await oidc_cutover._enable(
+            _enable_args(runtime, secret, confirm=oidc_cutover.ENABLE_CONFIRMATION)
+        )
+
+    assert runtime.read_bytes() == before
+
+
+@pytest.mark.asyncio
 async def test_enable_rotates_sessions_and_publishes_the_complete_group(tmp_path, monkeypatch):
     runtime = _runtime(tmp_path)
     secret = _secret(tmp_path)
@@ -185,8 +366,13 @@ async def test_enable_rotates_sessions_and_publishes_the_complete_group(tmp_path
     async def accepted(*_args, **_kwargs):
         return None
 
+    async def revoked(**_kwargs):
+        assert oidc_cutover._runtime_state(runtime)[0] == "password"
+        return 2
+
     monkeypatch.setattr(oidc_cutover, "_validate_provider", accepted)
     monkeypatch.setattr(oidc_cutover, "_validate_database_bootstrap", accepted)
+    monkeypatch.setattr(oidc_cutover, "_revoke_live_mcp_tokens", revoked)
     monkeypatch.setattr(oidc_cutover.secrets, "token_urlsafe", lambda _size: "rotated-session")
 
     result = await oidc_cutover._enable(
@@ -198,6 +384,7 @@ async def test_enable_rotates_sessions_and_publishes_the_complete_group(tmp_path
     )
 
     assert result["readback"] == "oidc_bootstrap_pending"
+    assert result["mcp_connectors_revoked"] == 2
     assert _value(runtime, "VITALS_SESSION_SECRET") == "rotated-session"
     assert _value(runtime, "VITALS_OIDC_CLIENT_SECRET") == "provider-secret"
     assert _value(runtime, "VITALS_OIDC_BOOTSTRAP_SUBJECT") == "owner-sub"
@@ -207,6 +394,14 @@ async def test_enable_rotates_sessions_and_publishes_the_complete_group(tmp_path
 async def test_enable_failure_after_publish_restores_every_previous_value(tmp_path, monkeypatch):
     runtime = _runtime(tmp_path)
     secret = _secret(tmp_path)
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'publish-failure.db'}"
+    live_ids, _expired_ids, _revoked_ids = await _seed_connector_database(database_url)
+    write_env_keys(
+        runtime,
+        {"VITALS_DATABASE_URL": database_url},
+        require_existing=True,
+        require_owner_only=True,
+    )
 
     async def accepted(*_args, **_kwargs):
         return None
@@ -236,6 +431,23 @@ async def test_enable_failure_after_publish_restores_every_previous_value(tmp_pa
 
     assert original_state(runtime)[0] == "password"
     assert _value(runtime, "VITALS_SESSION_SECRET") == "old-session-secret"
+    engine = create_async_engine(database_url)
+    try:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        sa.select(McpAccessToken).where(
+                            McpAccessToken.id.in_(live_ids)
+                        )
+                    )
+                ).all()
+            )
+        assert len(rows) == len(live_ids)
+        assert all(row.revoked_at is not None for row in rows)
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -267,7 +479,12 @@ async def test_rollback_validates_owner_then_clears_oidc_and_rotates(tmp_path, m
         assert legacy_password == "legacy-password"
         validated = True
 
+    async def revoked(**_kwargs):
+        assert oidc_cutover._runtime_state(runtime)[0] == "oidc_bootstrap_pending"
+        return 1
+
     monkeypatch.setattr(oidc_cutover, "_validate_password_rollback", validate)
+    monkeypatch.setattr(oidc_cutover, "_revoke_live_mcp_tokens", revoked)
     monkeypatch.setattr(oidc_cutover.secrets, "token_urlsafe", lambda _size: "rollback-session")
     args = argparse.Namespace(
         confirm=oidc_cutover.ROLLBACK_CONFIRMATION,
@@ -280,6 +497,7 @@ async def test_rollback_validates_owner_then_clears_oidc_and_rotates(tmp_path, m
 
     assert validated is True
     assert result["readback"] == "password"
+    assert result["mcp_connectors_revoked"] == 1
     assert _value(runtime, "VITALS_OIDC_ISSUER") == ""
     assert _value(runtime, "VITALS_SESSION_SECRET") == "rollback-session"
 
@@ -381,7 +599,13 @@ async def test_retire_legacy_keeps_oidc_and_rotates_every_signed_token(tmp_path,
         assert kwargs["require_password_retired"] is True
         assert kwargs["allow_already_retired"] is False
 
+    async def revoked(**_kwargs):
+        assert _value(runtime, "VITALS_AUTH_USERNAME") == "owner"
+        assert oidc_cutover._runtime_state(runtime)[0] == "oidc_bound"
+        return 4
+
     monkeypatch.setattr(oidc_cutover, "_require_bound_owner", accepted)
+    monkeypatch.setattr(oidc_cutover, "_revoke_live_mcp_tokens", revoked)
     monkeypatch.setattr(oidc_cutover.secrets, "token_urlsafe", lambda _size: "retired-session")
     args = argparse.Namespace(
         confirm=oidc_cutover.RETIRE_CONFIRMATION,
@@ -394,6 +618,7 @@ async def test_retire_legacy_keeps_oidc_and_rotates_every_signed_token(tmp_path,
     result = await oidc_cutover._retire_legacy(args)
 
     assert result["readback"] == "oidc_bound"
+    assert result["mcp_connectors_revoked"] == 4
     assert result["session_secret_rotated"] is True
     assert _value(runtime, "VITALS_AUTH_USERNAME") == ""
     assert _value(runtime, "VITALS_AUTH_PASSWORD_HASH") == ""
@@ -533,3 +758,124 @@ def test_secret_parent_must_not_be_group_accessible(tmp_path):
 
     with pytest.raises(oidc_cutover.OidcCutoverError, match="mode 0700"):
         oidc_cutover._validate_private_secret_file(secret)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_mcp_revocation_crosses_forced_rls_without_runtime_escalation(
+    db_session, tmp_path
+):
+    raw_admin_url = os.getenv("VITALS_TEST_DATABASE_URL")
+    if not raw_admin_url or not raw_admin_url.startswith("postgresql+asyncpg://"):
+        pytest.skip("integration test requires VITALS_TEST_DATABASE_URL")
+
+    admin_url = make_url(raw_admin_url)
+    role = f"vitals_oidc_revoke_{secrets.token_hex(6)}"
+    runtime_url = admin_url.set(
+        username=role,
+        password=secrets.token_urlsafe(24),
+    )
+    admin = create_async_engine(admin_url)
+    now = datetime.now(timezone.utc)
+    users = [
+        User(
+            username=f"rls-owner-{index}",
+            normalized_username=f"rls-owner-{index}",
+            password_hash="$synthetic",
+            status="active",
+        )
+        for index in range(2)
+    ]
+    db_session.add_all(users)
+    await db_session.flush()
+    subjects = [
+        HealthSubject(
+            owner_user_id=user.id,
+            display_name=f"RLS subject {index}",
+            timezone="Asia/Almaty",
+        )
+        for index, user in enumerate(users)
+    ]
+    db_session.add_all(subjects)
+    await db_session.flush()
+    live = [
+        McpAccessToken(
+            user_id=user.id,
+            subject_id=subject.id,
+            client_id="rls-connector",
+            audience="https://vitals.example.test/mcp",
+            issued_at=now - timedelta(days=1),
+            expires_at=now + timedelta(days=30),
+        )
+        for user, subject in zip(users, subjects, strict=True)
+    ]
+    db_session.add_all(live)
+    await db_session.commit()
+
+    try:
+        await provision_runtime_role(
+            migration_url=admin_url,
+            runtime_url=runtime_url,
+        )
+        async with admin.begin() as connection:
+            await connection.exec_driver_sql(
+                "ALTER TABLE mcp_access_tokens ENABLE ROW LEVEL SECURITY"
+            )
+            await connection.exec_driver_sql(
+                "ALTER TABLE mcp_access_tokens FORCE ROW LEVEL SECURITY"
+            )
+            await connection.exec_driver_sql(
+                "CREATE POLICY rls_subject_isolation ON mcp_access_tokens "
+                "USING (subject_id = NULLIF(current_setting("
+                "'vitals.subject_id', true), '')::uuid) "
+                "WITH CHECK (subject_id = NULLIF(current_setting("
+                "'vitals.subject_id', true), '')::uuid)"
+            )
+            attributes = (
+                await connection.execute(
+                    sa.text(
+                        "SELECT rolsuper, rolbypassrls FROM pg_roles "
+                        "WHERE rolname=:role"
+                    ),
+                    {"role": role},
+                )
+            ).one()
+            assert tuple(attributes) == (False, False)
+
+        runtime = _runtime(tmp_path)
+        write_env_keys(
+            runtime,
+            {
+                "VITALS_DATABASE_URL": runtime_url.render_as_string(
+                    hide_password=False
+                )
+            },
+            require_existing=True,
+            require_owner_only=True,
+        )
+
+        assert await oidc_cutover._revoke_live_mcp_tokens(runtime_env=runtime) == 2
+        rows = list(
+            (
+                await db_session.scalars(
+                    sa.select(McpAccessToken).where(
+                        McpAccessToken.id.in_([row.id for row in live])
+                    )
+                )
+            ).all()
+        )
+        assert len(rows) == 2
+        assert all(row.revoked_at is not None for row in rows)
+    finally:
+        async with admin.begin() as connection:
+            exists = await connection.scalar(
+                sa.text(
+                    "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=:role)"
+                ),
+                {"role": role},
+            )
+            if exists:
+                role_ident = connection.dialect.identifier_preparer.quote(role)
+                await connection.exec_driver_sql(f"DROP OWNED BY {role_ident}")
+                await connection.exec_driver_sql(f"DROP ROLE {role_ident}")
+        await admin.dispose()
