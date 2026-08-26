@@ -203,12 +203,25 @@ userinfo, invalid ports, query/fragment components, ambiguous paths, deceptive
 
 ## Adding another person by invitation
 
-Keep the deployment gate and stored mode as explicit shell decisions:
+The deployment gate must be persisted in the owner-only application runtime
+file. A shell `export` affects only that one CLI process and does not change an
+already-running web service. Stop web first so its Settings writer cannot race
+the host-operator update, persist and read back the gate, then recreate and
+health-check web before changing the stored mode:
 
 ```bash
-export VITALS_REGISTRATION_UNLOCKED=1
-python scripts/registration_mode.py --set invite_only
+docker compose stop vitals_app
+python scripts/registration_gate.py --set unlocked \
+  --confirm 'WEB STOPPED; UNLOCK REGISTRATION'
+docker compose up -d --force-recreate --wait vitals_app
+python scripts/registration_mode.py --set invite_only \
+  --runtime-env .vitals-runtime/vitals.env \
+  --confirm-web-recreated \
+  'WEB RECREATED WITH REGISTRATION GATE ENABLED'
 ```
+
+Do not proceed unless `registration_gate.py` reports
+`"readback": "unlocked"` and Compose reports the recreated web service healthy.
 
 After a fresh platform-superadmin login, open
 `/settings/platform/registration`. Enter the exact recipient address and choose
@@ -236,11 +249,18 @@ failure alert and `/health` heartbeat make a stopped retention loop visible.
 
 ## Adding a member by administrator approval
 
-Use the same deployment gate with the approval mode:
+Use the same stop, persisted-gate, recreate, and readback sequence with the
+approval mode:
 
 ```bash
-export VITALS_REGISTRATION_UNLOCKED=1
-python scripts/registration_mode.py --set admin_approved
+docker compose stop vitals_app
+python scripts/registration_gate.py --set unlocked \
+  --confirm 'WEB STOPPED; UNLOCK REGISTRATION'
+docker compose up -d --force-recreate --wait vitals_app
+python scripts/registration_mode.py --set admin_approved \
+  --runtime-env .vitals-runtime/vitals.env \
+  --confirm-web-recreated \
+  'WEB RECREATED WITH REGISTRATION GATE ENABLED'
 ```
 
 An unknown person may now complete the normal provider login. Vitals requires
@@ -258,6 +278,17 @@ unavailable, or the configured issuer changed. Requests from a previous issuer
 remain visible only so an operator can reject them with a private decision
 note. Rejection is also available after closure, so stale applicant PII need
 not remain pending until expiry.
+
+After onboarding, close the stored mode before locking the deployment gate:
+
+```bash
+python scripts/registration_mode.py --set disabled \
+  --runtime-env .vitals-runtime/vitals.env
+docker compose stop vitals_app
+python scripts/registration_gate.py --set locked \
+  --confirm 'WEB STOPPED; LOCK REGISTRATION'
+docker compose up -d --force-recreate --wait vitals_app
+```
 
 For a professional account provisioned directly by an operator, creating the
 local account and deciding which provider identity may enter it are two explicit

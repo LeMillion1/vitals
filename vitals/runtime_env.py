@@ -9,8 +9,12 @@ explicit security review instead of an implicit copy of every operator secret.
 
 from __future__ import annotations
 
+import errno
 import os
 import re
+import secrets
+import stat
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -90,6 +94,8 @@ PRIVILEGED_ENV_KEYS = frozenset(
 _ASSIGNMENT = re.compile(
     r"^(?:export[ \t]+)?(?P<key>[A-Za-z_][A-Za-z0-9_]*)[ \t]*="
 )
+_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_WRITE_LOCK = threading.Lock()
 
 
 class RuntimeEnvIsolationError(RuntimeError):
@@ -106,6 +112,256 @@ def runtime_environment_path(
     if configured:
         return Path(configured)
     return Path(__file__).resolve().parent.parent / ".env"
+
+
+def _open_runtime_parent(path: Path, *, require_owner_only: bool) -> int:
+    """Open and anchor the real directory containing *path*."""
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path.parent, flags)
+    parent_stat = os.fstat(descriptor)
+    if not stat.S_ISDIR(parent_stat.st_mode):
+        os.close(descriptor)
+        raise OSError(
+            errno.ENOTDIR,
+            f"Runtime env parent is not a real directory: {path.parent}",
+            path.parent,
+        )
+    if require_owner_only:
+        if parent_stat.st_uid != os.geteuid():
+            os.close(descriptor)
+            raise RuntimeEnvIsolationError(
+                "application runtime environment directory must belong to the "
+                "current user"
+            )
+        if stat.S_IMODE(parent_stat.st_mode) != 0o700:
+            os.close(descriptor)
+            raise RuntimeEnvIsolationError(
+                "application runtime environment directory must have mode 0700"
+            )
+    return descriptor
+
+
+def _read_runtime_lines(
+    path: Path,
+    *,
+    parent_descriptor: int,
+    require_existing: bool,
+    require_owner_only: bool,
+) -> list[str]:
+    """Read an existing regular runtime file without following a symlink."""
+
+    try:
+        path_stat = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        if require_existing:
+            raise RuntimeEnvIsolationError(
+                "application runtime environment file is missing"
+            ) from None
+        return []
+    if not stat.S_ISREG(path_stat.st_mode):
+        raise OSError(
+            errno.EINVAL,
+            f"Refusing to rewrite non-regular env file: {path}",
+            path,
+        )
+    if require_owner_only:
+        if path_stat.st_uid != os.geteuid():
+            raise RuntimeEnvIsolationError(
+                "application runtime environment file must belong to the current user"
+            )
+        if stat.S_IMODE(path_stat.st_mode) != 0o600:
+            raise RuntimeEnvIsolationError(
+                "application runtime environment file must have mode 0600"
+            )
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
+    try:
+        opened_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_stat.st_mode):
+            raise OSError(f"Refusing to rewrite non-regular env file: {path}")
+        if require_owner_only and (
+            opened_stat.st_uid != path_stat.st_uid
+            or stat.S_IMODE(opened_stat.st_mode) != 0o600
+        ):
+            raise RuntimeEnvIsolationError(
+                "application runtime environment changed during validation"
+            )
+        with os.fdopen(
+            descriptor,
+            mode="r",
+            encoding="utf-8",
+            newline="",
+        ) as env_file:
+            descriptor = -1
+            return env_file.readlines()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _atomic_owner_only_write(
+    path: Path,
+    content: str,
+    *,
+    parent_descriptor: int,
+) -> None:
+    """Atomically publish *content* from a unique mode-0600 sibling file."""
+
+    descriptor = -1
+    temporary_name: str | None = None
+    try:
+        temporary_name = f".{path.name}.{secrets.token_hex(16)}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(
+            temporary_name,
+            flags,
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        os.fchmod(descriptor, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(
+            descriptor,
+            mode="w",
+            encoding="utf-8",
+            newline="",
+        ) as env_file:
+            descriptor = -1
+            env_file.write(content)
+            env_file.flush()
+            os.fsync(env_file.fileno())
+        os.replace(
+            temporary_name,
+            path.name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+        temporary_name = None
+        try:
+            os.fsync(parent_descriptor)
+        except OSError as exc:
+            unsupported = {errno.EINVAL, errno.EBADF}
+            if hasattr(errno, "ENOTSUP"):
+                unsupported.add(errno.ENOTSUP)
+            if exc.errno not in unsupported:
+                raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+
+
+def read_env_key(
+    path: Path,
+    key: str,
+    *,
+    require_existing: bool = False,
+    require_owner_only: bool = False,
+) -> str:
+    """Read one assignment without following the file or parent symlinks."""
+
+    if not isinstance(key, str) or _KEY.fullmatch(key) is None:
+        raise ValueError(f"Invalid environment key: {key!r}")
+    try:
+        parent_descriptor = _open_runtime_parent(
+            path,
+            require_owner_only=require_owner_only,
+        )
+    except FileNotFoundError:
+        return ""
+    try:
+        lines = _read_runtime_lines(
+            path,
+            parent_descriptor=parent_descriptor,
+            require_existing=require_existing or require_owner_only,
+            require_owner_only=require_owner_only,
+        )
+    finally:
+        os.close(parent_descriptor)
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        match = _ASSIGNMENT.match(stripped)
+        if match is not None and match.group("key") == key:
+            return stripped[match.end() :].strip()
+    return ""
+
+
+def write_env_keys(
+    path: Path,
+    updates: Mapping[str, str],
+    *,
+    require_existing: bool = False,
+    require_owner_only: bool = False,
+) -> None:
+    """Atomically update assignments while preserving comments and ordering.
+
+    ``require_owner_only`` is for host-operator workflows: it additionally
+    requires a current-user-owned mode-0700 parent and an existing
+    current-user-owned mode-0600 runtime file. The web compatibility wrapper
+    intentionally leaves that option off because local development may use a
+    repository-level ``.env``.
+    """
+
+    for key, value in updates.items():
+        if not isinstance(key, str) or _KEY.fullmatch(key) is None:
+            raise ValueError(f"Invalid environment key: {key!r}")
+        if not isinstance(value, str):
+            raise TypeError(f"Value for {key!r} must be a string")
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"Value for {key!r} contains a newline character")
+
+    with _WRITE_LOCK:
+        parent_descriptor = _open_runtime_parent(
+            path,
+            require_owner_only=require_owner_only,
+        )
+        try:
+            lines = _read_runtime_lines(
+                path,
+                parent_descriptor=parent_descriptor,
+                require_existing=require_existing or require_owner_only,
+                require_owner_only=require_owner_only,
+            )
+            remaining = set(updates)
+            new_lines: list[str] = []
+            for line in lines:
+                stripped = line.strip()
+                if not stripped.startswith("#"):
+                    match = _ASSIGNMENT.match(stripped)
+                    candidate = match.group("key") if match is not None else None
+                    if candidate in remaining:
+                        newline = "\r\n" if line.endswith("\r\n") else "\n"
+                        new_lines.append(
+                            f"{candidate}={updates[candidate]}{newline}"
+                        )
+                        remaining.discard(candidate)
+                        continue
+                new_lines.append(line)
+            for key in sorted(remaining):
+                new_lines.append(f"{key}={updates[key]}\n")
+            _atomic_owner_only_write(
+                path,
+                "".join(new_lines),
+                parent_descriptor=parent_descriptor,
+            )
+        finally:
+            os.close(parent_descriptor)
 
 
 def require_runtime_environment_isolation(

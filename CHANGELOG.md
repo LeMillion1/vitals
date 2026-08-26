@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — registration gate is persisted before account admission
+
+The host operator now changes `VITALS_REGISTRATION_UNLOCKED` atomically in the
+owner-only application runtime file, reads it back, recreates web, and only then
+selects a non-disabled stored registration mode. A shell-only `export` can no
+longer be mistaken for the deployment state used by the running service.
+
 ### Changed — each care relationship has one stable conversation
 
 Doctors, trainers, and patients now open the same idempotent two-person room for
