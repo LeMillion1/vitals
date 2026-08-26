@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — local recovery points are complete and verifiable
+
+The backup sidecar now fails a bundle when `pg_dump`, compression, either
+volume archive, or checksum generation fails. It publishes an owner-only
+SHA-256 manifest only after the database, Garmin session, and private medical
+files all succeed, and it never rotates an older recovery point after an
+incomplete cycle.
+
 ### Fixed — Today keeps the daily brief readable
 
 The landing screen now has a stable localized page heading and presents the
