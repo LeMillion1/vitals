@@ -419,6 +419,17 @@ transaction succeeds. Never point the drill at the production project:
 ```bash
 export COMPOSE_PROJECT_NAME=vitals_idp_restore_<timestamp>
 export VITALS_IDP_RESTORE_MANIFEST=zitadel_bundle_<timestamp>.sha256
+export VITALS_IDP_BACKUP_HOST_DIR=/root/vitals/backups
+
+# The scratch provider must not claim the production issuer. Choose one unused
+# loopback port and keep all five values together for every command in the
+# drill, including cleanup.
+export VITALS_IDP_DOMAIN=localhost
+export VITALS_IDP_PUBLIC_SCHEME=http
+export VITALS_IDP_SECURE=false
+export VITALS_IDP_EXTERNAL_PORT=18082
+export VITALS_IDP_ORIGIN_PORT=18082
+
 docker compose --env-file .env --env-file .env.idp \
   --profile idp --profile idp-restore up \
   --exit-code-from vitals_idp_restore vitals_idp_restore
@@ -433,6 +444,13 @@ Never start `idp-public` inside the scratch project: it would contend for the
 production host's public ports and certificate identity. Exercise the restored
 provider through its unique loopback origin, while the production public
 gateway is tested separately against the production issuer hostname.
+
+Before the restore, render the selected service and prove that `/backups` maps
+read-only from the absolute production recovery directory. The production
+overlay overrides the two backup sidecars but deliberately does not override
+the operator-only restore service; omitting `VITALS_IDP_BACKUP_HOST_DIR` would
+therefore look in the checkout-local `backups/` directory and not test the
+published production bundle.
 
 Start the exact approved image digest against that restored database with the
 escrowed master key and an isolated external URL. The valid drill must pass

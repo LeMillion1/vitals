@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — the identity restore drill selects production recovery artifacts
+
+The production restore instructions now bind the operator-only ZITADEL restore
+service to the absolute backup directory and define a non-production localhost
+issuer/port for the scratch provider. The production overlay covers the backup
+sidecars but intentionally does not widen the restore service's mount.
+
 ### Fixed — the self-hosted ZITADEL issuer example matches discovery
 
 The production OIDC runbook now keeps ZITADEL's explicit external `:443` in
