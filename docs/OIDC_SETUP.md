@@ -55,8 +55,12 @@ The files are selected through `VITALS_IDP_MASTERKEY_FILE`,
 `VITALS_IDP_DB_BACKUP_PASSWORD_FILE`, and `VITALS_IDP_ADMIN_PASSWORD_FILE`.
 Preflight rejects missing, multiline, reused database, or non-URL-safe password
 files and a master key whose content is not exactly 32 characters. The master
-key is mounted only into fail-closed preflight, setup, and API; DB admin, Login,
-backup, gateway, Vitals web, and Vitals worker cannot read it.
+key is mounted directly only into fail-closed preflight and a networkless
+one-shot staging job. Local Compose exposes file-backed secrets as host bind
+mounts, so that job copies the root-owned host file into a provider-only volume
+as mode `0400` for ZITADEL's uid 1000; setup and API mount only that derived
+volume read-only. DB admin, Login, backup, gateway, Vitals web, and Vitals worker
+cannot read either copy.
 
 Never put these values in either the host/operator `.env` or the
 application runtime file. Compose does not mount the operator `.env` into web or

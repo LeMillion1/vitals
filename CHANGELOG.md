@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — root-owned ZITADEL master keys work without weakening permissions
+
+Self-hosted identity setup now stages the host mode-`0600` master key through a
+networkless one-shot into a provider-only mode-`0400` volume for ZITADEL's
+non-root uid. Setup and API no longer fail on a real Linux host or require the
+host secret to become group/world-readable.
+
 ### Fixed — split runtimes cannot see different data mounts
 
 Production deployment now refuses before migration when a host-only Compose

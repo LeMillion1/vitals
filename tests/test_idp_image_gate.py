@@ -137,6 +137,9 @@ def test_identity_service_graph_separates_setup_runtime_and_public_gateway():
         "vitals_idp_bootstrap_prepare": {
             "condition": "service_completed_successfully"
         },
+        "vitals_idp_masterkey_prepare": {
+            "condition": "service_completed_successfully"
+        },
     }
     assert services["vitals_idp"]["depends_on"] == {
         "vitals_idp_db_grants": {"condition": "service_completed_successfully"}
@@ -159,3 +162,36 @@ def test_identity_service_graph_separates_setup_runtime_and_public_gateway():
     assert services["vitals_idp_gateway"]["ports"] == [
         "127.0.0.1:${VITALS_IDP_ORIGIN_PORT:-8080}:8080"
     ]
+
+
+def test_identity_master_key_stays_private_but_readable_to_nonroot_zitadel():
+    compose = _compose()
+    services = compose["services"]
+    prepare = services["vitals_idp_masterkey_prepare"]
+    setup = services["vitals_idp_setup"]
+    runtime = services["vitals_idp"]
+
+    assert prepare["profiles"] == ["idp"]
+    assert prepare["depends_on"] == {
+        "vitals_idp_config_check": {
+            "condition": "service_completed_successfully"
+        }
+    }
+    assert prepare["secrets"] == ["idp_masterkey"]
+    assert prepare["volumes"] == [
+        "vitals_idp_masterkey:/zitadel/masterkey:rw"
+    ]
+    assert prepare["network_mode"] == "none"
+    assert prepare["read_only"] is True
+    assert prepare["cap_drop"] == ["ALL"]
+    assert prepare["cap_add"] == ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+    assert prepare["security_opt"] == ["no-new-privileges:true"]
+    assert "install -m 400 -o 1000 -g 1000" in prepare["command"][0]
+
+    for service in (setup, runtime):
+        assert "secrets" not in service
+        assert "vitals_idp_masterkey:/zitadel/masterkey:ro" in service["volumes"]
+        assert "/zitadel/masterkey/masterkey" in service["command"]
+        assert "/run/secrets/idp_masterkey" not in str(service)
+
+    assert "vitals_idp_masterkey" in compose["volumes"]
