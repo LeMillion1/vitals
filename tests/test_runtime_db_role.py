@@ -366,7 +366,6 @@ async def test_distinct_web_and_worker_logins_have_exact_routine_sets():
         "ALTER FUNCTION {signature} STABLE",
         "ALTER FUNCTION {signature} RESET ALL",
         "ALTER FUNCTION {signature} SET search_path = public",
-        "GRANT EXECUTE ON FUNCTION {signature} TO PUBLIC",
         "ALTER FUNCTION {signature} OWNER TO {other_owner}",
     ),
     ids=(
@@ -374,7 +373,6 @@ async def test_distinct_web_and_worker_logins_have_exact_routine_sets():
         "not-volatile",
         "missing-config",
         "unsafe-search-path",
-        "public-execute",
         "wrong-owner",
     ),
 )
@@ -465,6 +463,64 @@ async def test_runtime_role_refuses_an_untrusted_required_routine(
                 {"role": other_owner},
             ):
                 await connection.exec_driver_sql(f"DROP ROLE {other_owner_ident}")
+        await admin.dispose()
+
+
+@pytest.mark.asyncio
+async def test_runtime_role_repairs_public_execute_lost_by_plain_dump_restore():
+    raw_admin_url = os.getenv("VITALS_TEST_DATABASE_URL")
+    if not raw_admin_url or not raw_admin_url.startswith("postgresql+asyncpg://"):
+        pytest.skip("integration test requires VITALS_TEST_DATABASE_URL")
+
+    admin_url = make_url(raw_admin_url)
+    suffix = secrets.token_hex(6)
+    role = f"vitals_restore_acl_test_{suffix}"
+    runtime_url = admin_url.set(username=role, password=secrets.token_urlsafe(24))
+    signature = RUNTIME_EXECUTE_ROUTINES[0]
+    admin = create_async_engine(admin_url)
+    try:
+        async with admin.begin() as connection:
+            await connection.exec_driver_sql(
+                f"GRANT EXECUTE ON FUNCTION {signature} TO PUBLIC"
+            )
+            assert await connection.scalar(
+                sa.text(
+                    "SELECT has_function_privilege('public', :signature, 'EXECUTE')"
+                ),
+                {"signature": signature},
+            )
+
+        result = await provision_runtime_role(
+            migration_url=admin_url,
+            runtime_url=runtime_url,
+        )
+        assert result["extra_privileges"] == 0
+
+        async with admin.connect() as connection:
+            assert not await connection.scalar(
+                sa.text(
+                    "SELECT has_function_privilege('public', :signature, 'EXECUTE')"
+                ),
+                {"signature": signature},
+            )
+            assert await connection.scalar(
+                sa.text(
+                    "SELECT has_function_privilege(:role, :signature, 'EXECUTE')"
+                ),
+                {"role": role, "signature": signature},
+            )
+    finally:
+        async with admin.begin() as connection:
+            await connection.exec_driver_sql(
+                f"REVOKE EXECUTE ON FUNCTION {signature} FROM PUBLIC"
+            )
+            if await connection.scalar(
+                sa.text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=:role)"),
+                {"role": role},
+            ):
+                role_ident = connection.dialect.identifier_preparer.quote(role)
+                await connection.exec_driver_sql(f"DROP OWNED BY {role_ident}")
+                await connection.exec_driver_sql(f"DROP ROLE {role_ident}")
         await admin.dispose()
 
 

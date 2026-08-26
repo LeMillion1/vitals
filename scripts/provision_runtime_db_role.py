@@ -174,11 +174,23 @@ async def _converge_privileges(
     migration_ident = _quoted_identifier(connection, migration_role)
     database_ident = _quoted_identifier(connection, database)
 
-    # A signature is only an address, not an authority proof.  Refuse before
-    # changing any grants if the migration-owned bridge at that address was
-    # replaced, made invoker-rights, given an unsafe search path, or exposed to
-    # PUBLIC.  The whole provisioning transaction rolls back on this refusal.
+    # pg_dump --no-privileges recreates functions with PostgreSQL's default
+    # PUBLIC EXECUTE even when the source had revoked it. Closing that default is
+    # monotonic hardening, so normalize it before attestation. A signature is
+    # still only an address, not an authority proof: owner, body kind, volatility,
+    # definer mode, and fixed settings are checked before the runtime grant. Any
+    # refusal rolls this transaction back and keeps the long-lived services down.
     for routine_signature in execute_routines:
+        routine_exists = bool(
+            await connection.scalar(
+                sa.text("SELECT to_regprocedure(:signature) IS NOT NULL"),
+                {"signature": routine_signature},
+            )
+        )
+        if routine_exists:
+            await connection.exec_driver_sql(
+                f"REVOKE EXECUTE ON FUNCTION {routine_signature} FROM PUBLIC"
+            )
         routine = (
             await connection.execute(
                 sa.text(

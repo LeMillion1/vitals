@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — restored authorization routines close PostgreSQL defaults
+
+The runtime-role provisioner now removes the default `PUBLIC EXECUTE` grant
+that a plain `pg_dump --no-privileges` restore recreates on functions before it
+attests and grants either reviewed authorization routine. Restored backups can
+therefore pass least-privilege provisioning without briefly exposing a definer
+function or weakening the existing owner/configuration checks.
+
 ### Security — distinct PostgreSQL logins for web and worker
 
 Runtime-role provisioning now converges two different restricted logins against
