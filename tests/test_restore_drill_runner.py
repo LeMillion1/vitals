@@ -86,6 +86,10 @@ def test_subprocess_failure_rejects_unbounded_error_detail(monkeypatch):
 @pytest.mark.parametrize(
     ("diagnostic", "expected"),
     [
+        (
+            b"vitals_restore_drill_stage=identity_started\nprivate row detail",
+            "drill_app_timeout_identity_started",
+        ),
         (b"OSError: [Errno 30] Read-only file system: secret", "drill_app_read_only_failure"),
         (b"password authentication failed for user hidden", "drill_app_database_auth_failure"),
         (b"Application startup failed. Exiting.", "drill_app_startup_failure"),
@@ -573,6 +577,12 @@ def test_restore_compose_overlay_keeps_drill_inputs_read_only_and_network_intern
         "/data/private_files",
     ):
         assert f"target: {target}" in overlay
+
+
+def test_runtime_config_enables_only_bounded_restore_stage_markers(tmp_path):
+    content = runner._runtime_content(_context(tmp_path))
+
+    assert "VITALS_RESTORE_DRILL=true\n" in content
 
 
 def test_login_preparation_rejects_missing_marker_and_non_drill_database(

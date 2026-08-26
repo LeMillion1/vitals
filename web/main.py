@@ -281,12 +281,17 @@ async def lifespan(app: FastAPI):
 
     config = load_config()
 
+    def drill_stage(stage: str) -> None:
+        if os.getenv("VITALS_RESTORE_DRILL") == "true":
+            logger.info("vitals_restore_drill_stage=%s", stage)
+
     # Fail startup closed before catalogs, scheduler registration, or connector
     # work. Password mode reconciles its environment credential; OIDC mode
     # proves that the configured issuer has a safe durable destination without
     # reading or mutating legacy password material.
     from web.config import get_web_config
 
+    drill_stage("identity_started")
     if get_web_config().oidc_enabled:
         preference_bundle = await _load_oidc_identity_state(session_factory)
     else:
@@ -294,12 +299,14 @@ async def lifespan(app: FastAPI):
             session_factory,
             timezone=config.timezone,
         )
+    drill_stage("identity_completed")
 
     # Register cross-domain conflict resolvers (supplements/genetics/skincare/...).
     register_all_resolvers()
     # Upsert the curated rule catalog (vitals/data/conflict_rules.yaml) — cheap,
     # idempotent, and keeps the DB in sync with the checked-in YAML on every
     # deploy without a data migration per rule change.
+    drill_stage("catalogs_started")
     async with session_factory() as session:
         # Job schedules come from the DB (Settings → proactive), so the registry is
         # attached here rather than before the session opens.
@@ -312,6 +319,7 @@ async def lifespan(app: FastAPI):
         # Upsert the curated HRT compound catalog (vitals/data/hrt_compounds.yaml).
         await hrt_catalog.sync_catalog(session)
         await session.commit()
+    drill_stage("catalogs_completed")
 
     # The panel seed adopts the pre-tenancy catalog only under the shared
     # governance lock. Keep it in a fresh transaction so catalog row locks are
@@ -319,6 +327,7 @@ async def lifespan(app: FastAPI):
     from vitals.services import hrt_reminders
     from vitals.utils.timeutils import today_local
 
+    drill_stage("seed_started")
     async with session_factory() as session:
         try:
             conflict_context = (
@@ -349,13 +358,17 @@ async def lifespan(app: FastAPI):
                 "hormone panel seed skipped: more than one health subject, so "
                 "there is no sole owner to seed for"
             )
+    drill_stage("seed_completed")
 
+    drill_stage("heartbeats_started")
     if redis is not None:
         await seed_heartbeats(redis)
+    drill_stage("heartbeats_completed")
 
     scheduler = setup_scheduler(session_factory, redis, timezone=config.timezone)
     scheduler.start()
     app.state.scheduler = scheduler
+    drill_stage("scheduler_completed")
 
     async with AsyncExitStack() as stack:
         # The mounted MCP app builds its streamable-HTTP session manager in its own
@@ -363,7 +376,9 @@ async def lifespan(app: FastAPI):
         # fails with "manager not initialized".
         mcp_lifespan = getattr(app.state, "mcp_lifespan", None)
         if mcp_lifespan is not None:
+            drill_stage("mcp_started")
             await stack.enter_async_context(mcp_lifespan(app))
+        drill_stage("mcp_completed")
         yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────

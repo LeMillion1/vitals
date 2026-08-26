@@ -522,6 +522,7 @@ def _runtime_content(context: Context, *, password_hash: str = SYNTHETIC_HASH) -
         "VITALS_OIDC_REDIRECT_URL": "",
         "VITALS_OPENROUTER_API_KEY": "",
         "VITALS_REDIS_URL": "redis://vitals_redis:6379/0",
+        "VITALS_RESTORE_DRILL": "true",
         "VITALS_SESSION_SECRET": context.compose_env["VITALS_DRILL_SESSION_SECRET"],
         "VITALS_TIMEZONE": "Asia/Almaty",
         "VITALS_WEB_PUSH_ENABLED": "false",
@@ -782,6 +783,14 @@ def _classify_app_failure(context: Context) -> str:
         code="drill_app_diagnostics_failed",
     )
     combined = (logs.stdout + b"\n" + logs.stderr).lower()
+    stages = re.findall(rb"vitals_restore_drill_stage=([a-z_]+)", combined)
+    if stages:
+        try:
+            stage = stages[-1].decode("ascii")
+        except UnicodeDecodeError:
+            stage = "invalid"
+        if re.fullmatch(r"[a-z_]+", stage):
+            return f"drill_app_timeout_{stage}"
     patterns = (
         (b"read-only file system", "drill_app_read_only_failure"),
         (b"permission denied", "drill_app_permission_failure"),
