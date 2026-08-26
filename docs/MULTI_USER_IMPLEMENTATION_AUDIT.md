@@ -293,10 +293,12 @@ The document names every required IDP/application secret, fails partial
 application configuration closed, replaces the known first administrator
 password, and documents explicit account linking, provider logout,
 browser-session revocation, and support step-up. A later production audit found
-that the bundled v2.66.0 tag is obsolete, lacks an OCI digest pin, and is within
-published vulnerable ranges; it is now explicitly blocked from production.
-Provider/version/licence selection and the full restored-login rehearsal remain
-operator gates that local tests cannot prove.
+that the bundled v2.66.0 tag was obsolete, lacked an OCI digest pin, and was
+within published vulnerable ranges. It has since been removed: a nonexistent
+version-controlled sentinel and unconditional preflight refusal keep the IDP
+profile unstartable until a reviewed provider/configuration commit replaces
+both. Provider/version/licence selection and the full restored-login rehearsal
+remain operator gates that local tests cannot prove.
 
 ### `ARCHITECTURE.md` — mostly current method, incomplete generated sources
 

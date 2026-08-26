@@ -581,8 +581,9 @@ curl -s http://127.0.0.1:8000/health
 Профиль `offsite` не запускается автоматически. ZITADEL хранится отдельно и не
 входит в health-bundle: профиль `idp` создаёт отдельный manifest, а профиль
 `idp-offsite` использует другой зашифрованный репозиторий и не читает `.env`
-Vitals. Текущий reference-образ ZITADEL устарел; production-профиль нельзя
-запускать до выбора поддерживаемого OCI digest и полной restore/OIDC-репетиции.
+Vitals. У профиля ZITADEL нет запускаемого образа: version-controlled sentinel
+и preflight блокируют его до отдельного review-коммита с поддерживаемым OCI
+digest, совместимой конфигурацией и полной restore/OIDC-репетицией.
 
 #### 7. Проактивный слой (опционально)
 
@@ -1365,9 +1366,9 @@ replication to a separate versioned S3 repository and the mandatory scratch
 restore drill. The `offsite` profile never starts automatically. ZITADEL remains
 outside the health bundle: `idp` creates a separate manifest, while
 `idp-offsite` uses different encrypted-repository credentials and cannot read
-the Vitals `.env`. Its current reference image is obsolete; do not start the
-production profile until a supported OCI digest and the full restore/OIDC drill
-have been approved.
+the Vitals `.env`. The ZITADEL profile has no runnable image: a version-controlled
+sentinel and preflight block it until a reviewed commit supplies a supported OCI
+digest, compatible configuration, and the approved full restore/OIDC drill.
 
 #### 7. Proactive layer (optional)
 

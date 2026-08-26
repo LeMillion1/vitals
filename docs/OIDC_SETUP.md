@@ -30,15 +30,17 @@ start a process that has no usable recovery administrator.
 ## Before you start
 
 > [!CAUTION]
-> Do not start the bundled ZITADEL `v2.66.0` profile in production. That tag is
-> obsolete, is not pinned by OCI digest here, and falls within published
-> vulnerable ranges, including the official
+> Compose no longer contains a runnable ZITADEL default. The previously
+> referenced `v2.66.0` tag was obsolete and fell within published vulnerable
+> ranges, including the official
 > [critical IDOR advisory](https://github.com/zitadel/zitadel/security/advisories/GHSA-f3gh-529w-v32x)
 > and [MFA bypass advisory](https://github.com/zitadel/zitadel/security/advisories/GHSA-cfjq-28r2-4jv5).
 > First select a supported provider/version under its documented
 > [lifecycle](https://github.com/zitadel/zitadel/discussions/9417), review the
-> exact release's licence, pin its digest, and repeat the provider, backup,
-> restore, OIDC, and browser conformance gates.
+> exact release's licence, independently verify its manifest digest, and land a
+> reviewed code change that replaces the sentinel and unconditional preflight
+> refusal with exact image digest(s) plus compatible configuration. An env
+> override is deliberately insufficient to approve identity infrastructure.
 
 Before an approved provider's first start, generate three independent secrets
 and put them in a separate owner-only `.env.idp`, copied from
@@ -56,8 +58,10 @@ python -c "import secrets; print('Aa1!'+secrets.token_urlsafe(24))"
 
 Store the results as `VITALS_IDP_MASTERKEY`, `VITALS_IDP_DB_PASSWORD`, and
 `VITALS_IDP_ADMIN_PASSWORD`. These are required only when the `idp` profile is
-selected; its preflight refuses to start with a missing value or a master key
-whose length is not 32 characters.
+selected; its preflight refuses a missing secret or a master key whose length
+is not 32 characters. In the current release it then refuses unconditionally,
+even when all three are valid, because no provider image/configuration has been
+approved in version control yet.
 
 Never put these three values in the application `.env`. Compose mounts that
 file into `vitals_app`; `.env.idp` is passed only to explicit provider commands
@@ -324,9 +328,21 @@ month stop working together.
 
 ## The provider/version/licence gate
 
-The old `v2.66.0` tag remains in Compose only as a disabled implementation
-reference. It is not approved for production. Current ZITADEL lines changed
-runtime/login behavior and licence posture; a number-only edit is not a safe
-upgrade. Select the provider and version explicitly, inspect that exact release
-and notices, pin the verified OCI digest, and repeat the whole conformance and
-restore drill before changing this warning. This is not legal advice.
+Compose contains no runnable provider image: it has a version-controlled,
+nonexistent all-zero sentinel and an unconditional preflight refusal. Selecting
+the profile therefore cannot start an old tag, and changing an env file cannot
+approve a different binary. Current ZITADEL lines changed runtime/login
+behavior and licence posture. Select the provider and version explicitly,
+inspect that exact release and notices, prove that its tag resolves to the
+recorded OCI digest, and review the matching Compose/login/backup configuration
+before repeating the whole conformance and restore drill. This is not legal
+advice.
+
+For ZITADEL v4, approval is not a one-line image replacement. The reviewed
+deployment must pin separate API and Login V2 images, preserve or reproducibly
+recreate the login-client PAT/bootstrap state during disaster recovery, separate
+the public HTTPS port from the loopback origin port, and split one-shot database
+initialization/setup privileges from the non-superuser long-running role. The
+Cloudflare route must also be tested for the provider's HTTP/2, h2c, and
+gRPC-Web requirements. Keep the sentinel in place until those pieces and their
+restore/restart tests land together.

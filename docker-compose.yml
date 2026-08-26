@@ -93,9 +93,11 @@ services:
   # after its complete OIDC application group is configured. Read
   # docs/OIDC_SETUP.md before either step.
   #
-  # SECURITY GATE: v2.66.0 is an obsolete implementation reference, not an
-  # approved production image. Keep this profile off until a supported release
-  # is reviewed, tested, and pinned by OCI digest; see docs/OIDC_SETUP.md.
+  # SECURITY GATE: there is deliberately no runnable provider image. The
+  # all-zero reference below is a syntactically valid, nonexistent sentinel,
+  # and the preflight always refuses. Provider approval must be a reviewed code
+  # change that replaces both gates with exact supported image digest(s) and
+  # compatible configuration; see docs/OIDC_SETUP.md.
   vitals_idp_config_check:
     image: postgres:15-alpine
     profiles: ["idp"]
@@ -118,10 +120,12 @@ services:
           echo "VITALS_IDP_ADMIN_PASSWORD must be set" >&2
           exit 1
         }
+        echo "IDP profile is disabled: no provider image/configuration is approved in this release" >&2
+        exit 1
     restart: "no"
 
   vitals_idp:
-    image: ghcr.io/zitadel/zitadel:v2.66.0
+    image: ghcr.io/zitadel/zitadel:v0.0.0@sha256:0000000000000000000000000000000000000000000000000000000000000000
     profiles: ["idp"]
     depends_on:
       vitals_idp_config_check:
@@ -138,7 +142,7 @@ services:
       # `docker compose up` does not demand IDP secrets. The IDP containers
       # themselves are guarded by the profile's runtime preflight above.
       ZITADEL_MASTERKEY: ${VITALS_IDP_MASTERKEY:-}
-      # The reference image otherwise creates an administrator with a known default.
+      # ZITADEL otherwise creates an administrator with a known default.
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${VITALS_IDP_ADMIN_PASSWORD:-}
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: "true"
       # Vitals provisions and links every account explicitly. ZITADEL defaults

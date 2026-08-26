@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — the identity profile has no runnable obsolete image
+
+The optional ZITADEL profile no longer names the vulnerable tag-only v2.66.0
+reference. A version-controlled nonexistent sentinel and unconditional
+preflight refusal make the profile unstartable even with valid secrets. Enabling
+identity infrastructure now requires a reviewed code change containing exact
+supported image digest(s) and compatible provider/login/backup configuration;
+an env override cannot silently approve a different binary.
+
 ### Fixed — OIDC startup no longer depends on the legacy password
 
 With the complete OIDC configuration enabled, application startup now validates
@@ -39,9 +48,9 @@ The opt-in `idp` profile can publish checksum-verified, non-empty ZITADEL
 PostgreSQL recovery points only after provider readiness. A second hardened
 sidecar replicates only those artifacts into independent restic/S3 credentials;
 it cannot read the Vitals environment or health-store bundle. The provider
-profile remains production-blocked until its obsolete reference image is
-replaced by a supported, reviewed OCI digest and the full restore/login drill
-passes.
+profile remains production-blocked by a nonexistent image sentinel and
+unconditional preflight until a supported, reviewed OCI digest and matching
+configuration replace both and the full restore/login drill passes.
 
 ### Fixed — mobile sign-in touch targets
 

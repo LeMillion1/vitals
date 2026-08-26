@@ -269,17 +269,29 @@ rollback path.
 
 ## Identity-provider gate
 
-The bundled `ghcr.io/zitadel/zitadel:v2.66.0` image is a disabled implementation
-reference, **not a production-approved provider**. It is obsolete, lacks an OCI
-digest pin here, and falls within published vulnerable ranges. Do not start the
-production `idp` profile until a supported provider/version and its licence have
-been chosen, the exact image digest is pinned, and Compose/OIDC/browser
-conformance has been repeated.
+Compose contains no runnable default identity-provider image. The old
+`ghcr.io/zitadel/zitadel:v2.66.0` reference was removed because it was obsolete,
+not digest-pinned, and fell within published vulnerable ranges. The inactive
+profile now contains a nonexistent all-zero sentinel and refuses preflight
+unconditionally even when its secrets are valid. Provider approval must be a
+reviewed code change, not an env override. Do not enable the production `idp`
+profile until the supported release and its licence have been chosen, the tag's
+manifest has been independently matched to the committed digest, and its
+Compose/login/backup configuration plus OIDC/browser conformance have been
+reviewed.
+
+ZITADEL v4 requires a separate Login V2 image and login-client PAT/bootstrap
+state outside PostgreSQL. A future v4 approval must add that state to the
+identity recovery bundle or document and prove a non-circular recreation path;
+a database-only restore is not sufficient. The same change must separate
+one-shot database setup privileges from the long-running provider role and
+distinguish the public HTTPS port from the loopback origin port.
 
 Before the approved provider's first start, copy `.env.idp.example` to an
 owner-only `.env.idp` and escrow `VITALS_IDP_MASTERKEY` outside the VPS. Never
 put IDP control-plane secrets in the application `.env`: `vitals_app` mounts
-that file. The database password is not the encryption key; losing the master
+that file. The provider image/digest belongs in reviewed Compose code, not this
+secret file. The database password is not the encryption key; losing the master
 key can leave a successfully restored identity database unusable.
 
 For the current production checkout, preserve the exact project and overlay on
