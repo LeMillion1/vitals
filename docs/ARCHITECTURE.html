@@ -811,7 +811,7 @@ flowchart LR
       <div class="n">PR-03</div>
       <div>
         <h4>Ownership expansion and backfill<span class="state done">merged</span></h4>
-        <p>Nullable ownership columns on every table, dual-write from every path, eighteen resumable backfill phases, then scoped unique keys installed beside the global ones and the global ones dropped. Two people can now share a weigh-in date.</p>
+        <p>Nullable ownership columns on every table, dual-write from every path, nineteen resumable backfill phases, then scoped unique keys installed beside the global ones and the global ones dropped. Two people can now share a weigh-in date.</p>
       </div>
     </div>
     <div class="stage">
@@ -863,7 +863,7 @@ flowchart LR
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"12.5px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
 flowchart TB
   a["<b>1 · alembic upgrade 0048</b><br/><span style='font-size:11px'>every ownership column exists,<br/>all still nullable · safe to stop here</span>"]
-  b["<b>2 · bootstrap, then eighteen phases</b><br/><span style='font-size:11px'>owner, resource roots, catalogs<br/>raw → facts → children → artifacts<br/>each resumable, each checkpointed</span>"]
+  b["<b>2 · bootstrap, then nineteen phases</b><br/><span style='font-size:11px'>owner, resource roots, catalogs<br/>raw → facts → children → artifacts<br/>each resumable, each checkpointed</span>"]
   c{"every target column<br/>stamped?"}
   d["<b>3 · alembic upgrade head</b><br/><span style='font-size:11px'>0049 NOT NULL · 0050 FORCE RLS</span>"]
   e["<b>refused</b><br/><span style='font-size:11px'>names each table and how far behind<br/>nothing altered — run the phase, retry</span>"]

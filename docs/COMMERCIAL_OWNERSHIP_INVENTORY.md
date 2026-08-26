@@ -774,7 +774,9 @@ empty incoming shape in the same transaction, and requires backup v2 or an
 explicit reviewed recovery before nonempty restored history can be activated.
 
 > **Stages 3I and 3J are retired.** Revision `0058` dropped both tables, and the
-> two phases went with them: `OWNERSHIP_BACKFILL_SEQUENCE` holds eighteen, and
+> two domain phases went with them: `OWNERSHIP_BACKFILL_SEQUENCE` holds nineteen,
+> including the bounded `stage3.retired_signals.v1` compatibility phase needed
+> only to carry existing rows across revision `0049`, and
 > neither `stage3.channel_optional.day_context.v1` nor
 > `stage3.channel_optional.signals.v1` is among them. Their scripts and services
 > are deleted. The two sections below are kept as the record of a contract that
@@ -1712,9 +1714,9 @@ never to declare itself the installation.
 
 #### The cutover as one operation
 
-The eighteen phases, the contract revision and the policies are three parts of one
-upgrade, and until now each part was proven separately: twenty rehearsals for the
-phases, `test_required_ownership_contract` for the migration, and
+The nineteen phases, the contract revision and the policies are three parts of one
+upgrade, and until now each part was proven separately: phase-specific rehearsals,
+`test_required_ownership_contract` for the migration, and
 `test_row_level_security` for the policies — the last two against a lake that was
 empty or stamped by hand. Nothing carried a revision-0034 database with real data
 through all three.

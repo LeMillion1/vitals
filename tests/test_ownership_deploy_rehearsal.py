@@ -89,8 +89,9 @@ def _seed_revision_0034(connection: sa.Connection) -> None:
     def insert(table_name: str, rows: list[dict[str, Any]]) -> None:
         connection.execute(metadata.tables[table_name].insert(), rows)
 
-    insert(
-        "raw_payloads",
+    raw_payloads = metadata.tables["raw_payloads"]
+    connection.execute(
+        raw_payloads.insert(),
         [
             {
                 "domain": "garmin",
@@ -106,6 +107,40 @@ def _seed_revision_0034(connection: sa.Connection) -> None:
                 "payload": {"markers": [{"name": "ferritin", "value": 45.0}]},
                 "fetched_at": SEED_AT,
             },
+        ],
+    )
+    signal_raw_id = connection.execute(
+        raw_payloads.insert().values(
+            domain="signals",
+            source="telegram",
+            external_id="telegram:synthetic-deploy-rehearsal",
+            payload={"text": "synthetic"},
+            fetched_at=SEED_AT,
+        )
+    ).inserted_primary_key[0]
+    insert(
+        "signals",
+        [
+            {
+                "date": SEED_DATE,
+                "domain": "signals",
+                "source": "telegram",
+                "kind": "note",
+                "key": "synthetic",
+                "raw_id": signal_raw_id,
+                "batch_id": "synthetic-deploy",
+            }
+        ],
+    )
+    insert(
+        "day_context",
+        [
+            {
+                "date": SEED_DATE,
+                "domain": "signals",
+                "source": "template",
+                "answers": {"synthetic": True},
+            }
         ],
     )
     insert(
@@ -363,7 +398,7 @@ async def test_real_postgres_0034_lake_reaches_head_through_every_phase(
 
         # The same lake, now behind the policies. Elsewhere they are proven on a
         # database seeded by hand; here they close over rows that arrived at
-        # their owner through the twenty phases.
+        # their owner through the nineteen phases.
         restricted = await restricted_engine(database_url)
         try:
             async with restricted.connect() as connection:

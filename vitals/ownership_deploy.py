@@ -60,6 +60,9 @@ from vitals.operations.ownership.provider_raw import (
 from vitals.operations.ownership.raw import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
 )
+from vitals.operations.ownership.retired_signals import (
+    RETIRED_SIGNAL_OWNERSHIP_BACKFILL_PHASE,
+)
 from vitals.operations.ownership.shared_report import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_PHASE,
 )
@@ -82,7 +85,7 @@ class OwnershipBackfillStep:
     phase: str
 
 
-#: The twenty phases in dependency order. Raw payloads first, because every
+#: The nineteen phases in dependency order. Raw payloads first, because every
 #: provenance-bearing fact resolves its owner through one; then the normalized
 #: facts; then the children, which inherit from parents the earlier phases have
 #: already stamped; then the artifacts — reports, digests, notifications, alerts
@@ -146,6 +149,10 @@ OWNERSHIP_BACKFILL_SEQUENCE: tuple[OwnershipBackfillStep, ...] = (
     OwnershipBackfillStep(
         "backfill_weekly_digest_subject_ownership.py",
         WEEKLY_DIGEST_OWNERSHIP_BACKFILL_PHASE,
+    ),
+    OwnershipBackfillStep(
+        "backfill_retired_signal_ownership.py",
+        RETIRED_SIGNAL_OWNERSHIP_BACKFILL_PHASE,
     ),
     OwnershipBackfillStep(
         "backfill_notification_subject_ownership.py",

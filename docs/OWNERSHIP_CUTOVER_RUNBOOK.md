@@ -100,9 +100,13 @@ stamped:
     checkpoint phase `stage3.provider_outbox.garmin_weight_exports.v1`
 16. `python scripts/backfill_weekly_digest_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.retained_artifact.weekly_digests.v1`
-17. `python scripts/backfill_notification_subject_ownership.py --apply --batch-size 1000`  
+17. `python scripts/backfill_retired_signal_ownership.py --apply --batch-size 1000`
+    compatibility phase `stage3.retired_signals.v1`; these legacy Telegram
+    tables are removed by revision `0058`, but revision `0049` still requires
+    their existing rows to cross the ownership contract first
+18. `python scripts/backfill_notification_subject_ownership.py --apply --batch-size 1000`
     checkpoint phase `stage3.delivery_artifact.notifications.v1`
-18. `python scripts/backfill_system_alert_subject_ownership.py --apply --batch-size 1000`  
+19. `python scripts/backfill_system_alert_subject_ownership.py --apply --batch-size 1000`
     checkpoint phase `stage3.subject_optional.system_alerts.v1`
 
 Between any two, the upgrade can pause indefinitely.

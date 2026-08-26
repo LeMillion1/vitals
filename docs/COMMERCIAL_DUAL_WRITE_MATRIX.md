@@ -27,10 +27,11 @@ deployment that has not finished its backfill is still migrating through exactly
 these boundaries, in this order.
 
 > **Two boundaries below are retired.** Revision `0058` dropped `signals` and
-> `day_context`, and their Stage-3 phases left
-> `OWNERSHIP_BACKFILL_SEQUENCE`, which now holds eighteen. Those rows and
-> sections are kept, marked, because a deployment still migrating through the
-> earlier revisions passed through them — but no writer reaches them today.
+> `day_context`, and their two domain-specific Stage-3 phases left the live
+> design. `OWNERSHIP_BACKFILL_SEQUENCE` now holds nineteen phases, including one
+> bounded compatibility phase that attributes both legacy tables solely so an
+> existing lake can pass revision `0049` before `0058` removes them. The rows
+> and sections are kept, marked, because no writer reaches them today.
 
 ## Boundary contract
 

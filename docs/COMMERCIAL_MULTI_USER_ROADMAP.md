@@ -29,7 +29,7 @@ than trusting them if this date has gone stale.
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
 | Alembic head | `0080` — 80 revisions |
 | Schema | 88 tables; 71 carry `subject_id` and are covered by an RLS policy; 60 have it `NOT NULL` |
-| Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
+| Backfill | 19 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
 | Suites | Final gate: 5,425 fast tests and all 39 live UI scenarios passed; 5,613 PostgreSQL-selected tests passed in three isolated shards with the full migration cycle |
 | Domains / scheduled jobs | 14 and 16, of which 11 fan out per record |
 
