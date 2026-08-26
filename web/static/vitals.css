@@ -3155,6 +3155,7 @@ sup {
         align-items: baseline;
         gap: 8px;
         padding: 10px 12px;
+        min-height: 2.75rem;
     }
     .v-today-change-domain { display: none; }
     .v-today-change-delta { font-size: var(--text-body); }

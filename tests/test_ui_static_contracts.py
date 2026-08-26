@@ -229,6 +229,13 @@ def test_today_keeps_generated_narrative_out_of_the_page_heading():
     assert "font-size: var(--text-card)" in mobile
 
 
+def test_today_mobile_change_rows_keep_the_minimum_touch_target():
+    mobile = VITALS_CSS.split("@media (max-width: 767px)")[-1]
+    change_rule = mobile.split(".v-today-change {", 1)[1].split("}", 1)[0]
+
+    assert "min-height: 2.75rem" in change_rule
+
+
 # ── Form and icon-button accessibility ───────────────────────────────────────
 
 TAG = re.compile(r"<(input|button|a|label)\b", re.I)

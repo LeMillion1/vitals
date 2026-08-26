@@ -8,6 +8,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — weekly changes keep full phone touch targets
+
+The four navigating rows in Today's weekly-change summary now retain the
+44-pixel minimum touch height on phones instead of collapsing to 42 pixels.
+
 ### Fixed — ZITADEL application setup matches the Vitals token exchange
 
 The production runbook now requires Client Secret POST alongside PKCE S256 and
