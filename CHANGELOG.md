@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — identity recovery refuses partial or occupied targets
+
+An operator-only `idp-restore` profile now accepts one exact ZITADEL manifest,
+verifies its SQL and Login PAT, refuses a non-empty database or bootstrap
+volume, restores the dump transactionally as the non-superuser service owner,
+and publishes the PAT only after SQL succeeds. It has no Vitals database,
+runtime-file, master-key, or DB-admin access; the caller must use a fresh
+scratch Compose project and explicitly start the pinned setup/API/Login stack
+afterward.
+
 ### Added — self-hosted identity uses a production-like ZITADEL v4 stack
 
 The optional identity profile now pins ZITADEL API and Login V2 `v4.16.2` and

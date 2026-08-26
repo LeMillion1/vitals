@@ -488,6 +488,40 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
     restart: unless-stopped
 
+  # Operator-invoked only. It refuses a non-empty database/bootstrap target and
+  # restores one checksum-verified SQL+PAT pair into a fresh Compose project.
+  # Enable both profiles; after success, start the normal idp profile so the
+  # pinned version's init/setup phases verify and advance the restored schema.
+  vitals_idp_restore:
+    image: postgres:15-alpine
+    profiles: ["idp-restore"]
+    depends_on:
+      vitals_idp_db_provision:
+        condition: service_completed_successfully
+      vitals_idp_bootstrap_prepare:
+        condition: service_completed_successfully
+    environment:
+      PGHOST: vitals_idp_db
+      PGUSER: zitadel
+      PGDATABASE: zitadel
+      VITALS_IDP_DB_PASSWORD_FILE: /run/secrets/idp_db_service_password
+      VITALS_IDP_RESTORE_MANIFEST: ${VITALS_IDP_RESTORE_MANIFEST:-}
+    secrets:
+      - idp_db_service_password
+    volumes:
+      - ./scripts/idp_restore.sh:/usr/local/bin/idp_restore.sh:ro
+      - ${VITALS_IDP_BACKUP_HOST_DIR:-./backups}:/backups:ro
+      - vitals_idp_bootstrap:/zitadel/bootstrap:rw
+    networks: [vitals_idp_internal]
+    entrypoint: ["/bin/sh", "/usr/local/bin/idp_restore.sh"]
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    restart: "no"
+
   vitals_backup:
     image: postgres:15-alpine
     depends_on:

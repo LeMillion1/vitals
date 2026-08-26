@@ -279,3 +279,31 @@ def test_idp_offsite_is_a_separate_secret_and_failure_domain():
     health_offsite = compose["services"]["vitals_offsite_backup"]
     assert "vitals_idp" not in str(health_backup)
     assert "vitals_idp" not in str(health_offsite)
+
+
+def test_idp_restore_is_operator_only_and_cannot_touch_vitals_data():
+    compose = _compose()
+    service = compose["services"]["vitals_idp_restore"]
+
+    assert service["profiles"] == ["idp-restore"]
+    assert service["restart"] == "no"
+    assert service["read_only"] is True
+    assert service["secrets"] == ["idp_db_service_password"]
+    assert service["depends_on"] == {
+        "vitals_idp_db_provision": {
+            "condition": "service_completed_successfully"
+        },
+        "vitals_idp_bootstrap_prepare": {
+            "condition": "service_completed_successfully"
+        },
+    }
+    rendered = str(service)
+    assert "idp_db_admin_password" not in rendered
+    assert "idp_masterkey" not in rendered
+    assert "VITALS_DATABASE_URL" not in rendered
+    assert ".vitals-runtime" not in rendered
+    assert "vitals_idp_bootstrap:/zitadel/bootstrap:rw" in service["volumes"]
+    assert (
+        "${VITALS_IDP_BACKUP_HOST_DIR:-./backups}:/backups:ro"
+        in service["volumes"]
+    )

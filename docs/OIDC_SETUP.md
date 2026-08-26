@@ -334,10 +334,10 @@ is:
 1. Bring the provider back with the same project, overlay, two env files, and
    approved image digest used at cutover. Its identity volume is independent.
 2. If its data is gone, verify an exact `zitadel_bundle_<timestamp>.sha256`,
-   restore its `zitadel_<timestamp>.sql.gz` into a new empty PostgreSQL 15
-   database/new volume with `ON_ERROR_STOP`, then run the provider readiness,
-   discovery, restart, and login checks from the restore runbook. The artifact
-   is a logical SQL dump, not a copy of `vitals_idp_pgdata`.
+   use the `idp-restore` profile from the restore runbook against a fresh
+   project, and then run provider readiness, discovery, restart, and login
+   checks. The recovery point is the logical SQL dump plus its exact Login PAT,
+   not a copy of `vitals_idp_pgdata`.
 3. If you must reach the record without the provider at all, first restore the
    exact trusted `VITALS_AUTH_USERNAME` and `VITALS_AUTH_PASSWORD_HASH` pair
    consistent with the database. In the same owner-only configuration change,

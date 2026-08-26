@@ -351,14 +351,23 @@ gzip -t zitadel_<timestamp>.sql.gz
 test -s zitadel_login_client_<timestamp>.pat
 ```
 
-Restore only into a new empty PostgreSQL 15 database with drill-only
-credentials, inside one transaction. Restore the paired PAT into a new
-owner-only bootstrap volume; never overwrite the production volume during the
-drill:
+Restore only into a new Compose project with fresh PostgreSQL and bootstrap
+volumes. The operator-only service verifies the exact two-file manifest,
+refuses any table or existing target PAT, restores SQL in one transaction as
+the non-superuser database owner, and publishes the paired PAT only after that
+transaction succeeds. Never point the drill at the production project:
 
 ```bash
-gzip -dc zitadel_<timestamp>.sql.gz \
-  | psql -1 -v ON_ERROR_STOP=1 <empty-zitadel-drill-database-url>
+export COMPOSE_PROJECT_NAME=vitals_idp_restore_<timestamp>
+export VITALS_IDP_RESTORE_MANIFEST=zitadel_bundle_<timestamp>.sha256
+docker compose --env-file .env --env-file .env.idp \
+  --profile idp --profile idp-restore up \
+  --exit-code-from vitals_idp_restore vitals_idp_restore
+
+# The exact pinned version now verifies/advances the restored schema and starts
+# API, Login V2, and the h2c gateway.
+docker compose --env-file .env --env-file .env.idp \
+  --profile idp up -d --wait vitals_idp_gateway
 ```
 
 Start the exact approved image digest against that restored database with the
@@ -368,6 +377,10 @@ Code + PKCE login against a non-production Vitals stack. Restart the restored
 provider and repeat discovery/login. Record only the manifest, snapshot ID,
 image digest, and pass/fail timings—never identities, claims, credentials, or
 provider rows.
+
+After the drill, destroy only that exact scratch Compose project. The restore
+primitive itself never removes containers or volumes and therefore cannot
+guess which project an operator intended to preserve.
 
 From the trusted restic administration machine, prove that the independent
 offsite stream can be selected and restored without the health snapshot:
