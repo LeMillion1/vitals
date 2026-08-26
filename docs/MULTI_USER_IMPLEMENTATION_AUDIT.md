@@ -82,7 +82,10 @@ have RLS enabled and forced. Migration ownership, web runtime, and worker use
 three different PostgreSQL logins; both runtime logins are non-owner,
 `NOSUPERUSER`, and `NOBYPASSRLS`, while only the worker is a member of the
 database-specific platform-scope capability. Web and worker are healthy from
-one immutable runtime image, and the worker publishes no host port.
+one immutable runtime image at `62873bf`, and the worker publishes no host
+port. The external `/health` endpoint reports database, Redis, and scheduler
+healthy, and the post-deploy application, worker, ZITADEL API, Login V2, and
+loopback gateway logs contain no error-level lines.
 
 A fresh production bundle restored from its pre-cutover revision through
 `0084`, passed role/RLS/worker/web gates, rendered authenticated desktop and
@@ -94,12 +97,15 @@ replication remains a production gate.
 
 Self-hosted ZITADEL API, PostgreSQL, Login V2, loopback Caddy, and its backup
 sidecar are healthy. A destructive identity DB+PAT restore and restart passed.
+The loopback gateway pins the canonical public authority: requests spelling the
+Host as either `auth.bugless.tech` or `auth.bugless.tech:443` both discover the
+exact issuer `https://auth.bugless.tech`.
 The public Caddy profile is deployed but deliberately stopped: production
 Vitals remains in password mode until `auth.bugless.tech` has its normal DNS
 route, public HTTP/2/gRPC/browser gates pass, the Web OIDC application exists,
 and the owner completes the one-time federated binding. The latest complete
-fast suite at that gateway boundary passed 5,821 tests, skipped 211, and
-deselected 43.
+fast suite at that gateway boundary passed 5,980 tests, skipped 213, and
+deselected 43 in 235.23 seconds.
 
 ## Delivered product boundaries
 
@@ -393,6 +399,13 @@ Care guidance and the live conversation also exposed account usernames as the
 visible author and participant names. They now resolve professional profile
 display names and the patient's record display name, retaining usernames only
 as a fallback for an incomplete professional profile.
+
+The shared conversation now exposes the same small action set to both sides:
+each participant can correct only their own message and can close or resume the
+conversation without deleting history. Every action rechecks the current
+participant, relationship, consent, subject, CSRF, and thread state. The final
+care patch was checked at 390×844 and 1280×900 without overflow and with 44 px
+phone actions.
 
 The professional shell also disappeared entirely below 768 px because hiding
 the patient's five-slot record navigation had no role-specific replacement.
