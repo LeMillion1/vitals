@@ -19,7 +19,12 @@ from vitals.models.professional import (
     ProfessionalProfile,
 )
 from vitals.services.care import professionals
-from web.auth import create_session, _get_mcp_serializer, _get_serializer
+from web.auth import (
+    _get_mcp_serializer,
+    _get_serializer,
+    create_federated_session,
+    create_session,
+)
 from web.config import SESSION_COOKIE
 
 # PKCE pair used across the flow tests: CODE_CHALLENGE is the S256 of CODE_VERIFIER.
@@ -185,6 +190,83 @@ async def test_oauth_authorize_authenticated_renders(auth_client):
     assert "разрешённые сейчас разделы и действия" in response.text
     assert 'name="subject_id"' in response.text
     assert "read-only" not in response.text
+
+
+async def test_oauth_authorize_rejects_a_revoked_federated_cookie(
+    client, db_session, legacy_owner_roots
+):
+    """A signed OIDC cookie is no longer authority after session revocation."""
+    from vitals.services.authentication.sessions import revoke_all_sessions
+
+    user = await db_session.get(User, legacy_owner_roots.user_id)
+    token = create_federated_session(
+        username=user.username,
+        user_id=user.id,
+        session_version=user.session_version,
+        authenticated_at=int(datetime.now(timezone.utc).timestamp()),
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    client.cookies.set(SESSION_COOKIE, token, domain="test.local", path="/")
+    original_query = (
+        "response_type=code&client_id=vitals-claude-connector"
+        "&redirect_uri=https://claude.ai/callback"
+        f"&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
+        "&state=revoked-session"
+    )
+
+    before = await client.get(f"/oauth/authorize?{original_query}")
+    assert before.status_code == 200
+
+    await revoke_all_sessions(db_session, user_id=user.id)
+    await db_session.commit()
+
+    after = await client.get(f"/oauth/authorize?{original_query}")
+    assert after.status_code == 302
+    parsed = urlsplit(after.headers["location"])
+    assert parsed.path == "/login"
+    assert parse_qs(parsed.query)["next"] == [
+        f"/oauth/authorize?{original_query}"
+    ]
+    assert SESSION_COOKIE not in client.cookies
+
+    # The redirect is usable rather than a loop caused by /login seeing the
+    # stale-but-signed cookie and bouncing back to the app.
+    login = await client.get(after.headers["location"])
+    assert login.status_code == 200
+
+
+async def test_oauth_approve_rejects_a_revoked_federated_cookie_without_a_code(
+    client, db_session, redis, legacy_owner_roots
+):
+    """Approval rechecks the live session instead of trusting an open form."""
+    from vitals.services.authentication.sessions import revoke_all_sessions
+
+    user = await db_session.get(User, legacy_owner_roots.user_id)
+    token = create_federated_session(
+        username=user.username,
+        user_id=user.id,
+        session_version=user.session_version,
+        authenticated_at=int(datetime.now(timezone.utc).timestamp()),
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    client.cookies.set(SESSION_COOKIE, token, domain="test.local", path="/")
+    await revoke_all_sessions(db_session, user_id=user.id)
+    await db_session.commit()
+
+    response = await client.post(
+        "/oauth/authorize/approve",
+        data={
+            "client_id": "vitals-claude-connector",
+            "redirect_uri": "https://claude.ai/callback",
+            "state": "revoked-session",
+            "code_challenge": CODE_CHALLENGE,
+            "code_challenge_method": "S256",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Not authenticated"}
+    assert await redis.keys("oauth_code:*") == []
 
 
 async def test_oauth_authorize_invalid_client(auth_client):

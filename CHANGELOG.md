@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — revoked browser sessions cannot mint MCP credentials
+
+The MCP authorization and approval endpoints now use the same live,
+database-backed session boundary as protected pages. A suspended account or
+revoked OIDC session cannot reuse a still-correctly-signed cookie to issue a
+new connector token, and a rejected consent request returns to login without a
+stale-cookie redirect loop.
+
 ### Fixed — live settings no longer ask for a container restart
 
 Profile, Hevy, and MCP save confirmations now state that changes are already

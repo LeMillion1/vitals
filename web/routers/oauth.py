@@ -16,11 +16,11 @@ from urllib.parse import urlencode, urlsplit
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from web.auth import read_session, _get_mcp_serializer
-from web.config import SESSION_COOKIE, get_web_config
+from web.auth import _get_mcp_serializer, clear_session_cookie
+from web.config import get_web_config
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from web.deps import get_redis, get_session
+from web.deps import NotAuthenticated, get_redis, get_session, require_auth
 
 logger = logging.getLogger(__name__)
 
@@ -224,10 +224,14 @@ async def oauth_authorize(
             {"error": t("oauth.error.pkce_required"), "client_id": client_id, "redirect_uri": redirect_uri},
         )
 
-    # Check if the user is already authenticated in Vitals
-    token = request.cookies.get(SESSION_COOKIE)
-    username = read_session(token)
-    if username is None:
+    # A valid cookie signature is not live authority: an account may have been
+    # suspended or every session revoked since the cookie was issued.  Use the
+    # same database-backed boundary as every protected web route, but keep this
+    # endpoint structurally anonymous so a browser without a session can enter
+    # the OAuth login dance and retain the complete authorization request.
+    try:
+        username = await require_auth(request, db)
+    except NotAuthenticated:
         # Redirect to login page and preserve this consent flow as target
         next_path = str(request.url.path)
         if request.url.query:
@@ -238,7 +242,15 @@ async def oauth_authorize(
         # down to just "/oauth/authorize?response_type=code" and losing
         # client_id/redirect_uri — which then 422s after a successful login.
         login_url = f"/login?{urlencode({'next': next_path})}"
-        return RedirectResponse(url=login_url, status_code=status.HTTP_302_FOUND)
+        response = RedirectResponse(
+            url=login_url, status_code=status.HTTP_302_FOUND
+        )
+        # In particular, remove a revoked but still correctly signed OIDC
+        # cookie.  /login cannot revalidate it without a database session; if
+        # it remained in the jar it would mistake the signature for a live
+        # login and bounce back to the app instead of starting authentication.
+        clear_session_cookie(response)
+        return response
 
     from vitals.services.authentication import connector_authorization
 
@@ -291,10 +303,10 @@ async def oauth_approve(
     db: AsyncSession = Depends(get_session),
 ):
     """Processes user approval, stores code details in Redis, and redirects."""
-    token = request.cookies.get(SESSION_COOKIE)
-    username = read_session(token)
-    if username is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+    # Revalidate account status and session_version at the approval boundary.
+    # The consent page may have been open while the account was suspended or
+    # its sessions were revoked, so its previously signed cookie is not enough.
+    username = await require_auth(request, db)
 
     cfg = get_web_config()
     # Re-resolved here rather than trusted from the consent page: this endpoint
