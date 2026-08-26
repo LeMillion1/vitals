@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — Today keeps the daily brief readable
+
+The landing screen now has a stable localized page heading and presents the
+complete generated or deterministic daily brief as compact secondary text.
+Long health summaries no longer become oversized headings that hide the day's
+figures below the first phone viewport.
+
 ### Fixed — web runtime no longer owns or migrates the database
 
 Compose now runs Alembic and runtime-role provisioning as ordered one-shot

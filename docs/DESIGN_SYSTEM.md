@@ -774,10 +774,13 @@ rail and the bottom bar precisely because it is not a module.
 ### 5.4a The landing screen — `/today`
 
 `web/templates/today/index.html` is the one page with no `masthead_header()`: it
-opens the app, so it carries its own hero — an `<h1>` that is a **sentence**
-about the day, then five key figures (`.v-today-figure`). Everything it renders
-is composed in `vitals/services/today_service.py` from services the domain pages
-already use; no analytics live there. Two rules the screen depends on:
+opens the app, so it carries its own compact hero: a stable localized page name
+in `<h1>`, the complete daily narrative as secondary body text, then five key
+figures (`.v-today-figure`). Generated health interpretation must not become a
+heading, be truncated, or push the figures below the first mobile viewport.
+Everything it renders is composed in `vitals/services/today_service.py` from
+services the domain pages already use; no analytics live there. Two rules the
+screen depends on:
 
 * **The narrative never blocks on the LLM.** Today's `daily_brief` row is used
   when it exists, otherwise a deterministic sentence is assembled from the same

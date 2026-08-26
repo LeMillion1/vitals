@@ -210,6 +210,17 @@ def test_rail_tabs_and_chips_have_an_active_state():
     assert ".v-today-chips .v-chip:active" in VITALS_CSS
 
 
+def test_today_keeps_generated_narrative_out_of_the_page_heading():
+    template = (TEMPLATES / "today/index.html").read_text(encoding="utf-8")
+    assert '<h1 class="v-today-title">{{ t("today.page_title") }}</h1>' in template
+    assert '<p class="v-today-summary">{{ narrative }}</p>' in template
+    assert "narrative | length" not in template
+    assert ".v-today-title.is-long" not in VITALS_CSS
+    mobile = VITALS_CSS.split("@media (max-width: 767px)")[-1]
+    assert ".v-today-summary" in mobile
+    assert "font-size: var(--text-card)" in mobile
+
+
 # ── Form and icon-button accessibility ───────────────────────────────────────
 
 TAG = re.compile(r"<(input|button|a|label)\b", re.I)

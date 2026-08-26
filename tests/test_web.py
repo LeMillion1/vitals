@@ -1990,9 +1990,7 @@ async def test_root_lands_on_today(auth_client):
 
 
 async def test_today_page_renders_its_own_hero_and_quick_log(auth_client):
-    """One sentence, five figures, a one-field weight form and the chips that hand
-    the rest of the day to the page that owns the long form. No masthead header
-    and no rubric tab row: this page is not a section of a rubric."""
+    """A stable heading, full compact brief, five figures, and one-field log."""
     html = {"Accept": "text/html"}
     await auth_client.post(
         "/weight/log", data={"date": today_local().isoformat(), "weight_kg": "86.1"}
@@ -2000,7 +1998,10 @@ async def test_today_page_renders_its_own_hero_and_quick_log(auth_client):
 
     r = await auth_client.get("/today", headers=html)
     assert r.status_code == 200
-    assert 'class="v-today-title"' in r.text
+    assert '<h1 class="v-today-title">Сегодня</h1>' in r.text
+    assert r.text.count('class="v-today-title"') == 1
+    assert 'class="v-today-summary"' in r.text
+    assert 'v-today-title is-long' not in r.text
     assert r.text.count('class="v-today-figure"') == 5   # weight, sleep, HRV, BB, eaten
     assert 'class="mh-head"' not in r.text
     assert 'action="/weight/log"' in r.text
@@ -2022,7 +2023,8 @@ async def test_today_survives_every_optional_module_being_off(auth_client, db_se
 
     r = await auth_client.get("/today", headers={"Accept": "text/html"})
     assert r.status_code == 200
-    assert 'class="v-today-title"' in r.text
+    assert '<h1 class="v-today-title">Сегодня</h1>' in r.text
+    assert 'class="v-today-summary"' in r.text
     assert 'href="/nutrition"' not in r.text
     assert 'href="/timeline?new=1"' not in r.text
     # Weight is core, so its measurement chip is always reachable.

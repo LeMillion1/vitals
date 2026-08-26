@@ -6,7 +6,7 @@
 {% from "partials/masthead.html" import card_header with context %}
 {# The landing screen. No masthead_header() and no rubric tab row on purpose:
    this page is not a section of a rubric, it is what the app opens on, so it
-   carries its own hero — a sentence, not a section name.
+   carries its own compact heading and daily summary.
 
    The x-data root is the weight dashboard's own factory: the "Записать" card
    posts to the conflict-aware /weight/log and needs exactly the submitForm /
@@ -28,11 +28,10 @@
     </div>
 
     <div class="v-today-hero">
-        {# The hero is whatever the morning had to say, and its length is the
-           model's to decide — two sentences at 38px are five lines that push the
-           figures under the fold. One step down keeps a long morning readable
-           without truncating anything the owner is meant to read. #}
-        <h1 class="v-today-title{% if narrative | length > 140 %} is-long{% endif %}">{{ narrative }}</h1>
+        <div>
+            <h1 class="v-today-title">{{ t("today.page_title") }}</h1>
+            <p class="v-today-summary">{{ narrative }}</p>
+        </div>
         <div class="v-today-figures">
             {% for f in figures %}
             <div class="v-today-figure">

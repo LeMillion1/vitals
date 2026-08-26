@@ -2888,9 +2888,8 @@ sup {
 }
 /* ── Screen: Today (the landing page) ──────────────────────────────────────
    The one page with no masthead: it opens the app, so it carries its own hero
-   — a sentence about the day, then the five figures that sentence is about.
-   Sizes are one step down from the section masthead on purpose; a landing
-   screen that shouts is a screen the owner stops reading. */
+   — a stable page name, a compact daily summary, then the five figures the
+   summary is about. */
 .v-today-eyebrow-row {
     display: flex;
     align-items: center;
@@ -2923,11 +2922,12 @@ sup {
     text-wrap: pretty;
 }
 
-/* A long morning: the model wrote two sentences instead of one. One step down the
-   scale rather than a clamp — nothing the owner is meant to read gets hidden. */
-.v-today-title.is-long {
-    font-size: var(--text-title);
-    line-height: 1.2;
+.v-today-summary {
+    margin-top: var(--space-3);
+    max-width: 68ch;
+    color: var(--fg-2);
+    font: 500 var(--text-heading)/1.5 'Inter', sans-serif;
+    text-wrap: pretty;
 }
 
 .v-today-figures {
@@ -3117,12 +3117,13 @@ sup {
 
 @media (max-width: 767px) {
     .v-today-title { font-size: var(--text-title); }
-    /* The desktop step-down is one step; on a 402px column a long morning at
-       26px is still the whole first screen and nothing else. Two steps here —
-       the point is that it gets read, not that it is set large. */
-    .v-today-title.is-long { font-size: var(--text-lead); line-height: 1.35; }
+    .v-today-summary {
+        margin-top: var(--space-2);
+        font-size: var(--text-card);
+        line-height: 1.5;
+    }
     .v-today-hero { gap: 16px; }
-    /* The hero already says it in words. The strip is there to be glanced at,
+    /* The summary already says it in words. The strip is there to be glanced at,
        not to repeat the sentence above it in 30px figures: three across, no
        baseline sub-lines — 239px of grid becomes about 90. */
     .v-today-figures {
