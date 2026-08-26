@@ -610,7 +610,7 @@ async def test_settings_save_mcp(auth_client, tmp_path, monkeypatch):
         data={"mcp_client_id": "test-id", "mcp_client_secret": "test-secret"},
     )
     assert r.status_code == 303
-    assert "saved=mcp" in r.headers["location"]
+    assert r.headers["location"] == "/settings/platform?saved=mcp"
 
     content = env_file.read_text(encoding="utf-8")
     assert "VITALS_MCP_CLIENT_ID=test-id" in content

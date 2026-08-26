@@ -598,6 +598,33 @@ async def revoke(
     return record
 
 
+async def revoke_all_live(session: AsyncSession) -> int:
+    """Disconnect every still-usable connector after authority rotation.
+
+    Installation-wide client configuration is a trust root rather than a
+    personal preference.  Changing its client identifier makes every token
+    minted for the previous identifier unverifiable, so their durable rows must
+    stop claiming that those connectors remain active.  Rows stay in history
+    and the caller owns the surrounding transaction.
+    """
+
+    at = await _now(session)
+    rows = list(
+        (
+            await session.scalars(
+                select(McpAccessToken).where(
+                    McpAccessToken.revoked_at.is_(None),
+                    McpAccessToken.expires_at > at,
+                )
+            )
+        ).all()
+    )
+    for row in rows:
+        row.revoked_at = at
+    await session.flush()
+    return len(rows)
+
+
 async def list_for_user(
     session: AsyncSession, *, user_id: uuid.UUID
 ) -> Sequence[McpAccessToken]:
@@ -627,5 +654,6 @@ __all__ = [
     "list_for_user",
     "owner_scopes",
     "revoke",
+    "revoke_all_live",
     "verify",
 ]

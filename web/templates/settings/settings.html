@@ -274,39 +274,6 @@
     <!-- ─── PROACTIVE LAYER (bot schedule, nudges, Garmin polling) ─────────── -->
     {% include "partials/proactive_card.html" %}
 
-    <!-- ─── CLAUDE MCP ────────────────────────────────────────────────────── -->
-    <div class="v-card v-setting-row p-6 space-y-5">
-        {{ card_header(t("settings.mcp_title")) }}
-        <p class="v-text-body" style="color: var(--muted)">
-            {{ t("settings.mcp_description") }}
-        </p>
-        <form action="/settings/mcp" method="POST" class="space-y-4">
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div class="space-y-1.5">
-                    <label for="s-mcp-id" class="v-label">Client ID</label>
-                    <input id="s-mcp-id" name="mcp_client_id" type="text"
-                           value="{{ mcp_client_id }}" class="v-input font-mono"
-                           placeholder="vitals-claude-connector">
-                </div>
-                <div class="space-y-1.5">
-                    <label for="s-mcp-secret" class="v-label">
-                        Client Secret
-                        {% if mcp_client_secret_set %}
-                        <span class="v-chip v-chip-sm good ml-1.5">{{ t("settings.key_set") }}</span>
-                        {% endif %}
-                    </label>
-                    <input id="s-mcp-secret" name="mcp_client_secret" type="password"
-                           value="" class="v-input font-mono"
-                           placeholder="{{ t('settings.key_placeholder_set') if mcp_client_secret_set else t('settings.mcp_secret_placeholder') }}"
-                           autocomplete="new-password">
-                </div>
-            </div>
-            <div class="flex justify-end pt-1">
-                <button type="submit" class="v-btn text-xs">{{ t("settings.save_mcp") }}</button>
-            </div>
-        </form>
-    </div>
-
     <!-- ─── CONNECTED ASSISTANTS ───────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
         {{ card_header(t("mcp_tokens.title")) }}

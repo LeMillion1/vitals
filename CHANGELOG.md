@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — installation MCP authority is platform-admin only
+
+The shared MCP client identifier and secret now live on the platform hub,
+require recent platform-superadmin authentication, and are absent from every
+personal settings page. Changing the installation client identifier revokes all
+live connector grants in the same audited operation so Settings cannot present
+cryptographically obsolete credentials as active.
+
 ### Fixed — revoked browser sessions cannot mint MCP credentials
 
 The MCP authorization and approval endpoints now use the same live,

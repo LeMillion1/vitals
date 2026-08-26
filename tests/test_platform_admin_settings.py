@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import inspect
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
 
 from vitals.enums import UserRoleName
-from vitals.models.identity import AuditEvent, UserRole
+from vitals.models.identity import AuditEvent, McpAccessToken, UserRole
 from vitals.services import platform_admin_service
 from web.config import get_web_config
 
@@ -52,6 +53,8 @@ async def test_non_admin_cannot_write_or_see_openrouter_configuration(
     page = await auth_client.get("/settings")
     assert page.status_code == 200
     assert 'action="/settings/ai"' not in page.text
+    assert 'action="/settings/mcp"' not in page.text
+    assert 'action="/settings/platform/mcp"' not in page.text
     assert "triggerRestart" not in page.text
     assert "synthetic-existing" not in page.text
 
@@ -79,6 +82,13 @@ async def test_non_admin_cannot_write_or_see_openrouter_configuration(
         )
     ) is None
 
+    mcp_response = await auth_client.post(
+        "/settings/mcp",
+        data={"mcp_client_id": "replacement", "mcp_client_secret": "secret"},
+    )
+    assert mcp_response.status_code == 403
+    assert "VITALS_MCP_CLIENT_ID" not in env_file.read_text(encoding="utf-8")
+
 
 def test_platform_mutations_require_recent_authentication():
     from web.deps import require_recent_auth
@@ -86,6 +96,7 @@ def test_platform_mutations_require_recent_authentication():
 
     for endpoint in (
         settings.save_ai,
+        settings.save_mcp,
         settings.enable_platform_ai,
         settings.disable_platform_ai,
         settings.configure_platform_ai_quota,
@@ -97,6 +108,71 @@ def test_platform_mutations_require_recent_authentication():
             if hasattr(parameter.default, "dependency")
         }
         assert require_recent_auth in dependencies, endpoint.__name__
+
+
+async def test_mcp_configuration_lives_on_platform_hub(auth_client):
+    personal = await auth_client.get("/settings")
+    assert personal.status_code == 200
+    assert 'action="/settings/platform/mcp"' not in personal.text
+
+    platform = await auth_client.get("/settings/platform")
+    assert platform.status_code == 200
+    assert 'action="/settings/platform/mcp"' in platform.text
+
+
+async def test_changing_mcp_client_id_revokes_live_connectors_and_audits(
+    auth_client,
+    db_session,
+    legacy_owner_roots,
+    tmp_path,
+    monkeypatch,
+):
+    env_file = tmp_path / "test.env"
+    env_file.write_text(
+        "VITALS_MCP_CLIENT_ID=old-client\nVITALS_MCP_CLIENT_SECRET=old-secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+    monkeypatch.setenv("VITALS_MCP_CLIENT_ID", "old-client")
+    monkeypatch.setenv("VITALS_MCP_CLIENT_SECRET", "old-secret")
+
+    now = datetime.now(timezone.utc)
+    connector = McpAccessToken(
+        user_id=legacy_owner_roots.user_id,
+        subject_id=legacy_owner_roots.subject_id,
+        client_id="old-client",
+        audience="http://test/mcp",
+        issued_at=now,
+        expires_at=now + timedelta(days=30),
+    )
+    db_session.add(connector)
+    await db_session.commit()
+
+    response = await auth_client.post(
+        "/settings/platform/mcp",
+        data={"mcp_client_id": "new-client", "mcp_client_secret": ""},
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/settings/platform?saved=mcp"
+    await db_session.refresh(connector)
+    assert connector.revoked_at is not None
+    assert "VITALS_MCP_CLIENT_ID=new-client" in env_file.read_text(encoding="utf-8")
+
+    event = await db_session.scalar(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "platform.mcp.configuration.updated"
+        )
+    )
+    assert event is not None
+    assert event.subject_id is None
+    assert event.metadata_json == {
+        "source_surface": "web.settings",
+        "changed_fields": ["client_id"],
+        "record_count": 1,
+    }
+    assert "old-client" not in json.dumps(event.metadata_json)
+    assert "new-client" not in json.dumps(event.metadata_json)
 
 
 async def test_platform_admin_save_is_value_free_in_audit(

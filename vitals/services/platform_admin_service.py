@@ -49,6 +49,7 @@ _OPENROUTER_RESULT_CODES = frozenset(
         "quota_configured",
     }
 )
+_MCP_CHANGED_FIELDS = frozenset({"client_id", "client_secret"})
 
 
 class PlatformAdminError(RuntimeError):
@@ -81,6 +82,22 @@ def validate_openrouter_changed_fields(
     if any(field not in _OPENROUTER_CHANGED_FIELDS for field in fields):
         raise PlatformAdminValidationError(
             "changed_fields contains an unreviewed OpenRouter field"
+        )
+    return fields
+
+
+def validate_mcp_changed_fields(changed_fields: Iterable[str]) -> tuple[str, ...]:
+    """Canonicalize the value-free installation MCP audit vocabulary."""
+
+    try:
+        fields = tuple(sorted(set(changed_fields)))
+    except TypeError as exc:
+        raise PlatformAdminValidationError(
+            "changed_fields must be an iterable of reviewed field names"
+        ) from exc
+    if not fields or any(field not in _MCP_CHANGED_FIELDS for field in fields):
+        raise PlatformAdminValidationError(
+            "changed_fields contains an unreviewed MCP field"
         )
     return fields
 
@@ -278,6 +295,37 @@ async def record_openrouter_configuration_change(
     return event
 
 
+async def record_mcp_configuration_change(
+    session: AsyncSession,
+    *,
+    prepared: PreparedPlatformAdmin,
+    changed_fields: Iterable[str],
+    revoked_connectors: int,
+) -> AuditEvent:
+    """Append a secret-free audit event for installation MCP authority."""
+
+    capability = _require_prepared(session, prepared)
+    fields = validate_mcp_changed_fields(changed_fields)
+    if revoked_connectors < 0:
+        raise PlatformAdminValidationError("revoked_connectors cannot be negative")
+    event = AuditEvent(
+        actor_user_id=capability.user_id,
+        subject_id=None,
+        event_type="platform.mcp.configuration.updated",
+        outcome=AuditOutcome.SUCCESS.value,
+        resource_type="platform_integration",
+        resource_id="mcp_oauth",
+        metadata_json={
+            "source_surface": "web.settings",
+            "changed_fields": list(fields),
+            "record_count": revoked_connectors,
+        },
+    )
+    session.add(event)
+    await session.flush()
+    return event
+
+
 __all__ = [
     "PlatformAdminAuthorizationError",
     "PlatformAdminCapabilityError",
@@ -286,7 +334,9 @@ __all__ = [
     "PreparedPlatformAdmin",
     "is_active_platform_admin",
     "prepare_platform_admin",
+    "record_mcp_configuration_change",
     "record_openrouter_configuration_change",
     "require_prepared_platform_admin",
+    "validate_mcp_changed_fields",
     "validate_openrouter_changed_fields",
 ]

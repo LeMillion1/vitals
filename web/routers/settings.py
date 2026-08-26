@@ -7,12 +7,14 @@ POST /settings/garmin   — save Garmin credentials (email + password)
 POST /settings/password — change the login password (requires old password)
 GET  /settings/platform — platform-superadmin operations hub
 POST /settings/platform/ai/* — control the installation OpenRouter gateway
+POST /settings/platform/mcp — control installation OAuth client authority
 
 Personal provider credentials are encrypted per subject and take effect in the
-running process.  Installation-owned configuration such as the AI gateway is
-absent from the personal page, requires an active ``platform_superadmin`` role,
-and every mutation requires recent authentication.  The historical ``/ai``
-POST remains only as a role-checked compatibility alias.
+running process.  Installation-owned configuration such as the AI gateway and
+MCP OAuth client is absent from the personal page, requires an active
+``platform_superadmin`` role, and every mutation requires recent
+authentication.  Historical ``/ai`` and ``/mcp`` POST paths remain only as
+role-checked compatibility aliases.
 
 Sensitive inputs (API keys, passwords) are always shown masked in the form.
 """
@@ -483,9 +485,6 @@ async def _page(
             db,
             prepared=prepared_export,
         ),
-        # MCP
-        "mcp_client_id": read_key("VITALS_MCP_CLIENT_ID") or "vitals-claude-connector",
-        "mcp_client_secret_set": bool(read_key("VITALS_MCP_CLIENT_SECRET")),
         # Dashboard modules — registry + current state (set on request.state by
         # the global load_enabled_modules dependency).
         # Nutrition goals — a target keeps a default where a body measurement
@@ -791,7 +790,13 @@ async def platform_settings_page(
     return templates.TemplateResponse(
         request,
         "settings/platform.html",
-        {"username": username, "saved": saved},
+        {
+            "username": username,
+            "saved": saved,
+            "mcp_client_id": read_key("VITALS_MCP_CLIENT_ID")
+            or "vitals-claude-connector",
+            "mcp_client_secret_set": bool(read_key("VITALS_MCP_CLIENT_SECRET")),
+        },
     )
 
 
@@ -1205,25 +1210,94 @@ async def send_garmin_weight_now(
 
 
 @router.post("/mcp")
+@router.post("/platform/mcp")
 async def save_mcp(
     request: Request,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
     mcp_client_id: str = Form("vitals-claude-connector"),
     mcp_client_secret: str = Form(""),
 ):
+    """Update installation OAuth authority outside every personal record."""
+
+    del request
+    from vitals.services.authentication import mcp_tokens
+
+    prepared_admin = await _prepare_platform_admin_or_403(db, username=username)
+    current_client_id = (
+        read_key("VITALS_MCP_CLIENT_ID").strip() or "vitals-claude-connector"
+    )
     updates: dict[str, str] = {}
-    if mcp_client_id.strip():
-        updates["VITALS_MCP_CLIENT_ID"] = mcp_client_id.strip()
+    changed_fields: set[str] = set()
+    requested_client_id = mcp_client_id.strip()
+    if requested_client_id and requested_client_id != current_client_id:
+        if len(requested_client_id) > 255 or any(
+            char.isspace() or not char.isprintable() for char in requested_client_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid MCP client identifier",
+            )
+        updates["VITALS_MCP_CLIENT_ID"] = requested_client_id
+        changed_fields.add("client_id")
     if mcp_client_secret.strip() and not _is_sentinel(mcp_client_secret):
         updates["VITALS_MCP_CLIENT_SECRET"] = mcp_client_secret.strip()
+        changed_fields.add("client_secret")
 
-    if updates:
+    if not updates:
+        return RedirectResponse(
+            url="/settings/platform?saved=mcp",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    revoked_connectors = 0
+    if "client_id" in changed_fields:
+        revoked_connectors = await mcp_tokens.revoke_all_live(db)
+    await platform_admin_service.record_mcp_configuration_change(
+        db,
+        prepared=prepared_admin,
+        changed_fields=changed_fields,
+        revoked_connectors=revoked_connectors,
+    )
+
+    previous_persisted = {key: read_key(key) for key in updates}
+    previous_runtime = {
+        key: (key in os.environ, os.environ.get(key, "")) for key in updates
+    }
+    environment_written = False
+    try:
         write_keys(updates)
-        # Apply to current process environment to support immediate refresh
-        import os
-        for k, v in updates.items():
-            os.environ[k] = v
-    return _redirect("?saved=mcp")
+        environment_written = True
+        _set_runtime_values(updates)
+        await db.commit()
+    except BaseException:
+        compensation_error: Exception | None = None
+        if environment_written:
+            try:
+                write_keys(previous_persisted)
+                for key, (was_present, value) in previous_runtime.items():
+                    if was_present:
+                        os.environ[key] = value
+                    else:
+                        os.environ.pop(key, None)
+            except Exception as exc:
+                compensation_error = exc
+                for key in updates:
+                    os.environ[key] = ""
+        await db.rollback()
+        if compensation_error is not None:
+            logger.critical(
+                "platform MCP configuration failed and could not restore its "
+                "environment; connector authorization is disabled"
+            )
+            raise RuntimeError(
+                "platform MCP configuration could not restore its environment"
+            ) from compensation_error
+        raise
+    return RedirectResponse(
+        url="/settings/platform?saved=mcp",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 
