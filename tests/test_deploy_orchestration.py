@@ -71,6 +71,7 @@ def test_deploy_fast_forwards_and_builds_one_immutable_shared_image():
     assert "assert_shared_runtime_image" in source
     assert "assert_runtime_config_mounts" in _function(source, "compose_preflight")
     assert "assert_runtime_data_mounts" in _function(source, "compose_preflight")
+    assert "assert_backup_data_mounts" in _function(source, "compose_preflight")
     assert "vitals.worker_health import check_configured_worker_health" in source
 
 
@@ -429,6 +430,120 @@ assert_runtime_data_mounts
 
     assert rejected_access.returncode != 0
     assert "identical sources and access modes" in rejected_access.stderr
+
+
+def test_backup_mount_helper_requires_exact_read_only_runtime_sources(tmp_path):
+    target_pairs = (
+        ("/data/garmin_session", "/garmin_session"),
+        ("/app/web/static/uploads", "/legacy_uploads"),
+        ("/data/private_files", "/private_files"),
+    )
+    app_mounts = [
+        {
+            "type": "volume" if index != 1 else "bind",
+            "source": f"shared-{index}",
+            "target": app_target,
+            "read_only": index == 1,
+        }
+        for index, (app_target, _backup_target) in enumerate(target_pairs)
+    ]
+    backup_mounts = [
+        {
+            "type": app_mounts[index]["type"],
+            "source": app_mounts[index]["source"],
+            "target": backup_target,
+            "read_only": True,
+        }
+        for index, (_app_target, backup_target) in enumerate(target_pairs)
+    ]
+    payload = {
+        "services": {
+            "vitals_app": {"volumes": app_mounts},
+            "vitals_backup": {
+                "volumes": backup_mounts
+                + [
+                    {
+                        "type": "bind",
+                        "source": "/srv/vitals/backups",
+                        "target": "/backups",
+                        "read_only": False,
+                    }
+                ]
+            },
+            "vitals_offsite_backup": {
+                "volumes": [
+                    {
+                        "type": "bind",
+                        "source": "/srv/vitals/backups",
+                        "target": "/backups",
+                        "read_only": True,
+                    }
+                ]
+            },
+        }
+    }
+    compose_json = tmp_path / "compose.json"
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    shell = r'''
+source "$1"
+compose() { cat "$COMPOSE_JSON"; }
+assert_backup_data_mounts
+'''
+    environment = os.environ.copy()
+    environment["COMPOSE_JSON"] = str(compose_json)
+
+    accepted = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+    backup_mounts[1]["source"] = "/wrong/checkout/uploads"
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    wrong_source = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert wrong_source.returncode != 0
+    assert "exact runtime data paths" in wrong_source.stderr
+
+    backup_mounts[1]["source"] = app_mounts[1]["source"]
+    backup_mounts[1]["read_only"] = False
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    writable = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert writable.returncode != 0
+    assert "exact runtime data paths" in writable.stderr
+
+    backup_mounts[1]["read_only"] = True
+    payload["services"]["vitals_offsite_backup"]["volumes"][0]["source"] = (
+        "/wrong/checkout/backups"
+    )
+    compose_json.write_text(json.dumps(payload), encoding="utf-8")
+    offsite_drift = subprocess.run(
+        ["bash", "-c", shell, "test", str(SCRIPT)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert offsite_drift.returncode != 0
+    assert "exact runtime data paths" in offsite_drift.stderr
 
 
 def test_operator_docs_preserve_project_and_first_cutover_boundary():

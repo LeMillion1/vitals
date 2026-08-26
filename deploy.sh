@@ -210,12 +210,57 @@ if any(one_mount(app, target) != one_mount(worker, target) for target in targets
 ' || die "web and worker data mounts must resolve to identical sources and access modes"
 }
 
+assert_backup_data_mounts() {
+  compose config --format json | python3 -c '
+import json
+import sys
+
+payload = json.load(sys.stdin)
+services = payload.get("services", {})
+app = services.get("vitals_app", {})
+backup = services.get("vitals_backup", {})
+offsite = services.get("vitals_offsite_backup", {})
+target_pairs = (
+    ("/data/garmin_session", "/garmin_session"),
+    ("/app/web/static/uploads", "/legacy_uploads"),
+    ("/data/private_files", "/private_files"),
+)
+
+def one_mount(service, target):
+    matches = [item for item in service.get("volumes", []) if item.get("target") == target]
+    if len(matches) != 1:
+        raise SystemExit(1)
+    return matches[0]
+
+for app_target, backup_target in target_pairs:
+    app_mount = one_mount(app, app_target)
+    backup_mount = one_mount(backup, backup_target)
+    if (
+        backup_mount.get("type") != app_mount.get("type")
+        or backup_mount.get("source") != app_mount.get("source")
+        or backup_mount.get("read_only") is not True
+    ):
+        raise SystemExit(1)
+
+backup_output = one_mount(backup, "/backups")
+offsite_input = one_mount(offsite, "/backups")
+if (
+    bool(backup_output.get("read_only", False))
+    or offsite_input.get("type") != backup_output.get("type")
+    or offsite_input.get("source") != backup_output.get("source")
+    or offsite_input.get("read_only") is not True
+):
+    raise SystemExit(1)
+' || die "backup inputs and offsite source must match the exact runtime data paths"
+}
+
 compose_preflight() {
   DEPLOY_PHASE="compose preflight"
   compose config --quiet
   assert_shared_runtime_image
   assert_runtime_config_mounts
   assert_runtime_data_mounts
+  assert_backup_data_mounts
 }
 
 start_data_services() {
