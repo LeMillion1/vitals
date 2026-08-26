@@ -4,7 +4,7 @@ metric history, cascade delete, and the light alerts. Runs on SQLite (the tables
 use no Postgres-only features) and on Postgres."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -12,6 +12,7 @@ from sqlalchemy import select
 from vitals.enums import Source
 from vitals.integrations.llm_client import LLMNotConfigured
 from vitals.models.body_scan import BodyScan, BodyScanMetric
+from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.weight import WeightLog
 from vitals.services import alerts_service, body_scan_service, weight_service
 
@@ -61,6 +62,60 @@ async def _save(db_session, owner_write, *, on_date=DAY, **kw):
         prepared_weight_write=await owner_write.weight_write(on_date),
         **kw,
     )
+
+
+async def test_historical_rawless_parser_scan_uses_reviewed_checkpoint(
+    db_session,
+    legacy_owner_roots,
+):
+    scan = BodyScan(
+        subject_id=legacy_owner_roots.subject_id,
+        actor_user_id=None,
+        file_asset_id=None,
+        date=DAY,
+        domain="body_comp",
+        source=Source.BODY_SCAN.value,
+        file_key=None,
+        raw_payload_id=None,
+    )
+    scan.metrics.append(
+        BodyScanMetric(
+            subject_id=legacy_owner_roots.subject_id,
+            metric_key="weight",
+            label="Weight",
+            value=88.0,
+        )
+    )
+    db_session.add(scan)
+    await db_session.flush()
+    stamp = datetime(2026, 8, 20, tzinfo=UTC)
+    db_session.add(
+        OwnershipBackfillCheckpoint(
+            phase_key="stage3.file_backed.body_scans.v1.body_scans",
+            subject_id=legacy_owner_roots.subject_id,
+            status="completed",
+            scan_high_watermark_id=scan.id,
+            snapshot_rows=1,
+            last_scanned_id=scan.id,
+            scanned_rows=1,
+            updated_rows=1,
+            unchanged_rows=0,
+            data_checksum_before="b" * 64,
+            data_checksum_after="b" * 64,
+            ownership_checksum_after="b" * 64,
+            started_at=stamp,
+            updated_at=stamp,
+            completed_at=stamp,
+        )
+    )
+    await db_session.commit()
+
+    rows = await body_scan_service.list_scans(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+
+    assert [row.id for row in rows] == [scan.id]
 
 
 async def _owned_garmin_weight(db_session, owner_write, *, on_date, weight_kg):

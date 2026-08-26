@@ -1272,6 +1272,29 @@ async def _validate_persisted_scan(
             )
         return
     if scan.raw_payload_id is None:
+        from vitals.operations.ownership.body_scan import (
+            body_scan_historical_processed_bound,
+        )
+
+        historical_bound = await body_scan_historical_processed_bound(
+            session,
+            subject_id=subject_id,
+        )
+        if (
+            historical_bound is not None
+            and scan.id <= historical_bound
+            and scan.actor_user_id is None
+        ):
+            # Stage-3O proved the subject for pre-raw-first parser history but
+            # deliberately retained the absent raw/actor roots. Any historical
+            # sheet still has to match its reviewed FileAsset graph.
+            await _validate_migrated_sheet_root(
+                session,
+                scan=scan,
+                subject_id=subject_id,
+                for_update=for_update,
+            )
+            return
         raise conflict_engine.ConflictRawOwnershipError(
             f"{scan.source} body scan has no durable raw provenance"
         )
