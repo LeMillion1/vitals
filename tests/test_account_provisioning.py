@@ -139,15 +139,18 @@ async def test_web_member_provisioning_binds_before_subject_roots(
 
 @pytest.mark.parametrize("ambient_scope", ["subject", "platform"])
 async def test_web_member_provisioning_rejects_ambient_authority_before_mutation(
-    db_session, legacy_owner_roots, ambient_scope
+    db_session, legacy_owner_roots, ambient_scope, monkeypatch
 ):
-    from vitals.persistence.rls import bind_session_subject, enter_platform_scope
+    from vitals.persistence import rls
 
     before = await db_session.scalar(select(func.count()).select_from(User))
     if ambient_scope == "subject":
-        await bind_session_subject(db_session, legacy_owner_roots.subject_id)
+        await rls.bind_session_subject(db_session, legacy_owner_roots.subject_id)
     else:
-        await enter_platform_scope(db_session)
+        # Inject only the application-level ambient state this service guard is
+        # meant to reject. A web database login must not be able to acquire the
+        # underlying PostgreSQL platform capability.
+        monkeypatch.setitem(db_session.info, rls._PLATFORM_KEY, True)
 
     with pytest.raises(account_provisioning_service.AccountProvisioningScopeError):
         await account_provisioning_service.provision_bound_member_account(
