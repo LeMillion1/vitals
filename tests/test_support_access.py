@@ -2579,11 +2579,13 @@ async def test_the_console_has_a_link_somebody_can_actually_click(
     await db_session.commit()
 
     _sign_in(client, "rail-admin")
-    # ``/care`` rather than ``/weight``: an account with no record of its own is
-    # refused by every personal page, and this one is what they can open.
-    page = await client.get("/care", headers={"Accept": "text/html"})
-    assert page.status_code == 200
-    assert 'href="/settings/platform"' in page.text
+    # ``/care`` is a professional workspace, not a fake empty directory used
+    # as a stepping stone by a platform-only account.
+    landing = await client.get(
+        "/care", headers={"Accept": "text/html"}, follow_redirects=False
+    )
+    assert landing.status_code == 303
+    assert landing.headers["location"] == "/settings/platform"
 
     hub = await client.get("/settings/platform", headers={"Accept": "text/html"})
     assert hub.status_code == 200

@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — care navigation follows the reader's role
+
+The professional `/care` home now redirects ordinary members to their care-team
+hub and platform-only operators to their control-plane hub instead of showing
+either an empty patient roster. Shared record and
+conversation screens return record owners to patient-facing destinations while
+keeping professional links in the patient workspace, and desktop and phone
+navigation retain their active location after the patient `/messages` redirect.
+
 ### Fixed — runtime settings use a directory-backed atomic file
 
 Web now mounts the owner-only `.vitals-runtime/` host directory read/write and

@@ -220,16 +220,31 @@ async def roster(
     """
 
     user_id = await principal_user_id(request, db)
-    professional_roles = set(
+    assigned_roles = set(
         await db.scalars(
             select(UserRole.role).where(
                 UserRole.user_id == user_id,
-                UserRole.role.in_(
-                    (UserRoleName.DOCTOR.value, UserRoleName.TRAINER.value)
-                ),
             )
         )
     )
+    professional_roles = assigned_roles.intersection(
+        (UserRoleName.DOCTOR.value, UserRoleName.TRAINER.value)
+    )
+    if not professional_roles:
+        # ``/care`` is the professional workspace. A record owner reaches
+        # their people, consent and guidance through the patient-side hub; an
+        # empty professional roster is not a meaningful version of that page.
+        # A platform-only operator has a separate control-plane home and must
+        # not depend on a fake patient directory merely to reach it.
+        destination = (
+            "/settings/platform"
+            if UserRoleName.PLATFORM_SUPERADMIN.value in assigned_roles
+            else "/settings/care"
+        )
+        return RedirectResponse(
+            url=destination,
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     profile = await db.scalar(
         select(ProfessionalProfile).where(ProfessionalProfile.user_id == user_id)
     )
@@ -267,6 +282,7 @@ async def roster(
             ),
             "profile_verified": profile_verified,
             "is_professional_account": bool(professional_roles),
+            "active_account_nav": "professional_care",
         },
     )
 
@@ -432,6 +448,12 @@ async def patient(
             "withheld_domains": visible.withheld_domains,
             "record_restricted": visible.restricted,
             "may_read_messages": may_read_messages,
+            # A shared URL does not determine which account surface the reader
+            # is using. The same dual-role account can open its own record or a
+            # patient's, so navigation must follow the resolved care context.
+            "active_account_nav": (
+                "care_team" if care.is_owner else "professional_care"
+            ),
             # Self-ownership grants broad record operations, but professional
             # notes and care plans intentionally require a live professional
             # relationship in the record service. Never advertise actions that
@@ -540,6 +562,9 @@ async def messages(
             "open_thread": None,
             "thread_messages": [],
             "participants": [],
+            "active_account_nav": (
+                "messages" if care.is_owner else "professional_care"
+            ),
             # Owners reply inside an existing professional conversation. The
             # list page has no recipient selector, so letting them start here
             # would create a room containing nobody but themselves.
@@ -625,6 +650,9 @@ async def thread(
                 for person in participants
                 if person.removed_at is None
             ],
+            "active_account_nav": (
+                "messages" if care.is_owner else "professional_care"
+            ),
             "may_send": care.may(
                 resource_key=care_threads.MESSAGE_OPERATION,
                 action=care_threads.SEND_ACTION,

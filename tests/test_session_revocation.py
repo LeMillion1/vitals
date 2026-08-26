@@ -90,7 +90,10 @@ async def test_revoking_a_federated_session_closes_the_next_web_request(
     before = await client.get(
         "/care", headers={"Accept": "text/html"}, follow_redirects=False
     )
-    assert before.status_code == 200
+    # The account is authenticated but has no professional role, so the care
+    # router sends it to the patient-side hub before revocation.
+    assert before.status_code == 303
+    assert before.headers["location"] == "/settings/care"
 
     await revoke_all_sessions(db_session, user_id=user.id)
     await db_session.commit()

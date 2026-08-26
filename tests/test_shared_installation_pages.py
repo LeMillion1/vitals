@@ -277,7 +277,7 @@ async def test_an_account_without_a_record_is_offered_no_personal_section(
 async def test_an_account_with_a_record_is_offered_all_of_them(auth_client):
     """The same rail, for somebody the sections are about."""
 
-    page = await auth_client.get("/care", headers={"Accept": "text/html"})
+    page = await auth_client.get("/settings/care", headers={"Accept": "text/html"})
     assert page.status_code == 200
     assert "/today" in page.text
     assert "/share" in page.text

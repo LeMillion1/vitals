@@ -18,6 +18,7 @@
 
 {% macro mobile_bottom_nav(oob=false) %}
 {% set current_path = request.url.path if request else '' %}
+{% set nav_context = active_account_nav | default('') %}
 {% set slots = bottom_slots(request.state.enabled_modules or {}) %}
 <nav id="mobile-bottom-nav" {% if oob %}hx-swap-oob="true"{% endif %}
     class="md:hidden v-bottom-nav mh-bnav"
@@ -37,7 +38,7 @@
     {% endfor %}
     {# "More" stays lit for everything that lives behind it — Markers, Settings —
        otherwise standing on Labs leaves all five cells dark. #}
-    {% set in_more = current_path.startswith(more_routes(request.state.enabled_modules or {})) %}
+    {% set in_more = nav_context in ('professional_care', 'care_team', 'messages') or current_path.startswith(more_routes(request.state.enabled_modules or {})) %}
     <a href="/more" class="v-bnav-link {% if in_more %}is-active{% endif %}"{% if in_more %} aria-current="page"{% endif %}>
         <span class="v-nav-ico">{{ mh_icon('more') }}</span>
         <span class="mh-bnav-label">{{ t("nav.more") }}{% if request.state.care_unread_count %} · {{ request.state.care_unread_count }}{% endif %}</span>
@@ -51,12 +52,14 @@
    to find their work and never loses the sign-out action. #}
 {% macro mobile_role_nav() %}
 {% set current_path = request.url.path if request else '' %}
+{% set nav_context = active_account_nav | default('') %}
 {% set role_slots = (1 if request.state.is_professional else 0) + (1 if request.state.is_platform_admin else 0) + 1 %}
 <nav id="mobile-bottom-nav"
     class="md:hidden v-bottom-nav mh-bnav mh-role-bnav-{{ role_slots }}"
     style="padding-bottom: max(env(safe-area-inset-bottom), var(--sab, 0px)); min-height: calc(56px + max(env(safe-area-inset-bottom), var(--sab, 0px)))">
     {% if request.state.is_professional %}
-    <a href="/care" class="v-bnav-link {% if current_path.startswith('/care') %}is-active{% endif %}"{% if current_path.startswith('/care') %} aria-current="page"{% endif %}>
+    {% set care_active = nav_context == 'professional_care' or current_path.startswith('/care') %}
+    <a href="/care" class="v-bnav-link {% if care_active %}is-active{% endif %}"{% if care_active %} aria-current="page"{% endif %}>
         <span class="v-nav-ico">{{ mh_icon('patients') }}</span>
         <span class="mh-bnav-label">{{ t('care.roster_heading') }}</span>
     </a>

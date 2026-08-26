@@ -103,6 +103,8 @@
    like nav_primary.html. Pass oob=true to emit the hx-swap-oob marker. #}
 {% macro masthead_rail(oob=false) %}
 {% set current_path = request.url.path if request else '' %}
+{% set nav_context = active_account_nav | default('') %}
+{% set has_explicit_account_nav = nav_context in ('professional_care', 'care_team', 'messages') %}
 {% set em = request.state.enabled_modules or {} %}
 <aside id="primary-nav-masthead" {% if oob %}hx-swap-oob="true"{% endif %} class="mh-rail">
     <a href="/" class="mh-rail-wordmark" title="Vitals">Vitals</a>
@@ -154,7 +156,8 @@
            invitation; onboarding must remain reachable at zero patients. #}
         <div class="mh-rail-foot-links">
             {% if request.state.is_professional %}
-            <a href="/care" class="mh-rail-foot-link {% if current_path.startswith('/care') %}is-active{% endif %}">{{ t('care.roster_heading') }}</a>
+            {% set care_active = nav_context == 'professional_care' or (not has_explicit_account_nav and current_path.startswith('/care')) %}
+            <a href="/care" class="mh-rail-foot-link {% if care_active %}is-active{% endif %}"{% if care_active %} aria-current="page"{% endif %}>{{ t('care.roster_heading') }}</a>
             {% endif %}
             {% if request.state.is_platform_admin %}
             {# One control-plane destination. A superadmin often keeps no
@@ -165,9 +168,11 @@
             {# The persistent patient-side care hub. Invitations and access
                controls must remain discoverable before, during, and after a
                relationship rather than appearing only in a temporary banner. #}
-            <a href="/settings/care" class="mh-rail-foot-link {% if current_path.startswith('/settings/care') %}is-active{% endif %}">{{ t('care.team_heading') }}</a>
+            {% set care_team_active = nav_context == 'care_team' or (not has_explicit_account_nav and current_path.startswith('/settings/care')) %}
+            <a href="/settings/care" class="mh-rail-foot-link {% if care_team_active %}is-active{% endif %}"{% if care_team_active %} aria-current="page"{% endif %}>{{ t('care.team_heading') }}</a>
             {# The patient's door into conversations about their own record. #}
-            <a href="/messages" class="mh-rail-foot-link {% if current_path.startswith('/messages') %}is-active{% endif %}">
+            {% set messages_active = nav_context == 'messages' or (not has_explicit_account_nav and current_path.startswith('/messages')) %}
+            <a href="/messages" class="mh-rail-foot-link {% if messages_active %}is-active{% endif %}"{% if messages_active %} aria-current="page"{% endif %}>
                 <span>{{ t('care.messages_title') }}</span>
                 {% if request.state.care_unread_count %}
                 <span data-care-unread-count class="v-chip v-chip-sm">{{ request.state.care_unread_count }}</span>

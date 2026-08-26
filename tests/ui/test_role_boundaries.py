@@ -51,7 +51,17 @@ def test_two_patients_keep_separate_profiles(sign_in):
 
 
 @pytest.mark.parametrize(
-    "path", ["/today", "/weight", "/nutrition", "/labs", "/settings/access", "/more"]
+    "path",
+    [
+        "/today",
+        "/weight",
+        "/nutrition",
+        "/labs",
+        "/settings/access",
+        "/settings/care",
+        "/messages",
+        "/more",
+    ],
 )
 def test_the_patients_pages_fit_a_phone(sign_in, path):
     """Overflow is collected by the fixture; this only has to open them.
@@ -63,10 +73,16 @@ def test_the_patients_pages_fit_a_phone(sign_in, path):
     assert sign_in("timur", phone=True).visit(path).status == 200
 
 
-@pytest.mark.parametrize("screen", ["roster", "record"])
+@pytest.mark.parametrize("screen", ["roster", "record", "conversations"])
 def test_the_doctors_pages_fit_a_phone(sign_in, screen):
     doctor = sign_in("dr-ivanov", phone=True)
-    page = doctor.roster() if screen == "roster" else doctor.record_of("timur")
+    page = (
+        doctor.roster()
+        if screen == "roster"
+        else doctor.record_of("timur")
+        if screen == "record"
+        else doctor.conversations_about("timur")
+    )
     assert page.status == 200
 
 

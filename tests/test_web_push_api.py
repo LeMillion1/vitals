@@ -10,8 +10,14 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import select
 
-from vitals.enums import UserStatus
-from vitals.models.identity import User
+from vitals.enums import (
+    ProfessionalKind,
+    ProfessionalVerificationStatus,
+    UserRoleName,
+    UserStatus,
+)
+from vitals.models.identity import User, UserRole
+from vitals.models.professional import ProfessionalProfile
 from vitals.models.web_push import WebPushSubscription
 from vitals.services import credential_vault_service
 from vitals.services.notifications import web_push_config
@@ -217,11 +223,41 @@ async def test_shared_endpoint_and_concurrent_unique_race_are_generic_conflicts(
     assert race.json() == {"detail": "device_linked_elsewhere"}
 
 
-async def test_care_inboxes_offer_the_same_explicit_device_control(auth_client):
+async def test_care_inboxes_offer_the_same_explicit_device_control(
+    auth_client, db_session, legacy_owner_roots
+):
     patient_page = await auth_client.get("/messages", follow_redirects=True)
     assert patient_page.status_code == 200
     assert patient_page.text.count("data-web-push-card") == 1
     assert "data-web-push-enable" in patient_page.text
+
+    from vitals.utils.timeutils import now_utc
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    doctor = User(
+        username="push-roster-doctor",
+        normalized_username="push-roster-doctor",
+        password_hash="synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(doctor)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            UserRole(user_id=doctor.id, role=UserRoleName.DOCTOR.value),
+            ProfessionalProfile(
+                user_id=doctor.id,
+                kind=ProfessionalKind.DOCTOR.value,
+                verification_status=ProfessionalVerificationStatus.VERIFIED.value,
+                display_name="Dr Push Roster",
+                verified_at=now_utc(),
+                verified_by_user_id=legacy_owner_roots.user_id,
+            ),
+        ]
+    )
+    await db_session.commit()
+    auth_client.cookies.set(SESSION_COOKIE, create_session(doctor.username))
 
     roster_page = await auth_client.get("/care")
     assert roster_page.status_code == 200

@@ -17,6 +17,7 @@ keeping it true.
 
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 
@@ -191,6 +192,57 @@ async def test_a_new_professional_lands_on_one_onboarding_action(
     assert 'action="/logout"' in page.text
     # Device setup is secondary and appears only after professional review.
     assert "/settings/notifications/web-push/subscription" not in page.text
+
+
+async def test_an_ordinary_member_is_sent_from_professional_care_to_their_hub(
+    client, db_session
+):
+    """The professional home must not masquerade as an empty patient roster."""
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    member, _subject = await _patient(db_session, "care-route-member")
+    await db_session.commit()
+    client.cookies.set(SESSION_COOKIE, create_session(member.username))
+    response = await client.get(
+        "/care", headers={"Accept": "text/html"}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/settings/care"
+
+
+@pytest.mark.parametrize(
+    "roles",
+    [
+        (UserRoleName.DOCTOR,),
+        (UserRoleName.TRAINER,),
+        (UserRoleName.DOCTOR, UserRoleName.TRAINER),
+    ],
+)
+async def test_each_professional_role_keeps_the_roster_route(
+    client, db_session, roles
+):
+    """Doctor, trainer and dual-role accounts all own the `/care` workspace."""
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    professional = await _user(
+        db_session,
+        "care-route-" + "-".join(role.value for role in roles),
+        roles=roles,
+    )
+    await db_session.commit()
+    client.cookies.set(SESSION_COOKIE, create_session(professional.username))
+
+    response = await client.get(
+        "/care", headers={"Accept": "text/html"}, follow_redirects=False
+    )
+
+    assert response.status_code == 200
+    assert 'href="/care"' in response.text
 
 
 async def test_the_account_role_not_the_form_chooses_profile_kind(
@@ -693,7 +745,10 @@ async def test_role_revocation_hides_patient_names_from_the_roster(
     await db_session.commit()
 
     roster = await client.get("/care", headers={"Accept": "text/html"})
-    assert roster.status_code == 200
+    assert roster.status_code == 303
+    # The synthetic legacy owner also holds the platform role. Once its doctor
+    # role is revoked, the platform hub is the only remaining account surface.
+    assert roster.headers["location"] == "/settings/platform"
     assert str(subject_a.id) not in roster.text
     assert str(subject_b.id) not in roster.text
     assert subject_a.display_name not in roster.text
@@ -1031,6 +1086,65 @@ async def test_owner_record_does_not_offer_professional_write_forms(
     assert response.status_code == 200
     assert f'action="/care/{legacy_owner_roots.subject_id}/note"' not in response.text
     assert f'action="/care/{legacy_owner_roots.subject_id}/plan"' not in response.text
+    assert 'href="/settings/care"' in response.text
+    assert "Back to care team" in response.text or "К команде помощи" in response.text
+    assert 'href="/messages"' in response.text
+
+
+async def test_shared_care_pages_keep_role_relative_links_and_navigation(
+    doctor_client,
+):
+    """The path is shared; the resolved reader decides the surrounding shell."""
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client, doctor, (owner, subject), _b = doctor_client
+
+    professional_record = await client.get(
+        f"/care/{subject.id}", headers={"Accept": "text/html"}
+    )
+    assert professional_record.status_code == 200
+    assert 'href="/care" class="v-btn-ghost text-xs"' in professional_record.text
+    assert f'href="/care/{subject.id}/messages"' in professional_record.text
+    assert re.search(
+        r'<a href="/care" class="mh-rail-foot-link\s+is-active" aria-current="page">',
+        professional_record.text,
+    )
+    # This fixture is deliberately dual-role, so its personal phone bar must
+    # still identify the professional workspace as a destination under More.
+    assert re.search(
+        r'<a href="/more" class="v-bnav-link\s+is-active" aria-current="page">',
+        professional_record.text,
+    )
+
+    opened = await client.post(
+        f"/care/{subject.id}/messages",
+        data={"title": "Role-relative shell", "body": "Hello."},
+        follow_redirects=False,
+    )
+    client.cookies.set(SESSION_COOKIE, create_session(owner.username))
+    patient_thread = await client.get(
+        "/messages", headers={"Accept": "text/html"}, follow_redirects=True
+    )
+
+    assert patient_thread.status_code == 200
+    assert str(patient_thread.url).endswith(f"/care/{subject.id}/messages")
+    assert 'href="/settings/care" class="v-btn-ghost text-xs"' in patient_thread.text
+    assert re.search(
+        r'<a href="/messages" class="mh-rail-foot-link\s+is-active" aria-current="page">',
+        patient_thread.text,
+    )
+    assert re.search(
+        r'<a href="/more" class="v-bnav-link\s+is-active" aria-current="page">',
+        patient_thread.text,
+    )
+    assert not re.search(
+        r'<a href="/care" class="mh-rail-foot-link\s+is-active"',
+        patient_thread.text,
+    )
+    assert opened.status_code == 303
+    del doctor
 
 
 async def test_an_account_with_no_record_is_told_so_at_the_patients_door(
@@ -1103,6 +1217,8 @@ async def test_the_conversation_page_renders_what_was_said(
     assert doctor.username not in page.text
     assert "Bloods" in page.text
     assert "All conversations" in page.text or "Все разговоры" in page.text
+    assert f'href="/care/{subject_a.id}" class="v-btn-ghost text-xs"' in page.text
+    assert f'href="/care/{subject_a.id}/messages"' in page.text
     assert "Start conversation" not in page.text
     assert "Начать разговор" not in page.text
 
@@ -1143,6 +1259,8 @@ async def test_the_patient_conversation_uses_the_owners_perspective(doctor_clien
     assert "Напишите пациенту" not in page.text
     assert 'data-message-own="true"' in page.text
     assert 'data-message-own="false"' in page.text
+    assert 'href="/settings/care" class="v-btn-ghost text-xs"' in page.text
+    assert 'href="/messages" class="v-btn-ghost text-xs"' in page.text
 
 
 async def test_the_conversation_list_renders(doctor_client):

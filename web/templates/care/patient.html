@@ -24,10 +24,12 @@
                is reading their record. #}
             {% if not care.is_owner and not care.is_support %}({{ t("care.kind." ~ care.kind.value) }}){% endif %}
         </span>
-        <a href="/care" class="v-btn-ghost text-xs">{{ t("care.back_to_roster") }}</a>
+        <a href="{{ '/settings/care' if care.is_owner else '/care' }}" class="v-btn-ghost text-xs">
+            {{ t("care.back_to_team" if care.is_owner else "care.back_to_roster") }}
+        </a>
     </div>
 
-    {% call masthead_header('care', care.subject_display_name, []) %}{% endcall %}
+    {% call masthead_header('care_self' if care.is_owner else 'care', care.subject_display_name, []) %}{% endcall %}
 
     <!-- ─── THE RECORD ─────────────────────────────────────────────────────── -->
     {# Before the notes, because the notes are about it. A professional opening
@@ -47,7 +49,7 @@
             <span class="v-text-label">{{ t("care.messages_title") }}</span>
             <p class="v-text-micro" style="color: var(--muted)">{{ t("care.messages_description") }}</p>
         </div>
-        <a href="/care/{{ care.subject_id }}/messages" class="v-btn text-xs whitespace-nowrap">
+        <a href="{{ '/messages' if care.is_owner else '/care/' ~ care.subject_id ~ '/messages' }}" class="v-btn text-xs whitespace-nowrap">
             {{ t("care.threads_title") }}
         </a>
     </div>

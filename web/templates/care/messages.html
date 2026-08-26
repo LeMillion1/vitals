@@ -23,7 +23,9 @@
                is reading their record. #}
             {% if not care.is_owner and not care.is_support %}({{ t("care.kind." ~ care.kind.value) }}){% endif %}
         </span>
-        <a href="/care/{{ care.subject_id }}" class="v-btn-ghost text-xs">{{ t("care.back_to_record") }}</a>
+        <a href="{{ '/settings/care' if care.is_owner else '/care/' ~ care.subject_id }}" class="v-btn-ghost text-xs">
+            {{ t("care.back_to_team" if care.is_owner else "care.back_to_record") }}
+        </a>
     </div>
 
     {% call masthead_header('care_self' if care.is_owner else 'care', t("care.messages_title"), []) %}{% endcall %}
@@ -108,7 +110,7 @@
     <!-- ─── ONE CONVERSATION ───────────────────────────────────────────────── -->
     <div class="v-card p-6 space-y-4">
         {% call card_header(open_thread.title) %}
-        <a href="/care/{{ care.subject_id }}/messages" class="v-btn-ghost text-xs">
+        <a href="{{ '/messages' if care.is_owner else '/care/' ~ care.subject_id ~ '/messages' }}" class="v-btn-ghost text-xs">
             {{ t("care.back_to_threads") }}
         </a>
         {% endcall %}
