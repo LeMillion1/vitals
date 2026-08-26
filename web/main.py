@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.i18n import get_js_strings
+from vitals.i18n import current_lang, get_js_strings, t
 from vitals.process_mode import ProcessMode, load_process_mode
 from vitals.services import health_profile_service
 from vitals.services.access_resolution import AccessDeniedError
@@ -594,7 +594,6 @@ async def _populate_state_for_error_page(request: Request) -> None:
     fresh session/redis, mirroring each dependency's fail-safe default so the page
     renders no matter what.
     """
-    from vitals.i18n import current_lang
     from vitals.services import language_service, modules_service
     from web.deps import get_request_chrome_scope
 
@@ -652,15 +651,9 @@ async def _render_refusal(
     request: Request,
     *,
     status_code: int,
-    kicker_ru: str,
-    kicker_en: str,
-    headline_ru: str,
-    headline_en: str,
-    body_ru: str,
-    body_en: str,
+    copy_prefix: str,
     primary_href: str,
-    primary_ru: str,
-    primary_en: str,
+    primary_key: str | None = None,
 ):
     """Render a refusal as a page instead of a naked sentence.
 
@@ -684,7 +677,10 @@ async def _render_refusal(
     if not hasattr(request.state, "nav_status"):
         request.state.nav_status = []
 
-    is_ru = getattr(request.state, "lang", "en") == "ru"
+    # A matched route has already set both values in ``load_language``. Keeping
+    # the ContextVar aligned here also makes the error-page fallback and direct
+    # handler tests deterministic instead of depending on a previous request.
+    current_lang.set(getattr(request.state, "lang", "en"))
     username = None
     try:
         from web.auth import read_session
@@ -700,12 +696,12 @@ async def _render_refusal(
         {
             "username": username,
             "alerts": [],
-            "kicker": kicker_ru if is_ru else kicker_en,
-            "headline": headline_ru if is_ru else headline_en,
-            "body": body_ru if is_ru else body_en,
+            "kicker": t(f"{copy_prefix}.kicker"),
+            "headline": t(f"{copy_prefix}.headline"),
+            "body": t(f"{copy_prefix}.body"),
             "primary_href": primary_href,
-            "primary_label": primary_ru if is_ru else primary_en,
-            "back_label": "Назад" if is_ru else "Go back",
+            "primary_label": t(primary_key or f"{copy_prefix}.primary"),
+            "back_label": t("refusal.back"),
         },
         status_code=status_code,
     )
@@ -759,23 +755,31 @@ async def module_disabled_handler(request: Request, exc: ModuleDisabled):
 
 @app.exception_handler(NoPersonalRecordError)
 async def no_personal_record_handler(request: Request, exc: NoPersonalRecordError):
-    """A doctor or a trainer reaching a page about their own health data.
+    """A recordless account reaching a page about its own health data.
 
     Registered ahead of the bridge handler and matched more narrowly, because it
     is a different sentence. These accounts are not blocked by an unfinished
     migration and there is no setting that will let them in: the page answers
-    "your weight", "your labs", "your day", and they keep no record of their
-    own. Somebody who does hold patients is sent where their work actually is;
-    anybody else is told plainly, rather than being handed a limit that does not
-    apply to them and sent looking for it.
+    "your weight", "your labs", "your day", and they keep no record of their own.
+    Professional work takes precedence when an account also operates the
+    platform. A platform-only operator gets a plain explanation and a route back
+    to the control plane; other account shapes keep the existing generic answer.
     """
 
     del exc
     is_professional = bool(getattr(request.state, "is_professional", False))
+    is_platform_admin = bool(getattr(request.state, "is_platform_admin", False))
     accept = request.headers.get("accept", "")
     wants_html = request.method == "GET" and "text/html" in accept
     if is_professional and wants_html:
         return RedirectResponse(url="/care", status_code=status.HTTP_303_SEE_OTHER)
+    if is_platform_admin and wants_html:
+        return await _render_refusal(
+            request,
+            status_code=status.HTTP_409_CONFLICT,
+            copy_prefix="refusal.no_personal.platform",
+            primary_href="/settings/platform",
+        )
     detail = (
         "У этого аккаунта нет собственной медицинской записи. "
         "Эта страница — о ваших данных, а работа с подопечными живёт в разделе «Подопечные»."
@@ -784,21 +788,8 @@ async def no_personal_record_handler(request: Request, exc: NoPersonalRecordErro
         return await _render_refusal(
             request,
             status_code=status.HTTP_409_CONFLICT,
-            kicker_ru="Страница о ваших данных",
-            kicker_en="A page about your own data",
-            headline_ru="У этого аккаунта нет собственной записи",
-            headline_en="This account keeps no record of its own",
-            body_ru=(
-                "Эта страница показывает ваш вес, ваши анализы, ваш день. "
-                "Работа с подопечными живёт в разделе «Подопечные»."
-            ),
-            body_en=(
-                "This page shows your weight, your labs, your day. Work with "
-                "the people in your care lives under Patients."
-            ),
+            copy_prefix="refusal.no_personal.generic",
             primary_href="/care",
-            primary_ru="К подопечным",
-            primary_en="Go to patients",
         )
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT, content={"detail": detail}
@@ -840,25 +831,8 @@ async def legacy_ownership_handler(request: Request, exc: Exception):
         return await _render_refusal(
             request,
             status_code=status.HTTP_409_CONFLICT,
-            kicker_ru="Раздел ещё переезжает",
-            kicker_en="This section is still migrating",
-            headline_ru="Эта страница пока знает только одну запись",
-            headline_en="This page still knows only one record",
-            body_ru=(
-                "В установке больше одной медицинской записи, и этот раздел "
-                "ещё не умеет спрашивать, о чьей идёт речь. Он отказывается, "
-                "а не угадывает: ничего не записано и ничья чужая запись "
-                "не затронута."
-            ),
-            body_en=(
-                "This installation holds more than one health record, and this "
-                "section cannot yet ask which one you meant. It refuses rather "
-                "than guesses: nothing was written and nobody else's record was "
-                "touched."
-            ),
+            copy_prefix="refusal.legacy_multi_record",
             primary_href="/today",
-            primary_ru="На главную",
-            primary_en="Go to dashboard",
         )
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT, content={"detail": detail}
@@ -895,22 +869,13 @@ async def access_denied_handler(request: Request, exc: AccessDeniedError):
         return await _render_refusal(
             request,
             status_code=status.HTTP_403_FORBIDDEN,
-            kicker_ru="Доступ закрыт",
-            kicker_en="Access refused",
-            headline_ru="Недостаточно прав для этой операции",
-            headline_en="Not enough rights for this operation",
-            body_ru=(
-                "Возможно, согласие отозвано или срок доступа истёк. "
-                "Если это чужая запись — попросите её владельца открыть доступ."
-            ),
-            body_en=(
-                "Consent may have been withdrawn, or the access window may have "
-                "closed. If this is somebody else's record, ask them to grant "
-                "access."
-            ),
+            copy_prefix="refusal.access_denied",
             primary_href="/care" if holds_patients else "/today",
-            primary_ru="К подопечным" if holds_patients else "На главную",
-            primary_en="Go to patients" if holds_patients else "Go to dashboard",
+            primary_key=(
+                "refusal.access_denied.primary_patients"
+                if holds_patients
+                else "refusal.access_denied.primary_dashboard"
+            ),
         )
     return JSONResponse(
         status_code=status.HTTP_403_FORBIDDEN, content={"detail": detail}

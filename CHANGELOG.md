@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — recordless operators return to the platform workspace
+
+A platform-only operator who opens a personal health page now receives a clear
+localized explanation and a direct Platform action instead of being sent to an
+empty patient workspace. Doctor and trainer work keeps precedence for accounts
+that also carry a professional role.
+
 ### Fixed — installation MCP authority is platform-admin only
 
 The shared MCP client identifier and secret now live on the platform hub,
