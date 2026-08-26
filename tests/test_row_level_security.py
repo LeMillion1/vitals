@@ -212,6 +212,9 @@ async def restricted_engine(database_url: str):
 
     admin = create_async_engine(database_url, poolclass=NullPool)
     async with admin.begin() as connection:
+        database_ident = connection.dialect.identifier_preparer.quote(
+            sa.engine.make_url(database_url).database
+        )
         await connection.execute(
             sa.text(
                 "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE "
@@ -222,6 +225,11 @@ async def restricted_engine(database_url: str):
         )
         await connection.execute(
             sa.text(f"GRANT USAGE ON SCHEMA public TO {RESTRICTED_ROLE}")
+        )
+        await connection.execute(
+            sa.text(
+                f"GRANT CONNECT ON DATABASE {database_ident} TO {RESTRICTED_ROLE}"
+            )
         )
         await connection.execute(
             sa.text(

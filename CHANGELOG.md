@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — runtime database authority is convergent
+
+The database-role provisioner now removes role memberships, persistent role and
+database settings, database-object ownership, excessive direct grants, and stale
+default privileges before restoring the narrow runtime DML contract. It also
+removes implicit `PUBLIC` access to temporary objects, schema creation, user
+routines, data objects, and large objects. Its result is derived from PostgreSQL
+catalogs and effective-privilege checks, runs with bounded lock/statement
+timeouts, and fails closed unless ownership, memberships, settings, privileged
+attributes, and extra authority are all zero.
+
 ### Fixed — exposed migration credentials have a bounded rotation path
 
 The one-shot migration image can now rotate its PostgreSQL owner password and

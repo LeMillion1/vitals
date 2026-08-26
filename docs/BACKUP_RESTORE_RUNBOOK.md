@@ -234,11 +234,16 @@ disposable drill database; either refusal fails the drill. Do not run them on
 production merely to make a drill green. If the recovered revision legitimately
 predates the cutover, follow the
 [ownership cutover runbook](OWNERSHIP_CUTOVER_RUNBOOK.md); do not improvise an
-ownership update. Re-provision
-the distinct runtime role with `scripts/provision_runtime_db_role.py` and verify
-that it is not superuser, has no `BYPASSRLS`, owns no relation, sees no patient
-rows without a bound subject context, and sees only the bound subject inside a
-request transaction.
+ownership update. Re-provision the distinct runtime role with
+`scripts/provision_runtime_db_role.py` and verify that the command reports zero
+owned objects, memberships, role settings, and extra privileges. Provisioning is
+convergent: it removes inherited roles, role/database settings, object ownership,
+direct and implicit `PUBLIC` grants outside ordinary DML, and stale default grants
+before restoring the approved runtime grants. The transaction has bounded lock
+and statement timeouts; a timeout is a failed drill, not permission to wait on or
+terminate production sessions. Also verify that the role is not superuser, has
+no `BYPASSRLS`, sees no patient rows without a bound subject context, and sees
+only the bound subject inside a request transaction.
 
 ### 4. Start and inspect the recovered app
 

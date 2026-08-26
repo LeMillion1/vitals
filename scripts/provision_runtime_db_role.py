@@ -2,7 +2,7 @@
 
 The migration connection owns the schema and may bypass row-level security.
 The runtime connection must be a different login: it receives ordinary DML
-grants, owns no relation, and is explicitly stripped of privileged attributes.
+grants, owns no database object, and is explicitly stripped of other authority.
 """
 
 from __future__ import annotations
@@ -34,6 +34,480 @@ def _quoted_identifier(connection, value: str) -> str:
     return connection.dialect.identifier_preparer.quote(value)
 
 
+async def _set_runtime_role_password(
+    connection,
+    *,
+    runtime_role: str,
+    password: str,
+) -> None:
+    try:
+        await connection.execute(
+            sa.text(
+                "SELECT set_config('vitals.provision_runtime_role', :role, true), "
+                "set_config('vitals.provision_runtime_password', :password, true)"
+            ),
+            {"password": password, "role": runtime_role},
+        )
+        await connection.exec_driver_sql(
+            "DO $vitals$ BEGIN EXECUTE format("
+            "'ALTER ROLE %I WITH LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB "
+            "NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS', "
+            "current_setting('vitals.provision_runtime_role'), "
+            "current_setting('vitals.provision_runtime_password')); END $vitals$;"
+        )
+        await connection.exec_driver_sql(
+            "SELECT set_config('vitals.provision_runtime_role', '', true), "
+            "set_config('vitals.provision_runtime_password', '', true)"
+        )
+    except sa.exc.SQLAlchemyError:
+        raise RuntimeError("failed to configure runtime database login") from None
+
+
+async def _reset_role_authority(
+    connection,
+    *,
+    migration_role: str,
+    runtime_role: str,
+    database: str,
+) -> None:
+    runtime_ident = _quoted_identifier(connection, runtime_role)
+    migration_ident = _quoted_identifier(connection, migration_role)
+    database_ident = _quoted_identifier(connection, database)
+
+    memberships = (
+        await connection.execute(
+            sa.text(
+                "SELECT parent.rolname FROM pg_auth_members membership "
+                "JOIN pg_roles parent ON parent.oid=membership.roleid "
+                "JOIN pg_roles member ON member.oid=membership.member "
+                "WHERE member.rolname=:role ORDER BY parent.rolname"
+            ),
+            {"role": runtime_role},
+        )
+    ).scalars()
+    for parent_role in memberships:
+        parent_ident = _quoted_identifier(connection, parent_role)
+        await connection.exec_driver_sql(
+            f"REVOKE {parent_ident} FROM {runtime_ident}"
+        )
+
+    await connection.exec_driver_sql(f"ALTER ROLE {runtime_ident} RESET ALL")
+    database_settings = (
+        await connection.execute(
+            sa.text(
+                "SELECT database.datname FROM pg_db_role_setting setting "
+                "JOIN pg_roles role ON role.oid=setting.setrole "
+                "JOIN pg_database database ON database.oid=setting.setdatabase "
+                "WHERE role.rolname=:role ORDER BY database.datname"
+            ),
+            {"role": runtime_role},
+        )
+    ).scalars()
+    for configured_database in database_settings:
+        configured_database_ident = _quoted_identifier(
+            connection, configured_database
+        )
+        await connection.exec_driver_sql(
+            f"ALTER ROLE {runtime_ident} IN DATABASE "
+            f"{configured_database_ident} RESET ALL"
+        )
+
+    owns_database = bool(
+        await connection.scalar(
+            sa.text(
+                "SELECT EXISTS (SELECT 1 FROM pg_database database "
+                "JOIN pg_roles owner ON owner.oid=database.datdba "
+                "WHERE database.datname=:database AND owner.rolname=:role)"
+            ),
+            {"database": database, "role": runtime_role},
+        )
+    )
+    if owns_database:
+        await connection.exec_driver_sql(
+            f"ALTER DATABASE {database_ident} OWNER TO {migration_ident}"
+        )
+    await connection.exec_driver_sql(
+        f"REASSIGN OWNED BY {runtime_ident} TO {migration_ident}"
+    )
+    await connection.exec_driver_sql(f"DROP OWNED BY {runtime_ident}")
+    remaining_acl_dependencies = int(
+        await connection.scalar(
+            sa.text(
+                "SELECT count(*) FROM pg_shdepend dependency "
+                "JOIN pg_roles role ON role.oid=dependency.refobjid "
+                "WHERE dependency.refclassid='pg_authid'::regclass "
+                "AND dependency.deptype='a' AND role.rolname=:role"
+            ),
+            {"role": runtime_role},
+        )
+        or 0
+    )
+    if remaining_acl_dependencies:
+        raise RuntimeError(
+            "runtime database role retains ACL dependencies outside this database"
+        )
+
+
+async def _converge_privileges(
+    connection,
+    *,
+    migration_role: str,
+    runtime_role: str,
+    database: str,
+) -> None:
+    runtime_ident = _quoted_identifier(connection, runtime_role)
+    migration_ident = _quoted_identifier(connection, migration_role)
+    database_ident = _quoted_identifier(connection, database)
+    schemas = list(
+        (
+            await connection.execute(
+                sa.text(
+                    "SELECT nspname FROM pg_namespace "
+                    "WHERE nspname <> 'information_schema' "
+                    "AND nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
+                    "ORDER BY nspname"
+                )
+            )
+        ).scalars()
+    )
+    user_types = (
+        await connection.execute(
+            sa.text(
+                "SELECT namespace.nspname, object.typname FROM pg_type object "
+                "JOIN pg_namespace namespace ON namespace.oid=object.typnamespace "
+                "WHERE namespace.nspname <> 'information_schema' "
+                "AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
+                "AND object.typrelid=0 AND object.typelem=0 "
+                "ORDER BY namespace.nspname, object.typname"
+            )
+        )
+    ).all()
+    default_acl_entries = (
+        await connection.execute(
+            sa.text(
+                "SELECT DISTINCT grantor.rolname, namespace.nspname, "
+                "defaults.defaclobjtype FROM pg_default_acl defaults "
+                "CROSS JOIN LATERAL aclexplode(defaults.defaclacl) acl "
+                "JOIN pg_roles grantee ON grantee.oid=acl.grantee "
+                "JOIN pg_roles grantor ON grantor.oid=defaults.defaclrole "
+                "LEFT JOIN pg_namespace namespace "
+                "ON namespace.oid=defaults.defaclnamespace "
+                "WHERE grantee.rolname=:role "
+                "ORDER BY grantor.rolname, namespace.nspname NULLS FIRST, "
+                "defaults.defaclobjtype"
+            ),
+            {"role": runtime_role},
+        )
+    ).all()
+    large_object_oids = list(
+        (
+            await connection.execute(
+                sa.text("SELECT oid FROM pg_largeobject_metadata ORDER BY oid")
+            )
+        ).scalars()
+    )
+
+    await connection.exec_driver_sql(
+        f"REVOKE ALL PRIVILEGES ON DATABASE {database_ident} FROM {runtime_ident}"
+    )
+    await connection.exec_driver_sql(
+        f"REVOKE ALL PRIVILEGES ON DATABASE {database_ident} FROM PUBLIC"
+    )
+    await connection.exec_driver_sql(
+        f"GRANT CONNECT ON DATABASE {database_ident} TO {runtime_ident}"
+    )
+    for schema in schemas:
+        schema_ident = _quoted_identifier(connection, schema)
+        await connection.exec_driver_sql(
+            f"REVOKE ALL PRIVILEGES ON SCHEMA {schema_ident} FROM {runtime_ident}"
+        )
+        await connection.exec_driver_sql(
+            f"REVOKE ALL PRIVILEGES ON SCHEMA {schema_ident} FROM PUBLIC"
+        )
+        await connection.exec_driver_sql(
+            "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA "
+            f"{schema_ident} FROM {runtime_ident}"
+        )
+        await connection.exec_driver_sql(
+            "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA "
+            f"{schema_ident} FROM PUBLIC"
+        )
+        await connection.exec_driver_sql(
+            "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA "
+            f"{schema_ident} FROM {runtime_ident}"
+        )
+        await connection.exec_driver_sql(
+            "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA "
+            f"{schema_ident} FROM PUBLIC"
+        )
+        await connection.exec_driver_sql(
+            "REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA "
+            f"{schema_ident} FROM {runtime_ident}"
+        )
+        await connection.exec_driver_sql(
+            "REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA "
+            f"{schema_ident} FROM PUBLIC"
+        )
+    for schema, type_name in user_types:
+        schema_ident = _quoted_identifier(connection, schema)
+        type_ident = _quoted_identifier(connection, type_name)
+        await connection.exec_driver_sql(
+            f"REVOKE ALL PRIVILEGES ON TYPE {schema_ident}.{type_ident} "
+            f"FROM {runtime_ident}"
+        )
+        await connection.exec_driver_sql(
+            f"REVOKE ALL PRIVILEGES ON TYPE {schema_ident}.{type_ident} FROM PUBLIC"
+        )
+        if schema == "public":
+            await connection.exec_driver_sql(
+                f"GRANT USAGE ON TYPE {schema_ident}.{type_ident} TO {runtime_ident}"
+            )
+    for large_object_oid in large_object_oids:
+        await connection.exec_driver_sql(
+            f"REVOKE ALL PRIVILEGES ON LARGE OBJECT {large_object_oid} "
+            f"FROM {runtime_ident}, PUBLIC"
+        )
+
+    default_object_types = {
+        "r": "TABLES",
+        "S": "SEQUENCES",
+        "f": "FUNCTIONS",
+        "T": "TYPES",
+        "n": "SCHEMAS",
+    }
+    for grantor, schema, object_code in default_acl_entries:
+        if isinstance(object_code, bytes):
+            object_code = object_code.decode("ascii")
+        object_type = default_object_types.get(object_code)
+        if object_type is None:
+            raise RuntimeError(
+                f"unsupported default privilege object type: {object_code!r}"
+            )
+        grantor_ident = _quoted_identifier(connection, grantor)
+        schema_clause = ""
+        if schema is not None:
+            schema_ident = _quoted_identifier(connection, schema)
+            schema_clause = f"IN SCHEMA {schema_ident} "
+        await connection.exec_driver_sql(
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {grantor_ident} "
+            f"{schema_clause}REVOKE ALL PRIVILEGES ON {object_type} "
+            f"FROM {runtime_ident}"
+        )
+
+    await connection.exec_driver_sql(
+        f"GRANT USAGE ON SCHEMA public TO {runtime_ident}"
+    )
+    await connection.exec_driver_sql(
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES "
+        f"IN SCHEMA public TO {runtime_ident}"
+    )
+    await connection.exec_driver_sql(
+        "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES "
+        f"IN SCHEMA public TO {runtime_ident}"
+    )
+    for object_type in ("TABLES", "SEQUENCES", "FUNCTIONS", "TYPES", "SCHEMAS"):
+        await connection.exec_driver_sql(
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration_ident} "
+            f"REVOKE ALL PRIVILEGES ON {object_type} FROM {runtime_ident}"
+        )
+    await connection.exec_driver_sql(
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration_ident} "
+        "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
+    )
+    for object_type in ("TABLES", "SEQUENCES", "FUNCTIONS", "TYPES"):
+        await connection.exec_driver_sql(
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration_ident} "
+            f"IN SCHEMA public REVOKE ALL PRIVILEGES ON {object_type} "
+            f"FROM {runtime_ident}"
+        )
+    await connection.exec_driver_sql(
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration_ident} "
+        "IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE "
+        f"ON TABLES TO {runtime_ident}"
+    )
+    await connection.exec_driver_sql(
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration_ident} "
+        "IN SCHEMA public GRANT USAGE, SELECT, UPDATE "
+        f"ON SEQUENCES TO {runtime_ident}"
+    )
+    await connection.exec_driver_sql(
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration_ident} "
+        "IN SCHEMA public GRANT USAGE ON TYPES "
+        f"TO {runtime_ident}"
+    )
+
+
+async def _runtime_role_state(
+    connection,
+    *,
+    migration_role: str,
+    runtime_role: str,
+) -> dict:
+    attributes = (
+        await connection.execute(
+            sa.text(
+                "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, "
+                "rolinherit, rolreplication, rolbypassrls, "
+                "COALESCE(cardinality(rolconfig), 0) AS role_settings "
+                "FROM pg_roles WHERE rolname=:role"
+            ),
+            {"role": runtime_role},
+        )
+    ).mappings().one()
+    counts = (
+        await connection.execute(
+            sa.text(
+                "SELECT "
+                "(SELECT count(*) FROM pg_auth_members membership "
+                " JOIN pg_roles member ON member.oid=membership.member "
+                " WHERE member.rolname=:role) AS memberships, "
+                "(SELECT count(*) FROM pg_db_role_setting setting "
+                " JOIN pg_roles role ON role.oid=setting.setrole "
+                " WHERE role.rolname=:role) AS database_settings, "
+                "(SELECT count(*) FROM pg_database database "
+                " JOIN pg_roles owner ON owner.oid=database.datdba "
+                " WHERE owner.rolname=:role) + "
+                "(SELECT count(*) FROM pg_namespace namespace "
+                " JOIN pg_roles owner ON owner.oid=namespace.nspowner "
+                " WHERE owner.rolname=:role) + "
+                "(SELECT count(*) FROM pg_class object "
+                " JOIN pg_roles owner ON owner.oid=object.relowner "
+                " WHERE owner.rolname=:role) + "
+                "(SELECT count(*) FROM pg_proc object "
+                " JOIN pg_roles owner ON owner.oid=object.proowner "
+                " WHERE owner.rolname=:role) + "
+                "(SELECT count(*) FROM pg_type object "
+                " JOIN pg_roles owner ON owner.oid=object.typowner "
+                " WHERE owner.rolname=:role) AS owned_objects, "
+                "(SELECT count(*) FROM pg_class object "
+                " JOIN pg_namespace namespace ON namespace.oid=object.relnamespace "
+                " CROSS JOIN LATERAL aclexplode(object.relacl) acl "
+                " JOIN pg_roles grantee ON grantee.oid=acl.grantee "
+                " WHERE grantee.rolname=:role "
+                " AND namespace.nspname <> 'information_schema' "
+                " AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
+                " AND ((object.relkind='S' AND upper(acl.privilege_type) "
+                " NOT IN ('USAGE','SELECT','UPDATE')) OR "
+                " (object.relkind<>'S' AND upper(acl.privilege_type) "
+                " NOT IN ('SELECT','INSERT','UPDATE','DELETE')))) AS "
+                "extra_relation_privileges, "
+                "(SELECT count(*) FROM pg_namespace namespace "
+                " CROSS JOIN LATERAL aclexplode(namespace.nspacl) acl "
+                " JOIN pg_roles grantee ON grantee.oid=acl.grantee "
+                " WHERE grantee.rolname=:role "
+                " AND upper(acl.privilege_type)<>'USAGE') AS extra_schema_privileges, "
+                "(SELECT count(*) FROM pg_database database "
+                " CROSS JOIN LATERAL aclexplode(database.datacl) acl "
+                " JOIN pg_roles grantee ON grantee.oid=acl.grantee "
+                " WHERE grantee.rolname=:role "
+                " AND upper(acl.privilege_type)<>'CONNECT') AS extra_database_privileges, "
+                "(SELECT count(*) FROM pg_proc object "
+                " JOIN pg_namespace namespace ON namespace.oid=object.pronamespace "
+                " CROSS JOIN LATERAL aclexplode(object.proacl) acl "
+                " JOIN pg_roles grantee ON grantee.oid=acl.grantee "
+                " WHERE grantee.rolname=:role) AS routine_privileges, "
+                "(SELECT count(*) FROM pg_type object "
+                " JOIN pg_namespace namespace ON namespace.oid=object.typnamespace "
+                " CROSS JOIN LATERAL aclexplode(object.typacl) acl "
+                " JOIN pg_roles grantee ON grantee.oid=acl.grantee "
+                " WHERE grantee.rolname=:role AND NOT ("
+                " namespace.nspname='public' "
+                " AND upper(acl.privilege_type)='USAGE')) AS "
+                "extra_type_privileges, "
+                "(SELECT count(*) FROM pg_namespace namespace "
+                " WHERE namespace.nspname <> 'information_schema' "
+                " AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
+                " AND has_schema_privilege(:role, namespace.oid, 'CREATE')) AS "
+                "effective_schema_create, "
+                "(SELECT count(*) FROM pg_proc object "
+                " JOIN pg_namespace namespace ON namespace.oid=object.pronamespace "
+                " WHERE namespace.nspname <> 'information_schema' "
+                " AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
+                " AND has_function_privilege(:role, object.oid, 'EXECUTE')) AS "
+                "effective_routine_execute, "
+                "(SELECT count(*) FROM pg_class object "
+                " JOIN pg_namespace namespace ON namespace.oid=object.relnamespace "
+                " WHERE namespace.nspname <> 'information_schema' "
+                " AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
+                " AND object.relkind IN ('r','p','v','m','S','f') AND ("
+                " (object.relkind='S' AND namespace.nspname<>'public' AND ("
+                "  has_sequence_privilege(:role, object.oid, 'USAGE') OR "
+                "  has_sequence_privilege(:role, object.oid, 'SELECT') OR "
+                "  has_sequence_privilege(:role, object.oid, 'UPDATE'))) OR "
+                " (object.relkind<>'S' AND ("
+                "  has_table_privilege(:role, object.oid, 'TRUNCATE') OR "
+                "  has_table_privilege(:role, object.oid, 'REFERENCES') OR "
+                "  has_table_privilege(:role, object.oid, 'TRIGGER') OR "
+                "  (namespace.nspname<>'public' AND ("
+                "   has_table_privilege(:role, object.oid, 'SELECT') OR "
+                "   has_table_privilege(:role, object.oid, 'INSERT') OR "
+                "   has_table_privilege(:role, object.oid, 'UPDATE') OR "
+                "   has_table_privilege(:role, object.oid, 'DELETE'))))))) AS "
+                "effective_extra_relation_privileges, "
+                "(SELECT count(*) FROM pg_largeobject_metadata object "
+                " CROSS JOIN LATERAL aclexplode(object.lomacl) acl "
+                " WHERE acl.grantee=0 OR acl.grantee=("
+                " SELECT oid FROM pg_roles WHERE rolname=:role)) AS "
+                "effective_large_object_privileges, "
+                "(SELECT CASE WHEN has_database_privilege("
+                ":role, current_database(), 'TEMPORARY') THEN 1 ELSE 0 END) AS "
+                "effective_database_temp, "
+                "(SELECT count(*) FROM pg_default_acl defaults "
+                " CROSS JOIN LATERAL aclexplode(defaults.defaclacl) acl "
+                " JOIN pg_roles grantee ON grantee.oid=acl.grantee "
+                " JOIN pg_roles grantor ON grantor.oid=defaults.defaclrole "
+                " LEFT JOIN pg_namespace namespace "
+                " ON namespace.oid=defaults.defaclnamespace "
+                " WHERE grantee.rolname=:role AND NOT ("
+                " grantor.rolname=:migration_role "
+                " AND namespace.nspname='public' "
+                " AND ((defaults.defaclobjtype='r' "
+                " AND upper(acl.privilege_type) "
+                " IN ('SELECT','INSERT','UPDATE','DELETE')) "
+                " OR (defaults.defaclobjtype='S' "
+                " AND upper(acl.privilege_type) "
+                " IN ('USAGE','SELECT','UPDATE')) "
+                " OR (defaults.defaclobjtype='T' "
+                " AND upper(acl.privilege_type)='USAGE')))) AS "
+                "extra_default_privileges"
+            ),
+            {"migration_role": migration_role, "role": runtime_role},
+        )
+    ).mappings().one()
+    state = {**dict(attributes), **{key: int(value) for key, value in counts.items()}}
+    expected_attributes = {
+        "rolcanlogin": True,
+        "rolsuper": False,
+        "rolcreatedb": False,
+        "rolcreaterole": False,
+        "rolinherit": False,
+        "rolreplication": False,
+        "rolbypassrls": False,
+    }
+    if any(state[key] != value for key, value in expected_attributes.items()):
+        raise RuntimeError("runtime database role has privileged attributes")
+    zero_keys = (
+        "role_settings",
+        "memberships",
+        "database_settings",
+        "owned_objects",
+        "extra_relation_privileges",
+        "extra_schema_privileges",
+        "extra_database_privileges",
+        "routine_privileges",
+        "extra_type_privileges",
+        "effective_schema_create",
+        "effective_routine_execute",
+        "effective_extra_relation_privileges",
+        "effective_large_object_privileges",
+        "effective_database_temp",
+        "extra_default_privileges",
+    )
+    if any(state[key] != 0 for key in zero_keys):
+        raise RuntimeError("runtime database role retains unexpected authority")
+    return state
+
+
 async def provision_runtime_role(*, migration_url: URL, runtime_url: URL) -> dict:
     migration_role = migration_url.username
     runtime_role = runtime_url.username
@@ -51,18 +525,14 @@ async def provision_runtime_role(*, migration_url: URL, runtime_url: URL) -> dic
     engine = create_async_engine(migration_url)
     try:
         async with engine.begin() as connection:
+            await connection.exec_driver_sql("SET LOCAL lock_timeout = '5s'")
+            await connection.exec_driver_sql("SET LOCAL statement_timeout = '30s'")
             connected_role = await connection.scalar(sa.text("SELECT current_user"))
             database = await connection.scalar(sa.text("SELECT current_database()"))
             if connected_role != migration_role or database != migration_url.database:
                 raise RuntimeError("migration connection identity does not match its URL")
 
             runtime_ident = _quoted_identifier(connection, runtime_role)
-            migration_ident = _quoted_identifier(connection, migration_role)
-            database_ident = _quoted_identifier(connection, database)
-            password_literal = await connection.scalar(
-                sa.text("SELECT quote_literal(:password)"),
-                {"password": runtime_url.password},
-            )
             exists = bool(
                 await connection.scalar(
                     sa.text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=:role)"),
@@ -71,52 +541,29 @@ async def provision_runtime_role(*, migration_url: URL, runtime_url: URL) -> dic
             )
             if not exists:
                 await connection.exec_driver_sql(
-                    f"CREATE ROLE {runtime_ident} LOGIN PASSWORD {password_literal}"
+                    f"CREATE ROLE {runtime_ident} NOLOGIN"
                 )
-            await connection.exec_driver_sql(
-                f"ALTER ROLE {runtime_ident} WITH LOGIN PASSWORD {password_literal} "
-                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION "
-                "NOBYPASSRLS"
+            await _set_runtime_role_password(
+                connection,
+                runtime_role=runtime_role,
+                password=runtime_url.password,
             )
-
-            owned_relations = int(
-                await connection.scalar(
-                    sa.text(
-                        "SELECT count(*) FROM pg_class c "
-                        "JOIN pg_roles r ON r.oid=c.relowner "
-                        "WHERE r.rolname=:role AND c.relkind IN "
-                        "('r','p','v','m','S','f')"
-                    ),
-                    {"role": runtime_role},
-                )
-                or 0
+            await _reset_role_authority(
+                connection,
+                migration_role=migration_role,
+                runtime_role=runtime_role,
+                database=database,
             )
-            if owned_relations:
-                raise RuntimeError("runtime database role must not own relations")
-
-            await connection.exec_driver_sql(
-                f"GRANT CONNECT ON DATABASE {database_ident} TO {runtime_ident}"
+            await _converge_privileges(
+                connection,
+                migration_role=migration_role,
+                runtime_role=runtime_role,
+                database=database,
             )
-            await connection.exec_driver_sql(
-                f"GRANT USAGE ON SCHEMA public TO {runtime_ident}"
-            )
-            await connection.exec_driver_sql(
-                "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES "
-                f"IN SCHEMA public TO {runtime_ident}"
-            )
-            await connection.exec_driver_sql(
-                "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES "
-                f"IN SCHEMA public TO {runtime_ident}"
-            )
-            await connection.exec_driver_sql(
-                f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration_ident} "
-                "IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE "
-                f"ON TABLES TO {runtime_ident}"
-            )
-            await connection.exec_driver_sql(
-                f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration_ident} "
-                "IN SCHEMA public GRANT USAGE, SELECT, UPDATE "
-                f"ON SEQUENCES TO {runtime_ident}"
+            state = await _runtime_role_state(
+                connection,
+                migration_role=migration_role,
+                runtime_role=runtime_role,
             )
     finally:
         await engine.dispose()
@@ -126,9 +573,24 @@ async def provision_runtime_role(*, migration_url: URL, runtime_url: URL) -> dic
         "database": migration_url.database,
         "migration_role": migration_role,
         "runtime_role": runtime_role,
-        "owned_relations": 0,
-        "superuser": False,
-        "bypass_rls": False,
+        "owned_objects": state["owned_objects"],
+        "role_memberships": state["memberships"],
+        "role_settings": state["role_settings"] + state["database_settings"],
+        "extra_privileges": (
+            state["extra_relation_privileges"]
+            + state["extra_schema_privileges"]
+            + state["extra_database_privileges"]
+            + state["routine_privileges"]
+            + state["extra_type_privileges"]
+            + state["effective_schema_create"]
+            + state["effective_routine_execute"]
+            + state["effective_extra_relation_privileges"]
+            + state["effective_large_object_privileges"]
+            + state["effective_database_temp"]
+            + state["extra_default_privileges"]
+        ),
+        "superuser": state["rolsuper"],
+        "bypass_rls": state["rolbypassrls"],
     }
 
 
