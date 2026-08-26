@@ -205,7 +205,50 @@ services:
       - vitals_garmin_session:/garmin_session:ro
       # Care-message attachments and later private-local medical files.
       - vitals_private_files:/private_files:ro
+      # Pre-relocation medical uploads remain recoverable until the legacy
+      # directory can be retired on every installation.
+      - ./web/static/uploads:/legacy_uploads:ro
     entrypoint: ["/bin/sh", "/usr/local/bin/backup.sh"]
+    restart: unless-stopped
+
+  # Encrypted off-host replication is opt-in and refuses to initialize a
+  # repository. Create and escrow the four secret files on the host, initialize
+  # a versioned S3 repository from a trusted admin machine, and deny the
+  # production credential deletion of packs, indexes, snapshots, and keys;
+  # then start only this sidecar without reconciling the application stack:
+  # docker compose --profile offsite up -d --no-deps vitals_offsite_backup.
+  vitals_offsite_backup:
+    image: ghcr.io/restic/restic:0.19.1@sha256:2f0373803493361f9304a57150d464677f69a9dad487afec202105aafb2592f2
+    profiles: ["offsite"]
+    hostname: ${VITALS_OFFSITE_HOSTNAME:-vitals-installation}
+    depends_on:
+      vitals_backup:
+        condition: service_started
+    environment:
+      RESTIC_REPOSITORY_FILE: /run/secrets/restic_repository
+      RESTIC_PASSWORD_FILE: /run/secrets/restic_password
+      VITALS_RESTIC_S3_ACCESS_KEY_FILE: /run/secrets/restic_s3_access_key
+      VITALS_RESTIC_S3_SECRET_KEY_FILE: /run/secrets/restic_s3_secret_key
+      AWS_EC2_METADATA_DISABLED: "true"
+      RESTIC_CACHE_DIR: /tmp/restic-cache
+      VITALS_OFFSITE_HOSTNAME: ${VITALS_OFFSITE_HOSTNAME:-vitals-installation}
+      VITALS_OFFSITE_INTERVAL_SECONDS: ${VITALS_OFFSITE_INTERVAL_SECONDS:-900}
+    secrets:
+      - restic_repository
+      - restic_password
+      - restic_s3_access_key
+      - restic_s3_secret_key
+    volumes:
+      - ./scripts/offsite_backup.sh:/usr/local/bin/offsite_backup.sh:ro
+      - ./backups:/backups:ro
+      - ./.env:/source/vitals.env:ro
+      - vitals_offsite_state:/state
+    entrypoint: ["/bin/sh", "/usr/local/bin/offsite_backup.sh"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
     restart: unless-stopped
 
 volumes:
@@ -214,3 +257,14 @@ volumes:
   vitals_garmin_session:
   vitals_private_files:
   vitals_idp_pgdata:
+  vitals_offsite_state:
+
+secrets:
+  restic_repository:
+    file: ${VITALS_RESTIC_REPOSITORY_FILE:-.secrets/restic_repository}
+  restic_password:
+    file: ${VITALS_RESTIC_PASSWORD_FILE:-.secrets/restic_password}
+  restic_s3_access_key:
+    file: ${VITALS_RESTIC_S3_ACCESS_KEY_FILE:-.secrets/restic_s3_access_key}
+  restic_s3_secret_key:
+    file: ${VITALS_RESTIC_S3_SECRET_KEY_FILE:-.secrets/restic_s3_secret_key}

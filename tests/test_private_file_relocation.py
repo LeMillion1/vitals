@@ -548,7 +548,9 @@ def test_backup_contract_includes_private_file_volume():
         encoding="utf-8"
     )
     assert "vitals_private_files:/private_files:ro" in compose
+    assert "./web/static/uploads:/legacy_uploads:ro" in compose
     assert 'private_file="$BACKUP_DIR/private_files_${timestamp}.tar.gz"' in backup_script
     assert 'tar -czf "$private_file.tmp" -C "$PRIVATE_FILE_DIR" .' in backup_script
     assert 'PRIVATE_FILE_DIR="${VITALS_PRIVATE_FILE_DIR:-/private_files}"' in backup_script
+    assert 'LEGACY_UPLOAD_DIR="${VITALS_LEGACY_UPLOAD_DIR:-/legacy_uploads}"' in backup_script
     assert 'manifest_file="$BACKUP_DIR/vitals_bundle_${timestamp}.sha256"' in backup_script

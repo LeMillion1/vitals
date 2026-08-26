@@ -14,6 +14,7 @@ web/node_modules/
 
 # Secrets + local artifacts (env is injected at runtime via compose env_file)
 .env*
+.secrets/
 config.local.*
 *.pem
 *.key

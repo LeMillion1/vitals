@@ -28,6 +28,7 @@ def _run_backup(
     tar_fail_for: str = "",
     create_garmin: bool = True,
     create_private: bool = True,
+    create_legacy: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -53,12 +54,16 @@ printf 'archive of %s\\n' "$source_dir" > "$output"
     backup_dir = tmp_path / "backups"
     garmin_dir = tmp_path / "garmin"
     private_dir = tmp_path / "private"
+    legacy_dir = tmp_path / "legacy_uploads"
     if create_garmin:
         garmin_dir.mkdir()
         (garmin_dir / "token.json").write_text("synthetic", encoding="utf-8")
     if create_private:
         private_dir.mkdir()
         (private_dir / "medical.bin").write_bytes(b"synthetic")
+    if create_legacy:
+        legacy_dir.mkdir()
+        (legacy_dir / "legacy-medical.bin").write_bytes(b"synthetic")
 
     env = {
         **os.environ,
@@ -66,6 +71,7 @@ printf 'archive of %s\\n' "$source_dir" > "$output"
         "VITALS_BACKUP_DIR": str(backup_dir),
         "VITALS_GARMIN_SESSION_DIR": str(garmin_dir),
         "VITALS_PRIVATE_FILE_DIR": str(private_dir),
+        "VITALS_LEGACY_UPLOAD_DIR": str(legacy_dir),
         "VITALS_BACKUP_RETENTION_DAYS": "7",
         "VITALS_BACKUP_INTERVAL_SECONDS": "60",
         "VITALS_BACKUP_RUN_ONCE": "true",
@@ -92,7 +98,7 @@ def test_success_creates_one_exact_owner_only_bundle(tmp_path):
     assert stat.S_IMODE(backup_dir.stat().st_mode) == 0o700
     manifest, = _manifests(backup_dir)
     lines = manifest.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 3
+    assert len(lines) == 4
 
     names = [line.split("  ", 1)[1] for line in lines]
     stamp = manifest.name.removeprefix("vitals_bundle_").removesuffix(".sha256")
@@ -100,6 +106,7 @@ def test_success_creates_one_exact_owner_only_bundle(tmp_path):
         f"vitals_{stamp}.sql.gz",
         f"garmin_session_{stamp}.tar.gz",
         f"private_files_{stamp}.tar.gz",
+        f"legacy_uploads_{stamp}.tar.gz",
     ]
     for line, name in zip(lines, names, strict=True):
         digest, listed_name = line.split("  ", 1)
@@ -116,8 +123,10 @@ def test_success_creates_one_exact_owner_only_bundle(tmp_path):
         ({"gzip_status": 8}, "database dump failed"),
         ({"tar_fail_for": "garmin"}, "Garmin session archive failed"),
         ({"tar_fail_for": "private"}, "private-file archive failed"),
+        ({"tar_fail_for": "legacy_uploads"}, "legacy-upload archive failed"),
         ({"create_garmin": False}, "no Garmin session dir"),
         ({"create_private": False}, "no private file dir"),
+        ({"create_legacy": False}, "no legacy upload dir"),
     ],
 )
 def test_incomplete_cycle_publishes_nothing(tmp_path, kwargs, error):
@@ -136,6 +145,7 @@ def test_failed_cycle_does_not_rotate_an_old_complete_bundle(tmp_path):
         backup_dir / f"vitals_{old_stamp}.sql.gz",
         backup_dir / f"garmin_session_{old_stamp}.tar.gz",
         backup_dir / f"private_files_{old_stamp}.tar.gz",
+        backup_dir / f"legacy_uploads_{old_stamp}.tar.gz",
         backup_dir / f"vitals_bundle_{old_stamp}.sha256",
     ]
     for old_file in old_files:

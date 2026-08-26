@@ -15,6 +15,7 @@ def test_dockerignore_excludes_every_local_health_and_credential_store():
 
     assert {
         ".env*",
+        ".secrets/",
         "*.pem",
         "*.key",
         "oauth_tokens*.json",

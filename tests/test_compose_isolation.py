@@ -71,3 +71,37 @@ def test_operator_commands_address_the_compose_service():
     assert "docker exec vitals_app" not in dependency_snapshot + backfill
     assert dependency_snapshot.count("docker compose exec vitals_app") == 1
     assert backfill.count("docker compose exec vitals_app") == 3
+
+
+def test_offsite_backup_is_opt_in_pinned_and_least_privileged():
+    compose = _compose()
+    service = compose["services"]["vitals_offsite_backup"]
+
+    assert service["profiles"] == ["offsite"]
+    assert service["image"] == (
+        "ghcr.io/restic/restic:0.19.1@"
+        "sha256:2f0373803493361f9304a57150d464677f69a9dad487afec202105aafb2592f2"
+    )
+    assert service["read_only"] is True
+    assert service["cap_drop"] == ["ALL"]
+    assert service["security_opt"] == ["no-new-privileges:true"]
+    assert service["entrypoint"] == [
+        "/bin/sh",
+        "/usr/local/bin/offsite_backup.sh",
+    ]
+    environment = service["environment"]
+    assert environment["AWS_EC2_METADATA_DISABLED"] == "true"
+    assert "AWS_ACCESS_KEY_ID" not in environment
+    assert "AWS_SECRET_ACCESS_KEY" not in environment
+    assert not {"PGHOST", "PGUSER", "PGPASSWORD", "PGDATABASE"}.intersection(
+        environment
+    )
+    assert set(service["secrets"]) == {
+        "restic_repository",
+        "restic_password",
+        "restic_s3_access_key",
+        "restic_s3_secret_key",
+    }
+    assert "./backups:/backups:ro" in service["volumes"]
+    assert "./.env:/source/vitals.env:ro" in service["volumes"]
+    assert not any("docker.sock" in volume for volume in service["volumes"])

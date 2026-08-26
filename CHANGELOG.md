@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — opt-in encrypted off-host recovery replication
+
+An isolated Compose profile can now send only checksum-verified complete local
+recovery sets plus the protected installation environment into an already
+initialized S3-backed restic repository. Repository, encryption, and S3
+credentials arrive as file secrets; the read-only sidecar has no database
+credential or Docker socket, never initializes or prunes the repository, and
+advances its freshness marker only after successful encrypted replication.
+
 ### Fixed — care consent matches the record a professional can see
 
 Consent choices and the recommended grant now come from the same care-section
@@ -44,11 +53,11 @@ relationship and could only fail after submission.
 
 ### Fixed — local recovery points are complete and verifiable
 
-The backup sidecar now fails a bundle when `pg_dump`, compression, either
-volume archive, or checksum generation fails. It publishes an owner-only
-SHA-256 manifest only after the database, Garmin session, and private medical
-files all succeed, and it never rotates an older recovery point after an
-incomplete cycle.
+The backup sidecar now fails a bundle when `pg_dump`, compression, any archive,
+or checksum generation fails. It publishes an owner-only SHA-256 manifest only
+after the database, Garmin session, private medical volume, and pre-relocation
+medical uploads all succeed, and it never rotates an older recovery point after
+an incomplete cycle.
 
 ### Fixed — Today keeps the daily brief readable
 

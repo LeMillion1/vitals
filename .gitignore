@@ -15,6 +15,7 @@ config.local.*
 private_key.txt
 origin*.txt
 cert*.txt
+.secrets/
 
 # ── Python Specifics ──────────────────────────────────────────────────────────
 __pycache__/
