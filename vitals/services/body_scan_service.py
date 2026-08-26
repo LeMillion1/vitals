@@ -48,6 +48,7 @@ from vitals.models.identity import HealthSubject
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
+from vitals.ownership_transition import bridges as ownership_bridges
 from vitals.services import (
     alerts_service,
     conflict_engine,
@@ -1272,11 +1273,7 @@ async def _validate_persisted_scan(
             )
         return
     if scan.raw_payload_id is None:
-        from vitals.operations.ownership.body_scan import (
-            body_scan_historical_processed_bound,
-        )
-
-        historical_bound = await body_scan_historical_processed_bound(
+        historical_bound = await ownership_bridges.body_scan_historical_processed_bound(
             session,
             subject_id=subject_id,
         )

@@ -25,6 +25,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PROGRESS_PHOTO_CHECKPOINT_PHASE = (
     "stage3.file_backed.progress_photos.v1.progress_photos"
 )
+_BODY_SCAN_CHECKPOINT_PHASE = "stage3.file_backed.body_scans.v1.body_scans"
 _SHARED_REPORT_CHECKPOINT_PHASE = (
     "stage3.retained_artifact.shared_reports.v1.shared_reports"
 )
@@ -44,6 +45,20 @@ class ProgressPhotoOwnershipBackfillStateError(
     ProgressPhotoOwnershipBackfillError
 ):
     """Progress-photo checkpoint evidence is inconsistent."""
+
+
+class BodyScanOwnershipBackfillError(RuntimeError):
+    """Base class for fail-closed body-scan transition failures."""
+
+
+class BodyScanOwnershipBackfillValidationError(
+    BodyScanOwnershipBackfillError, ValueError
+):
+    """A body-scan bridge argument or persisted scalar is invalid."""
+
+
+class BodyScanOwnershipBackfillStateError(BodyScanOwnershipBackfillError):
+    """Body-scan checkpoint evidence is inconsistent."""
 
 
 class SharedReportOwnershipBackfillError(RuntimeError):
@@ -224,6 +239,31 @@ async def progress_photo_historical_processed_bound(
     return None
 
 
+async def body_scan_historical_processed_bound(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> int | None:
+    """Return the reviewed historical body-scan prefix for runtime reads."""
+
+    if not isinstance(subject_id, uuid.UUID):
+        raise BodyScanOwnershipBackfillValidationError("subject_id must be a UUID")
+    checkpoint = await _load_checkpoint(session, phase=_BODY_SCAN_CHECKPOINT_PHASE)
+    if checkpoint is None:
+        return None
+    status = _validate_checkpoint(
+        checkpoint,
+        phase=_BODY_SCAN_CHECKPOINT_PHASE,
+        subject_id=subject_id,
+        error=BodyScanOwnershipBackfillStateError,
+    )
+    if status == "running":
+        return checkpoint.last_scanned_id
+    if status == "completed":
+        return checkpoint.scan_high_watermark_id
+    return None
+
+
 async def shared_report_historical_bridge_state(
     session: AsyncSession,
     *,
@@ -261,6 +301,9 @@ async def shared_report_historical_bridge_state(
 
 
 __all__ = [
+    "BodyScanOwnershipBackfillError",
+    "BodyScanOwnershipBackfillStateError",
+    "BodyScanOwnershipBackfillValidationError",
     "ProgressPhotoOwnershipBackfillError",
     "ProgressPhotoOwnershipBackfillStateError",
     "ProgressPhotoOwnershipBackfillValidationError",
@@ -268,6 +311,7 @@ __all__ = [
     "SharedReportOwnershipBackfillError",
     "SharedReportOwnershipBackfillStateError",
     "SharedReportOwnershipBackfillValidationError",
+    "body_scan_historical_processed_bound",
     "progress_photo_historical_processed_bound",
     "shared_report_historical_bridge_state",
 ]
