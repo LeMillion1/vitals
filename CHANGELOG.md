@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — architecture evidence follows the current runtime tree
+
+The generated architecture reference and current-state audit now count the
+recordless platform-operator service and all 43 browser scenarios. The roadmap
+tracks Alembic head `0084`, while the production addendum no longer claims an
+off-host recovery copy before independent encrypted replication exists.
+
 ### Fixed — the identity restore drill selects production recovery artifacts
 
 The production restore instructions now bind the operator-only ZITADEL restore

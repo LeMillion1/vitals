@@ -116,7 +116,7 @@ page needs the same edit:
 | migration count | `migrations/versions/` | 84, head `0084` |
 | RLS table count | table coverage from revisions `0050` through `0079`, plus the `0083` worker-capability policy rewrite, asserted in `tests/test_row_level_security.py` | 71 |
 | platform-scope functions | the permitted list in `tests/test_row_level_security.py` | 9 |
-| routers, tracked application-service modules | tracked non-`__init__` files in `web/routers/`, `vitals/services/` | 34 and 102 |
+| routers, tracked application-service modules | tracked non-`__init__` files in `web/routers/`, `vitals/services/` | 34 and 103 |
 
 The **39 columns** the timeline attributes to revision `0049` is deliberately
 *not* in that table: it is the length of that revision's own

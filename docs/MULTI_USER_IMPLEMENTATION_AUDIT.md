@@ -64,11 +64,11 @@ verdict:
 | Domain enum | 14 values: 13 record sections plus internal `system` | Verified |
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
 | Web routers | 34 tracked non-`__init__` modules under `web/routers` | Verified |
-| Application services | 102 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
+| Application services | 103 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
 | Flat service debt | 54 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 20 |
 | Scheduled jobs | 16 registered jobs; 11 fan out per subject or provider connection | Verified |
 | Platform-scope callers | the AST contract in `tests/test_row_level_security.py` enumerates 9 exact permitted functions; invitation acceptance is no longer one of them | Verified and shrinking |
-| Browser scenarios | `pytest tests/ui -m ui -q` → 39 passed in 150.04s | Verified on the final runtime tree |
+| Browser scenarios | `pytest tests/ui -m ui -q` → 43 passed in 138.35s | Verified on the current runtime tree |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
 current commit. The final gate below records commands executed against the
@@ -88,9 +88,9 @@ A fresh production bundle restored from its pre-cutover revision through
 `0084`, passed role/RLS/worker/web gates, rendered authenticated desktop and
 phone journeys, survived a runtime restart, and was destroyed by exact scratch
 project identity. Measured served RTO was 58.892 seconds. The health and
-ZITADEL DB+Login-PAT manifests both passed their checksums and have verified
-owner-only off-host copies; automatic S3/restic replication is not yet
-configured.
+ZITADEL DB+Login-PAT manifests both passed their checksums in owner-only local
+backup directories. No verified off-host copy exists yet; automatic S3/restic
+replication remains a production gate.
 
 Self-hosted ZITADEL API, PostgreSQL, Login V2, loopback Caddy, and its backup
 sidecar are healthy. A destructive identity DB+PAT restore and restart passed.
@@ -407,7 +407,7 @@ draining the pipe: once the OS buffer filled, the server blocked while handling
 a request. The fixture
 now writes its synthetic server log to the run's temporary directory, and that
 checkpoint's complete suite passed 35 scenarios in 93.49 seconds. The current
-collection contains 39 scenarios; this historical timing is not a current gate.
+collection contains 43 scenarios; this historical timing is not a current gate.
 
 The largest remaining confirmed UX gaps are low-contrast `--faint` microcopy
 outside the touched care screens and roster states beyond conversation urgency.

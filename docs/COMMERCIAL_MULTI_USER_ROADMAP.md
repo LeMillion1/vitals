@@ -19,7 +19,7 @@ already exist upstream. New commercial work therefore starts from the current
 upstream head. The fork's `master` branch is not force-updated or otherwise
 rewritten.
 
-## Where this stands today (2026-08-26)
+## Where this stands today (2026-08-27)
 
 The numbers and states below are measured, not remembered. Re-derive them rather
 than trusting them if this date has gone stale.
@@ -27,10 +27,10 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0080` — 80 revisions |
+| Alembic head | `0084` — 84 revisions |
 | Schema | 88 tables; 71 carry `subject_id` and are covered by an RLS policy; 60 have it `NOT NULL` |
 | Backfill | 19 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | Final gate: 5,425 fast tests and all 39 live UI scenarios passed; 5,613 PostgreSQL-selected tests passed in three isolated shards with the full migration cycle |
+| Suites | Current gates: 5,938 fast tests and all 43 live UI scenarios passed; the earlier exhaustive PostgreSQL gate selected 5,613 tests across three isolated shards with the full migration cycle |
 | Domains / scheduled jobs | 14 and 16, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
