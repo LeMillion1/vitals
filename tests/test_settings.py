@@ -909,11 +909,10 @@ async def test_web_only_schedule_save_is_honestly_deferred(
         "load_process_mode",
         lambda: ProcessMode.WEB,
     )
-    monkeypatch.setattr(
-        settings_router,
-        "apply_schedule",
-        lambda app, settings: False,
-    )
+    async def failed_signal():
+        return False
+
+    monkeypatch.setattr(settings_router, "signal_schedule_reload", failed_signal)
 
     response = await auth_client.post(
         "/settings/proactive",
@@ -928,5 +927,120 @@ async def test_web_only_schedule_save_is_honestly_deferred(
 
     assert response.status_code == 303
     assert response.headers["location"] == (
-        "/settings?saved=proactive&deferred=1"
+        "/settings?saved=proactive&deferred=reload"
     )
+
+
+async def test_web_only_schedule_save_signals_after_commit(
+    auth_client,
+    session_factory,
+    monkeypatch,
+):
+    from vitals.process_mode import ProcessMode
+    from vitals.services.proactive import prefs
+    from web.routers import settings as settings_router
+
+    calls = []
+
+    async def signal_probe():
+        async with session_factory() as session:
+            scope = await prefs.resolve_legacy_preferences_scope(
+                session,
+                actor_username="tester",
+            )
+            bundle = await prefs.get_preferences_bundle(
+                session,
+                scope=scope,
+                actor_username="tester",
+            )
+            calls.append(("signal", bundle.as_flat_dict()["brief_time"]))
+        return True
+
+    monkeypatch.setattr(
+        settings_router,
+        "load_process_mode",
+        lambda: ProcessMode.WEB,
+    )
+    monkeypatch.setattr(settings_router, "signal_schedule_reload", signal_probe)
+    monkeypatch.setattr(
+        settings_router,
+        "apply_schedule",
+        lambda app, settings: pytest.fail("web mode must not apply local registry"),
+    )
+
+    response = await auth_client.post(
+        "/settings/proactive",
+        data={
+            "brief_time": "11:00",
+            "garmin_sync_hours": "6",
+            "pulse_seconds": "900",
+            "pulse_start_hour": "8",
+            "pulse_end_hour": "24",
+        },
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/settings?saved=proactive"
+    assert calls == [("signal", "11:00")]
+
+
+async def test_combined_schedule_save_keeps_immediate_local_apply(
+    auth_client,
+    monkeypatch,
+):
+    from vitals.process_mode import ProcessMode
+    from web.routers import settings as settings_router
+
+    calls = []
+    monkeypatch.setattr(
+        settings_router,
+        "load_process_mode",
+        lambda: ProcessMode.COMBINED,
+    )
+    monkeypatch.setattr(
+        settings_router,
+        "apply_schedule",
+        lambda app, settings: calls.append(settings["brief_time"]) or True,
+    )
+
+    async def forbidden_signal():
+        pytest.fail("combined mode must not signal a split worker")
+
+    monkeypatch.setattr(
+        settings_router,
+        "signal_schedule_reload",
+        forbidden_signal,
+    )
+
+    response = await auth_client.post(
+        "/settings/proactive",
+        data={
+            "brief_time": "10:30",
+            "garmin_sync_hours": "6",
+            "pulse_seconds": "900",
+            "pulse_start_hour": "8",
+            "pulse_end_hour": "24",
+        },
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/settings?saved=proactive"
+    assert calls == ["10:30"]
+
+
+async def test_split_schedule_signal_timeout_is_bounded(monkeypatch):
+    import asyncio
+
+    from vitals.scheduler import control
+    from web import deps
+    from web.routers import settings as settings_router
+
+    async def never_returns(redis_client):
+        del redis_client
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(control, "WEB_SIGNAL_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(control, "request_schedule_reload", never_returns)
+    monkeypatch.setattr(deps, "get_redis_client", lambda: object())
+
+    assert await settings_router.signal_schedule_reload() is False

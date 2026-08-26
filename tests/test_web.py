@@ -42,6 +42,54 @@ async def test_health_endpoint(client, redis):
     assert "scheduler_heartbeat_age_seconds" not in res_data
 
 
+async def test_web_mode_health_uses_worker_manifest_and_generation(
+    auth_client,
+    redis,
+    monkeypatch,
+):
+    import time
+
+    from vitals.process_mode import ProcessMode
+    from vitals.scheduler.control import (
+        publish_worker_manifest,
+        request_schedule_reload,
+    )
+    from web import main as web_main
+
+    monkeypatch.setattr(web_main, "load_process_mode", lambda: ProcessMode.WEB)
+    generation = await request_schedule_reload(redis)
+    await publish_worker_manifest(
+        redis,
+        generation=generation,
+        heartbeat_job_ids=["keepalive", "daily_brief"],
+    )
+    now = str(int(time.time()))
+    await redis.set("scheduler:last_run:keepalive", now)
+    await redis.set("scheduler:last_run:daily_brief", now)
+
+    response = await auth_client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["scheduler"] == "ok"
+    assert response.json()["scheduler_reload_pending"] is False
+    assert response.json()["stale_jobs"] == []
+
+    await request_schedule_reload(redis)
+    response = await auth_client.get("/health")
+
+    assert response.json()["status"] == "error"
+    assert response.json()["scheduler"] == "stale"
+    assert response.json()["scheduler_reload_pending"] is True
+
+    from vitals.scheduler.control import WORKER_MANIFEST_KEY
+
+    await redis.delete(WORKER_MANIFEST_KEY)
+    response = await auth_client.get("/health")
+
+    assert response.json()["scheduler"] == "stale"
+    assert response.json()["scheduler_reload_pending"] is None
+
+
 async def test_unauthorized_redirects(client):
     """GET requests to authed pages redirect to login, while JSON endpoints return 401."""
     # Navigation GET request should redirect to /login

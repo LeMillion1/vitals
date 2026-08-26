@@ -75,10 +75,21 @@ class WorkerLifecycle:
     _prepared: bool = field(default=False, init=False)
     _heartbeats_seeded: bool = field(default=False, init=False)
     _scheduler: Optional[AsyncIOScheduler] = field(default=None, init=False)
+    _applied_heartbeat_job_ids: frozenset[str] = field(
+        default_factory=frozenset,
+        init=False,
+    )
+    _pending_heartbeat_seed_ids: set[str] = field(default_factory=set, init=False)
 
     @property
     def scheduler(self) -> Optional[AsyncIOScheduler]:
         return self._scheduler
+
+    @property
+    def heartbeat_job_ids(self) -> tuple[str, ...]:
+        """The job ids successfully attached to this lifecycle's scheduler."""
+
+        return tuple(sorted(self._applied_heartbeat_job_ids))
 
     def prepare(self, settings: Optional[dict[str, Any]]) -> None:
         """Build process-local domain and job registries without starting."""
@@ -86,6 +97,7 @@ class WorkerLifecycle:
         if self._prepared:
             raise RuntimeError("worker lifecycle is already prepared")
         from vitals.scheduler.jobs import register_all_jobs
+        from vitals.scheduler.scheduler import heartbeat_job_ids
         from vitals.services.conflict_registrations import register_all_resolvers
 
         # Conflict resolvers are process-local just like scheduled jobs. A
@@ -93,6 +105,7 @@ class WorkerLifecycle:
         # conflict-aware jobs must never run with an empty safety catalog.
         register_all_resolvers()
         register_all_jobs(settings)
+        self._applied_heartbeat_job_ids = frozenset(heartbeat_job_ids())
         self._prepared = True
 
     async def seed_heartbeats(self) -> None:
@@ -133,6 +146,41 @@ class WorkerLifecycle:
         scheduler.start()
         self._scheduler = scheduler
         return scheduler
+
+    def reload(self, settings: Optional[dict[str, Any]]) -> None:
+        """Atomically validate and attach a rebuilt registry to the scheduler."""
+
+        scheduler = self._scheduler
+        if scheduler is None:
+            raise RuntimeError("worker lifecycle must be started before reload")
+
+        from vitals.scheduler.jobs import register_all_jobs
+        from vitals.scheduler.scheduler import (
+            apply_registry,
+            heartbeat_job_ids,
+        )
+
+        previous_job_ids = self._applied_heartbeat_job_ids
+        register_all_jobs(settings)
+        current_job_ids = frozenset(heartbeat_job_ids())
+        apply_registry(scheduler, self.session_factory, self.redis)
+        # Only a successful live apply advances the lifecycle-owned projection.
+        # The module-global registry may already contain an attempted rebuild,
+        # so it is not authoritative after an exception.
+        self._applied_heartbeat_job_ids = current_job_ids
+        newly_enabled_job_ids = sorted(current_job_ids - previous_job_ids)
+        self._pending_heartbeat_seed_ids.update(newly_enabled_job_ids)
+
+    async def seed_pending_heartbeats(self) -> None:
+        """Seed newly attached jobs without reapplying their live triggers."""
+
+        if self.redis is None or not self._pending_heartbeat_seed_ids:
+            return
+        from vitals.scheduler.scheduler import seed_heartbeats
+
+        job_ids = sorted(self._pending_heartbeat_seed_ids)
+        await seed_heartbeats(self.redis, job_ids=job_ids)
+        self._pending_heartbeat_seed_ids.difference_update(job_ids)
 
     def shutdown(self) -> None:
         """Stop a started scheduler; a prepared-only web process is a no-op."""

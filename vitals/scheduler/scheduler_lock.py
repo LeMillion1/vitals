@@ -29,13 +29,19 @@ def _heartbeat_key(job_id: str) -> str:
     return f"scheduler:last_run:{job_id}"
 
 
-async def record_scheduler_heartbeat(redis: Redis, job_id: str) -> None:
+async def record_scheduler_heartbeat(redis: Redis, job_id: str) -> bool:
     """Stamp ``scheduler:last_run:{job_id}`` with now. Best-effort: a Redis hiccup
-    must never break the job whose liveness we're recording."""
+    must never break the job whose liveness we're recording.
+
+    The boolean lets startup/control-plane seeding require confirmation without
+    changing normal job ticks from best-effort into a failure source.
+    """
     try:
-        await redis.set(_heartbeat_key(job_id), str(int(time.time())))
+        recorded = await redis.set(_heartbeat_key(job_id), str(int(time.time())))
     except Exception:
         logger.warning("Could not record scheduler heartbeat for %s", job_id)
+        return False
+    return bool(recorded)
 
 
 async def scheduler_heartbeat_age(redis: Redis, job_id: str) -> Optional[float]:

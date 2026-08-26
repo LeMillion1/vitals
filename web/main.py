@@ -944,19 +944,39 @@ async def health(
     redis_ok = False
     heartbeat_age = None
     stale_jobs = None
+    process_mode = load_process_mode()
+    worker_reload_pending = None if process_mode is ProcessMode.WEB else False
     try:
         await redis_client.ping()
         redis_ok = True
 
         from vitals.config import load_config
-        from vitals.scheduler.scheduler import KEEPALIVE_JOB_ID, heartbeat_budgets
+        from vitals.scheduler.scheduler import (
+            KEEPALIVE_JOB_ID,
+            heartbeat_budget_caps,
+            heartbeat_budgets,
+        )
         from vitals.scheduler.scheduler_lock import scheduler_heartbeat_age
 
-        # Every heartbeating job is checked against a budget derived from its own
-        # schedule — watching the keepalive alone left a module job free to stop
-        # firing while /health stayed green.
+        if process_mode is ProcessMode.WEB:
+            from vitals.scheduler.control import (
+                read_worker_health_state,
+            )
+
+            desired_generation, manifest = await read_worker_health_state(
+                redis_client
+            )
+            budgets = heartbeat_budget_caps(manifest.heartbeat_job_ids)
+            worker_reload_pending = manifest.generation != desired_generation
+        else:
+            budgets = heartbeat_budgets(load_config().timezone)
+
+        # Every heartbeating job is checked against either its process-local
+        # schedule budget or the split worker's reviewed preference-independent
+        # cap. Watching keepalive alone left one module job free to stop while
+        # /health stayed green.
         stale_jobs = []
-        for job_id, budget in heartbeat_budgets(load_config().timezone).items():
+        for job_id, budget in budgets.items():
             age = await scheduler_heartbeat_age(redis_client, job_id)
             if job_id == KEEPALIVE_JOB_ID:
                 heartbeat_age = age
@@ -965,7 +985,9 @@ async def health(
     except Exception as e:
         logger.error("Healthcheck Redis check failed: %s", e)
 
-    scheduler_ok = stale_jobs is not None and not stale_jobs
+    scheduler_ok = (
+        stale_jobs is not None and not stale_jobs and not worker_reload_pending
+    )
     status_str = "ok" if (db_ok and redis_ok and scheduler_ok) else "error"
 
     body = {
@@ -986,6 +1008,8 @@ async def health(
     if read_session(request.cookies.get(SESSION_COOKIE)) is not None:
         body["scheduler_heartbeat_age_seconds"] = heartbeat_age
         body["stale_jobs"] = stale_jobs or []
+        if process_mode is ProcessMode.WEB:
+            body["scheduler_reload_pending"] = worker_reload_pending
 
     return body
 

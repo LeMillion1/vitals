@@ -23,6 +23,7 @@ Sensitive inputs (API keys, passwords) are always shown masked in the form.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -1429,8 +1430,14 @@ async def save_proactive(
     await db.commit()
 
     schedule_applied = False
+    reload_failed = False
     if governs_schedule:
-        schedule_applied = apply_schedule(request.app, settings)
+        process_mode = load_process_mode()
+        if process_mode is ProcessMode.COMBINED:
+            schedule_applied = apply_schedule(request.app, settings)
+        elif process_mode is ProcessMode.WEB:
+            schedule_applied = await signal_schedule_reload()
+            reload_failed = not schedule_applied
     # prefs.sanitize() (called inside set_preferences_bundle) silently clamps
     # out-of-range
     # input — compare what was submitted to what actually got stored so the
@@ -1440,22 +1447,34 @@ async def save_proactive(
     query = "?saved=proactive"
     if adjusted:
         query += "&adjusted=1"
-    deferred = not governs_schedule
-    if (
-        governs_schedule
-        and load_process_mode() is ProcessMode.WEB
-        and not schedule_applied
-    ):
-        # The split worker cannot observe process memory. Until the Redis
-        # generation/reload protocol lands, be honest that both processes need
-        # a restart instead of claiming the live schedule changed.
-        deferred = True
+    deferred = not governs_schedule or reload_failed
     if deferred:
         # Saved, and deliberately not applied to the running scheduler. A plain
         # "saved" here would be true about the row and false about the effect,
         # which is the worse of the two silences.
-        query += "&deferred=1"
+        query += "&deferred=reload" if reload_failed else "&deferred=1"
     return _redirect(query)
+
+
+async def signal_schedule_reload() -> bool:
+    """Publish an opaque split-worker generation within a bounded wait."""
+
+    from vitals.scheduler.control import (
+        WEB_SIGNAL_TIMEOUT_SECONDS,
+        request_schedule_reload,
+    )
+    from web.deps import get_redis_client
+
+    try:
+        async with asyncio.timeout(WEB_SIGNAL_TIMEOUT_SECONDS):
+            await request_schedule_reload(get_redis_client())
+    except Exception:
+        # The preference commit already succeeded. PostgreSQL polling will
+        # discover it, but the immediate wake/ack path is delayed; report that
+        # honestly rather than turning a durable write into an HTTP 500.
+        logger.exception("could not signal the split scheduler reload")
+        return False
+    return True
 
 
 def apply_schedule(app, settings: dict) -> bool:

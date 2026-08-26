@@ -15,8 +15,11 @@ existing single-user deployments. Operators can now opt into a web-only process
 or run the scheduler through a separate worker entry point, with strict process
 mode validation and an explicit platform-scoped startup settings read. Compose
 remains on the compatibility default until the later deployment cutover. In
-the preparatory web-only mode, a schedule save is explicitly marked deferred
-until both processes restart; cross-process live reload is a separate gate.
+web-only mode, schedule saves now publish only an opaque generation hint. The
+worker polls the durable PostgreSQL settings as truth, reapplies changed jobs,
+seeds only new heartbeats, and renews a short non-PHI lease containing reviewed
+job identifiers rather than preference-derived cadences. Split `/health` uses
+that lease and fails stale while an acknowledgement or control poll is missing.
 
 ### Added — production-copy restores are rehearsed in an isolated stack
 

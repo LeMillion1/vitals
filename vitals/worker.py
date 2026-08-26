@@ -8,6 +8,7 @@ cutover is implemented separately.
 from __future__ import annotations
 
 import asyncio
+import logging
 import signal
 from contextlib import AsyncExitStack, suppress
 
@@ -17,7 +18,17 @@ from vitals.config import load_config
 from vitals.database import create_session_factory
 from vitals.process_mode import ProcessMode, load_process_mode
 from vitals.runtime_env import require_runtime_environment_isolation
+from vitals.scheduler.control import (
+    RELOAD_POLL_SECONDS,
+    WORKER_CONTROL_TIMEOUT_SECONDS,
+    WORKER_RELOAD_ATTEMPT_TIMEOUT_SECONDS,
+    ensure_schedule_generation,
+    publish_worker_manifest,
+)
 from vitals.scheduler.lifecycle import WorkerLifecycle, load_worker_settings
+
+logger = logging.getLogger(__name__)
+_STOP_REQUESTED = object()
 
 
 def _install_stop_handlers(event: asyncio.Event) -> tuple[signal.Signals, ...]:
@@ -30,6 +41,109 @@ def _install_stop_handlers(event: asyncio.Event) -> tuple[signal.Signals, ...]:
             continue
         installed.append(signum)
     return tuple(installed)
+
+
+async def _wait_for_poll(stop_event: asyncio.Event, seconds: float) -> None:
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=seconds)
+    except TimeoutError:
+        pass
+
+
+async def _await_or_stop(awaitable, stop_event: asyncio.Event):
+    """Cancel one bounded control await as soon as shutdown is requested."""
+
+    work = asyncio.create_task(awaitable)
+    stopped = asyncio.create_task(stop_event.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {work, stopped},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if stopped in done and stop_event.is_set():
+            if not work.done():
+                work.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await work
+            return _STOP_REQUESTED
+        stopped.cancel()
+        with suppress(asyncio.CancelledError):
+            await stopped
+        return await work
+    finally:
+        for task in (work, stopped):
+            if not task.done():
+                task.cancel()
+        # An outer asyncio.timeout must not return while a cancelled DB/Redis
+        # operation is still unwinding against resources the ExitStack may now
+        # close. Await both cancellation paths before handing control back.
+        await asyncio.gather(work, stopped, return_exceptions=True)
+
+
+async def monitor_schedule_reloads(
+    *,
+    lifecycle: WorkerLifecycle,
+    session_factory,
+    redis: Redis,
+    applied_settings: dict | None,
+    stop_event: asyncio.Event,
+    poll_seconds: float = RELOAD_POLL_SECONDS,
+) -> None:
+    """Poll PostgreSQL truth until shutdown and lease the applied worker state.
+
+    Redis generations make an acknowledged save visible immediately, but they
+    are only a hint: the committed settings projection is read every poll. A
+    failed web→Redis signal therefore cannot strand the worker indefinitely.
+    """
+
+    while not stop_event.is_set():
+        try:
+            async with asyncio.timeout(WORKER_RELOAD_ATTEMPT_TIMEOUT_SECONDS):
+                desired_generation = await _await_or_stop(
+                    ensure_schedule_generation(redis), stop_event
+                )
+                if desired_generation is _STOP_REQUESTED:
+                    return
+                settings = await _await_or_stop(
+                    load_worker_settings(session_factory), stop_event
+                )
+                if settings is _STOP_REQUESTED:
+                    return
+                if settings != applied_settings:
+                    lifecycle.reload(settings)
+                    # Update local applied state before the Redis lease write.
+                    # If publication fails, the next poll retries only the ack;
+                    # replacing interval jobs again could indefinitely rephase
+                    # their next fire.
+                    applied_settings = settings
+
+                seeded = await _await_or_stop(
+                    lifecycle.seed_pending_heartbeats(), stop_event
+                )
+                if seeded is _STOP_REQUESTED:
+                    return
+
+                manifest = await _await_or_stop(
+                    publish_worker_manifest(
+                        redis,
+                        generation=desired_generation,
+                        heartbeat_job_ids=lifecycle.heartbeat_job_ids,
+                    ),
+                    stop_event,
+                )
+                if manifest is _STOP_REQUESTED:
+                    return
+                if manifest is None:
+                    # A newer signal won the WATCH race. Observe it immediately
+                    # rather than keeping an avoidable pending window.
+                    continue
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The short manifest lease expires if DB/control polling cannot
+            # complete, so web health cannot remain green on a stale schedule.
+            logger.exception("scheduler control poll failed; retaining applied schedule")
+        await _wait_for_poll(stop_event, poll_seconds)
 
 
 async def run_worker(*, stop_event: asyncio.Event | None = None) -> None:
@@ -72,11 +186,48 @@ async def run_worker(*, stop_event: asyncio.Event | None = None) -> None:
             stack.push_async_callback(redis.aclose)
             stack.callback(lifecycle.shutdown)
 
-            settings = await load_worker_settings(session_factory)
+            if event.is_set():
+                return
+            # Capture desired state before the DB read. If web commits/signals
+            # concurrently, the later generation cannot be acknowledged with
+            # the older settings snapshot; the monitor observes and reloads it.
+            async with asyncio.timeout(WORKER_CONTROL_TIMEOUT_SECONDS):
+                generation = await _await_or_stop(
+                    ensure_schedule_generation(redis), event
+                )
+            if generation is _STOP_REQUESTED:
+                return
+            async with asyncio.timeout(WORKER_RELOAD_ATTEMPT_TIMEOUT_SECONDS):
+                settings = await _await_or_stop(
+                    load_worker_settings(session_factory), event
+                )
+            if settings is _STOP_REQUESTED:
+                return
             lifecycle.prepare(settings)
-            await lifecycle.seed_heartbeats()
+            seeded = await _await_or_stop(lifecycle.seed_heartbeats(), event)
+            if seeded is _STOP_REQUESTED:
+                return
             lifecycle.start()
-            await event.wait()
+            if event.is_set():
+                return
+            async with asyncio.timeout(WORKER_CONTROL_TIMEOUT_SECONDS):
+                published = await _await_or_stop(
+                    publish_worker_manifest(
+                        redis,
+                        generation=generation,
+                        heartbeat_job_ids=lifecycle.heartbeat_job_ids,
+                    ),
+                    event,
+                )
+            if published is _STOP_REQUESTED:
+                return
+            await monitor_schedule_reloads(
+                lifecycle=lifecycle,
+                session_factory=session_factory,
+                redis=redis,
+                applied_settings=settings,
+                stop_event=event,
+            )
     finally:
         loop = asyncio.get_running_loop()
         for signum in installed_handlers:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -73,9 +74,45 @@ JOB_FAILURE_FAMILY_BY_ID = MappingProxyType(
     }
 )
 
+# Health budgets crossing the web/worker boundary are deliberately capped by a
+# reviewed, preference-independent value per job. Publishing the live budget
+# would disclose exact user-selected cadences (for example Garmin sync hours)
+# through Redis. The worker publishes only which jobs it owns; web maps those
+# ids to these conservative maxima. The one-minute keepalive still detects a
+# dead worker promptly, while an individually stalled job is allowed no longer
+# than the widest supported schedule for that job plus the standard slack.
+HEARTBEAT_BUDGET_CAP_SECONDS_BY_JOB = MappingProxyType(
+    {
+        KEEPALIVE_JOB_ID: 120.0,
+        "raw_payload_sweep": 90_300.0,
+        "share_purge": 90_300.0,
+        "ai_invocation_reconcile": 1_200.0,
+        "notification_delivery_reconcile": 1_200.0,
+        "care_push_dispatch": 315.0,
+        "registration_admission_retention": 3_900.0,
+        "glp1_plateau": 90_300.0,
+        "hrt_reminders": 90_300.0,
+        "nutrition_day_end": 90_300.0,
+        "daily_brief": 90_300.0,
+        "nudges": 7_500.0,
+        "weekly_digest": 608_700.0,
+        "garmin_sync": 90_300.0,
+        "garmin_weight_export": 86_700.0,
+        "hevy_sync": 21_900.0,
+    }
+)
+
 
 class JobFailureClassificationError(ValueError):
     """A scheduled job has no exact, reviewed failure-alert ownership family."""
+
+
+class SchedulerHealthClassificationError(ValueError):
+    """A heartbeating job has no safe preference-independent health cap."""
+
+
+class SchedulerHeartbeatSeedError(RuntimeError):
+    """One or more readiness heartbeats were not durably recorded."""
 
 
 def _require_failure_family(
@@ -157,6 +194,16 @@ _FIRE_SAMPLES = 8
 _BUDGET_SLACK_SECONDS = 300.0
 
 
+def _build_trigger(spec: JobSpec, timezone):
+    """Build one trigger without mutating a live scheduler."""
+
+    from apscheduler.triggers.cron import CronTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    factory = CronTrigger if spec.trigger == "cron" else IntervalTrigger
+    return factory(timezone=timezone, **spec.trigger_kwargs)
+
+
 def _max_gap_seconds(spec: JobSpec, timezone: str) -> float:
     """Longest wait between two consecutive fires of ``spec``'s schedule.
 
@@ -164,11 +211,7 @@ def _max_gap_seconds(spec: JobSpec, timezone: str) -> float:
     a cron at 03:00/11:00/16:00/22:00 has an 8-hour worst gap that no arithmetic
     over the kwargs would give us.
     """
-    from apscheduler.triggers.cron import CronTrigger
-    from apscheduler.triggers.interval import IntervalTrigger
-
-    factory = CronTrigger if spec.trigger == "cron" else IntervalTrigger
-    trigger = factory(timezone=timezone, **spec.trigger_kwargs)
+    trigger = _build_trigger(spec, timezone)
     now = datetime.now(trigger.timezone)
 
     fires: list[datetime] = []
@@ -197,7 +240,32 @@ def heartbeat_budgets(timezone: str) -> dict[str, float]:
     for spec in _registry.values():
         if spec.heartbeat:
             budgets[spec.id] = _max_gap_seconds(spec, timezone) + _BUDGET_SLACK_SECONDS
+    caps = heartbeat_budget_caps(budgets)
+    oversized = {
+        job_id: budget
+        for job_id, budget in budgets.items()
+        if budget > caps[job_id]
+    }
+    if oversized:
+        raise SchedulerHealthClassificationError(
+            f"heartbeat budget exceeds reviewed cap: {sorted(oversized)}"
+        )
     return budgets
+
+
+def heartbeat_budget_caps(job_ids: Iterable[str]) -> dict[str, float]:
+    """Return reviewed health caps without exposing live schedule preferences."""
+
+    ids = tuple(job_ids)
+    unknown = sorted(set(ids) - set(HEARTBEAT_BUDGET_CAP_SECONDS_BY_JOB))
+    if unknown:
+        raise SchedulerHealthClassificationError(
+            f"heartbeating jobs need reviewed health caps: {unknown}"
+        )
+    return {
+        job_id: HEARTBEAT_BUDGET_CAP_SECONDS_BY_JOB[job_id]
+        for job_id in ids
+    }
 
 
 async def _record_job_outcome(
@@ -404,10 +472,18 @@ def apply_registry(
     just as much as adding — switch the Garmin pulse off and the old interval job
     would otherwise keep firing until the next deploy.
     """
-    for spec in _registry.values():
+    # Construct every trigger before touching the running scheduler. One bad
+    # boundary value must not replace the first half of the jobs and then fail,
+    # leaving a mixed registry that is retried and rephased on every poll.
+    heartbeat_budgets(scheduler.timezone)
+    prepared = [
+        (spec, _build_trigger(spec, scheduler.timezone))
+        for spec in _registry.values()
+    ]
+    for spec, trigger in prepared:
         scheduler.add_job(
             _make_runner(spec, session_factory, redis),
-            trigger=spec.trigger,
+            trigger=trigger,
             id=spec.id,
             replace_existing=True,
             **spec.trigger_kwargs,
@@ -447,10 +523,25 @@ def setup_scheduler(
     return scheduler
 
 
-async def seed_heartbeats(redis: Optional[Redis]) -> None:
+async def seed_heartbeats(
+    redis: Optional[Redis],
+    *,
+    job_ids: Optional[Iterable[str]] = None,
+) -> None:
     """Seed every monitored heartbeat at startup so ``/health`` is green
-    immediately (APScheduler's first interval tick is one minute out)."""
+    immediately (APScheduler's first interval tick is one minute out).
+
+    A live reload may pass only newly enabled ids. Refreshing every existing
+    heartbeat during an unrelated settings save would hide a stalled infrequent
+    job for its complete schedule budget.
+    """
     if redis is None:
         return
-    for job_id in heartbeat_job_ids():
-        await record_scheduler_heartbeat(redis, job_id)
+    failed_job_ids: list[str] = []
+    for job_id in heartbeat_job_ids() if job_ids is None else job_ids:
+        if not await record_scheduler_heartbeat(redis, job_id):
+            failed_job_ids.append(job_id)
+    if failed_job_ids:
+        raise SchedulerHeartbeatSeedError(
+            f"could not seed scheduler heartbeats: {sorted(failed_job_ids)}"
+        )
