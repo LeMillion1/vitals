@@ -95,7 +95,18 @@ async def oauth_metadata(request: Request):
         "token_endpoint": f"{base_url}/oauth/token",
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
-        "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
+        # MCP clients only attempt URL-based registration when the
+        # authorization server advertises this capability explicitly.
+        "client_id_metadata_document_supported": True,
+        # URL client ids are public clients: the validated metadata document,
+        # exact redirect URI and PKCE bind their flow, so they authenticate with
+        # ``none``.  The pre-registered connector remains confidential and
+        # still has to use one of the two client-secret methods below.
+        "token_endpoint_auth_methods_supported": [
+            "none",
+            "client_secret_post",
+            "client_secret_basic",
+        ],
         "code_challenge_methods_supported": ["S256"]
     }
 
@@ -173,7 +184,7 @@ async def resolve_client(client_id: str, redirect_uri: Optional[str], cfg):
             return None, "oauth.error.invalid_client"
         if not redirect_uri or not metadata.allows(redirect_uri):
             return None, "oauth.error.invalid_redirect"
-        return metadata.client_name or client_id, None
+        return metadata.client_name, None
 
     if client_id != cfg.mcp_client_id:
         return None, "oauth.error.invalid_client"
@@ -313,7 +324,7 @@ async def oauth_approve(
     # is reachable on its own, and the form it reads is one the caller controls
     # entirely. A metadata document checked when the page rendered proves
     # nothing about the client id that arrives in this POST.
-    _name, refusal = await resolve_client(client_id, redirect_uri, cfg)
+    client_name, refusal = await resolve_client(client_id, redirect_uri, cfg)
     if refusal == "oauth.error.invalid_client":
         raise HTTPException(status_code=400, detail="Invalid client_id")
     if refusal is not None:
@@ -352,6 +363,10 @@ async def oauth_approve(
         "code_challenge_method": code_challenge_method,
         "username": username,
         "subject_id": str(selected.subject_id),
+        # A client name is an assertion from the metadata document, not from
+        # the token request.  Keep the value that was actually shown on the
+        # consent screen so Connected assistants can name the same grant later.
+        "client_name": client_name,
     }
     await redis.setex(f"oauth_code:{code}", 300, json.dumps(code_payload))
 
@@ -396,37 +411,93 @@ async def oauth_token(
 
     cfg = get_web_config()
 
-    # Read credentials from Basic Auth header if missing in body
-    if not client_secret:
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.lower().startswith("basic "):
-            try:
-                decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
-                cid, csec = decoded.split(":", 1)
-                if not client_id:
-                    client_id = cid
-                client_secret = csec
-            except Exception:
-                logger.warning("Failed to decode Basic auth header on token exchange", exc_info=True)
+    # Read credentials from Basic Auth without allowing the body and header to
+    # name two different clients.  That ambiguity is especially dangerous now
+    # that one client shape is public and the other is confidential: a request
+    # must not borrow the static client's secret while claiming a metadata URL.
+    auth_header = request.headers.get("authorization", "")
+    basic_client_id: str | None = None
+    basic_client_secret: str | None = None
+    if auth_header:
+        if not auth_header.lower().startswith("basic "):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_client", "error_description": "Unsupported client authentication"},
+            )
+        try:
+            decoded = base64.b64decode(auth_header[6:], validate=True).decode(
+                "utf-8"
+            )
+            basic_client_id, basic_client_secret = decoded.split(":", 1)
+        except (ValueError, UnicodeDecodeError):
+            logger.warning("Failed to decode Basic auth header on token exchange")
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_client", "error_description": "Invalid client authentication"},
+            )
+        if client_id and client_id != basic_client_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_client", "error_description": "Conflicting client identifiers"},
+            )
+        client_id = client_id or basic_client_id
+        if client_secret and client_secret != basic_client_secret:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_client", "error_description": "Conflicting client credentials"},
+            )
+        client_secret = client_secret or basic_client_secret
 
-    if client_id != cfg.mcp_client_id:
+    from vitals.services.authentication import oauth_clients as client_metadata
+
+    metadata_client = bool(
+        isinstance(client_id, str)
+        and client_metadata.looks_like_a_metadata_url(client_id)
+    )
+    if not metadata_client and client_id != cfg.mcp_client_id:
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_client", "error_description": "Client ID mismatch"},
         )
 
-    # Fail-closed: an unconfigured secret must never act as a wildcard credential.
-    if not cfg.mcp_client_secret:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "invalid_client", "error_description": "Client secret not configured"},
-        )
+    if metadata_client:
+        # Client ID Metadata Documents describe public clients.  Supplying a
+        # secret or Basic credentials must not silently turn this into a hybrid
+        # authentication method: the proof is the exact validated redirect plus
+        # PKCE, both bound into the one-use code below.
+        if client_secret is not None or basic_client_id is not None:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_client", "error_description": "Metadata clients use no client secret"},
+            )
+        try:
+            metadata = await client_metadata.fetch(client_id)
+        except client_metadata.ClientMetadataError:
+            logger.warning("client metadata document refused at token exchange", exc_info=True)
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_client", "error_description": "Client metadata unavailable"},
+            )
+        if not isinstance(redirect_uri, str) or not metadata.allows(redirect_uri):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_grant", "error_description": "Redirect URI mismatch"},
+            )
+    else:
+        # Fail-closed: an unconfigured secret must never act as a wildcard
+        # credential. This branch is deliberately unchanged in strength even
+        # though metadata-document clients do not carry a secret.
+        if not cfg.mcp_client_secret:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_client", "error_description": "Client secret not configured"},
+            )
 
-    if not secrets.compare_digest(client_secret or "", cfg.mcp_client_secret):
-        return JSONResponse(
-            status_code=400,
-            content={"error": "invalid_client", "error_description": "Client secret mismatch"},
-        )
+        if not secrets.compare_digest(client_secret or "", cfg.mcp_client_secret):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_client", "error_description": "Client secret mismatch"},
+            )
 
     if grant_type != "authorization_code":
         return JSONResponse(
@@ -451,9 +522,36 @@ async def oauth_token(
             content={"error": "invalid_grant", "error_description": "Code expired or invalid"},
         )
 
-    code_data = json.loads(code_raw)
+    try:
+        code_data = json.loads(code_raw)
+    except (TypeError, ValueError):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_grant", "error_description": "Code expired or invalid"},
+        )
+    if not isinstance(code_data, dict):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_grant", "error_description": "Code expired or invalid"},
+        )
 
-    if not redirect_allowed(redirect_uri, cfg) or redirect_uri != code_data["redirect_uri"]:
+    # A public metadata client must never exchange a code issued to the static
+    # confidential client (or to another metadata URL), and the confidential
+    # client must not exchange a public client's code merely because it knows
+    # the installation secret. The code is the authority here, so compare it
+    # after the atomic consume and before using any of its other fields.
+    if code_data.get("client_id") != client_id:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_grant", "error_description": "Client ID mismatch"},
+        )
+
+    redirect_is_allowed = (
+        metadata.allows(redirect_uri)
+        if metadata_client
+        else redirect_allowed(redirect_uri, cfg)
+    )
+    if not redirect_is_allowed or redirect_uri != code_data.get("redirect_uri"):
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_grant", "error_description": "Redirect URI mismatch"},

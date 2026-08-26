@@ -38,7 +38,7 @@ import socket
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -70,7 +70,7 @@ class ClientMetadata:
 
     client_id: str
     redirect_uris: tuple[str, ...]
-    client_name: str | None = None
+    client_name: str
 
     def allows(self, redirect_uri: str) -> bool:
         """Whether this exact callback is one the document declares.
@@ -97,16 +97,33 @@ def looks_like_a_metadata_url(client_id: str) -> bool:
     """Whether this client id is a URL rather than a pre-registered name.
 
     The distinction the profile draws, and the one that decides which path an
-    authorization takes. Deliberately narrow: an ``https`` scheme and a host.
-    Anything else is treated as a plain identifier and matched against the
-    configured client, so a malformed URL cannot fall through into the fetching
-    path by accident.
+    authorization takes. Deliberately narrow: the HTTPS URL shape required by
+    the profile, including a path and excluding userinfo, fragments and dot
+    segments. Anything else is treated as a plain identifier and matched
+    against the configured client, so a malformed URL cannot fall through into
+    the fetching path by accident.
     """
 
-    if not client_id or not client_id.startswith("https://"):
+    if not client_id or len(client_id) > 255:
         return False
-    parts = urlsplit(client_id)
-    return bool(parts.scheme == "https" and parts.netloc and not parts.fragment)
+    try:
+        parts = urlsplit(client_id)
+        hostname = parts.hostname
+        username = parts.username
+        password = parts.password
+    except ValueError:
+        return False
+    path_segments = (unquote(segment) for segment in parts.path.split("/"))
+    return bool(
+        parts.scheme == "https"
+        and parts.netloc
+        and hostname
+        and username is None
+        and password is None
+        and parts.path
+        and not parts.fragment
+        and all(segment not in {".", ".."} for segment in path_segments)
+    )
 
 
 def _require_public_destination(host: str) -> None:
@@ -178,10 +195,24 @@ def _validated(document: Any, client_id: str) -> ClientMetadata:
         uris.append(uri)
 
     name = document.get("client_name")
+    if not isinstance(name, str) or not name.strip() or len(name) > 255:
+        raise ClientMetadataError("the document declares no usable client_name")
+
+    # Vitals implements the MCP public-client profile, not private_key_jwt or
+    # another asymmetric client authentication mechanism.  Accepting a missing
+    # or different value and then treating it as public at the token endpoint
+    # would silently weaken what the document asked for.
+    if document.get("token_endpoint_auth_method") != "none":
+        raise ClientMetadataError(
+            "the document does not declare public token authentication"
+        )
+    if "client_secret" in document or "client_secret_expires_at" in document:
+        raise ClientMetadataError("a metadata document must not carry a secret")
+
     return ClientMetadata(
         client_id=client_id,
         redirect_uris=tuple(uris),
-        client_name=name if isinstance(name, str) and name.strip() else None,
+        client_name=name,
     )
 
 

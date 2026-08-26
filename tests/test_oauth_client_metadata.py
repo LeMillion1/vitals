@@ -14,12 +14,19 @@ of them exactly.
 
 from __future__ import annotations
 
+import json
+from urllib.parse import parse_qs, urlsplit
+
 import httpx
 import pytest
+from sqlalchemy import select
 
+from vitals.models.identity import McpAccessToken
 from vitals.services.authentication import oauth_clients as client_metadata
+from web.auth import _get_mcp_serializer
 
 DOCUMENT_URL = "https://apps.example.test/connector.json"
+CODE_VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 
 
 @pytest.fixture(autouse=True)
@@ -76,6 +83,7 @@ def _document(**overrides):
         "client_id": DOCUMENT_URL,
         "client_name": "Kitchen Dashboard",
         "redirect_uris": ["https://apps.example.test/callback"],
+        "token_endpoint_auth_method": "none",
     }
     base.update(overrides)
     return base
@@ -91,6 +99,12 @@ def _document(**overrides):
         "file:///etc/passwd",
         "ftp://apps.example.test/connector.json",
         "vitals-claude-connector",
+        "https://apps.example.test",
+        "https://user@apps.example.test/connector.json",
+        "https://apps.example.test/a/../connector.json",
+        "https://apps.example.test/a/%2e/connector.json",
+        "https://apps.example.test/connector.json#fragment",
+        "https://[not-an-ipv6-address/connector.json",
         "",
     ],
 )
@@ -205,6 +219,29 @@ async def test_a_document_claiming_another_identity_is_refused(public_dns, answe
     """
 
     answering(_document(client_id="https://apps.example.test/somebody-else.json"))
+    with pytest.raises(client_metadata.ClientMetadataError):
+        await client_metadata.fetch(DOCUMENT_URL)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"client_name": ""},
+        {"client_name": "   "},
+        {"client_name": "x" * 256},
+        {"client_name": None},
+        {"token_endpoint_auth_method": None},
+        {"token_endpoint_auth_method": "client_secret_basic"},
+        {"client_secret": "a-document-must-never-publish-this"},
+        {"client_secret_expires_at": 0},
+    ],
+)
+async def test_mcp_metadata_must_describe_a_named_public_client(
+    public_dns, answering, overrides
+):
+    """The token endpoint implements ``none``, so the document must say that."""
+
+    answering(_document(**overrides))
     with pytest.raises(client_metadata.ClientMetadataError):
         await client_metadata.fetch(DOCUMENT_URL)
 
@@ -462,3 +499,181 @@ async def test_the_authorization_response_names_the_issuer(
     metadata = (await client.get("/.well-known/oauth-authorization-server")).json()
     assert metadata["authorization_response_iss_parameter_supported"] is True
     assert metadata["issuer"] in response.headers["location"].replace("%3A", ":").replace("%2F", "/")
+
+
+# ── A metadata client can redeem what it was shown ──────────────────────────
+
+
+async def _approve_metadata_client(client, client_id: str) -> str:
+    response = await client.post(
+        "/oauth/authorize/approve",
+        data={
+            "client_id": client_id,
+            "redirect_uri": "https://apps.example.test/callback",
+            "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+            "code_challenge_method": "S256",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    return parse_qs(urlsplit(response.headers["location"]).query)["code"][0]
+
+
+async def test_metadata_client_exchanges_without_a_static_secret_and_verifies_on_mcp(
+    client,
+    a_registered_client,
+    legacy_owner_roots,
+    redis,
+    db_session,
+    monkeypatch,
+):
+    """The URL client is public, but its grant is still fully bound.
+
+    This crosses authorize, the one-use code, token persistence/signing and the
+    SDK verifier seam.  A 200 from ``/oauth/token`` alone would miss the prior
+    defect where the token was minted but the MCP verifier rejected every URL
+    client because it only recognized the configured static identifier.
+    """
+
+    _sign_in(client)
+    code = await _approve_metadata_client(client, a_registered_client)
+    stored = json.loads(await redis.get(f"oauth_code:{code}"))
+    assert stored["client_id"] == DOCUMENT_URL
+    assert stored["redirect_uri"] == "https://apps.example.test/callback"
+    assert stored["client_name"] == "Kitchen Dashboard"
+
+    exchanged = await client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://apps.example.test/callback",
+            "client_id": a_registered_client,
+            "code_verifier": CODE_VERIFIER,
+        },
+    )
+    assert exchanged.status_code == 200, exchanged.text
+    access_token = exchanged.json()["access_token"]
+    payload = _get_mcp_serializer().loads(access_token)
+    assert payload["client_id"] == DOCUMENT_URL
+    assert payload["health_subject"] == str(legacy_owner_roots.subject_id)
+
+    persisted = await db_session.scalar(
+        select(McpAccessToken).where(McpAccessToken.client_id == DOCUMENT_URL)
+    )
+    assert persisted is not None
+    assert persisted.client_id == DOCUMENT_URL
+    assert persisted.client_name == "Kitchen Dashboard"
+
+    from web.routers import mcp as mcp_router
+    from vitals.persistence import rls as rls_session
+
+    class _VerifierSession:
+        async def __aenter__(self):
+            db_session.info.pop(rls_session._SUBJECT_KEY, None)
+            return db_session
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class _VerifierFactory:
+        def __call__(self):
+            return _VerifierSession()
+
+    await db_session.commit()
+    monkeypatch.setattr(
+        mcp_router,
+        "get_session_factory",
+        lambda: _VerifierFactory(),
+    )
+    granted = await mcp_router._ConnectorTokenVerifier().verify_token(access_token)
+    assert granted is not None
+    assert granted.client_id == DOCUMENT_URL
+    assert granted.subject == "tester"
+
+
+async def test_metadata_client_token_redirect_must_still_be_the_exact_document_uri(
+    client,
+    a_registered_client,
+    legacy_owner_roots,
+    redis,
+):
+    """Same host and an almost-identical path are not the registered callback."""
+
+    _sign_in(client)
+    code = await _approve_metadata_client(client, a_registered_client)
+    exchanged = await client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://apps.example.test/callback/elsewhere",
+            "client_id": a_registered_client,
+            "code_verifier": CODE_VERIFIER,
+        },
+    )
+    assert exchanged.status_code == 400
+    assert exchanged.json()["error"] == "invalid_grant"
+    # Rejection happened before consuming a valid grant, so the real client can
+    # still redeem the code with the exact callback it originally supplied.
+    assert await redis.get(f"oauth_code:{code}") is not None
+
+
+async def test_static_client_cannot_exchange_a_metadata_clients_code(
+    client,
+    a_registered_client,
+    legacy_owner_roots,
+):
+    """Knowing the installation secret grants no authority over another code."""
+
+    _sign_in(client)
+    code = await _approve_metadata_client(client, a_registered_client)
+    exchanged = await client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://apps.example.test/callback",
+            "client_id": "vitals-claude-connector",
+            "client_secret": "test-mcp-secret",
+            "code_verifier": CODE_VERIFIER,
+        },
+    )
+    assert exchanged.status_code == 400
+    assert exchanged.json() == {
+        "error": "invalid_grant",
+        "error_description": "Client ID mismatch",
+    }
+
+
+async def test_metadata_client_cannot_mix_public_and_basic_authentication(
+    client,
+    a_registered_client,
+    legacy_owner_roots,
+):
+    """A request cannot borrow confidential credentials for a public client."""
+
+    _sign_in(client)
+    code = await _approve_metadata_client(client, a_registered_client)
+    exchanged = await client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://apps.example.test/callback",
+            "client_id": a_registered_client,
+            "code_verifier": CODE_VERIFIER,
+        },
+        auth=(a_registered_client, "not-a-real-secret"),
+    )
+    assert exchanged.status_code == 400
+    assert exchanged.json()["error"] == "invalid_client"
+
+
+async def test_discovery_advertises_both_public_and_confidential_token_auth(client):
+    metadata = (
+        await client.get("/.well-known/oauth-authorization-server")
+    ).json()
+    assert metadata["client_id_metadata_document_supported"] is True
+    methods = metadata["token_endpoint_auth_methods_supported"]
+    assert methods == ["none", "client_secret_post", "client_secret_basic"]

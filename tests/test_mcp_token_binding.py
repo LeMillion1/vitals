@@ -282,6 +282,7 @@ async def test_profile_suspension_invalidates_a_professional_token_immediately(
 @pytest.mark.parametrize(
     ("claim", "replacement"),
     [
+        ("client_id", lambda: "https://other.example.test/client.json"),
         ("health_subject", lambda: str(uuid.uuid4())),
         ("relationship", lambda: str(uuid.uuid4())),
         ("consent_version", lambda: 99),
@@ -322,6 +323,23 @@ async def test_a_token_for_another_client_is_refused(db_session, legacy_owner_ro
     assert (
         await _verify(db_session, payload, expected_client_id="somebody-else") is None
     )
+
+
+async def test_a_registry_token_for_a_metadata_url_is_verified(
+    db_session, legacy_owner_roots
+):
+    """Its durable row replaces the static registration for this client shape."""
+
+    client_id = "https://apps.example.test/connector.json"
+    payload, record = await _issue(
+        db_session,
+        client_id=client_id,
+        client_name="Kitchen Dashboard",
+    )
+    verified = await _verify(db_session, payload)
+    assert verified is not None
+    assert verified.client_id == client_id
+    assert record.client_name == "Kitchen Dashboard"
 
 
 async def test_a_token_from_another_issuer_is_refused(

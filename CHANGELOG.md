@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — metadata-document MCP clients complete OAuth safely
+
+HTTPS Client ID Metadata Document clients can now redeem their own PKCE-bound
+authorization codes without borrowing the installation's static secret, and
+their signed tokens remain bound to the exact durable client registration at
+the MCP boundary. The confidential installation client still requires its
+secret, while mixed authentication, changed redirect URIs, changed client IDs,
+and malformed public-client metadata fail closed.
+
 ### Fixed — OIDC signing-key rotation disconnects MCP grants truthfully
 
 Enable, rollback, and legacy-password retirement now revoke every live MCP

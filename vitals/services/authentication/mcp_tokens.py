@@ -316,7 +316,20 @@ async def verify(
 
     if payload.get("type") != TOKEN_TYPE:
         return None
-    if payload.get("client_id") != expected_client_id:
+    claimed_client_id = payload.get("client_id")
+    if not isinstance(claimed_client_id, str) or not claimed_client_id:
+        return None
+
+    # The configured identifier is the legacy confidential connector. Client
+    # ID Metadata Documents add a second, public shape whose HTTPS URL is the
+    # identifier. Registry-backed tokens for that shape are accepted below only
+    # when the signed claim exactly matches the durable row created at issuance.
+    # An old token without a registry row can only be the configured client:
+    # metadata clients have never existed without a ``jti`` binding.
+    from vitals.services.authentication import oauth_clients
+
+    is_metadata_client = oauth_clients.looks_like_a_metadata_url(claimed_client_id)
+    if claimed_client_id != expected_client_id and not is_metadata_client:
         return None
 
     username = payload.get("username")
@@ -329,6 +342,9 @@ async def verify(
     audience = payload.get("aud")
     issuer = payload.get("iss")
     raw_jti = payload.get("jti")
+
+    if raw_jti is None and claimed_client_id != expected_client_id:
+        return None
 
     if raw_jti is None:
         # Pre-registry credentials had neither binding claim. Preserve that
@@ -385,6 +401,13 @@ async def verify(
             # token from before a restore, or one whose row was deleted. Neither
             # is a credential.
             return None
+
+    # For a registry-backed credential the row, not the current installation
+    # setting, is the client registration it was actually issued under. This is
+    # what lets metadata-URL clients work while preventing a signed payload from
+    # changing one URL into another (or into the static client) after issuance.
+    if record.client_id != claimed_client_id:
+        return None
 
     if record.revoked_at is not None:
         return None
