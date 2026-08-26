@@ -82,6 +82,53 @@ def test_subprocess_failure_rejects_unbounded_error_detail(monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    ("diagnostic", "expected"),
+    [
+        (b"OSError: [Errno 30] Read-only file system: secret", "drill_app_read_only_failure"),
+        (b"password authentication failed for user hidden", "drill_app_database_auth_failure"),
+        (b"Application startup failed. Exiting.", "drill_app_startup_failure"),
+    ],
+)
+def test_app_failure_classification_returns_only_bounded_codes(
+    tmp_path, monkeypatch, diagnostic, expected
+):
+    context = _context(tmp_path)
+
+    def fake_run(command, **_kwargs):
+        assert "logs" in command
+        return subprocess.CompletedProcess(command, 0, stdout=diagnostic, stderr=b"")
+
+    monkeypatch.setattr(runner, "_run", fake_run)
+
+    assert runner._classify_app_failure(context) == expected
+
+
+def test_app_failure_classification_uses_only_container_state_for_unknown_logs(
+    tmp_path, monkeypatch
+):
+    context = _context(tmp_path)
+    calls = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(
+                command, 0, stdout=b"sensitive unknown detail", stderr=b""
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=b'{"State":"exited","ExitCode":7}\n',
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(runner, "_run", fake_run)
+
+    assert runner._classify_app_failure(context) == "drill_app_exited_7"
+
+
 def _bundle(tmp_path: Path) -> runner.Bundle:
     names = [
         f"vitals_{STAMP}.sql.gz",

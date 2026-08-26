@@ -770,6 +770,47 @@ def _wait_http(port: int, path: str, *, timeout: float = 60.0) -> int:
     return last_status
 
 
+def _classify_app_failure(context: Context) -> str:
+    """Map captured app diagnostics to a fixed code without returning log text."""
+
+    logs = _run(
+        _compose(context) + ["logs", "--no-color", "--tail", "200", "vitals_app"],
+        cwd=context.source_dir,
+        env=_safe_env(),
+        code="drill_app_diagnostics_failed",
+    )
+    combined = (logs.stdout + b"\n" + logs.stderr).lower()
+    patterns = (
+        (b"read-only file system", "drill_app_read_only_failure"),
+        (b"permission denied", "drill_app_permission_failure"),
+        (b"password authentication failed", "drill_app_database_auth_failure"),
+        (b"connection refused", "drill_app_database_connect_failure"),
+        (b"could not translate host name", "drill_app_database_connect_failure"),
+        (b"credential key", "drill_app_credential_config_failure"),
+        (b"runtime environment", "drill_app_runtime_env_failure"),
+        (b"application startup failed", "drill_app_startup_failure"),
+    )
+    for marker, code in patterns:
+        if marker in combined:
+            return code
+
+    status = _run(
+        _compose(context) + ["ps", "--all", "--format", "json", "vitals_app"],
+        cwd=context.source_dir,
+        env=_safe_env(),
+        code="drill_app_diagnostics_failed",
+    )
+    payloads = _json_lines(status.stdout, status.stderr)
+    if payloads:
+        state = str(payloads[-1].get("State", "")).lower()
+        exit_code = payloads[-1].get("ExitCode")
+        if state == "exited" and isinstance(exit_code, int) and 0 <= exit_code <= 255:
+            return f"drill_app_exited_{exit_code}"
+        if state == "running":
+            return "drill_app_endpoint_unavailable"
+    return "drill_app_health_failed"
+
+
 def _resource_ids(project: str) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
     for kind, command in (
@@ -1269,7 +1310,7 @@ def run_drill(args: argparse.Namespace) -> dict[str, Any]:
             code="drill_app_start_failed",
         )
         if _wait_http(context.port, "/health") != 200:
-            _fail("drill_app_health_failed")
+            _fail(_classify_app_failure(context))
         if _wait_http(context.port, "/login") != 200:
             _fail("drill_login_page_failed")
         return _write_state(
