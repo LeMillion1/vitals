@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — patient record no longer offers professional-only actions
+
+A patient viewing their own shared-care record can still read notes and plans,
+but no longer sees authoring forms that require a live doctor or trainer
+relationship and could only fail after submission.
+
 ### Fixed — local recovery points are complete and verifiable
 
 The backup sidecar now fails a bundle when `pg_dump`, compression, either

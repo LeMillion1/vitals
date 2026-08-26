@@ -941,6 +941,25 @@ async def test_the_patient_reaches_their_own_conversations_without_an_id(
     )
 
 
+async def test_owner_record_does_not_offer_professional_write_forms(
+    client, legacy_owner_roots
+):
+    """Self-access may read professional artifacts but cannot author them."""
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client.cookies.set(SESSION_COOKIE, create_session("tester"))
+    response = await client.get(
+        f"/care/{legacy_owner_roots.subject_id}",
+        headers={"Accept": "text/html"},
+    )
+
+    assert response.status_code == 200
+    assert f'action="/care/{legacy_owner_roots.subject_id}/note"' not in response.text
+    assert f'action="/care/{legacy_owner_roots.subject_id}/plan"' not in response.text
+
+
 async def test_an_account_with_no_record_is_told_so_at_the_patients_door(
     client, db_session, legacy_owner_roots
 ):

@@ -423,17 +423,24 @@ async def patient(
             "withheld_domains": visible.withheld_domains,
             "record_restricted": visible.restricted,
             "may_read_messages": may_read_messages,
-            "may_write_note": care.may(
+            # Self-ownership grants broad record operations, but professional
+            # notes and care plans intentionally require a live professional
+            # relationship in the record service. Never advertise actions that
+            # this exact context must reject after submission.
+            "may_write_note": not care.is_owner
+            and care.may(
                 resource_key=records.NOTE_ARTIFACT,
                 action=PolicyAction.CREATE,
                 resource_type=PolicyResourceType.ARTIFACT,
             ),
-            "may_write_plan": care.may(
+            "may_write_plan": not care.is_owner
+            and care.may(
                 resource_key=records.PLAN_ARTIFACT,
                 action=PolicyAction.CREATE,
                 resource_type=PolicyResourceType.ARTIFACT,
             ),
-            "may_update_plan": care.may(
+            "may_update_plan": not care.is_owner
+            and care.may(
                 resource_key=records.PLAN_ARTIFACT,
                 action=PolicyAction.UPDATE,
                 resource_type=PolicyResourceType.ARTIFACT,
