@@ -123,7 +123,7 @@ docker compose --env-file .env --env-file .env.idp \
 The only published provider origin is the Caddy gateway at
 `127.0.0.1:${VITALS_IDP_ORIGIN_PORT}`. It routes `/ui/v2/login` to Login V2 and
 all other paths to the API over h2c. API, Login, and PostgreSQL publish no host
-ports. The public `https://<VITALS_IDP_DOMAIN>:443` route is a separate opt-in
+ports. The public `https://<VITALS_IDP_DOMAIN>` route on TCP 443 is a separate opt-in
 profile and cutover gate. Do not use a Cloudflare Tunnel for this hostname:
 create a normal DNS A/AAAA record to the host, allow inbound TCP 80/443, and
 preserve HTTP/2 and gRPC. When Cloudflare proxies the record, use
@@ -141,14 +141,15 @@ docker compose --env-file .env --env-file .env.idp \
 The public profile owns ports 80/443 and its own persistent Caddy certificate
 volume; it mounts no provider or application secrets. Do not start it beside
 another reverse proxy that already owns those ports. Prove externally that the
-discovered issuer is exactly `https://<VITALS_IDP_DOMAIN>:443`, that Console and
-Login V2 render, and that both gRPC-Web and native `grpcurl` work through 443.
-A plain HTTP smoke is not that proof. The loopback gateway remains available as
-the credential-free recovery/debug origin and does not share certificate state.
-ZITADEL includes its configured external port in discovery even when that port
-is the HTTPS default. Vitals compares the issuer verbatim, so every
-`VITALS_OIDC_ISSUER`, bootstrap link, and operator command below must retain
-`:443`; do not normalize it away.
+discovered issuer is exactly `https://<VITALS_IDP_DOMAIN>` with the default port
+omitted, that Console and Login V2 render, and that both gRPC-Web and native
+`grpcurl` work through 443. A plain HTTP smoke is not that proof. The loopback
+gateway remains available as the credential-free recovery/debug origin and does
+not share certificate state. Every proxy and Login V2 request sends the same
+canonical authority through `VITALS_IDP_PUBLIC_AUTHORITY`; for HTTPS on 443 that
+value is the hostname without `:443`. Vitals compares the issuer verbatim, so
+`VITALS_OIDC_ISSUER`, bootstrap links, and operator commands must use the exact
+discovery value rather than adding or removing a port themselves.
 The public and loopback gateways share a proxy-only network with Login/API;
 neither can reach the identity database network.
 The public gateway trusts forwarded client addresses only from the reviewed
@@ -265,7 +266,7 @@ fixed coordinator prefix. The state file is owner-only and contains no client
 secret, password, subject, client ID, DSN, or subprocess output:
 
 ```bash
-OIDC_ISSUER=https://idp.example.com:443             # exact discovery value
+OIDC_ISSUER=https://idp.example.com                 # exact discovery value
 OIDC_CLIENT_ID=...
 OIDC_CLIENT_SECRET_FILE=/absolute/private/oidc-client-secret
 LEGACY_PASSWORD_FILE=/absolute/private/legacy-password-proof
@@ -394,7 +395,7 @@ docker compose --env-file .env --env-file .env.idp \
   python scripts/manage_platform_admin.py provision \
     --actor-username <current-owner-username> \
     --username platform-operator \
-    --issuer https://idp.example.com:443 \
+    --issuer https://idp.example.com \
     --subject <opaque-provider-subject> \
     --confirm 'PROVISION RECORDLESS PLATFORM OPERATOR'
 ```
@@ -410,7 +411,7 @@ docker compose --env-file .env --env-file .env.idp \
   python scripts/manage_platform_admin.py revoke \
     --actor-username platform-operator \
     --target-username <current-owner-username> \
-    --issuer https://idp.example.com:443 \
+    --issuer https://idp.example.com \
     --confirm 'REVOKE PLATFORM ADMIN ROLE'
 ```
 
@@ -520,7 +521,7 @@ above. Run both from a shell with `VITALS_DATABASE_URL` set:
 ```bash
 python scripts/provision_account.py --username dr-ivanova --role doctor
 python scripts/link_identity.py --username dr-ivanova \
-  --issuer https://idp.example.com:443 --subject 2417...
+  --issuer https://idp.example.com --subject 2417...
 ```
 
 Use the provider's exact `iss` and opaque `sub` values. Never substitute an

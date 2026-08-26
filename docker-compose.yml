@@ -342,10 +342,10 @@ services:
       ZITADEL_TLS_ENABLED: "false"
       ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_ALLOWREGISTER: "false"
       ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
-      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: ${VITALS_IDP_PUBLIC_SCHEME:-http}://${VITALS_IDP_DOMAIN:-localhost}:${VITALS_IDP_EXTERNAL_PORT:-8080}/ui/v2/login/
-      ZITADEL_OIDC_DEFAULTLOGINURLV2: ${VITALS_IDP_PUBLIC_SCHEME:-http}://${VITALS_IDP_DOMAIN:-localhost}:${VITALS_IDP_EXTERNAL_PORT:-8080}/ui/v2/login/login?authRequest=
-      ZITADEL_OIDC_DEFAULTLOGOUTURLV2: ${VITALS_IDP_PUBLIC_SCHEME:-http}://${VITALS_IDP_DOMAIN:-localhost}:${VITALS_IDP_EXTERNAL_PORT:-8080}/ui/v2/login/logout?post_logout_redirect=
-      ZITADEL_SAML_DEFAULTLOGINURLV2: ${VITALS_IDP_PUBLIC_SCHEME:-http}://${VITALS_IDP_DOMAIN:-localhost}:${VITALS_IDP_EXTERNAL_PORT:-8080}/ui/v2/login/login?samlRequest=
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: ${VITALS_IDP_PUBLIC_SCHEME:-http}://${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}/ui/v2/login/
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: ${VITALS_IDP_PUBLIC_SCHEME:-http}://${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}/ui/v2/login/login?authRequest=
+      ZITADEL_OIDC_DEFAULTLOGOUTURLV2: ${VITALS_IDP_PUBLIC_SCHEME:-http}://${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}/ui/v2/login/logout?post_logout_redirect=
+      ZITADEL_SAML_DEFAULTLOGINURLV2: ${VITALS_IDP_PUBLIC_SCHEME:-http}://${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}/ui/v2/login/login?samlRequest=
     volumes:
       - vitals_idp_config:/zitadel/config:ro
       - vitals_idp_bootstrap:/zitadel/bootstrap:rw
@@ -435,7 +435,7 @@ services:
       ZITADEL_API_URL: http://vitals_idp:8080
       NEXT_PUBLIC_BASE_PATH: /ui/v2/login
       ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
-      CUSTOM_REQUEST_HEADERS: Host:${VITALS_IDP_DOMAIN:-localhost}:${VITALS_IDP_EXTERNAL_PORT:-8080},X-Forwarded-Proto:${VITALS_IDP_PUBLIC_SCHEME:-http}
+      CUSTOM_REQUEST_HEADERS: Host:${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080},X-Forwarded-Proto:${VITALS_IDP_PUBLIC_SCHEME:-http}
     volumes:
       - vitals_idp_bootstrap:/zitadel/bootstrap:ro
     networks: [vitals_idp_proxy]
@@ -457,6 +457,7 @@ services:
         condition: service_healthy
     environment:
       VITALS_IDP_DOMAIN: ${VITALS_IDP_DOMAIN:-localhost}
+      VITALS_IDP_PUBLIC_AUTHORITY: ${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}
       VITALS_IDP_PUBLIC_SCHEME: ${VITALS_IDP_PUBLIC_SCHEME:-http}
       VITALS_IDP_EXTERNAL_PORT: ${VITALS_IDP_EXTERNAL_PORT:-8080}
     volumes:
@@ -499,6 +500,7 @@ services:
       # Empty is intentional: unlike the loopback profile, a public listener
       # must fail Caddy config loading when the real issuer was not supplied.
       VITALS_IDP_DOMAIN: "${VITALS_IDP_DOMAIN-}"
+      VITALS_IDP_PUBLIC_AUTHORITY: "${VITALS_IDP_PUBLIC_AUTHORITY-}"
     volumes:
       - ./deploy/zitadel/Caddy.public:/etc/caddy/Caddyfile:ro
       - vitals_idp_caddy_data:/data:rw

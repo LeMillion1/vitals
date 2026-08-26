@@ -22,6 +22,7 @@
 		# ZITADEL documents a Caddy/gRPC-gateway hang when this request
 		# header reaches the h2c upstream on an error response.
 		header_up -TE
+		header_up Host {$VITALS_IDP_PUBLIC_AUTHORITY}
 	}
 }
 

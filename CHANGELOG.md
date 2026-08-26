@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — ZITADEL uses one canonical issuer authority
+
+The loopback gateway, public gateway, Login V2, and setup URLs now send one
+validated public authority to ZITADEL. Default HTTPS port 443 is omitted from
+the authority and issuer, matching normal browser and Cloudflare Host headers;
+the cutover runbook now requires the exact live discovery value instead of a
+contradictory explicit-port form.
+
 ### Fixed — metadata-document MCP clients complete OAuth safely
 
 HTTPS Client ID Metadata Document clients can now redeem their own PKCE-bound

@@ -52,6 +52,7 @@ def _run_preflight(tmp_path: Path, **overrides: str) -> subprocess.CompletedProc
         "VITALS_IDP_PUBLIC_SCHEME": "https",
         "VITALS_IDP_SECURE": "true",
         "VITALS_IDP_EXTERNAL_PORT": "443",
+        "VITALS_IDP_PUBLIC_AUTHORITY": "idp.example.test",
         "VITALS_IDP_ORIGIN_PORT": "18080",
         "VITALS_IDP_ADMIN_USERNAME": "operator",
         "VITALS_IDP_ADMIN_EMAIL": "operator@example.test",
@@ -99,6 +100,10 @@ def test_identity_preflight_accepts_complete_production_configuration(tmp_path):
     [
         ({"VITALS_IDP_PUBLIC_SCHEME": "http"}, "scheme and external-secure"),
         ({"VITALS_IDP_EXTERNAL_PORT": "8080"}, "public HTTPS on port 443"),
+        (
+            {"VITALS_IDP_PUBLIC_AUTHORITY": "idp.example.test:443"},
+            "canonical public authority idp.example.test",
+        ),
         ({"VITALS_IDP_DOMAIN": "bad/domain"}, "plain DNS hostname"),
         ({"VITALS_IDP_LOGIN_PAT_EXPIRATION": "never"}, "explicit UTC timestamp"),
         (
@@ -190,7 +195,8 @@ def test_public_identity_gateway_is_explicit_tls_profile_without_secrets():
         "0.0.0.0:443:443",
     ]
     assert service["environment"] == {
-        "VITALS_IDP_DOMAIN": "${VITALS_IDP_DOMAIN-}"
+        "VITALS_IDP_DOMAIN": "${VITALS_IDP_DOMAIN-}",
+        "VITALS_IDP_PUBLIC_AUTHORITY": "${VITALS_IDP_PUBLIC_AUTHORITY-}",
     }
     assert service["read_only"] is True
     assert service["cap_drop"] == ["ALL"]
@@ -214,11 +220,41 @@ def test_public_identity_gateway_is_explicit_tls_profile_without_secrets():
     assert "reverse_proxy @login http://vitals_idp_login:3000" in caddyfile
     assert "reverse_proxy h2c://vitals_idp:8080" in caddyfile
     assert "header_up -TE" in caddyfile
+    assert "header_up Host {$VITALS_IDP_PUBLIC_AUTHORITY}" in caddyfile
     assert "admin off" in caddyfile
     assert "trusted_proxies static" in caddyfile
     assert "trusted_proxies_strict" in caddyfile
     assert "client_ip_headers CF-Connecting-IP X-Forwarded-For" in caddyfile
     assert "vitals_idp_caddy_data" in compose["volumes"]
+
+
+def test_identity_surfaces_share_the_canonical_public_authority():
+    services = _compose()["services"]
+    setup = services["vitals_idp_setup"]["environment"]
+    login = services["vitals_idp_login"]["environment"]
+    gateway = services["vitals_idp_gateway"]["environment"]
+
+    assert all(
+        "${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}" in setup[name]
+        for name in (
+            "ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI",
+            "ZITADEL_OIDC_DEFAULTLOGINURLV2",
+            "ZITADEL_OIDC_DEFAULTLOGOUTURLV2",
+            "ZITADEL_SAML_DEFAULTLOGINURLV2",
+        )
+    )
+    assert login["CUSTOM_REQUEST_HEADERS"].startswith(
+        "Host:${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080},"
+    )
+    assert gateway["VITALS_IDP_PUBLIC_AUTHORITY"] == (
+        "${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}"
+    )
+    local_caddy = (ROOT / "deploy" / "zitadel" / "Caddyfile").read_text(
+        encoding="utf-8"
+    )
+    assert local_caddy.count(
+        "header_up Host {$VITALS_IDP_PUBLIC_AUTHORITY}"
+    ) == 2
 
 
 def test_identity_gateways_cannot_reach_identity_database_network():

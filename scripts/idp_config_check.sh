@@ -103,6 +103,15 @@ if [ "$VITALS_IDP_DOMAIN" != localhost ]; then
         exit 2
     fi
 fi
+expected_authority="$VITALS_IDP_DOMAIN:$VITALS_IDP_EXTERNAL_PORT"
+if { [ "$VITALS_IDP_PUBLIC_SCHEME" = https ] && [ "$VITALS_IDP_EXTERNAL_PORT" -eq 443 ]; } \
+    || { [ "$VITALS_IDP_PUBLIC_SCHEME" = http ] && [ "$VITALS_IDP_EXTERNAL_PORT" -eq 80 ]; }; then
+    expected_authority="$VITALS_IDP_DOMAIN"
+fi
+if [ "${VITALS_IDP_PUBLIC_AUTHORITY:-}" != "$expected_authority" ]; then
+    echo "[idp-config] ERROR: VITALS_IDP_PUBLIC_AUTHORITY must be the canonical public authority $expected_authority" >&2
+    exit 2
+fi
 case "${VITALS_IDP_ADMIN_USERNAME:-}" in
     ''|*[!A-Za-z0-9._-]*)
         echo "[idp-config] ERROR: VITALS_IDP_ADMIN_USERNAME is invalid" >&2
