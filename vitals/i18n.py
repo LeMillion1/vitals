@@ -1526,6 +1526,19 @@ _EN: dict[str, str] = {
     "support.live_title": "Open right now",
     "support.live_empty": "You hold no access to anybody's record.",
     "support.waiting_title": "Waiting for an answer",
+    "support.record_lookup_title": "Open one record workspace",
+    "support.record_lookup_hint": (
+        "Ask the patient for the record code shown on their Access page. This "
+        "console never searches or lists patients."
+    ),
+    "support.field_record_code": "Record code",
+    "support.record_lookup_submit": "Open workspace",
+    "support.selected_record": "Selected record",
+    "support.patient_record_code_title": "Your record code",
+    "support.patient_record_code_hint": (
+        "Share this code with platform support only when you want them to send "
+        "an access request. The code identifies your record; it grants no access."
+    ),
     "support.ask_title": "Ask for access",
     "support.ask_hint": (
         "The patient reads every field of this, including the reason, in your "
@@ -3643,6 +3656,19 @@ _RU: dict[str, str] = {
     "support.live_title": "Открыто сейчас",
     "support.live_empty": "У вас нет доступа ни к одной записи.",
     "support.waiting_title": "Ждёт ответа",
+    "support.record_lookup_title": "Открыть рабочее место одной записи",
+    "support.record_lookup_hint": (
+        "Попросите у пользователя код записи со страницы «Доступ». Эта консоль "
+        "не ищет и не показывает список пользователей."
+    ),
+    "support.field_record_code": "Код записи",
+    "support.record_lookup_submit": "Открыть",
+    "support.selected_record": "Выбранная запись",
+    "support.patient_record_code_title": "Код вашей записи",
+    "support.patient_record_code_hint": (
+        "Передавайте этот код поддержке платформы, только когда хотите получить "
+        "запрос доступа. Код указывает на вашу запись, но сам доступа не даёт."
+    ),
     "support.ask_title": "Попросить доступ",
     "support.ask_hint": (
         "Пациент читает каждое поле этой формы, включая причину — вашими словами."

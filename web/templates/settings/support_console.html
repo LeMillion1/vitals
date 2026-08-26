@@ -20,6 +20,27 @@
     {% if asked %}<div class="v-alert info">{{ t("support.console_" ~ asked) }}</div>{% endif %}
     {% if error %}<div class="v-alert warn">{{ t("support.error_refused") }}</div>{% endif %}
 
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("support.record_lookup_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.record_lookup_hint") }}</p>
+        <form action="/settings/platform/support" method="GET" class="space-y-4">
+            <div>
+                <label for="support-record-code" class="v-label">{{ t("support.field_record_code") }}</label>
+                <input id="support-record-code" name="record_id" type="text" class="v-input"
+                       value="{{ selected_subject_id or '' }}" autocomplete="off" spellcheck="false" required>
+            </div>
+            <div class="flex justify-end">
+                <button type="submit" class="v-btn text-xs">{{ t("support.record_lookup_submit") }}</button>
+            </div>
+        </form>
+    </div>
+
+    {% if selected_subject_id %}
+    <div class="v-card-inset p-4 space-y-1">
+        <p class="v-text-label" style="color: var(--muted)">{{ t("support.selected_record") }}</p>
+        <p class="v-text-label break-words">{{ selected_subject_id }}</p>
+    </div>
+
     <!-- ─── WHAT IS OPEN RIGHT NOW ─────────────────────────────────────────── -->
     <div class="v-card p-6 space-y-4">
         {{ card_header(t("support.live_title")) }}
@@ -67,7 +88,7 @@
         {% for row in requests %}
         <div class="v-card-inset p-4 space-y-2">
             <div class="flex flex-wrap items-center justify-between gap-3">
-                <span class="v-text-body"><strong>{{ row.subject_display_name }}</strong></span>
+                <span class="v-text-body"><strong>{{ t("support.selected_record") }}</strong></span>
                 <form action="/settings/platform/support/{{ row.request_id }}/withdraw" method="POST">
                     <input type="hidden" name="subject_id" value="{{ row.subject_id }}">
                     <button type="submit" class="v-btn-ghost text-xs">{{ t("support.withdraw") }}</button>
@@ -86,24 +107,13 @@
     <div class="v-card p-6 space-y-4">
         {{ card_header(t("support.ask_title")) }}
 
-        {# The patient reads every field of this form. That is why the reason is
-           required and free text while the record is a list rather than a
-           search box: choosing whose record to investigate has to be a choice
-           somebody can audit, not a name somebody typed. #}
+        {# The patient reads every field of this form. The record was selected
+           by its exact opaque code above; this console never lists or searches
+           patients by name. #}
         <p class="v-text-body" style="color: var(--muted)">{{ t("support.ask_hint") }}</p>
 
-        {% if not subjects %}
-        <p class="v-text-body" style="color: var(--muted)">{{ t("support.ask_nobody") }}</p>
-        {% else %}
         <form action="/settings/platform/support/request" method="POST" class="space-y-4">
-            <div>
-                <label for="support-subject" class="v-label">{{ t("support.field_record") }}</label>
-                <select id="support-subject" name="subject_id" class="v-input" required>
-                    {% for subject_id, display_name in subjects %}
-                    <option value="{{ subject_id }}">{{ display_name }}</option>
-                    {% endfor %}
-                </select>
-            </div>
+            <input type="hidden" name="subject_id" value="{{ selected_subject_id }}">
 
             <div>
                 <label for="support-reason" class="v-label">{{ t("support.field_reason") }}</label>
@@ -141,20 +151,13 @@
                 <button type="submit" class="v-btn text-xs">{{ t("support.ask_submit") }}</button>
             </div>
         </form>
-        {% endif %}
     </div>
 
     <div class="v-card p-6 space-y-4">
         {{ card_header(t("support.repair_ask_title")) }}
         <p class="v-text-body" style="color: var(--muted)">{{ t("support.repair_ask_hint") }}</p>
-        {% if subjects %}
         <form action="/settings/platform/support/repair/request" method="POST" class="space-y-4">
-            <div>
-                <label for="support-repair-subject" class="v-label">{{ t("support.field_record") }}</label>
-                <select id="support-repair-subject" name="subject_id" class="v-input" required>
-                    {% for subject_id, display_name in subjects %}<option value="{{ subject_id }}">{{ display_name }}</option>{% endfor %}
-                </select>
-            </div>
+            <input type="hidden" name="subject_id" value="{{ selected_subject_id }}">
             <div>
                 <label for="support-repair-reason" class="v-label">{{ t("support.field_reason") }}</label>
                 <textarea id="support-repair-reason" name="reason" rows="3" class="v-input" required maxlength="2000"></textarea>
@@ -166,9 +169,6 @@
             <p class="v-text-micro" style="color: var(--faint)">{{ t("support.repair_fixed_diff") }}</p>
             <div class="flex justify-end"><button type="submit" class="v-btn text-xs">{{ t("support.repair_ask_submit") }}</button></div>
         </form>
-        {% else %}
-        <p class="v-text-body" style="color: var(--muted)">{{ t("support.ask_nobody") }}</p>
-        {% endif %}
     </div>
 
     <!-- Export is never an upgrade of read access. It is asked for separately,
@@ -177,18 +177,8 @@
         {{ card_header(t("support.export_ask_title")) }}
         <p class="v-text-body" style="color: var(--muted)">{{ t("support.export_ask_hint") }}</p>
 
-        {% if not subjects %}
-        <p class="v-text-body" style="color: var(--muted)">{{ t("support.ask_nobody") }}</p>
-        {% else %}
         <form action="/settings/platform/support/export/request" method="POST" hx-boost="false" class="space-y-4">
-            <div>
-                <label for="support-export-subject" class="v-label">{{ t("support.field_record") }}</label>
-                <select id="support-export-subject" name="subject_id" class="v-input" required>
-                    {% for subject_id, display_name in subjects %}
-                    <option value="{{ subject_id }}">{{ display_name }}</option>
-                    {% endfor %}
-                </select>
-            </div>
+            <input type="hidden" name="subject_id" value="{{ selected_subject_id }}">
             <div>
                 <label for="support-export-reason" class="v-label">{{ t("support.field_reason") }}</label>
                 <textarea id="support-export-reason" name="reason" rows="3" class="v-input" required maxlength="2000" placeholder="{{ t('support.field_reason_hint') }}"></textarea>
@@ -202,8 +192,8 @@
                 <button type="submit" class="v-btn text-xs">{{ t("support.export_ask_submit") }}</button>
             </div>
         </form>
-        {% endif %}
     </div>
+    {% endif %}
 
 </div>
 {% endblock %}

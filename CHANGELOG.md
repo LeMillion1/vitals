@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security — support opens one opaque record, never a patient directory
+
+The platform support console no longer enumerates patient names or opens the
+installation-wide RLS scope to summarize every request and grant. A patient now
+shares the opaque record code shown on their Access page; the administrator
+enters that exact code and the request binds to only that subject. Pending asks
+remain name-free in the console, while an active patient-approved grant may show
+the patient's display name. Read, repair, and one-time export remain separate
+approval flows with recent-auth enforcement.
+
 ### Fixed — legacy web startup binds one record instead of the platform
 
 The password-era compatibility bootstrap now discovers or creates only the

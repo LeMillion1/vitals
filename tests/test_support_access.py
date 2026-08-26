@@ -1610,14 +1610,12 @@ async def test_the_console_refuses_an_account_that_is_not_an_administrator(
 async def test_the_console_renders_for_an_administrator(
     client, db_session, legacy_owner_roots
 ):
-    """Including the list of records an ask may name.
-
-    Which is a list rather than a search box on purpose: choosing whose record
-    to investigate has to be a choice somebody can audit later, not a patient
-    found by typing part of their name.
-    """
+    """The root accepts one exact record code and lists no patients."""
 
     admin = await _admin(db_session, "web-console-admin")
+    _patient_owner, hidden_subject = await _patient(
+        db_session, "web-console-hidden-patient"
+    )
     await db_session.commit()
 
     _sign_in(client, "web-console-admin")
@@ -1631,7 +1629,37 @@ async def test_the_console_renders_for_an_administrator(
         "исправление требуют отдельных одобрений пациента. Более широкие "
         "исправления недоступны."
     ) in response.text
-    del admin, legacy_owner_roots
+    assert 'name="record_id"' in response.text
+    assert legacy_owner_roots.subject_id.hex not in response.text.replace("-", "")
+    assert hidden_subject.display_name not in response.text
+    del admin, legacy_owner_roots, _patient_owner
+
+
+async def test_pending_console_request_does_not_reveal_the_patient_name(
+    client, db_session, legacy_owner_roots
+):
+    admin = await _admin(db_session, "pending-name-admin")
+    _owner, subject = await _patient(db_session, "pending-name-patient")
+    reason = "Investigating an exact synthetic record code."
+    pending = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=subject.id,
+        reason=reason,
+        scopes=support.read_scopes_for((Domain.LABS,)),
+    )
+    await db_session.commit()
+
+    _sign_in(client, admin.username)
+    response = await client.get(
+        f"/settings/platform/support?record_id={subject.id}",
+        headers={"Accept": "text/html"},
+    )
+
+    assert response.status_code == 200
+    assert str(pending.id) in response.text
+    assert subject.display_name not in response.text
+    del legacy_owner_roots
 
 
 async def test_the_console_offers_only_sections_a_record_actually_has(
@@ -1648,7 +1676,8 @@ async def test_the_console_offers_only_sections_a_record_actually_has(
     _sign_in(client, "sections-console-admin")
     page = (
         await client.get(
-            "/settings/platform/support", headers={"Accept": "text/html"}
+            f"/settings/platform/support?record_id={legacy_owner_roots.subject_id}",
+            headers={"Accept": "text/html"},
         )
     ).text
     assert 'value="labs"' in page
@@ -1680,7 +1709,11 @@ async def test_an_ask_naming_a_section_nobody_has_is_refused(
     assert response.status_code in (302, 303)
     assert "error=domain" in response.headers["location"]
 
-    state = await support.console_for_admin(db_session, admin_user_id=admin.id)
+    state = await support.console_for_admin(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=subject.id,
+    )
     assert not state.requests, "an ask for a section nobody has was recorded"
     del legacy_owner_roots
 
@@ -1779,7 +1812,8 @@ async def test_same_admin_grants_stay_exact_from_console_link_through_audit(
 
     _sign_in(client, admin.username)
     console = await client.get(
-        "/settings/platform/support", headers={"Accept": "text/html"}
+        f"/settings/platform/support?record_id={legacy_owner_roots.subject_id}",
+        headers={"Accept": "text/html"},
     )
     assert console.status_code == 200
     for grant_id in grant_ids.values():

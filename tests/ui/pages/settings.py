@@ -120,12 +120,13 @@ class SupportConsolePage(Page):
 
     READ_FORM = 'form[action="/settings/platform/support/request"]'
     EXPORT_FORM = 'form[action="/settings/platform/support/export/request"]'
-    SUBJECT = f'{READ_FORM} select[name="subject_id"]'
+    LOOKUP = 'form[action="/settings/platform/support"]'
+    RECORD_CODE = f'{LOOKUP} input[name="record_id"]'
+    LOOKUP_SUBMIT = f'{LOOKUP} button[type="submit"]'
     REASON = f'{READ_FORM} textarea[name="reason"]'
     HOURS = f'{READ_FORM} input[name="hours"]'
     TICKET = f'{READ_FORM} input[name="ticket_reference"]'
     SUBMIT = f'{READ_FORM} button[type="submit"]'
-    EXPORT_SUBJECT = f'{EXPORT_FORM} select[name="subject_id"]'
     EXPORT_REASON = f'{EXPORT_FORM} textarea[name="reason"]'
     EXPORT_TICKET = f'{EXPORT_FORM} input[name="ticket_reference"]'
     EXPORT_SUBMIT = f'{EXPORT_FORM} button[type="submit"]'
@@ -149,7 +150,7 @@ class SupportConsolePage(Page):
     ) -> "SupportConsolePage":
         """Fill the form a patient will read every field of."""
 
-        self.page.select_option(self.SUBJECT, label=record)
+        self._select_record(record)
         self.page.fill(self.REASON, reason)
         if hours is not None:
             self.page.fill(self.HOURS, str(hours))
@@ -169,12 +170,22 @@ class SupportConsolePage(Page):
     ) -> "SupportConsolePage":
         """Ask for the separately approved, one-shot portability export."""
 
-        self.page.select_option(self.EXPORT_SUBJECT, label=record)
+        self._select_record(record)
         self.page.fill(self.EXPORT_REASON, reason)
         if ticket is not None:
             self.page.fill(self.EXPORT_TICKET, ticket)
         self._act(self.EXPORT_SUBMIT)
         return self
+
+    def _select_record(self, display_name: str) -> None:
+        resolver = getattr(self, "record_id_for", None)
+        assert resolver is not None, "support console has no record-code resolver"
+        record_id = resolver(display_name)
+        self.page.fill(self.RECORD_CODE, record_id)
+        self._act(self.LOOKUP_SUBMIT)
+        remember = getattr(self, "remember_record", None)
+        if remember is not None:
+            remember(record_id)
 
     def open_the_record(self, *, scope_label: str | None = None):
         from tests.ui.pages.care import CareRecordPage

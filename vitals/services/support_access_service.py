@@ -1824,7 +1824,6 @@ class ConsoleRequest:
 
     request_id: uuid.UUID
     subject_id: uuid.UUID
-    subject_display_name: str
     mode: str
     reason: str
     created_at: datetime
@@ -1834,34 +1833,29 @@ class ConsoleRequest:
 
 @dataclass(frozen=True, slots=True)
 class Console:
-    """What one admin has open and outstanding, across every record."""
+    """What one admin has open and outstanding for one selected record."""
 
     grants: tuple[ConsoleGrant, ...]
     requests: tuple[ConsoleRequest, ...]
 
 
 async def console_for_admin(
-    session: AsyncSession, *, admin_user_id: uuid.UUID
+    session: AsyncSession,
+    *,
+    admin_user_id: uuid.UUID,
+    subject_id: uuid.UUID | None,
 ) -> Console:
-    """This admin's live grants and unanswered asks, across every subject.
+    """This admin's live grants and unanswered asks for one exact record.
 
-    Enters the platform scope, and is on the named list in
-    ``tests/test_row_level_security.py`` for it. The reason is the same shape as
-    the entries already there: an admin's own list spans every record that
-    approved one, so there is no single subject to bind — and binding one would
-    answer a different question. Both queries name this admin, so what the open
-    scope can reach and what it returns are the same rows.
-
-    Returns frozen values rather than ORM objects on purpose. A template holding
-    a live row could lazy-load its way to a subject's data from inside a request
-    that has the boundary open, which is the one thing this scope must not be
-    used to do.
+    The root console passes ``None`` only to prove the live platform role before
+    a record code is entered. Once a code is present the router binds that exact
+    subject before calling. A pending request deliberately carries no patient
+    name; approval is what permits the active-grant projection to reveal it.
     """
 
     await _require_platform_admin(session, user_id=admin_user_id)
-    from vitals.persistence.rls import enter_platform_scope
-
-    await enter_platform_scope(session)
+    if subject_id is None:
+        return Console(grants=(), requests=())
     now = await _now(session)
 
     grant_rows = (
@@ -1871,6 +1865,7 @@ async def console_for_admin(
             .join(HealthSubject, HealthSubject.id == SupportAccessGrant.subject_id)
             .where(
                 SupportAccessGrant.granted_to_user_id == admin_user_id,
+                SupportAccessGrant.subject_id == subject_id,
                 SupportAccessGrant.status == SupportAccessStatus.ACTIVE.value,
                 SupportAccessGrant.expires_at > now,
             )
@@ -1880,17 +1875,17 @@ async def console_for_admin(
 
     request_rows = (
         await session.execute(
-            select(SupportAccessRequest, HealthSubject.display_name)
+            select(SupportAccessRequest)
             .options(selectinload(SupportAccessRequest.scopes))
-            .join(HealthSubject, HealthSubject.id == SupportAccessRequest.subject_id)
             .where(
                 SupportAccessRequest.requested_by_user_id == admin_user_id,
+                SupportAccessRequest.subject_id == subject_id,
                 SupportAccessRequest.status == _LIVE_REQUEST,
                 SupportAccessRequest.expires_at > now,
             )
             .order_by(SupportAccessRequest.created_at.desc())
         )
-    ).all()
+    ).scalars().all()
 
     return Console(
         grants=tuple(
@@ -1915,7 +1910,6 @@ async def console_for_admin(
             ConsoleRequest(
                 request_id=request.id,
                 subject_id=request.subject_id,
-                subject_display_name=display_name,
                 mode=request.mode,
                 reason=request.reason,
                 created_at=_as_utc(request.created_at),
@@ -1928,34 +1922,9 @@ async def console_for_admin(
                     )
                 ),
             )
-            for request, display_name in request_rows
+            for request in request_rows
         ),
     )
-
-
-async def reachable_subjects(
-    session: AsyncSession, *, admin_user_id: uuid.UUID
-) -> tuple[tuple[uuid.UUID, str], ...]:
-    """Every record an ask could name, as ``(id, display name)``.
-
-    Deliberately not a search over people. It is the same list
-    ``/settings/platform/ai`` already shows an administrator, for the same
-    reason: choosing whose record to investigate has to be a choice from a list
-    somebody can audit, not a free-text field that finds a patient by name.
-    """
-
-    await _require_platform_admin(session, user_id=admin_user_id)
-    from vitals.persistence.rls import enter_platform_scope
-
-    await enter_platform_scope(session)
-    rows = (
-        await session.execute(
-            select(HealthSubject.id, HealthSubject.display_name)
-            .where(HealthSubject.owner_user_id != admin_user_id)
-            .order_by(HealthSubject.display_name)
-        )
-    ).all()
-    return tuple((row[0], row[1]) for row in rows)
 
 
 async def expire_stale(session: AsyncSession) -> tuple[int, int]:
@@ -2076,7 +2045,6 @@ __all__ = [
     "repair_workspace",
     "review_repair",
     "revert_repair",
-    "reachable_subjects",
     "revoke_grant",
     "withdraw_request",
 ]

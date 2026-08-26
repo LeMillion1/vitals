@@ -81,6 +81,15 @@
     {% if decided %}<div class="v-alert info">{{ t("support.decided_" ~ decided) }}</div>{% endif %}
     {% if error %}<div class="v-alert warn">{{ t("support.error_refused") }}</div>{% endif %}
 
+    <div class="v-card p-6 space-y-4" data-record-code>
+        {{ card_header(t("support.patient_record_code_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.patient_record_code_hint") }}</p>
+        <div class="space-y-2">
+            <p class="v-label">{{ t("support.field_record_code") }}</p>
+            <p class="v-card-inset p-4 v-text-label break-words" data-record-code-value>{{ subject_id }}</p>
+        </div>
+    </div>
+
     <div class="v-card p-6 space-y-4" data-break-glass-history>
         {{ card_header(t("break_glass.patient_history_title")) }}
         <p class="v-text-body" style="color: var(--muted)">{{ t("break_glass.patient_history_hint") }}</p>

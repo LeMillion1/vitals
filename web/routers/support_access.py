@@ -5,17 +5,18 @@ together. Every rule about who may do what lives in
 :mod:`vitals.services.support_access_service`; these routes carry a form to it
 and turn its refusals into pages.
 
-The administrator's console reads across records and is on the named list in
-``tests/test_row_level_security.py`` for it. The patient's screens resolve their
-subject from *who they are* rather than from the path — the same rule
-``web/routers/consents.py`` follows, for the same reason: the subject has to
-come from whichever source cannot be stale.
+The administrator's console accepts one exact opaque record code and binds that
+subject before reading anything; it neither searches nor lists patients. The
+patient's screens resolve their subject from *who they are* rather than from the
+path — the same rule ``web/routers/consents.py`` follows, for the same reason:
+the subject has to come from whichever source cannot be stale.
 """
 from __future__ import annotations
 
 import json
 import uuid
 from datetime import timedelta
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -50,6 +51,25 @@ def _back(url: str, marker: str) -> RedirectResponse:
     return RedirectResponse(
         url=f"{url}?{marker}", status_code=status.HTTP_303_SEE_OTHER
     )
+
+
+def _console_back(subject_id: uuid.UUID, marker: str) -> RedirectResponse:
+    key, _, value = marker.partition("=")
+    query = urlencode({"record_id": str(subject_id), key: value})
+    return RedirectResponse(
+        url=f"/settings/platform/support?{query}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _record_selector(raw: str | None) -> uuid.UUID | None:
+    if raw is None or not raw.strip():
+        return None
+    try:
+        selected = uuid.UUID(raw.strip())
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return selected if selected.int else None
 
 
 async def _admin_id(request: Request, db: AsyncSession) -> uuid.UUID:
@@ -95,11 +115,18 @@ async def console(
     db: AsyncSession = Depends(get_session),
     asked: str | None = None,
     error: str | None = None,
+    record_id: str | None = None,
 ):
     admin_user_id = await _admin_id(request, db)
+    selected_subject_id = _record_selector(record_id)
     try:
-        state = await support.console_for_admin(db, admin_user_id=admin_user_id)
-        subjects = await support.reachable_subjects(db, admin_user_id=admin_user_id)
+        if selected_subject_id is not None:
+            await bind_session_subject(db, selected_subject_id)
+        state = await support.console_for_admin(
+            db,
+            admin_user_id=admin_user_id,
+            subject_id=selected_subject_id,
+        )
     except support.NotAPlatformAdmin as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -112,7 +139,7 @@ async def console(
             "username": username,
             "grants": state.grants,
             "requests": state.requests,
-            "subjects": subjects,
+            "selected_subject_id": selected_subject_id,
             "domains": [domain.value for domain in RECORD_SECTIONS],
             "default_hours": int(
                 support.DEFAULT_GRANT_TTL.total_seconds() // 3600
@@ -139,12 +166,12 @@ async def ask_for_access(
     try:
         chosen = [Domain(value) for value in domains]
     except ValueError:
-        return _back("/settings/platform/support", "error=domain")
+        return _console_back(subject_id, "error=domain")
     if any(domain not in RECORD_SECTIONS for domain in chosen):
         # Not a section of anybody's record, so not a thing to be asked for —
         # checked here as well as omitted from the form, because the form is a
         # suggestion and this is the rule.
-        return _back("/settings/platform/support", "error=domain")
+        return _console_back(subject_id, "error=domain")
     # The form names exactly one record. Binding it is the PostgreSQL isolation
     # boundary; the service's live platform-role check remains authorization.
     await bind_session_subject(db, subject_id)
@@ -165,9 +192,9 @@ async def ask_for_access(
         ) from exc
     except support.SupportAccessError:
         await db.rollback()
-        return _back("/settings/platform/support", "error=refused")
+        return _console_back(subject_id, "error=refused")
     await db.commit()
-    return _back("/settings/platform/support", "asked=1")
+    return _console_back(subject_id, "asked=1")
 
 
 @admin_router.post("/export/request")
@@ -201,9 +228,9 @@ async def ask_for_export(
         ) from exc
     except support.SupportAccessError:
         await db.rollback()
-        return _back("/settings/platform/support", "error=refused")
+        return _console_back(subject_id, "error=refused")
     await db.commit()
-    return _back("/settings/platform/support", "asked=export")
+    return _console_back(subject_id, "asked=export")
 
 
 @admin_router.post("/repair/request")
@@ -234,9 +261,9 @@ async def ask_for_repair(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN) from exc
     except support.SupportAccessError:
         await db.rollback()
-        return _back("/settings/platform/support", "error=refused")
+        return _console_back(subject_id, "error=refused")
     await db.commit()
-    return _back("/settings/platform/support", "asked=repair")
+    return _console_back(subject_id, "asked=repair")
 
 
 def _repair_selectors(subject_selector: str, grant_selector: str):
@@ -483,9 +510,9 @@ async def withdraw(
         )
     except support.SupportAccessError:
         await db.rollback()
-        return _back("/settings/platform/support", "error=refused")
+        return _console_back(subject_id, "error=refused")
     await db.commit()
-    return _back("/settings/platform/support", "asked=withdrawn")
+    return _console_back(subject_id, "asked=withdrawn")
 
 
 @admin_router.post("/grant/{grant_id}/revoke")
@@ -509,9 +536,9 @@ async def hand_it_back(
         )
     except support.SupportAccessError:
         await db.rollback()
-        return _back("/settings/platform/support", "error=refused")
+        return _console_back(subject_id, "error=refused")
     await db.commit()
-    return _back("/settings/platform/support", "asked=handed-back")
+    return _console_back(subject_id, "asked=handed-back")
 
 
 # ── The patient's side ───────────────────────────────────────────────────────
@@ -547,6 +574,7 @@ async def access_history(
         "settings/access_history.html",
         {
             "username": username,
+            "subject_id": subject_id,
             "pending_requests": history.pending,
             "past_requests": history.past,
             "request_history_has_more": history.has_more,

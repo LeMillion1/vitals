@@ -2101,17 +2101,6 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
         # roots. Every returned account is then processed in a separate
         # subject-bound job transaction.
         ("vitals/scheduler/fanout.py", "_list_provider_accounts"),
-        # An administrator's own console: their live grants and unanswered asks
-        # span every record that answered one, so there is no single subject to
-        # bind and binding one would answer a different question. Both queries
-        # name this admin, and both return frozen values rather than rows, so
-        # nothing reachable under the open scope leaves the function.
-        ("vitals/services/support_access_service.py", "console_for_admin"),
-        # The list of records an ask may name. Same list ``/settings/platform/ai``
-        # already shows an administrator, and for the same reason: choosing whose
-        # record to investigate must be a choice from an auditable list, not a
-        # free-text search that finds a patient by name.
-        ("vitals/services/support_access_service.py", "reachable_subjects"),
         # Fixed-target operator cutover. It must enumerate every legacy file
         # root across subjects; output is aggregate-only and every changed row
         # is independently committed with an append-only audit event.

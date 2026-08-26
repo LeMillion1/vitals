@@ -272,6 +272,20 @@ class Installation:
             )
         return self._subjects[username]
 
+    def subject_named(self, display_name: str) -> str:
+        """Resolve the opaque code from a display name used by UI scenarios."""
+
+        import sqlite3
+
+        with sqlite3.connect(self.database) as db:
+            row = db.execute(
+                "SELECT id FROM health_subjects WHERE display_name = ?",
+                (display_name,),
+            ).fetchone()
+        assert row is not None, f"no seeded record named {display_name!r}"
+        raw = row[0]
+        return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+
 
 #: Tables a scenario writes into, newest-first so a child is removed before the
 #: parent it points at. Everything a test creates lives in one of these; the

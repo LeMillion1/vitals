@@ -53,7 +53,23 @@ class Role:
         return self._open(AccessHistoryPage)
 
     def support_console(self) -> SupportConsolePage:
-        return self._open(SupportConsolePage)
+        record_id = getattr(self, "_support_record_id", None)
+        if record_id is None:
+            page = self._open(SupportConsolePage)
+        else:
+            screen = SupportConsolePage(
+                self.page,
+                self.installation.base_url,
+                self.username,
+                self.complaints,
+            )
+            screen.PATH = f"{SupportConsolePage.PATH}?record_id={record_id}"
+            page = screen.open()
+        page.record_id_for = self.installation.subject_named
+        page.remember_record = lambda value: setattr(
+            self, "_support_record_id", value
+        )
+        return page
 
     def roster(self) -> CareRosterPage:
         return self._open(CareRosterPage)
