@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — product documentation distinguishes records from modules
+
+The repository guidance and feature template now describe the shared,
+multi-account service. README defines the 15 product modules as 13 persisted
+health-record sections plus charts and proactive behavior, and no longer claims
+raw storage for inbound messages from the removed Telegram bot.
+
 ### Fixed — recordless operators return to the platform workspace
 
 A platform-only operator who opens a personal health page now receives a clear

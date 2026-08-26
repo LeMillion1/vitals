@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Feature requests are welcome! Keep in mind Vitals is a **single-user, self-hosted** tool — features that add complexity for multi-user scenarios are unlikely to be accepted.
+        Feature requests are welcome! Vitals is a **self-hosted, multi-account** service: describe which patient, professional, support, or platform-operator role owns the workflow and data.
 
   - type: textarea
     id: problem

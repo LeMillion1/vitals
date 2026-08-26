@@ -7,7 +7,7 @@
 
 <p align="center">
   <strong>Self-hosted personal health data lake & dashboard with 69 MCP tools for Claude.ai</strong><br>
-  <sub>Masthead UI · EN/RU interface · 14 Domains · Weight & BIA · HRT/TRT · GLP-1 · Garmin · Hevy · Nutrition · Labs · Genetics · Skincare · Timeline · AI Digests · Doctor Report</sub>
+  <sub>Masthead UI · EN/RU interface · 15 product modules · Weight & BIA · HRT/TRT · GLP-1 · Garmin · Hevy · Nutrition · Labs · Genetics · Skincare · Timeline · AI Digests · Doctor Report</sub>
 </p>
 
 <p align="center">
@@ -58,7 +58,7 @@
 
 Мои данные были разбросаны по многим приложениям: Garmin, Hevy, заметки по GLP-1 и ГЗТ, таблица с анализами, файл с добавками. Ни одно из них не умело сопоставлять сон с восстановлением после тренировки или связывать побочные эффекты терапии с питанием — всё приходилось держать в голове.
 
-Vitals написан с Claude в качестве основного инструмента разработки — но модель данных, архитектура и доменная структура мои. MCP-слой — ключевая часть: Claude может в реальном времени читать и записывать данные по всем 15 доменам, отвечая на вопросы вроде «как мой сон за последнюю неделю влияет на восстановление?» с конкретными цифрами.
+Vitals написан с Claude в качестве основного инструмента разработки — но модель данных, архитектура и доменная структура мои. MCP-слой — ключевая часть: Claude может в реальном времени читать и записывать данные во всех разделах медицинской записи, отвечая на вопросы вроде «как мой сон за последнюю неделю влияет на восстановление?» с конкретными цифрами.
 
 ### Что умеет
 
@@ -71,7 +71,7 @@ Vitals написан с Claude в качестве основного инст�
 <td width="50%">
 
 **📊 Данные и аналитика**
-- 15 независимых доменов здоровья, терапии и хронологии
+- 15 продуктовых модулей: 13 разделов медицинской записи, графики и проактивный слой
 - Автосинк Garmin Connect + Hevy API
 - OCR-парсинг анализов через LLM (Gemini)
 - Vision-парсинг бланков состава тела InBody / МедАсс (BIA)
@@ -144,7 +144,7 @@ Vitals написан с Claude в качестве основного инст�
 
 > [!NOTE]
 > **1. Сохранность сырых данных (Raw Payloads Store)**
-> Все интеграции сохраняют исходные ответы API в JSONB-таблицу `raw_payloads` параллельно со структурированными записями: Garmin, Hevy, анализы, BIA-бланки, исходный VCF и входящие сообщения бота. Если завтра обновится парсер — вся история перепарсится без потерь, и это не обещание на словах: ночная задача `raw_payload_sweep` (03:30) заново разбирает всё, что помечено «нужен перепарс», по каждому домену независимо.
+> Внешние интеграции и импортируемые документы сохраняют исходные ответы или содержимое в JSONB-таблице `raw_payloads` параллельно со структурированными записями: Garmin, Hevy, анализы, BIA-бланки и исходный VCF. Если завтра обновится парсер — сохранённая история перепарсится без потерь, и это не обещание на словах: ночная задача `raw_payload_sweep` (03:30) заново разбирает всё, что помечено «нужен перепарс», по каждому домену независимо.
 
 > [!TIP]
 > **2. Движок конфликтов (Conflict Engine)**
@@ -917,7 +917,7 @@ Vitals has a **voice**: a proactive layer builds a morning brief and condition-d
 
 My data was scattered across many apps: Garmin, Hevy, GLP-1 and HRT notes, a spreadsheet with lab results, a file with supplements. None of them could cross-reference sleep with training recovery or link therapy side effects to nutrition — I had to keep it all in my head.
 
-Built with Claude as the primary coding tool — but the data model, architecture, and domain design are mine. The MCP layer is the key part: Claude can read and write data across all 14 domains in real time, answering questions like "how did my sleep this week affect my recovery?" with actual numbers.
+Built with Claude as the primary coding tool — but the data model, architecture, and domain design are mine. The MCP layer is the key part: Claude can read and write every health-record section in real time, answering questions like "how did my sleep this week affect my recovery?" with actual numbers.
 
 <p align="center">
   <img src="./gifs/MCP_en.gif" alt="Claude querying Vitals via MCP" width="100%">
@@ -934,7 +934,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 <td width="50%">
 
 **📊 Data & Analytics**
-- 15 independent health, therapy and event domains
+- 15 product modules: 13 health-record sections, charts, and the proactive layer
 - Auto-sync Garmin Connect + Hevy API
 - OCR lab report parsing via LLM (Gemini)
 - Vision-parsing of InBody / МедАсс (BIA) body composition reports
@@ -1007,7 +1007,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 
 > [!NOTE]
 > **1. Raw Data Preservation**
-> All API integrations preserve original JSON payloads in a JSONB `raw_payloads` table alongside normalized records: Garmin, Hevy, lab reports, BIA sheets, the source VCF, and every inbound bot message. If a parser changes — the entire history can be re-processed with zero loss, and that isn't only a promise: a nightly `raw_payload_sweep` (03:30) re-derives everything flagged for re-parsing, each domain committing independently.
+> External integrations and imported documents preserve original responses or content in a JSONB `raw_payloads` table alongside normalized records: Garmin, Hevy, lab reports, BIA sheets, and the source VCF. If a parser changes, the retained history can be re-processed without loss: a nightly `raw_payload_sweep` (03:30) re-derives everything flagged for re-parsing, each domain committing independently.
 
 > [!TIP]
 > **2. Resilient Conflict Engine**
