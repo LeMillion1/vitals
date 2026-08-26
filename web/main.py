@@ -24,6 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.i18n import get_js_strings
+from vitals.persistence.rls import enter_platform_scope
 from vitals.services import health_profile_service
 from vitals.services.access_resolution import AccessDeniedError
 from vitals.services.alerts_service import AlertLegacyBridgeError
@@ -101,6 +102,13 @@ async def _bootstrap_legacy_identity(
     web_config = get_web_config()
     async with session_factory() as session:
         try:
+            # This compatibility transaction has to discover the sole durable
+            # subject before any subject can be bound.  Under a restricted
+            # runtime role an unbound RLS session correctly sees no connection
+            # roots and would try to create duplicates.  Declare the bounded
+            # startup reconciliation as installation work; the scope is LOCAL
+            # to this transaction and ends at the commit/rollback below.
+            await enter_platform_scope(session)
             identity = await bootstrap_legacy_owner(
                 session,
                 username=web_config.auth_username,

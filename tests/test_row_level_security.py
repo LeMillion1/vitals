@@ -742,6 +742,10 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
             "vitals/services/authentication/admission/_shared.py",
             "provision_and_link",
         ),
+        # The compatibility startup transaction must discover the sole durable
+        # subject before it can bind one. Its identity, connection, settings,
+        # and preference reconciliation is bounded by one commit/rollback.
+        ("web/main.py", "_bootstrap_legacy_identity"),
         # Housekeeping across every subject, with no person to act as.
         ("vitals/services/share_service.py", "purge_job"),
         ("vitals/services/ai_gateway_service.py", "reconciliation_job"),
