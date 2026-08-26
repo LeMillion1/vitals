@@ -2,7 +2,9 @@
 
 ## Supported Versions
 
-This commercial fork is completing a multi-user transition. Only the latest
+The commercial branch has completed its code-level multi-user isolation boundary
+for the current release. Public launch still requires the documented external
+security, legal, identity-provider, backup, and operations gates. Only the latest
 commit on `commercial/main` is supported; upstream `master` remains the
 single-user self-hosted edition.
 
@@ -39,6 +41,13 @@ security model assumes:
 - Only provisioned accounts can enter while registration is disabled
 - The `.env` file with credentials is never committed to the repository
 
+The normative role and operational boundaries are defined in
+[`docs/ACCESS_MODEL.md`](docs/ACCESS_MODEL.md). In particular, the server's host
+operator and an application `platform_superadmin` are separate capabilities;
+neither supplies standing in-application permission to inspect PHI. The host
+operator remains a highly trusted infrastructure principal because server,
+database-owner, and backup access can bypass application enforcement.
+
 Key security controls already in place:
 - **Bcrypt** password hashing
 - **Signed session cookies** (itsdangerous)
@@ -49,11 +58,11 @@ Key security controls already in place:
 
 ### Commercial branch transition
 
-The `commercial/*` branches are an in-progress multi-user rewrite. Public
-registration remains disabled until subject ownership, scoped services, files,
-integrations, sessions, MCP, and PostgreSQL RLS have all passed their isolation
-gates. A schema row or role is not evidence that the branch is ready to host
-multiple people.
+The code-level transition covers subject ownership, scoped services, files,
+integrations, sessions, MCP, and PostgreSQL RLS. Public registration remains
+disabled until the remaining external security, legal, identity-provider,
+backup, and operations gates are completed. Passing the code boundary does not
+by itself authorize a public commercial launch.
 
 The legacy environment-backed owner is materialized as an active database user,
 `member`, `platform_superadmin`, and self-owned health subject during startup.
@@ -61,8 +70,11 @@ Startup fails closed if the configured username or bcrypt hash disagrees with a
 non-empty identity database. The last active platform superadmin cannot be
 revoked or suspended through identity services.
 
-`platform_superadmin` is an operational role, not standing permission to inspect
-health data. Patient data requires a short-lived, subject-bound support grant
+`platform_superadmin` is an application control-plane role, not the host operator
+and not standing permission to inspect health data. It may use reviewed Platform
+surfaces, including the web-runtime restart action; that action does not restart
+the separate scheduler worker, run migrations, deploy an image, or control the
+Compose project. Patient data requires a short-lived, subject-bound support grant
 with an explicit reason, approver, expiry, mode, and concrete scope. This is how
 maintainers can investigate and repair production issues without creating an
 invisible global medical-record bypass.
@@ -123,16 +135,18 @@ row state, expiry, and exact verified email under the identity-governance lock.
 The UUID and signed cookie are not sufficient on their own, and neither contains
 an address, account kind, provider claim, role, credential, or health data.
 
-The legacy password bridge writes `.env` and PostgreSQL as one logical change,
-but no filesystem/database transaction can make them physically atomic. An
-ordinary commit error or request cancellation restores the previous environment
+The legacy password bridge writes the application runtime file selected by
+`VITALS_ENV_FILE` and PostgreSQL as one logical change. In production that file
+is the allowlisted `.vitals-runtime/vitals.env`, not the host/operator `.env`.
+No filesystem/database transaction can make the two stores physically atomic.
+An ordinary commit error or request cancellation restores the previous runtime
 hash. A hard process stop or ambiguous database commit can still leave the two
 copies different; startup then deliberately refuses to choose one. Recovery is
-an operator action: restore the intended bcrypt hash from a trusted secret backup
-to both stores (without printing it to logs), bump `users.session_version`, and
-restart. Until database sessions land, rotate `VITALS_SESSION_SECRET` as a
-separate step when already issued browser/MCP credentials must be invalidated.
-Never make bootstrap overwrite one side automatically.
+a host-operator action: restore the intended bcrypt hash from a trusted secret
+backup to both stores (without printing it to logs), bump
+`users.session_version`, and restart. Rotate `VITALS_SESSION_SECRET` separately
+when already issued browser/MCP credentials must also be invalidated. Never make
+bootstrap overwrite one side automatically.
 
 The complete OIDC configuration disables that bridge at process startup. The
 application does not read legacy username/hash values to create, select, repair,
@@ -192,5 +206,4 @@ installation-wide action: it invalidates every signed browser and MCP token.
 ## What is NOT a Security Issue
 
 - The application being accessible on your own local network
-- Rate limits being bypassable by the single authorized user
 - Log messages containing non-sensitive operational information

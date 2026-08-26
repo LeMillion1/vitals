@@ -39,13 +39,16 @@
 
 ## Vitals - Личный кабинет здоровья и data lake
 
-**Vitals** — персональный дашборд здоровья и полноценное «озеро данных» (data lake) для одного пользователя. Система спроектирована для долгосрочного отслеживания биомаркеров, рекомпозиции тела, контроля терапии GLP-1, прохождения курсов гормональной терапии (ГЗТ / TRT), анализа спортивных показателей и построения еженедельных AI-отчётов с помощью языковых моделей через OpenRouter.
+**Vitals** — self-hosted сервис личных кабинетов здоровья и полноценное «озеро данных» (data lake), где каждая медицинская запись принадлежит конкретному человеку. Система спроектирована для долгосрочного отслеживания биомаркеров, рекомпозиции тела, контроля терапии GLP-1, прохождения курсов гормональной терапии (ГЗТ / TRT), анализа спортивных показателей и построения еженедельных AI-отчётов с помощью языковых моделей через OpenRouter.
 
 Интерфейс полностью стандартизирован на единственной оболочке **Masthead** — издательском (editorial) дизайне с тёплой глубокой темой (`#1D1A21` / `#332F3C`), milk-white текстом, точечными акцентами цвета янтарного мёда (`#F5A623`) и высококлассной типографикой (Outfit/Bricolage Grotesque/Inter, без использования моноширинных шрифтов). Дизайн-система целиком описана в [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md).
 
 Проверенный статус многопользовательской миграции, расхождения документации и
 оставшиеся границы зафиксированы в
 [docs/MULTI_USER_IMPLEMENTATION_AUDIT.md](docs/MULTI_USER_IMPLEMENTATION_AUDIT.md).
+Нормативные границы владельца записи, врача, тренера, поддержки, администратора
+приложения и оператора сервера описаны в
+[docs/ACCESS_MODEL.md](docs/ACCESS_MODEL.md).
 
 Главное отличие от фитнес-трекеров — **принцип максимального сохранения сырых данных**. Vitals — умный навигатор здоровья, который подсвечивает неочевидные взаимосвязи между сном, тренировками, медикаментами и весом, помогая принимать взвешенные решения. Не надзиратель — штурман.
 
@@ -107,9 +110,9 @@ Vitals написан с Claude в качестве основного инст�
 <td>
 
 **🔒 Приватность и контроль**
-- Self-hosted, single-user, behind VPN
-- Bcrypt-авторизация + подписанные сессии
-- Двухфакторный вход (TOTP) — по желанию, включается в настройках
+- Self-hosted shared service с изоляцией данных по владельцу записи
+- OIDC для нескольких аккаунтов; bcrypt/TOTP остаются режимом совместимости legacy-владельца
+- Роль врача или тренера сама не открывает данные: нужны отношения и согласие подопечного
 - CSRF + Origin Guard + CSP
 - Модульный дашборд — включай/выключай домены в настройках
 - Никаких внешних CDN — шрифты и стили полностью локальные
@@ -152,8 +155,11 @@ Vitals написан с Claude в качестве основного инст�
 > Время «сегодня» и границы дат строго в зоне пользователя (`VITALS_TIMEZONE`). Никаких сбитых графиков при вечерних тренировках. Всё время через `vitals/utils/timeutils`.
 
 > [!CAUTION]
-> **4. Self-hosted & Single-User Privacy**
-> Биометрические данные принадлежат только вам. Деплой на собственный сервер за VPN. Сессионные куки, bcrypt-пароль, CSRF-защита.
+> **4. Self-hosted и изолированная по субъекту приватность**
+> Медицинские данные принадлежат конкретному владельцу записи. Роль врача,
+> тренера или администратора сама их не открывает; точные основания доступа
+> описаны в [модели доступа](docs/ACCESS_MODEL.md). Деплой выполняется на
+> собственный сервер за TLS/VPN с защищёнными сессиями и CSRF-защитой.
 
 > [!TIP]
 > **5. Полная переносимость данных (Data Portability)**
@@ -578,6 +584,13 @@ Host-only `.env` с migration DSN, worker DSN и паролем владельц
 `.vitals-runtime/` для атомарного чтения/изменения `vitals.env`, worker — тот же
 каталог только для чтения и получает свой DSN через точное Compose-сопоставление.
 
+Host operator и `platform_superadmin` — разные границы. Первый управляет SSH,
+Compose, миграциями, секретами и disaster recovery; второй получает только
+проверенные действия в Platform-разделе приложения и не имеет постоянного
+доступа к медицинским данным. Кнопка перезапуска в Platform завершает только
+web-runtime, а не отдельный worker и не весь Compose-проект. Полная матрица:
+[docs/ACCESS_MODEL.md](docs/ACCESS_MODEL.md).
+
 #### 4. Запустите
 
 ```bash
@@ -885,13 +898,16 @@ bash scripts/test_postgres.sh
 
 ## Vitals - Personal Health Dashboard and Data Lake
 
-**Vitals** is a personal health dashboard and data lake designed for a single user. Built for long-term tracking of biomarkers, body recomposition, GLP-1 therapy, hormone replacement therapy (HRT / TRT) cycles, athletic performance, and AI-powered weekly analytical digests via OpenRouter LLMs.
+**Vitals** is a self-hosted health-account service and data lake in which every medical record belongs to one named person. It is built for long-term tracking of biomarkers, body recomposition, GLP-1 therapy, hormone replacement therapy (HRT / TRT) cycles, athletic performance, and AI-powered weekly analytical digests via OpenRouter LLMs.
 
 The interface standardizes entirely on a single UI shell — **Masthead** — featuring a warm dark plum-charcoal aesthetic (`#1D1A21` / `#332F3C`), milk-white typography, selective honey-amber (`#F5A623`) highlights, and editorial-grade typography (Outfit / Bricolage Grotesque / Inter, without a single monospace font). The full design system is documented in [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md).
 
 The verified multi-user migration status, documentation discrepancies, and
 remaining boundaries are recorded in
 [docs/MULTI_USER_IMPLEMENTATION_AUDIT.md](docs/MULTI_USER_IMPLEMENTATION_AUDIT.md).
+The normative boundaries for record owners, doctors, trainers, support,
+application administrators, and server operators are defined in
+[docs/ACCESS_MODEL.md](docs/ACCESS_MODEL.md).
 
 Unlike typical fitness trackers, Vitals prioritizes **preserving raw historical data**. It serves as a smart wellness navigator — uncovering correlations between sleep, workouts, supplements, and body composition. Not a watchdog — a co-pilot.
 
@@ -957,9 +973,9 @@ Built with Claude as the primary coding tool — but the data model, architectur
 <td>
 
 **🔒 Privacy & Control**
-- Self-hosted, single-user, behind VPN
-- Bcrypt auth + signed session cookies
-- Optional two-factor sign-in (TOTP), switched on in Settings
+- Self-hosted shared service with record-owner isolation
+- OIDC for multiple accounts; bcrypt/TOTP remains a legacy-owner compatibility mode
+- A doctor or trainer role grants no data by itself: relationship and patient consent are required
 - CSRF + Origin Guard + CSP
 - Modular dashboard — toggle domains on/off in Settings
 - No external CDNs — fonts and assets are hosted locally
@@ -1002,8 +1018,11 @@ Built with Claude as the primary coding tool — but the data model, architectur
 > Daily resets and calendar math resolve against the user's timezone (`VITALS_TIMEZONE`), not the server clock. No more split days from late-night workouts. All time via `vitals/utils/timeutils`.
 
 > [!CAUTION]
-> **4. Single-User Self-Hosted Privacy**
-> Your biometrics belong to you. Designed for deployment behind a VPN. Secure session cookies, bcrypt passwords, CSRF protection, and an optional TOTP second factor for installs that face the open internet.
+> **4. Subject-Isolated Self-Hosted Privacy**
+> Health data belongs to one named record owner. A doctor, trainer, or
+> administrator role does not open it by itself; the exact authorization bases
+> are defined in the [access model](docs/ACCESS_MODEL.md). Deploy behind TLS/VPN
+> with protected sessions and CSRF checks.
 
 > [!TIP]
 > **5. End-to-End Data Portability**
@@ -1429,6 +1448,13 @@ owner password, is never mounted into either runtime. Web mounts
 `.vitals-runtime/` read/write so Settings can atomically replace `vitals.env`;
 the worker mounts the same directory read-only and receives its own DSN through
 one exact Compose mapping.
+
+The host operator and `platform_superadmin` are separate boundaries. The first
+controls SSH, Compose, migrations, secrets, and disaster recovery; the second
+receives only reviewed application actions in the Platform area and has no
+standing PHI access. Platform's restart action terminates the web runtime only,
+not the separate worker or the whole Compose project. See the complete matrix in
+[docs/ACCESS_MODEL.md](docs/ACCESS_MODEL.md).
 
 #### 4. Launch
 

@@ -63,9 +63,13 @@ is not 32 characters. In the current release it then refuses unconditionally,
 even when all three are valid, because no provider image/configuration has been
 approved in version control yet.
 
-Never put these three values in the application `.env`. Compose mounts that
-file into `vitals_app`; `.env.idp` is passed only to explicit provider commands
-and is never mounted into the application.
+Never put these three values in either the host/operator `.env` or the
+application runtime file. Compose does not mount the operator `.env` into web or
+worker: they receive only the allowlisted `.vitals-runtime/vitals.env`, with web
+mounting its directory read/write and worker mounting it read-only. `.env.idp`
+is passed only to explicit provider-profile commands and is never mounted into
+the Vitals runtimes. The separate host-operator and application-admin boundaries
+are defined in [`ACCESS_MODEL.md`](ACCESS_MODEL.md).
 
 The profile also starts `vitals_idp_backup`, which writes a separate verified
 PostgreSQL recovery stream below `backups/idp/`. Before the first production
