@@ -2033,24 +2033,38 @@ def test_the_compose_file_keeps_the_provider_behind_a_profile():
     )
     for name in (
         "vitals_idp_config_check",
-        "vitals_idp",
+        "vitals_idp_config_render",
+        "vitals_idp_bootstrap_prepare",
         "vitals_idp_db",
+        "vitals_idp_db_provision",
+        "vitals_idp_init",
+        "vitals_idp_setup",
+        "vitals_idp_bootstrap_seal",
+        "vitals_idp_db_grants",
+        "vitals_idp",
+        "vitals_idp_login",
+        "vitals_idp_gateway",
         "vitals_idp_backup",
     ):
         assert compose["services"][name]["profiles"] == ["idp"], name
 
-    for name in ("vitals_idp", "vitals_idp_db"):
-        assert compose["services"][name]["depends_on"][
-            "vitals_idp_config_check"
-        ]["condition"] == "service_completed_successfully"
+    assert compose["services"]["vitals_idp_db"]["depends_on"][
+        "vitals_idp_config_check"
+    ]["condition"] == "service_completed_successfully"
 
     assert compose["services"]["vitals_idp"]["healthcheck"]["test"] == [
         "CMD",
         "/app/zitadel",
         "ready",
     ]
+    assert compose["services"]["vitals_idp_login"]["healthcheck"]["test"] == [
+        "CMD",
+        "/bin/sh",
+        "-c",
+        "node /app/healthcheck.mjs http://localhost:3000/ui/v2/login/healthy",
+    ]
     assert compose["services"]["vitals_idp_backup"]["depends_on"] == {
-        "vitals_idp": {"condition": "service_healthy"}
+        "vitals_idp_gateway": {"condition": "service_healthy"}
     }
 
     # Its own volume, so restoring the health store and restoring the identity
@@ -2078,12 +2092,14 @@ def test_the_inactive_provider_profile_does_not_require_provider_secrets():
     ).read_text()
 
     for name in (
-        "VITALS_IDP_MASTERKEY",
-        "VITALS_IDP_DB_PASSWORD",
-        "VITALS_IDP_ADMIN_PASSWORD",
+        "VITALS_IDP_MASTERKEY_FILE",
+        "VITALS_IDP_DB_ADMIN_PASSWORD_FILE",
+        "VITALS_IDP_DB_SERVICE_PASSWORD_FILE",
+        "VITALS_IDP_DB_BACKUP_PASSWORD_FILE",
+        "VITALS_IDP_ADMIN_PASSWORD_FILE",
     ):
         assert f"${{{name}:?" not in source
-        assert f"${{{name}:-}}" in source
+        assert f"${{{name}:-" in source
 
 
 def test_the_provider_profile_replaces_the_known_first_admin_password():
@@ -2094,17 +2110,21 @@ def test_the_provider_profile_replaces_the_known_first_admin_password():
     root = Path(__file__).resolve().parent.parent
     source = (root / "docker-compose.yml").read_text()
     compose = yaml.safe_load(source)
-    environment = compose["services"]["vitals_idp"]["environment"]
+    service = compose["services"]["vitals_idp_config_render"]
 
-    assert environment["ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD"] == (
-        "${VITALS_IDP_ADMIN_PASSWORD:-}"
+    assert "idp_admin_password" in service["secrets"]
+    assert service["environment"]["VITALS_IDP_ADMIN_PASSWORD_FILE"] == (
+        "/run/secrets/idp_admin_password"
     )
+    setup = compose["services"]["vitals_idp_setup"]
+    assert "idp_admin_password" not in setup.get("secrets", [])
+    assert "ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD" not in setup["environment"]
     assert "Password1!" not in source
     for document in (
         root / ".env.idp.example",
         root / "docs" / "OIDC_SETUP.md",
     ):
-        assert "VITALS_IDP_ADMIN_PASSWORD" in document.read_text()
+        assert "VITALS_IDP_ADMIN_PASSWORD_FILE" in document.read_text()
 
 
 def test_the_provider_profile_does_not_advertise_orphan_registration():
@@ -2114,7 +2134,7 @@ def test_the_provider_profile_does_not_advertise_orphan_registration():
 
     root = Path(__file__).resolve().parent.parent
     compose = yaml.safe_load((root / "docker-compose.yml").read_text())
-    environment = compose["services"]["vitals_idp"]["environment"]
+    environment = compose["services"]["vitals_idp_setup"]["environment"]
 
     assert environment[
         "ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_ALLOWREGISTER"

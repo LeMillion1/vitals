@@ -30,40 +30,35 @@ start a process that has no usable recovery administrator.
 ## Before you start
 
 > [!CAUTION]
-> Compose no longer contains a runnable ZITADEL default. The previously
-> referenced `v2.66.0` tag was obsolete and fell within published vulnerable
-> ranges, including the official
-> [critical IDOR advisory](https://github.com/zitadel/zitadel/security/advisories/GHSA-f3gh-529w-v32x)
-> and [MFA bypass advisory](https://github.com/zitadel/zitadel/security/advisories/GHSA-cfjq-28r2-4jv5).
-> First select a supported provider/version under its documented
-> [lifecycle](https://github.com/zitadel/zitadel/discussions/9417), review the
-> exact release's licence, independently verify its manifest digest, and land a
-> reviewed code change that replaces the sentinel and unconditional preflight
-> refusal with exact image digest(s) plus compatible configuration. An env
-> override is deliberately insufficient to approve identity infrastructure.
+> Compose approves ZITADEL `v4.16.2` only at the two reviewed OCI index digests
+> committed in `docker-compose.yml`; the Login V2 image is a separate process.
+> Caddy `2.10.2` is pinned separately and has no Docker socket. A later version
+> change is an infrastructure migration: verify new digests, run `setup`, take a
+> pre-upgrade identity bundle, and repeat the destructive restore drill first.
 
-Before an approved provider's first start, generate three independent secrets
-and put them in a separate owner-only `.env.idp`, copied from
-`.env.idp.example`:
+Before the first start, create `.secrets/` with mode `0700`, generate five
+independent one-line secret files with mode `0600`, and copy
+`.env.idp.example` to owner-only `.env.idp`. The example names the expected
+paths:
 
 ```bash
-# Exactly 32 characters. Back it up: changing it later loses access to data
-# ZITADEL encrypted with it.
-python -c "import secrets; print(secrets.token_hex(16))"
-# Database password.
+# Exactly 32 bytes and no trailing newline; escrow the same file off-host.
+python -c "import secrets,sys; sys.stdout.write(secrets.token_hex(16))"
+# Run separately for DB admin, DB service owner, and read-only backup role.
 python -c "import secrets; print(secrets.token_urlsafe(32))"
-# First administrator password; the prefix guarantees the required classes.
-python -c "import secrets; print('Aa1!'+secrets.token_urlsafe(24))"
+# First human administrator password.
+python -c "import secrets; print('Aa1.'+secrets.token_urlsafe(24))"
 ```
 
-Store the results as `VITALS_IDP_MASTERKEY`, `VITALS_IDP_DB_PASSWORD`, and
-`VITALS_IDP_ADMIN_PASSWORD`. These are required only when the `idp` profile is
-selected; its preflight refuses a missing secret or a master key whose length
-is not 32 characters. In the current release it then refuses unconditionally,
-even when all three are valid, because no provider image/configuration has been
-approved in version control yet.
+The files are selected through `VITALS_IDP_MASTERKEY_FILE`,
+`VITALS_IDP_DB_ADMIN_PASSWORD_FILE`, `VITALS_IDP_DB_SERVICE_PASSWORD_FILE`,
+`VITALS_IDP_DB_BACKUP_PASSWORD_FILE`, and `VITALS_IDP_ADMIN_PASSWORD_FILE`.
+Preflight rejects missing, multiline, reused database, or non-URL-safe password
+files and a master key whose content is not exactly 32 characters. The master
+key is mounted only into fail-closed preflight, setup, and API; DB admin, Login,
+backup, gateway, Vitals web, and Vitals worker cannot read it.
 
-Never put these three values in either the host/operator `.env` or the
+Never put these values in either the host/operator `.env` or the
 application runtime file. Compose does not mount the operator `.env` into web or
 worker: they receive only the allowlisted `.vitals-runtime/vitals.env`, with web
 mounting its directory read/write and worker mounting it read-only. `.env.idp`
@@ -72,7 +67,8 @@ the Vitals runtimes. The separate host-operator and application-admin boundaries
 are defined in [`ACCESS_MODEL.md`](ACCESS_MODEL.md).
 
 The profile also starts `vitals_idp_backup`, which writes a separate verified
-PostgreSQL recovery stream below `backups/idp/`. Before the first production
+two-artifact recovery stream below `backups/idp/`: a PostgreSQL dump and the
+matching Login V2 client PAT, with the manifest published last. Before production
 start, follow the identity-provider gate in `BACKUP_RESTORE_RUNBOOK.md` against
 a disposable ZITADEL database. Confirm that the production Compose override
 mounts the same protected host backup directory into this sidecar and the
@@ -100,10 +96,18 @@ docker compose --env-file .env --env-file .env.idp \
   --profile idp up -d --wait vitals_idp_backup
 ```
 
-ZITADEL comes up on `127.0.0.1:8080`, bound to loopback for the same reason the
-app is: this is the door to the health record and belongs behind the same VPN.
-Sign in with `zitadel-admin@zitadel.<external-domain>` and the value of
-`VITALS_IDP_ADMIN_PASSWORD`, then complete the required password change. The
+The only published provider origin is the Caddy gateway at
+`127.0.0.1:${VITALS_IDP_ORIGIN_PORT}`. It routes `/ui/v2/login` to Login V2 and
+all other paths to the API over h2c. API, Login, and PostgreSQL publish no host
+ports. The public `https://<VITALS_IDP_DOMAIN>:443` route is a separate cutover
+gate: it must preserve HTTP/2/gRPC to this h2c-aware boundary and pass external
+discovery, Console, Login V2, gRPC-Web, and `grpcurl` checks. A plain
+Cloudflare-Tunnel HTTP smoke is not that proof.
+
+Sign in with the configured `VITALS_IDP_ADMIN_USERNAME` (ZITADEL may suffix the
+default organization domain) and the value of
+the file selected by `VITALS_IDP_ADMIN_PASSWORD_FILE`, then complete the
+required password change. The
 pinned image's upstream default is publicly known; the Compose preflight and
 explicit first-instance password exist to ensure it is never used. Changing a
 `FIRSTINSTANCE` value after `vitals_idp_pgdata` has been created does not update
@@ -363,21 +367,15 @@ month stop working together.
 
 ## The provider/version/licence gate
 
-Compose contains no runnable provider image: it has a version-controlled,
-nonexistent all-zero sentinel and an unconditional preflight refusal. Selecting
-the profile therefore cannot start an old tag, and changing an env file cannot
-approve a different binary. Current ZITADEL lines changed runtime/login
-behavior and licence posture. Select the provider and version explicitly,
-inspect that exact release and notices, prove that its tag resolves to the
-recorded OCI digest, and review the matching Compose/login/backup configuration
-before repeating the whole conformance and restore drill. This is not legal
-advice.
+The approved deployment pins ZITADEL API and Login V2 `v4.16.2` plus Caddy
+`2.10.2` by OCI index digest. Environment files cannot replace those images.
+It separates database provisioning, `init schema`, versioned `setup`, runtime,
+Login, gateway, and backup; the long-running API uses only the non-superuser
+database owner, while backup uses `pg_read_all_data` in the dedicated identity
+cluster. The setup-generated Login PAT is part of every identity bundle.
 
-For ZITADEL v4, approval is not a one-line image replacement. The reviewed
-deployment must pin separate API and Login V2 images, preserve or reproducibly
-recreate the login-client PAT/bootstrap state during disaster recovery, separate
-the public HTTPS port from the loopback origin port, and split one-shot database
-initialization/setup privileges from the non-superuser long-running role. The
-Cloudflare route must also be tested for the provider's HTTP/2, h2c, and
-gRPC-Web requirements. Keep the sentinel in place until those pieces and their
-restore/restart tests land together.
+Approval of the images is not approval to cut over production. Before adding
+the four Vitals OIDC values, complete the tagged-image Compose conformance,
+destructive DB+PAT restore and restart, independent offsite restore, and public
+HTTP/2/gRPC/browser checks. Review the exact release notices and licence again
+for every version change. This is not legal advice.

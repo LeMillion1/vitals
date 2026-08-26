@@ -2,7 +2,8 @@
 # Periodic, independently restorable recovery points for the ZITADEL database.
 #
 # Identity data has a different recovery boundary from health data. A ZITADEL
-# dump is complete only after its one-artifact checksum manifest is published;
+# dump is complete only when the matching Login V2 credential is captured and
+# the two-artifact checksum manifest is published;
 # offsite replication and restore tooling ignore every loose file.
 
 set -eu
@@ -18,6 +19,19 @@ BACKUP_DIR="${VITALS_IDP_BACKUP_DIR:-/backups/idp}"
 RETENTION_DAYS="${VITALS_IDP_BACKUP_RETENTION_DAYS:-7}"
 INTERVAL_SECONDS="${VITALS_IDP_BACKUP_INTERVAL_SECONDS:-86400}"
 RUN_ONCE="${VITALS_IDP_BACKUP_RUN_ONCE:-false}"
+BOOTSTRAP_PAT_FILE="${VITALS_IDP_BOOTSTRAP_PAT_FILE:-/zitadel/bootstrap/login-client.pat}"
+DB_PASSWORD_FILE="${VITALS_IDP_DB_PASSWORD_FILE:-}"
+
+if [ -z "$DB_PASSWORD_FILE" ] || [ ! -f "$DB_PASSWORD_FILE" ] \
+    || [ -L "$DB_PASSWORD_FILE" ] || [ ! -s "$DB_PASSWORD_FILE" ]; then
+    echo "[idp-backup] ERROR: database password secret is missing or invalid" >&2
+    exit 2
+fi
+if ! PGPASSWORD="$(awk 'NR > 1 { exit 1 } { value = $0 } END { if (NR != 1 || value == "") exit 1; printf "%s", value }' "$DB_PASSWORD_FILE")"; then
+    echo "[idp-backup] ERROR: database password secret must be one non-empty line" >&2
+    exit 2
+fi
+export PGPASSWORD
 
 require_positive_integer() {
     name="$1"
@@ -51,6 +65,7 @@ echo "[idp-backup] starting — retention=${RETENTION_DAYS}d interval=${INTERVAL
 remove_cycle_files() {
     rm -f \
         "$database_file" "$database_file.tmp" \
+        "$bootstrap_file" "$bootstrap_file.tmp" \
         "$manifest_file" "$manifest_file.tmp"
 }
 
@@ -75,6 +90,7 @@ rotate_complete_bundles() {
         esac
         rm -f \
             "$BACKUP_DIR/zitadel_${old_stamp}.sql.gz" \
+            "$BACKUP_DIR/zitadel_login_client_${old_stamp}.pat" \
             "$old_manifest"
         echo "[idp-backup] pruned complete bundle $old_stamp"
     done
@@ -83,18 +99,38 @@ rotate_complete_bundles() {
     # points. Retire them only after a new complete identity bundle exists.
     find "$BACKUP_DIR" -name 'zitadel_*.sql.gz' -type f \
         -mtime +"$RETENTION_DAYS" -print -exec rm -f {} +
+    find "$BACKUP_DIR" -name 'zitadel_login_client_*.pat' -type f \
+        -mtime +"$RETENTION_DAYS" -print -exec rm -f {} +
 }
 
 run_backup_cycle() {
     timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
     database_file="$BACKUP_DIR/zitadel_${timestamp}.sql.gz"
+    bootstrap_file="$BACKUP_DIR/zitadel_login_client_${timestamp}.pat"
     manifest_file="$BACKUP_DIR/zitadel_bundle_${timestamp}.sha256"
 
     remove_cycle_files
+    if [ ! -f "$BOOTSTRAP_PAT_FILE" ] || [ -L "$BOOTSTRAP_PAT_FILE" ] \
+        || [ ! -s "$BOOTSTRAP_PAT_FILE" ]; then
+        echo "[idp-backup] ERROR: Login V2 bootstrap PAT is missing or invalid at $timestamp" >&2
+        remove_cycle_files
+        return 1
+    fi
+    bootstrap_before="$(sha256sum "$BOOTSTRAP_PAT_FILE" | awk '{ print $1 }')" || {
+        echo "[idp-backup] ERROR: Login V2 bootstrap PAT could not be read at $timestamp" >&2
+        remove_cycle_files
+        return 1
+    }
+    if ! cp "$BOOTSTRAP_PAT_FILE" "$bootstrap_file.tmp"; then
+        echo "[idp-backup] ERROR: Login V2 bootstrap PAT could not be copied at $timestamp" >&2
+        remove_cycle_files
+        return 1
+    fi
+    chmod 600 "$bootstrap_file.tmp"
     # PGHOST/PGUSER/PGPASSWORD/PGDATABASE come from the isolated sidecar.
     if ! table_count="$(
         psql -X -A -t -v ON_ERROR_STOP=1 -c \
-            "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema')"
+            "SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'eventstore' AND c.relname = 'events2' AND c.relkind = 'r'"
     )"; then
         echo "[idp-backup] ERROR: database readiness check failed at $timestamp" >&2
         remove_cycle_files
@@ -113,11 +149,30 @@ run_backup_cycle() {
         return 1
     fi
     chmod 600 "$database_file.tmp"
+    bootstrap_after="$(sha256sum "$BOOTSTRAP_PAT_FILE" | awk '{ print $1 }')" || {
+        echo "[idp-backup] ERROR: Login V2 bootstrap PAT could not be rechecked at $timestamp" >&2
+        remove_cycle_files
+        return 1
+    }
+    bootstrap_copy="$(sha256sum "$bootstrap_file.tmp" | awk '{ print $1 }')" || {
+        echo "[idp-backup] ERROR: copied Login V2 bootstrap PAT could not be checked at $timestamp" >&2
+        remove_cycle_files
+        return 1
+    }
+    if [ "$bootstrap_before" != "$bootstrap_after" ] \
+        || [ "$bootstrap_before" != "$bootstrap_copy" ]; then
+        echo "[idp-backup] ERROR: Login V2 bootstrap PAT changed during backup at $timestamp" >&2
+        remove_cycle_files
+        return 1
+    fi
     mv "$database_file.tmp" "$database_file"
+    mv "$bootstrap_file.tmp" "$bootstrap_file"
 
     if ! (
         cd "$BACKUP_DIR"
-        sha256sum "${database_file##*/}" > "${manifest_file##*/}.tmp"
+        sha256sum \
+            "${database_file##*/}" \
+            "${bootstrap_file##*/}" > "${manifest_file##*/}.tmp"
     ); then
         echo "[idp-backup] ERROR: checksum manifest failed at $timestamp" >&2
         remove_cycle_files

@@ -96,6 +96,7 @@ validate_manifest() {
     esac
 
     database_name="zitadel_${stamp}.sql.gz"
+    bootstrap_name="zitadel_login_client_${stamp}.pat"
     actual_names="$(
         awk '
             NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/ { exit 1 }
@@ -106,7 +107,8 @@ validate_manifest() {
         echo "[idp-offsite] ERROR: malformed identity manifest content" >&2
         return 1
     }
-    if [ "$actual_names" != "$database_name" ]; then
+    expected_names="$(printf '%s\n%s' "$database_name" "$bootstrap_name")"
+    if [ "$actual_names" != "$expected_names" ]; then
         echo "[idp-offsite] ERROR: manifest does not name the exact identity set" >&2
         return 1
     fi
@@ -143,7 +145,8 @@ replicate_latest() {
         --tag vitals-idp \
         --tag "vitals-idp-bundle:$stamp" \
         "$manifest" \
-        "$BACKUP_DIR/$database_name"; then
+        "$BACKUP_DIR/$database_name" \
+        "$BACKUP_DIR/$bootstrap_name"; then
         echo "[idp-offsite] ERROR: encrypted identity replication failed" >&2
         return 1
     fi

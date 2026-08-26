@@ -31,11 +31,14 @@ The optional ZITADEL identity store is deliberately separate. A complete
 identity-store recovery point lives below `backups/idp/` and has exactly:
 
 - `zitadel_<timestamp>.sql.gz`;
-- `zitadel_bundle_<timestamp>.sha256`, published last and containing the dump
-  checksum.
+- `zitadel_login_client_<timestamp>.pat`;
+- `zitadel_bundle_<timestamp>.sha256`, published last and containing both
+  checksums in that exact order.
 
-The `idp` profile starts this backup sidecar only after the provider reports
-ready and the script refuses a database with no user tables. The health-store
+The `idp` profile starts this backup sidecar only after API, Login V2, and the
+gateway report ready; the script refuses a database without ZITADEL's
+`eventstore.events2` table or a
+missing, empty, symlinked, or concurrently changed PAT. The health-store
 bundle does **not** include `vitals_idp_pgdata`, and a healthy identity backup
 does not make a health bundle complete. Starting a supported provider while
 Vitals still uses password login is preparation; enabling OIDC is the cutover.
@@ -286,26 +289,23 @@ rollback path.
 
 ## Identity-provider gate
 
-Compose contains no runnable default identity-provider image. The old
-`ghcr.io/zitadel/zitadel:v2.66.0` reference was removed because it was obsolete,
-not digest-pinned, and fell within published vulnerable ranges. The inactive
-profile now contains a nonexistent all-zero sentinel and refuses preflight
-unconditionally even when its secrets are valid. Provider approval must be a
-reviewed code change, not an env override. Do not enable the production `idp`
-profile until the supported release and its licence have been chosen, the tag's
-manifest has been independently matched to the committed digest, and its
-Compose/login/backup configuration plus OIDC/browser conformance have been
-reviewed.
+Compose pins the reviewed ZITADEL API and Login V2 `v4.16.2` images and Caddy
+`2.10.2` by OCI index digest. The identity profile separates database-role
+provisioning, `init schema`, versioned `setup`, runtime API, Login V2, h2c
+gateway, and backup. Only the loopback gateway publishes a host port; the
+database superuser is restricted to PostgreSQL and two one-shot provisioning
+jobs. Image approval does not authorize production cutover: the destructive
+restore and external HTTP/2/gRPC/browser gates below still must pass.
 
-ZITADEL v4 requires a separate Login V2 image and login-client PAT/bootstrap
-state outside PostgreSQL. A future v4 approval must add that state to the
-identity recovery bundle or document and prove a non-circular recreation path;
-a database-only restore is not sufficient. The same change must separate
-one-shot database setup privileges from the long-running provider role and
-distinguish the public HTTPS port from the loopback origin port.
+Every complete identity bundle contains exactly two payloads plus a manifest
+published last: `zitadel_<timestamp>.sql.gz` and
+`zitadel_login_client_<timestamp>.pat`. The sidecar fingerprints the live PAT
+before and after `pg_dump` and refuses a raced, absent, empty, or symlinked
+credential. A database-only restore is not a ZITADEL v4 recovery point.
 
 Before the approved provider's first start, copy `.env.idp.example` to an
-owner-only `.env.idp` and escrow `VITALS_IDP_MASTERKEY` outside the VPS. Never
+owner-only `.env.idp` and escrow the exact file selected by
+`VITALS_IDP_MASTERKEY_FILE` outside the VPS. Never
 put IDP control-plane secrets in `.vitals-runtime/vitals.env` or another
 runtime-visible file.
 Neither runtime mounts the host/operator `.env`. The provider image/digest
@@ -348,14 +348,17 @@ docker compose --env-file .env --env-file .env.idp --profile idp up -d \
 cd backups/idp
 sha256sum -c zitadel_bundle_<timestamp>.sha256
 gzip -t zitadel_<timestamp>.sql.gz
+test -s zitadel_login_client_<timestamp>.pat
 ```
 
 Restore only into a new empty PostgreSQL 15 database with drill-only
-credentials:
+credentials, inside one transaction. Restore the paired PAT into a new
+owner-only bootstrap volume; never overwrite the production volume during the
+drill:
 
 ```bash
 gzip -dc zitadel_<timestamp>.sql.gz \
-  | psql -v ON_ERROR_STOP=1 <empty-zitadel-drill-database-url>
+  | psql -1 -v ON_ERROR_STOP=1 <empty-zitadel-drill-database-url>
 ```
 
 Start the exact approved image digest against that restored database with the

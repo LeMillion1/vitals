@@ -215,7 +215,7 @@ def test_idp_backup_waits_for_provider_and_has_only_database_authority():
 
     assert service["profiles"] == ["idp"]
     assert service["depends_on"] == {
-        "vitals_idp": {"condition": "service_healthy"}
+        "vitals_idp_gateway": {"condition": "service_healthy"}
     }
     assert service["read_only"] is True
     assert service["cap_drop"] == ["ALL"]
@@ -224,14 +224,20 @@ def test_idp_backup_waits_for_provider_and_has_only_database_authority():
         "TZ",
         "PGHOST",
         "PGUSER",
-        "PGPASSWORD",
         "PGDATABASE",
+        "VITALS_IDP_DB_PASSWORD_FILE",
+        "VITALS_IDP_BOOTSTRAP_PAT_FILE",
         "VITALS_IDP_BACKUP_RETENTION_DAYS",
     }
+    assert service["secrets"] == ["idp_db_backup_password"]
+    assert service["group_add"] == ["65533"]
+    assert "vitals_idp_bootstrap:/zitadel/bootstrap:ro" in service["volumes"]
     source = str(service)
     for forbidden in (
         "VITALS_IDP_MASTERKEY",
         "VITALS_IDP_ADMIN_PASSWORD",
+        "idp_db_admin_password",
+        "idp_db_service_password",
         "VITALS_OIDC_CLIENT_SECRET",
         "VITALS_DB_PASSWORD",
         ".env",
@@ -259,7 +265,10 @@ def test_idp_offsite_is_a_separate_secret_and_failure_domain():
         "idp_restic_s3_access_key",
         "idp_restic_s3_secret_key",
     }
-    assert "./backups/idp:/backups/idp:ro" in service["volumes"]
+    assert (
+        "${VITALS_IDP_BACKUP_HOST_DIR:-./backups}/idp:/backups/idp:ro"
+        in service["volumes"]
+    )
     assert not any(".env" in volume for volume in service["volumes"])
     assert not any("docker.sock" in volume for volume in service["volumes"])
     assert not {"PGHOST", "PGUSER", "PGPASSWORD", "PGDATABASE"}.intersection(

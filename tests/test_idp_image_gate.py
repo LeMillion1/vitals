@@ -1,17 +1,28 @@
-"""The optional identity profile has no runnable unapproved image."""
+"""Executable approval gate for the pinned production-like ZITADEL stack."""
 from __future__ import annotations
 
-import subprocess
+import os
 from pathlib import Path
+import subprocess
 
+import pytest
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_PATH = ROOT / "docker-compose.yml"
-SENTINEL = (
-    "ghcr.io/zitadel/zitadel:v0.0.0@sha256:"
-    + "0" * 64
+CHECK = ROOT / "scripts" / "idp_config_check.sh"
+API_IMAGE = (
+    "ghcr.io/zitadel/zitadel:v4.16.2@sha256:"
+    "4b68a2106f60baa2895e5a00a77fcd915d29d0db3f0c011d3eb9f99f557b2b48"
+)
+LOGIN_IMAGE = (
+    "ghcr.io/zitadel/zitadel-login:v4.16.2@sha256:"
+    "f35e20cf3edd4a45a44c548b887c58304b350ed56078546735015f5cd17eef75"
+)
+GATEWAY_IMAGE = (
+    "caddy:2.10.2-alpine@sha256:"
+    "4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d"
 )
 
 
@@ -19,18 +30,36 @@ def _compose() -> dict:
     return yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
 
 
-def _run_preflight() -> subprocess.CompletedProcess[str]:
-    command = _compose()["services"]["vitals_idp_config_check"]["command"][0]
-    # Compose turns ``$$`` into one container-side dollar. Execute the same
-    # script locally without letting the host substitute provider secrets.
-    command = command.replace("$$", "$")
+def _run_preflight(tmp_path: Path, **overrides: str) -> subprocess.CompletedProcess[str]:
+    secrets = {
+        "masterkey": "0123456789abcdef0123456789abcdef",
+        "db_admin": "synthetic-admin-password",
+        "db_service": "synthetic-service-password",
+        "db_backup": "synthetic-backup-password",
+        "admin": "Aa1.synthetic-human-password",
+    }
+    for name, value in secrets.items():
+        suffix = "" if name == "masterkey" else "\n"
+        (tmp_path / name).write_text(value + suffix, encoding="utf-8")
     environment = {
-        "VITALS_IDP_MASTERKEY": "0123456789abcdef0123456789abcdef",
-        "VITALS_IDP_DB_PASSWORD": "synthetic-db-password",
-        "VITALS_IDP_ADMIN_PASSWORD": "Aa1!synthetic-admin-password",
+        **os.environ,
+        "VITALS_IDP_MASTERKEY_FILE": str(tmp_path / "masterkey"),
+        "VITALS_IDP_DB_ADMIN_PASSWORD_FILE": str(tmp_path / "db_admin"),
+        "VITALS_IDP_DB_SERVICE_PASSWORD_FILE": str(tmp_path / "db_service"),
+        "VITALS_IDP_DB_BACKUP_PASSWORD_FILE": str(tmp_path / "db_backup"),
+        "VITALS_IDP_ADMIN_PASSWORD_FILE": str(tmp_path / "admin"),
+        "VITALS_IDP_DOMAIN": "idp.example.test",
+        "VITALS_IDP_PUBLIC_SCHEME": "https",
+        "VITALS_IDP_SECURE": "true",
+        "VITALS_IDP_EXTERNAL_PORT": "443",
+        "VITALS_IDP_ORIGIN_PORT": "18080",
+        "VITALS_IDP_ADMIN_USERNAME": "operator",
+        "VITALS_IDP_ADMIN_EMAIL": "operator@example.test",
+        "VITALS_IDP_LOGIN_PAT_EXPIRATION": "2027-08-26T00:00:00Z",
+        **overrides,
     }
     return subprocess.run(
-        ["/bin/sh", "-ec", command],
+        ["/bin/sh", str(CHECK)],
         env=environment,
         capture_output=True,
         text=True,
@@ -38,20 +67,95 @@ def _run_preflight() -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_identity_profile_has_only_a_nonexistent_versioned_sentinel():
+def test_identity_profile_pins_reviewed_api_login_and_gateway_images():
     source = COMPOSE_PATH.read_text(encoding="utf-8")
     compose = _compose()
-    provider = compose["services"]["vitals_idp"]
-    preflight = compose["services"]["vitals_idp_config_check"]
 
-    assert provider["image"] == SENTINEL
-    assert "VITALS_IDP_IMAGE" not in preflight["environment"]
-    assert "v2.66.0" not in source
+    assert compose["services"]["vitals_idp"]["image"] == API_IMAGE
+    assert compose["services"]["vitals_idp_init"]["image"] == API_IMAGE
+    assert compose["services"]["vitals_idp_setup"]["image"] == API_IMAGE
+    assert compose["services"]["vitals_idp_login"]["image"] == LOGIN_IMAGE
+    assert compose["services"]["vitals_idp_gateway"]["image"] == GATEWAY_IMAGE
+    assert "v0.0.0" not in source
     assert "${VITALS_IDP_IMAGE" not in source
+    assert "docker.sock" not in str(compose["services"]["vitals_idp_gateway"])
 
 
-def test_identity_preflight_refuses_even_with_all_secrets_configured():
-    result = _run_preflight()
+def test_identity_preflight_accepts_complete_production_configuration(tmp_path):
+    result = _run_preflight(tmp_path)
 
-    assert result.returncode != 0
-    assert "no provider image/configuration is approved" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "configuration accepted" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"VITALS_IDP_PUBLIC_SCHEME": "http"}, "scheme and external-secure"),
+        ({"VITALS_IDP_EXTERNAL_PORT": "8080"}, "public HTTPS on port 443"),
+        ({"VITALS_IDP_DOMAIN": "bad/domain"}, "plain DNS hostname"),
+        ({"VITALS_IDP_LOGIN_PAT_EXPIRATION": "never"}, "explicit UTC timestamp"),
+        (
+            {"VITALS_IDP_LOGIN_PAT_EXPIRATION": "2020-01-01T00:00:00Z"},
+            "expiration must be in the future",
+        ),
+    ],
+)
+def test_identity_preflight_rejects_unsafe_public_configuration(
+    tmp_path, override, message
+):
+    result = _run_preflight(tmp_path, **override)
+
+    assert result.returncode == 2
+    assert message in result.stderr
+
+
+def test_identity_preflight_rejects_reused_database_passwords(tmp_path):
+    duplicate = tmp_path / "duplicate"
+    duplicate.write_text("same-synthetic-password-long\n", encoding="utf-8")
+    result = _run_preflight(
+        tmp_path,
+        VITALS_IDP_DB_ADMIN_PASSWORD_FILE=str(duplicate),
+        VITALS_IDP_DB_SERVICE_PASSWORD_FILE=str(duplicate),
+    )
+
+    assert result.returncode == 2
+    assert "passwords must differ" in result.stderr
+
+
+def test_identity_service_graph_separates_setup_runtime_and_public_gateway():
+    services = _compose()["services"]
+
+    assert services["vitals_idp_init"]["command"] == [
+        "init",
+        "schema",
+        "--config",
+        "/zitadel/config/config.yaml",
+    ]
+    assert services["vitals_idp_setup"]["depends_on"] == {
+        "vitals_idp_init": {"condition": "service_completed_successfully"},
+        "vitals_idp_bootstrap_prepare": {
+            "condition": "service_completed_successfully"
+        },
+    }
+    assert services["vitals_idp"]["depends_on"] == {
+        "vitals_idp_db_grants": {"condition": "service_completed_successfully"}
+    }
+    assert services["vitals_idp_login"]["depends_on"] == {
+        "vitals_idp": {"condition": "service_healthy"}
+    }
+    assert services["vitals_idp_gateway"]["depends_on"] == {
+        "vitals_idp": {"condition": "service_healthy"},
+        "vitals_idp_login": {"condition": "service_healthy"},
+    }
+    assert services["vitals_idp_gateway"]["cap_drop"] == ["ALL"]
+    assert services["vitals_idp_gateway"]["cap_add"] == ["NET_BIND_SERVICE"]
+    publishers = {
+        name
+        for name, service in services.items()
+        if name.startswith("vitals_idp") and service.get("ports")
+    }
+    assert publishers == {"vitals_idp_gateway"}
+    assert services["vitals_idp_gateway"]["ports"] == [
+        "127.0.0.1:${VITALS_IDP_ORIGIN_PORT:-8080}:8080"
+    ]

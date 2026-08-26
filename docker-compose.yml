@@ -169,78 +169,224 @@ services:
   # after its complete OIDC application group is configured. Read
   # docs/OIDC_SETUP.md before either step.
   #
-  # SECURITY GATE: there is deliberately no runnable provider image. The
-  # all-zero reference below is a syntactically valid, nonexistent sentinel,
-  # and the preflight always refuses. Provider approval must be a reviewed code
-  # change that replaces both gates with exact supported image digest(s) and
-  # compatible configuration; see docs/OIDC_SETUP.md.
+  # ZITADEL v4 is deliberately split into one-shot schema/setup phases, API,
+  # Login V2, and an h2c-aware gateway. Only the gateway publishes a loopback
+  # port; no provider container can see the Vitals database or runtime file.
   vitals_idp_config_check:
     image: postgres:15-alpine
     profiles: ["idp"]
     environment:
-      VITALS_IDP_MASTERKEY: ${VITALS_IDP_MASTERKEY:-}
-      VITALS_IDP_DB_PASSWORD: ${VITALS_IDP_DB_PASSWORD:-}
-      VITALS_IDP_ADMIN_PASSWORD: ${VITALS_IDP_ADMIN_PASSWORD:-}
-    entrypoint: ["/bin/sh", "-ec"]
-    command:
-      - |
-        [ "$${#VITALS_IDP_MASTERKEY}" -eq 32 ] || {
-          echo "VITALS_IDP_MASTERKEY must contain exactly 32 characters" >&2
-          exit 1
-        }
-        [ -n "$${VITALS_IDP_DB_PASSWORD}" ] || {
-          echo "VITALS_IDP_DB_PASSWORD must be set" >&2
-          exit 1
-        }
-        [ -n "$${VITALS_IDP_ADMIN_PASSWORD}" ] || {
-          echo "VITALS_IDP_ADMIN_PASSWORD must be set" >&2
-          exit 1
-        }
-        echo "IDP profile is disabled: no provider image/configuration is approved in this release" >&2
-        exit 1
+      VITALS_IDP_MASTERKEY_FILE: /run/secrets/idp_masterkey
+      VITALS_IDP_DB_ADMIN_PASSWORD_FILE: /run/secrets/idp_db_admin_password
+      VITALS_IDP_DB_SERVICE_PASSWORD_FILE: /run/secrets/idp_db_service_password
+      VITALS_IDP_DB_BACKUP_PASSWORD_FILE: /run/secrets/idp_db_backup_password
+      VITALS_IDP_ADMIN_PASSWORD_FILE: /run/secrets/idp_admin_password
+      VITALS_IDP_DOMAIN: ${VITALS_IDP_DOMAIN:-localhost}
+      VITALS_IDP_PUBLIC_SCHEME: ${VITALS_IDP_PUBLIC_SCHEME:-http}
+      VITALS_IDP_SECURE: ${VITALS_IDP_SECURE:-false}
+      VITALS_IDP_EXTERNAL_PORT: ${VITALS_IDP_EXTERNAL_PORT:-8080}
+      VITALS_IDP_ORIGIN_PORT: ${VITALS_IDP_ORIGIN_PORT:-8080}
+      VITALS_IDP_ADMIN_USERNAME: ${VITALS_IDP_ADMIN_USERNAME:-zitadel-admin}
+      VITALS_IDP_ADMIN_EMAIL: ${VITALS_IDP_ADMIN_EMAIL:-admin@localhost.test}
+      VITALS_IDP_LOGIN_PAT_EXPIRATION: ${VITALS_IDP_LOGIN_PAT_EXPIRATION:-2027-08-26T00:00:00Z}
+    secrets:
+      - idp_masterkey
+      - idp_db_admin_password
+      - idp_db_service_password
+      - idp_db_backup_password
+      - idp_admin_password
+    volumes:
+      - ./scripts/idp_config_check.sh:/usr/local/bin/idp_config_check.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/idp_config_check.sh"]
     restart: "no"
 
-  vitals_idp:
-    image: ghcr.io/zitadel/zitadel:v0.0.0@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  vitals_idp_config_render:
+    image: postgres:15-alpine
+    profiles: ["idp"]
+    depends_on:
+      vitals_idp_config_check:
+        condition: service_completed_successfully
+    environment:
+      VITALS_IDP_DB_SERVICE_PASSWORD_FILE: /run/secrets/idp_db_service_password
+      VITALS_IDP_ADMIN_PASSWORD_FILE: /run/secrets/idp_admin_password
+      VITALS_IDP_ADMIN_USERNAME: ${VITALS_IDP_ADMIN_USERNAME:-zitadel-admin}
+      VITALS_IDP_ADMIN_EMAIL: ${VITALS_IDP_ADMIN_EMAIL:-admin@localhost.test}
+      VITALS_IDP_LOGIN_PAT_EXPIRATION: ${VITALS_IDP_LOGIN_PAT_EXPIRATION:-2027-08-26T00:00:00Z}
+    secrets:
+      - idp_db_service_password
+      - idp_admin_password
+    volumes:
+      - ./scripts/idp_render_config.sh:/usr/local/bin/idp_render_config.sh:ro
+      - vitals_idp_config:/zitadel/config:rw
+    networks: [vitals_idp_internal]
+    entrypoint: ["/bin/sh", "/usr/local/bin/idp_render_config.sh"]
+    restart: "no"
+
+  vitals_idp_bootstrap_prepare:
+    image: postgres:15-alpine
+    profiles: ["idp"]
+    depends_on:
+      vitals_idp_config_check:
+        condition: service_completed_successfully
+    volumes:
+      - vitals_idp_bootstrap:/zitadel/bootstrap:rw
+    networks: [vitals_idp_internal]
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["chown 1000:1000 /zitadel/bootstrap && chmod 700 /zitadel/bootstrap"]
+    restart: "no"
+
+  # Its own cluster and database: the cluster superuser exists only in this
+  # container and the two role-provisioning jobs. ZITADEL receives a dedicated
+  # non-superuser database owner instead.
+  vitals_idp_db:
+    image: postgres:15-alpine
+    profiles: ["idp"]
+    depends_on:
+      vitals_idp_config_check:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/idp_db_admin_password
+      POSTGRES_DB: postgres
+    secrets:
+      - idp_db_admin_password
+    volumes:
+      - vitals_idp_pgdata:/var/lib/postgresql/data
+    networks: [vitals_idp_internal]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  vitals_idp_db_provision:
+    image: postgres:15-alpine
     profiles: ["idp"]
     depends_on:
       vitals_idp_config_check:
         condition: service_completed_successfully
       vitals_idp_db:
         condition: service_healthy
-    command: >
-      start-from-init
-      --masterkeyFromEnv
-      --tlsMode external
     environment:
-      # Compose interpolates every service before applying profiles. Keep these
-      # values empty when the optional profile is not selected so ordinary
-      # `docker compose up` does not demand IDP secrets. The IDP containers
-      # themselves are guarded by the profile's runtime preflight above.
-      ZITADEL_MASTERKEY: ${VITALS_IDP_MASTERKEY:-}
-      # ZITADEL otherwise creates an administrator with a known default.
-      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${VITALS_IDP_ADMIN_PASSWORD:-}
-      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: "true"
-      # Vitals provisions and links every account explicitly. ZITADEL defaults
-      # this to true, which would advertise a sign-up flow that can only create
-      # an orphan identity with no Vitals account or health subject.
-      ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_ALLOWREGISTER: "false"
+      VITALS_IDP_DB_ADMIN_PASSWORD_FILE: /run/secrets/idp_db_admin_password
+      VITALS_IDP_DB_SERVICE_PASSWORD_FILE: /run/secrets/idp_db_service_password
+      VITALS_IDP_DB_BACKUP_PASSWORD_FILE: /run/secrets/idp_db_backup_password
+    secrets:
+      - idp_db_admin_password
+      - idp_db_service_password
+      - idp_db_backup_password
+    volumes:
+      - ./scripts/provision_idp_db_roles.sh:/usr/local/bin/provision_idp_db_roles.sh:ro
+    networks: [vitals_idp_internal]
+    entrypoint: ["/bin/sh", "/usr/local/bin/provision_idp_db_roles.sh"]
+    command: ["provision"]
+    restart: "no"
+
+  vitals_idp_init:
+    image: ghcr.io/zitadel/zitadel:v4.16.2@sha256:4b68a2106f60baa2895e5a00a77fcd915d29d0db3f0c011d3eb9f99f557b2b48
+    profiles: ["idp"]
+    depends_on:
+      vitals_idp_db_provision:
+        condition: service_completed_successfully
+      vitals_idp_config_render:
+        condition: service_completed_successfully
+    volumes:
+      - vitals_idp_config:/zitadel/config:ro
+    networks: [vitals_idp_internal]
+    command: ["init", "schema", "--config", "/zitadel/config/config.yaml"]
+    restart: "no"
+
+  vitals_idp_setup:
+    image: ghcr.io/zitadel/zitadel:v4.16.2@sha256:4b68a2106f60baa2895e5a00a77fcd915d29d0db3f0c011d3eb9f99f557b2b48
+    profiles: ["idp"]
+    depends_on:
+      vitals_idp_init:
+        condition: service_completed_successfully
+      vitals_idp_bootstrap_prepare:
+        condition: service_completed_successfully
+    environment:
       ZITADEL_EXTERNALDOMAIN: ${VITALS_IDP_DOMAIN:-localhost}
-      ZITADEL_EXTERNALPORT: ${VITALS_IDP_PORT:-8080}
+      ZITADEL_EXTERNALPORT: ${VITALS_IDP_EXTERNAL_PORT:-8080}
       ZITADEL_EXTERNALSECURE: ${VITALS_IDP_SECURE:-false}
-      ZITADEL_DATABASE_POSTGRES_HOST: vitals_idp_db
-      ZITADEL_DATABASE_POSTGRES_PORT: 5432
-      ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
-      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: zitadel
-      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${VITALS_IDP_DB_PASSWORD:-}
-      ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
-      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: zitadel
-      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${VITALS_IDP_DB_PASSWORD:-}
-      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
-    ports:
-      # Same reasoning as the app: bound to loopback, because this is the door
-      # to the health record and belongs behind the same VPN.
-      - "127.0.0.1:${VITALS_IDP_PORT:-8080}:8080"
+      ZITADEL_TLS_ENABLED: "false"
+      ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_ALLOWREGISTER: "false"
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: ${VITALS_IDP_PUBLIC_SCHEME:-http}://${VITALS_IDP_DOMAIN:-localhost}:${VITALS_IDP_EXTERNAL_PORT:-8080}/ui/v2/login/
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: ${VITALS_IDP_PUBLIC_SCHEME:-http}://${VITALS_IDP_DOMAIN:-localhost}:${VITALS_IDP_EXTERNAL_PORT:-8080}/ui/v2/login/login?authRequest=
+      ZITADEL_OIDC_DEFAULTLOGOUTURLV2: ${VITALS_IDP_PUBLIC_SCHEME:-http}://${VITALS_IDP_DOMAIN:-localhost}:${VITALS_IDP_EXTERNAL_PORT:-8080}/ui/v2/login/logout?post_logout_redirect=
+      ZITADEL_SAML_DEFAULTLOGINURLV2: ${VITALS_IDP_PUBLIC_SCHEME:-http}://${VITALS_IDP_DOMAIN:-localhost}:${VITALS_IDP_EXTERNAL_PORT:-8080}/ui/v2/login/login?samlRequest=
+    secrets:
+      - idp_masterkey
+    volumes:
+      - vitals_idp_config:/zitadel/config:ro
+      - vitals_idp_bootstrap:/zitadel/bootstrap:rw
+    networks: [vitals_idp_internal]
+    command: ["setup", "--masterkeyFile", "/run/secrets/idp_masterkey", "--config", "/zitadel/config/config.yaml", "--steps", "/zitadel/config/steps.yaml", "--init-projections=true"]
+    restart: "no"
+
+  vitals_idp_bootstrap_seal:
+    image: postgres:15-alpine
+    profiles: ["idp"]
+    depends_on:
+      vitals_idp_setup:
+        condition: service_completed_successfully
+    volumes:
+      - vitals_idp_bootstrap:/zitadel/bootstrap:rw
+      - vitals_idp_config:/zitadel/config:rw
+    networks: [vitals_idp_internal]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        test -s /zitadel/bootstrap/login-client.pat
+        && test ! -L /zitadel/bootstrap/login-client.pat
+        && chown 1000:65533 /zitadel/bootstrap/login-client.pat
+        && chmod 640 /zitadel/bootstrap/login-client.pat
+        && chown 1000:65533 /zitadel/bootstrap
+        && chmod 750 /zitadel/bootstrap
+        && test -f /zitadel/config/steps.yaml
+        && rm -f /zitadel/config/steps.yaml
+    restart: "no"
+
+  vitals_idp_db_grants:
+    image: postgres:15-alpine
+    profiles: ["idp"]
+    depends_on:
+      vitals_idp_bootstrap_seal:
+        condition: service_completed_successfully
+    environment:
+      VITALS_IDP_DB_ADMIN_PASSWORD_FILE: /run/secrets/idp_db_admin_password
+      VITALS_IDP_DB_SERVICE_PASSWORD_FILE: /run/secrets/idp_db_service_password
+      VITALS_IDP_DB_BACKUP_PASSWORD_FILE: /run/secrets/idp_db_backup_password
+    secrets:
+      - idp_db_admin_password
+      - idp_db_service_password
+      - idp_db_backup_password
+    volumes:
+      - ./scripts/provision_idp_db_roles.sh:/usr/local/bin/provision_idp_db_roles.sh:ro
+    networks: [vitals_idp_internal]
+    entrypoint: ["/bin/sh", "/usr/local/bin/provision_idp_db_roles.sh"]
+    command: ["grant-backup"]
+    restart: "no"
+
+  vitals_idp:
+    image: ghcr.io/zitadel/zitadel:v4.16.2@sha256:4b68a2106f60baa2895e5a00a77fcd915d29d0db3f0c011d3eb9f99f557b2b48
+    profiles: ["idp"]
+    depends_on:
+      vitals_idp_db_grants:
+        condition: service_completed_successfully
+    environment:
+      ZITADEL_EXTERNALDOMAIN: ${VITALS_IDP_DOMAIN:-localhost}
+      ZITADEL_EXTERNALPORT: ${VITALS_IDP_EXTERNAL_PORT:-8080}
+      ZITADEL_EXTERNALSECURE: ${VITALS_IDP_SECURE:-false}
+      ZITADEL_TLS_ENABLED: "false"
+      ZITADEL_PORT: 8080
+    secrets:
+      - idp_masterkey
+    volumes:
+      - vitals_idp_config:/zitadel/config:ro
+    networks: [vitals_idp_internal]
+    command: ["start", "--masterkeyFile", "/run/secrets/idp_masterkey", "--config", "/zitadel/config/config.yaml"]
     healthcheck:
       test: ["CMD", "/app/zitadel", "ready"]
       interval: 10s
@@ -249,28 +395,63 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # Its own database rather than a schema in the app's. They have different
-  # backup and restore rhythms — losing the identity store means logging back
-  # in, losing the health store means losing the record — and one pg_dump that
-  # holds both invites restoring both when you meant one.
-  vitals_idp_db:
-    image: postgres:15-alpine
+  vitals_idp_login:
+    image: ghcr.io/zitadel/zitadel-login:v4.16.2@sha256:f35e20cf3edd4a45a44c548b887c58304b350ed56078546735015f5cd17eef75
     profiles: ["idp"]
     depends_on:
-      vitals_idp_config_check:
-        condition: service_completed_successfully
+      vitals_idp:
+        condition: service_healthy
     environment:
-      POSTGRES_USER: zitadel
-      POSTGRES_PASSWORD: ${VITALS_IDP_DB_PASSWORD:-}
-      POSTGRES_DB: zitadel
+      ZITADEL_API_URL: http://vitals_idp:8080
+      NEXT_PUBLIC_BASE_PATH: /ui/v2/login
+      ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
+      CUSTOM_REQUEST_HEADERS: Host:${VITALS_IDP_DOMAIN:-localhost}:${VITALS_IDP_EXTERNAL_PORT:-8080},X-Forwarded-Proto:${VITALS_IDP_PUBLIC_SCHEME:-http}
     volumes:
-      - vitals_idp_pgdata:/var/lib/postgresql/data
-    restart: unless-stopped
+      - vitals_idp_bootstrap:/zitadel/bootstrap:ro
+    networks: [vitals_idp_internal]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U zitadel -d zitadel"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      test: ["CMD", "/bin/sh", "-c", "node /app/healthcheck.mjs http://localhost:3000/ui/v2/login/healthy"]
+      interval: 10s
+      timeout: 30s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  vitals_idp_gateway:
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    profiles: ["idp"]
+    depends_on:
+      vitals_idp:
+        condition: service_healthy
+      vitals_idp_login:
+        condition: service_healthy
+    environment:
+      VITALS_IDP_DOMAIN: ${VITALS_IDP_DOMAIN:-localhost}
+      VITALS_IDP_PUBLIC_SCHEME: ${VITALS_IDP_PUBLIC_SCHEME:-http}
+      VITALS_IDP_EXTERNAL_PORT: ${VITALS_IDP_EXTERNAL_PORT:-8080}
+    volumes:
+      - ./deploy/zitadel/Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - vitals_idp_internal
+      - vitals_idp_edge
+    ports:
+      - "127.0.0.1:${VITALS_IDP_ORIGIN_PORT:-8080}:8080"
+    read_only: true
+    cap_drop: ["ALL"]
+    # The official image marks the binary with this file capability. Retaining
+    # only that capability is required for exec even though our origin is 8080.
+    cap_add: ["NET_BIND_SERVICE"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /data:rw,noexec,nosuid,nodev,size=16m
+      - /config:rw,noexec,nosuid,nodev,size=16m
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/debug/ready"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
 
   # A separate recovery stream for the identity store. Health-store success
   # cannot prove that anybody will be able to log in after a disaster, and the
@@ -279,18 +460,26 @@ services:
     image: postgres:15-alpine
     profiles: ["idp"]
     depends_on:
-      vitals_idp:
+      vitals_idp_gateway:
         condition: service_healthy
     environment:
       TZ: Europe/Chisinau
       PGHOST: vitals_idp_db
-      PGUSER: zitadel
-      PGPASSWORD: ${VITALS_IDP_DB_PASSWORD:-}
+      PGUSER: zitadel_backup
       PGDATABASE: zitadel
+      VITALS_IDP_DB_PASSWORD_FILE: /run/secrets/idp_db_backup_password
+      VITALS_IDP_BOOTSTRAP_PAT_FILE: /zitadel/bootstrap/login-client.pat
       VITALS_IDP_BACKUP_RETENTION_DAYS: ${VITALS_IDP_BACKUP_RETENTION_DAYS:-7}
+    secrets:
+      - idp_db_backup_password
+    # Login V2 runs as gid 65533; the sealed PAT is group-readable so backup
+    # can copy it without granting world access or running with DAC override.
+    group_add: ["65533"]
     volumes:
       - ./scripts/idp_backup.sh:/usr/local/bin/idp_backup.sh:ro
-      - ./backups:/backups
+      - ${VITALS_IDP_BACKUP_HOST_DIR:-./backups}:/backups
+      - vitals_idp_bootstrap:/zitadel/bootstrap:ro
+    networks: [vitals_idp_internal]
     entrypoint: ["/bin/sh", "/usr/local/bin/idp_backup.sh"]
     read_only: true
     cap_drop: ["ALL"]
@@ -396,7 +585,7 @@ services:
       - idp_restic_s3_secret_key
     volumes:
       - ./scripts/idp_offsite_backup.sh:/usr/local/bin/idp_offsite_backup.sh:ro
-      - ./backups/idp:/backups/idp:ro
+      - ${VITALS_IDP_BACKUP_HOST_DIR:-./backups}/idp:/backups/idp:ro
       - vitals_idp_offsite_state:/state
     entrypoint: ["/bin/sh", "/usr/local/bin/idp_offsite_backup.sh"]
     read_only: true
@@ -412,10 +601,27 @@ volumes:
   vitals_garmin_session:
   vitals_private_files:
   vitals_idp_pgdata:
+  vitals_idp_config:
+  vitals_idp_bootstrap:
   vitals_offsite_state:
   vitals_idp_offsite_state:
 
+networks:
+  vitals_idp_internal:
+    internal: true
+  vitals_idp_edge:
+
 secrets:
+  idp_masterkey:
+    file: ${VITALS_IDP_MASTERKEY_FILE:-.secrets/idp_masterkey}
+  idp_db_admin_password:
+    file: ${VITALS_IDP_DB_ADMIN_PASSWORD_FILE:-.secrets/idp_db_admin_password}
+  idp_db_service_password:
+    file: ${VITALS_IDP_DB_SERVICE_PASSWORD_FILE:-.secrets/idp_db_service_password}
+  idp_db_backup_password:
+    file: ${VITALS_IDP_DB_BACKUP_PASSWORD_FILE:-.secrets/idp_db_backup_password}
+  idp_admin_password:
+    file: ${VITALS_IDP_ADMIN_PASSWORD_FILE:-.secrets/idp_admin_password}
   restic_repository:
     file: ${VITALS_RESTIC_REPOSITORY_FILE:-.secrets/restic_repository}
   restic_password:

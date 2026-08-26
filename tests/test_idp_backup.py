@@ -40,6 +40,10 @@ def _run_backup(
     _write_executable(fake_bin / "psql", f"printf '%s\\n' '{table_count}'")
 
     backup_dir = tmp_path / "idp-backups"
+    bootstrap_pat = tmp_path / "login-client.pat"
+    bootstrap_pat.write_text("synthetic-login-client-pat\n", encoding="utf-8")
+    database_password = tmp_path / "database-password"
+    database_password.write_text("synthetic-backup-password\n", encoding="utf-8")
     env = {
         **os.environ,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
@@ -47,6 +51,8 @@ def _run_backup(
         "VITALS_IDP_BACKUP_RETENTION_DAYS": retention,
         "VITALS_IDP_BACKUP_INTERVAL_SECONDS": interval,
         "VITALS_IDP_BACKUP_RUN_ONCE": run_once,
+        "VITALS_IDP_BOOTSTRAP_PAT_FILE": str(bootstrap_pat),
+        "VITALS_IDP_DB_PASSWORD_FILE": str(database_password),
     }
     result = subprocess.run(
         ["/bin/sh", str(SCRIPT)],
@@ -69,14 +75,19 @@ def test_success_creates_one_exact_owner_only_identity_bundle(tmp_path):
     assert stat.S_IMODE(backup_dir.stat().st_mode) == 0o700
     (manifest,) = _manifests(backup_dir)
     lines = manifest.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 1
+    assert len(lines) == 2
 
-    digest, name = lines[0].split("  ", 1)
     stamp = manifest.name.removeprefix("zitadel_bundle_").removesuffix(".sha256")
-    assert name == f"zitadel_{stamp}.sql.gz"
-    artifact = backup_dir / name
-    assert digest == hashlib.sha256(artifact.read_bytes()).hexdigest()
-    assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
+    expected_names = [
+        f"zitadel_{stamp}.sql.gz",
+        f"zitadel_login_client_{stamp}.pat",
+    ]
+    assert [line.split("  ", 1)[1] for line in lines] == expected_names
+    for line in lines:
+        digest, name = line.split("  ", 1)
+        artifact = backup_dir / name
+        assert digest == hashlib.sha256(artifact.read_bytes()).hexdigest()
+        assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
     assert stat.S_IMODE(manifest.stat().st_mode) == 0o600
 
 
@@ -144,6 +155,34 @@ def test_empty_identity_database_is_refused_before_dump(tmp_path):
 
     assert result.returncode != 0
     assert "refusing an empty identity database" in result.stderr
+    assert list(backup_dir.iterdir()) == []
+
+
+def test_missing_login_pat_fails_without_publishing_a_bundle(tmp_path):
+    bootstrap_pat = tmp_path / "missing-login-client.pat"
+    result, backup_dir = _run_backup(tmp_path)
+    assert result.returncode == 0
+    for path in backup_dir.iterdir():
+        path.unlink()
+
+    env = {
+        **os.environ,
+        "VITALS_IDP_BACKUP_DIR": str(backup_dir),
+        "VITALS_IDP_BACKUP_RUN_ONCE": "true",
+        "VITALS_IDP_BACKUP_INTERVAL_SECONDS": "60",
+        "VITALS_IDP_BOOTSTRAP_PAT_FILE": str(bootstrap_pat),
+        "VITALS_IDP_DB_PASSWORD_FILE": str(tmp_path / "database-password"),
+    }
+    failed = subprocess.run(
+        ["/bin/sh", str(SCRIPT)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert failed.returncode != 0
+    assert "bootstrap PAT is missing or invalid" in failed.stderr
     assert list(backup_dir.iterdir()) == []
 
 

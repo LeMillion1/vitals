@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — self-hosted identity uses a production-like ZITADEL v4 stack
+
+The optional identity profile now pins ZITADEL API and Login V2 `v4.16.2` and
+Caddy `2.10.2` by reviewed OCI index digest. Database provisioning,
+`init schema`, versioned setup, runtime API, Login V2, the h2c gateway, and the
+read-only backup role have separate authority; only the gateway publishes a
+loopback port. Provider secrets are owner-only files, and every verified
+identity recovery point now pairs the PostgreSQL dump with the exact Login V2
+client PAT before publishing its two-artifact manifest. Production OIDC remains
+off until the destructive restore, independent offsite, public HTTP/2/gRPC, and
+browser login gates pass.
+
 ### Fixed — registration gate is persisted before account admission
 
 The host operator now changes `VITALS_REGISTRATION_UNLOCKED` atomically in the

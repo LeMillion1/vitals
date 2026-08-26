@@ -295,11 +295,12 @@ application configuration closed, replaces the known first administrator
 password, and documents explicit account linking, provider logout,
 browser-session revocation, and support step-up. A later production audit found
 that the bundled v2.66.0 tag was obsolete, lacked an OCI digest pin, and was
-within published vulnerable ranges. It has since been removed: a nonexistent
-version-controlled sentinel and unconditional preflight refusal keep the IDP
-profile unstartable until a reviewed provider/configuration commit replaces
-both. Provider/version/licence selection and the full restored-login rehearsal
-remain operator gates that local tests cannot prove.
+within published vulnerable ranges. It was first replaced by a fail-closed
+sentinel. Subsequent implementation approved digest-pinned ZITADEL API/Login V2
+`v4.16.2` and Caddy `2.10.2`, split `init schema`, `setup`, runtime, gateway,
+and database authority, and made the Login PAT part of each identity bundle.
+The destructive restored-login, offsite, public HTTP/2/gRPC, and browser
+rehearsals remain operator gates that local unit tests cannot prove.
 
 ### `ARCHITECTURE.md` — mostly current method, incomplete generated sources
 

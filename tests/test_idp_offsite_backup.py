@@ -31,9 +31,12 @@ def _fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
 
     dump = backup_dir / f"zitadel_{STAMP}.sql.gz"
     dump.write_bytes(b"synthetic identity database")
+    bootstrap = backup_dir / f"zitadel_login_client_{STAMP}.pat"
+    bootstrap.write_bytes(b"synthetic login-client credential")
     manifest = backup_dir / f"zitadel_bundle_{STAMP}.sha256"
     manifest.write_text(
-        f"{hashlib.sha256(dump.read_bytes()).hexdigest()}  {dump.name}\n",
+        f"{hashlib.sha256(dump.read_bytes()).hexdigest()}  {dump.name}\n"
+        f"{hashlib.sha256(bootstrap.read_bytes()).hexdigest()}  {bootstrap.name}\n",
         encoding="utf-8",
     )
 
@@ -102,6 +105,7 @@ def test_complete_identity_set_is_the_only_replication_payload(tmp_path):
     assert f"--tag vitals-idp-bundle:{STAMP}" in commands[1]
     assert f"zitadel_bundle_{STAMP}.sha256" in commands[1]
     assert f"zitadel_{STAMP}.sql.gz" in commands[1]
+    assert f"zitadel_login_client_{STAMP}.pat" in commands[1]
     assert str(excluded_env) not in commands[1]
     assert str(excluded_health) not in commands[1]
 
