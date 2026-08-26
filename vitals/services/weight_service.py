@@ -51,6 +51,7 @@ from vitals.models.weight import (
     WeightLog,
 )
 from vitals.models.raw_payload import RawPayload
+from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.tenancy import FileAsset
 from vitals.ownership import WriteIdentity
 from vitals.ownership_transition import bridges as ownership_bridges
@@ -74,6 +75,10 @@ if TYPE_CHECKING:
     )
 
 NOISE_ALERT_KEY = "weight.noisy_period_active"
+_WEIGHT_OWNERSHIP_CHECKPOINT_PHASE = (
+    "stage3.channel_optional.weight_logs.v1.weight_logs"
+)
+_WEIGHT_HISTORY_CACHE_KEY = "weight_ownership_historical_high_watermarks"
 
 
 class WeightOwnershipError(ValueError):
@@ -954,6 +959,21 @@ async def _validate_persisted_weight_provenance(
 
     from vitals.models.tenancy import IntegrationConnection
 
+    cached_watermarks = session.info.setdefault(_WEIGHT_HISTORY_CACHE_KEY, {})
+    if subject_id not in cached_watermarks:
+        cached_watermarks[subject_id] = int(
+            await session.scalar(
+                select(OwnershipBackfillCheckpoint.scan_high_watermark_id).where(
+                    OwnershipBackfillCheckpoint.phase_key
+                    == _WEIGHT_OWNERSHIP_CHECKPOINT_PHASE,
+                    OwnershipBackfillCheckpoint.subject_id == subject_id,
+                    OwnershipBackfillCheckpoint.status == "completed",
+                )
+            )
+            or 0
+        )
+    historical = row.id <= cached_watermarks[subject_id]
+
     if row.subject_id != subject_id:
         raise WeightOwnershipError("weight fact belongs to another subject")
     if row.domain != DOMAIN:
@@ -1048,6 +1068,11 @@ async def _validate_persisted_weight_provenance(
         return
 
     if row.source == Source.GARMIN_API.value:
+        if historical and connection is None and raw is None:
+            # Stage-3L could prove the sole historical subject even when the
+            # pre-raw-first Garmin fact retained neither provider root. New
+            # writes are above the checkpoint and must pass the strict branch.
+            return
         if (
             connection is None
             or connection.provider != IntegrationProvider.GARMIN.value

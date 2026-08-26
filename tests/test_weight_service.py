@@ -2,7 +2,7 @@
 noise alerts, and chart-series assembly."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 from freezegun import freeze_time
@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 
 from vitals.enums import Source
 from vitals.models.weight import WeightLog
+from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.services import alerts_service, conflict_engine, weight_service
 from vitals.utils.timeutils import today_local
 
@@ -84,6 +85,53 @@ async def test_log_weight_creates_active_row(db_session, owner_write):
         subject_id=owner_write.subject_id,
     )
     assert active is not None and active.weight_kg == 88.0
+
+
+async def test_historical_rawless_garmin_weight_uses_reviewed_checkpoint(
+    db_session,
+    legacy_owner_roots,
+):
+    historical = WeightLog(
+        subject_id=legacy_owner_roots.subject_id,
+        actor_user_id=None,
+        integration_connection_id=None,
+        date=date(2020, 1, 2),
+        domain="weight",
+        source=Source.GARMIN_API.value,
+        weight_kg=88.0,
+        raw_payload_id=None,
+        superseded=False,
+    )
+    db_session.add(historical)
+    await db_session.flush()
+    stamp = datetime(2026, 8, 20, tzinfo=UTC)
+    db_session.add(
+        OwnershipBackfillCheckpoint(
+            phase_key="stage3.channel_optional.weight_logs.v1.weight_logs",
+            subject_id=legacy_owner_roots.subject_id,
+            status="completed",
+            scan_high_watermark_id=historical.id,
+            snapshot_rows=1,
+            last_scanned_id=historical.id,
+            scanned_rows=1,
+            updated_rows=1,
+            unchanged_rows=0,
+            data_checksum_before="a" * 64,
+            data_checksum_after="b" * 64,
+            ownership_checksum_after="b" * 64,
+            started_at=stamp,
+            updated_at=stamp,
+            completed_at=stamp,
+        )
+    )
+    await db_session.commit()
+
+    rows = await weight_service.list_active_weights(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+
+    assert [row.id for row in rows] == [historical.id]
 
 
 async def test_manual_supersedes_garmin_same_date(db_session, owner_write):
