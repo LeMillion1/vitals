@@ -248,14 +248,14 @@ def _context(tmp_path: Path) -> runner.Context:
 
 
 def _role_payload(context: runner.Context) -> dict:
-    def state(runtime_role: str) -> dict:
+    def state(runtime_role: str, *, memberships: int) -> dict:
         return {
             "status": "completed",
             "database": context.database,
             "migration_role": context.owner_role,
             "runtime_role": runtime_role,
             "owned_objects": 0,
-            "role_memberships": 0,
+            "role_memberships": memberships,
             "role_settings": 0,
             "extra_privileges": 0,
             "superuser": False,
@@ -266,8 +266,22 @@ def _role_payload(context: runner.Context) -> dict:
         "status": "completed",
         "database": context.database,
         "migration_role": context.owner_role,
-        "web": state(context.runtime_role),
-        "worker": state(context.worker_role),
+        "web": state(context.runtime_role, memberships=0),
+        "worker": state(context.worker_role, memberships=1),
+        "platform_scope": {
+            "status": "completed",
+            "database": context.database,
+            "role": "vitals_platform_scope_db_16384",
+            "member_role": context.worker_role,
+            "members": 1,
+            "role_memberships": 0,
+            "role_settings": 0,
+            "owned_objects": 0,
+            "extra_privileges": 0,
+            "login": False,
+            "superuser": False,
+            "bypass_rls": False,
+        },
     }
 
 
@@ -288,9 +302,16 @@ def test_role_provision_payload_requires_the_complete_exact_attestation(tmp_path
         (("web", "runtime_role"), "other"),
         (("web", "owned_objects"), True),
         (("web", "role_memberships"), 1),
+        (("worker", "role_memberships"), True),
         (("web", "superuser"), True),
         (("worker", "bypass_rls"), True),
         (("worker", "unexpected"), 0),
+        (("platform_scope", "members"), True),
+        (("platform_scope", "members"), 0),
+        (("platform_scope", "role"), "vitals_platform_scope_db_0"),
+        (("platform_scope", "member_role"), "other"),
+        (("platform_scope", "login"), True),
+        (("platform_scope", "unexpected"), 0),
     ],
 )
 def test_role_provision_payload_rejects_partial_or_unsafe_state(

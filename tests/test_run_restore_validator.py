@@ -40,6 +40,7 @@ def test_runtime_success_preserves_only_aggregate_counts():
         "forced_rls_tables": 56,
         "inspected_subject_rows": 7,
         "operation": "validate_runtime_rls",
+        "platform_visible_rows": 7,
         "required_subject_tables": 48,
         "result": "ok",
         "subjects": 1,

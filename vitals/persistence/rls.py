@@ -28,17 +28,51 @@ from sqlalchemy.orm import Session
 #: constant in revision 0050; the paired contract test pins that it does.
 SUBJECT_SETTING = "vitals.subject_id"
 
-#: The other thing a transaction may be acting for. Some work legitimately
-#: belongs to the installation rather than to a person: the published report
-#: that a visitor opens with a token, where the token *is* the authorization
-#: and there is no session to bind; and the housekeeping jobs that sweep
-#: unprocessed payloads or reconcile provider invocations across everybody.
+#: The other thing a worker transaction may be acting for. Some housekeeping
+#: belongs to the installation rather than to one person: sweeping unprocessed
+#: payloads or reconciling provider invocations across everybody. Public report
+#: tokens are attested separately and bind their exact subject instead.
 #:
 #: Declaring it is deliberate and narrow. It is transaction-local like the
 #: subject, it must be asked for by name, and a contract test enumerates every
 #: caller — so a fourth one is something a reviewer sees rather than something
 #: that accumulates.
 PLATFORM_SETTING = "vitals.platform_scope"
+
+# PostgreSQL roles are cluster-global while a Vitals installation owns one
+# dedicated database.  Suffixing the marker role with the database OID keeps
+# parallel test/restore databases isolated and deliberately makes a logical
+# restore fail closed until the role provisioner runs against the new target.
+PLATFORM_CAPABILITY_ROLE_PREFIX = "vitals_platform_scope_db_"
+
+# This is intentionally an inline predicate rather than a SECURITY DEFINER
+# function.  A function would add another executable bridge to both runtime
+# roles.  Resolving the role through pg_roles also makes a missing marker return
+# false instead of raising the undefined-role error produced by a regrole cast.
+PLATFORM_CAPABILITY_PREDICATE = f"""
+EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_roles AS capability
+    WHERE capability.rolname = '{PLATFORM_CAPABILITY_ROLE_PREFIX}' || (
+        SELECT database.oid::text
+        FROM pg_catalog.pg_database AS database
+        WHERE database.datname = pg_catalog.current_database()
+    )
+      AND capability.rolcanlogin = false
+      AND capability.rolsuper = false
+      AND capability.rolcreatedb = false
+      AND capability.rolcreaterole = false
+      AND capability.rolinherit = false
+      AND capability.rolreplication = false
+      AND capability.rolbypassrls = false
+      AND pg_catalog.pg_has_role(session_user, capability.oid, 'MEMBER')
+)
+""".strip()
+
+PLATFORM_SCOPE_PREDICATE = (
+    f"current_setting('{PLATFORM_SETTING}', true) = 'on' "
+    f"AND {PLATFORM_CAPABILITY_PREDICATE}"
+)
 
 _SUBJECT_KEY = "vitals_rls_subject_id"
 _PLATFORM_KEY = "vitals_rls_platform_scope"
@@ -112,12 +146,10 @@ async def bind_session_subject(session, subject_id: uuid.UUID) -> None:
 async def enter_platform_scope(session) -> None:
     """Declare that this transaction acts for the installation, not for a person.
 
-    Two kinds of work need it, and both are legitimate rather than a way around
-    the boundary. A published report is opened by a visitor holding a token: the
-    token is the authorization, and there is no session to bind because there is
-    no account. Housekeeping jobs — sweeping unprocessed payloads, reconciling
+    Worker housekeeping jobs — sweeping unprocessed payloads or reconciling
     provider invocations — are about the installation's own state and have no
-    person to act as.
+    single person to act as. The database capability makes this unavailable to
+    web sessions even if they set the raw transaction-local setting themselves.
 
     Everything else must bind a subject instead. This is not a fallback for a
     path that forgot to: an unbound session seeing nothing is the design, and
@@ -125,12 +157,24 @@ async def enter_platform_scope(session) -> None:
     off for that request.
     """
 
-    session.info[_PLATFORM_KEY] = True
     if session.get_bind().dialect.name != "postgresql":
+        session.info[_PLATFORM_KEY] = True
         return
     await session.execute(
         text("SELECT set_config(:name, 'on', true)"), {"name": PLATFORM_SETTING}
     )
+    authorized = bool(
+        await session.scalar(text(f"SELECT {PLATFORM_CAPABILITY_PREDICATE}"))
+    )
+    if not authorized:
+        await session.execute(
+            text("SELECT set_config(:name, '', true)"),
+            {"name": PLATFORM_SETTING},
+        )
+        raise RlsSessionError(
+            "this database login is not authorized for the platform scope"
+        )
+    session.info[_PLATFORM_KEY] = True
 
 
 def in_platform_scope(session) -> bool:

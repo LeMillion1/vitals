@@ -144,7 +144,14 @@ def _fail(code: str) -> NoReturn:
 def _validate_role_payload(context: Context, payload: Any) -> None:
     """Accept only the complete attested web/worker role result."""
 
-    top_keys = {"status", "database", "migration_role", "web", "worker"}
+    top_keys = {
+        "status",
+        "database",
+        "migration_role",
+        "platform_scope",
+        "web",
+        "worker",
+    }
     role_keys = {
         "status",
         "database",
@@ -165,9 +172,9 @@ def _validate_role_payload(context: Context, payload: Any) -> None:
         or payload["migration_role"] != context.owner_role
     ):
         _fail("runtime_role_provision_failed")
-    for label, expected_role in (
-        ("web", context.runtime_role),
-        ("worker", context.worker_role),
+    for label, expected_role, expected_memberships in (
+        ("web", context.runtime_role, 0),
+        ("worker", context.worker_role, 1),
     ):
         state = payload[label]
         if not isinstance(state, dict) or set(state) != role_keys:
@@ -181,15 +188,60 @@ def _validate_role_payload(context: Context, payload: Any) -> None:
             or state["bypass_rls"] is not False
         ):
             _fail("runtime_role_provision_failed")
-        for key in (
-            "owned_objects",
-            "role_memberships",
-            "role_settings",
-            "extra_privileges",
-        ):
+        for key in ("owned_objects", "role_settings", "extra_privileges"):
             value = state[key]
             if isinstance(value, bool) or not isinstance(value, int) or value != 0:
                 _fail("runtime_role_provision_failed")
+        memberships = state["role_memberships"]
+        if (
+            isinstance(memberships, bool)
+            or not isinstance(memberships, int)
+            or memberships != expected_memberships
+        ):
+            _fail("runtime_role_provision_failed")
+
+    capability = payload["platform_scope"]
+    capability_keys = {
+        "status",
+        "database",
+        "role",
+        "member_role",
+        "members",
+        "role_memberships",
+        "role_settings",
+        "owned_objects",
+        "extra_privileges",
+        "login",
+        "superuser",
+        "bypass_rls",
+    }
+    if not isinstance(capability, dict) or set(capability) != capability_keys:
+        _fail("runtime_role_provision_failed")
+    if (
+        capability["status"] != "completed"
+        or capability["database"] != context.database
+        or capability["member_role"] != context.worker_role
+        or re.fullmatch(
+            r"vitals_platform_scope_db_[1-9][0-9]*", capability["role"]
+        )
+        is None
+        or capability["login"] is not False
+        or capability["superuser"] is not False
+        or capability["bypass_rls"] is not False
+    ):
+        _fail("runtime_role_provision_failed")
+    members = capability["members"]
+    if isinstance(members, bool) or not isinstance(members, int) or members != 1:
+        _fail("runtime_role_provision_failed")
+    for key in (
+        "role_memberships",
+        "role_settings",
+        "owned_objects",
+        "extra_privileges",
+    ):
+        value = capability[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value != 0:
+            _fail("runtime_role_provision_failed")
 
 
 def _utc_now() -> str:

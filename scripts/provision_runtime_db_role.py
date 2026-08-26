@@ -26,6 +26,7 @@ RUNTIME_EXECUTE_ROUTINES: tuple[str, ...] = (
     "public.attest_shared_report_token(text)",
 )
 WORKER_EXECUTE_ROUTINES: tuple[str, ...] = ()
+PLATFORM_CAPABILITY_ROLE_PREFIX = "vitals_platform_scope_db_"
 _REQUIRED_ROUTINE_CONFIG = frozenset(
     {"search_path=pg_catalog, pg_temp", "row_security=off"}
 )
@@ -46,6 +47,16 @@ def _postgres_url(name: str) -> URL:
 
 def _quoted_identifier(connection, value: str) -> str:
     return connection.dialect.identifier_preparer.quote(value)
+
+
+def platform_capability_role_name(database_oid: int) -> str:
+    """Return the cluster role dedicated to one database incarnation."""
+
+    if isinstance(database_oid, bool) or not isinstance(database_oid, int):
+        raise ValueError("database_oid must be an integer")
+    if database_oid <= 0:
+        raise ValueError("database_oid must be positive")
+    return f"{PLATFORM_CAPABILITY_ROLE_PREFIX}{database_oid}"
 
 
 async def _set_runtime_role_password(
@@ -714,6 +725,237 @@ async def provision_runtime_role(
     }
 
 
+async def _platform_capability_state(
+    connection,
+    *,
+    capability_role: str,
+    web_role: str,
+    worker_role: str,
+) -> dict:
+    attributes = (
+        await connection.execute(
+            sa.text(
+                "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, "
+                "rolinherit, rolreplication, rolbypassrls, "
+                "COALESCE(cardinality(rolconfig), 0) AS role_settings "
+                "FROM pg_roles WHERE rolname=:role"
+            ),
+            {"role": capability_role},
+        )
+    ).mappings().one()
+    counts = (
+        await connection.execute(
+            sa.text(
+                "SELECT "
+                "(SELECT count(*) FROM pg_auth_members membership "
+                " JOIN pg_roles member ON member.oid=membership.member "
+                " WHERE member.rolname=:role) AS parent_memberships, "
+                "(SELECT count(*) FROM pg_auth_members membership "
+                " JOIN pg_roles parent ON parent.oid=membership.roleid "
+                " WHERE parent.rolname=:role) AS members, "
+                "(SELECT count(*) FROM pg_auth_members membership "
+                " JOIN pg_roles parent ON parent.oid=membership.roleid "
+                " JOIN pg_roles member ON member.oid=membership.member "
+                " WHERE parent.rolname=:role "
+                " AND (member.rolname<>:worker OR membership.admin_option)) "
+                "AS unexpected_members, "
+                "(SELECT count(*) FROM pg_auth_members membership "
+                " JOIN pg_roles parent ON parent.oid=membership.roleid "
+                " JOIN pg_roles member ON member.oid=membership.member "
+                " WHERE parent.rolname=:role AND member.rolname=:web) "
+                "AS web_memberships, "
+                "(SELECT count(*) FROM pg_db_role_setting setting "
+                " JOIN pg_roles role ON role.oid=setting.setrole "
+                " WHERE role.rolname=:role) AS database_settings, "
+                "(SELECT count(*) FROM pg_database database "
+                " JOIN pg_roles owner ON owner.oid=database.datdba "
+                " WHERE owner.rolname=:role) + "
+                "(SELECT count(*) FROM pg_namespace namespace "
+                " JOIN pg_roles owner ON owner.oid=namespace.nspowner "
+                " WHERE owner.rolname=:role) + "
+                "(SELECT count(*) FROM pg_class object "
+                " JOIN pg_roles owner ON owner.oid=object.relowner "
+                " WHERE owner.rolname=:role) + "
+                "(SELECT count(*) FROM pg_proc object "
+                " JOIN pg_roles owner ON owner.oid=object.proowner "
+                " WHERE owner.rolname=:role) + "
+                "(SELECT count(*) FROM pg_type object "
+                " JOIN pg_roles owner ON owner.oid=object.typowner "
+                " WHERE owner.rolname=:role) AS owned_objects, "
+                "(SELECT count(*) FROM pg_shdepend dependency "
+                " JOIN pg_roles role ON role.oid=dependency.refobjid "
+                " WHERE dependency.refclassid='pg_authid'::regclass "
+                " AND dependency.deptype='a' AND role.rolname=:role) "
+                "AS acl_dependencies, "
+                "(SELECT count(*) FROM pg_namespace namespace "
+                " WHERE namespace.nspname <> 'information_schema' "
+                " AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
+                " AND (has_schema_privilege(:role, namespace.oid, 'USAGE') "
+                " OR has_schema_privilege(:role, namespace.oid, 'CREATE'))) + "
+                "(SELECT count(*) FROM pg_class object "
+                " JOIN pg_namespace namespace ON namespace.oid=object.relnamespace "
+                " WHERE namespace.nspname <> 'information_schema' "
+                " AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
+                " AND object.relkind IN ('r','p','v','m','S','f') AND ("
+                "  (object.relkind='S' AND ("
+                "   has_sequence_privilege(:role, object.oid, 'USAGE') OR "
+                "   has_sequence_privilege(:role, object.oid, 'SELECT') OR "
+                "   has_sequence_privilege(:role, object.oid, 'UPDATE'))) OR "
+                "  (object.relkind<>'S' AND ("
+                "   has_table_privilege(:role, object.oid, 'SELECT') OR "
+                "   has_table_privilege(:role, object.oid, 'INSERT') OR "
+                "   has_table_privilege(:role, object.oid, 'UPDATE') OR "
+                "   has_table_privilege(:role, object.oid, 'DELETE') OR "
+                "   has_table_privilege(:role, object.oid, 'TRUNCATE') OR "
+                "   has_table_privilege(:role, object.oid, 'REFERENCES') OR "
+                "   has_table_privilege(:role, object.oid, 'TRIGGER'))))) + "
+                "(SELECT count(*) FROM pg_proc object "
+                " JOIN pg_namespace namespace ON namespace.oid=object.pronamespace "
+                " WHERE namespace.nspname <> 'information_schema' "
+                " AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
+                " AND has_function_privilege(:role, object.oid, 'EXECUTE')) + "
+                "(SELECT CASE WHEN has_database_privilege("
+                ":role, current_database(), 'CONNECT') "
+                " OR has_database_privilege(:role, current_database(), 'CREATE') "
+                " OR has_database_privilege(:role, current_database(), 'TEMPORARY') "
+                "THEN 1 ELSE 0 END) AS effective_privileges"
+            ),
+            {
+                "role": capability_role,
+                "web": web_role,
+                "worker": worker_role,
+            },
+        )
+    ).mappings().one()
+    state = {**dict(attributes), **{key: int(value) for key, value in counts.items()}}
+    expected_attributes = {
+        "rolcanlogin": False,
+        "rolsuper": False,
+        "rolcreatedb": False,
+        "rolcreaterole": False,
+        "rolinherit": False,
+        "rolreplication": False,
+        "rolbypassrls": False,
+    }
+    if any(state[key] != value for key, value in expected_attributes.items()):
+        raise RuntimeError("platform capability role has privileged attributes")
+    if state["members"] != 1:
+        raise RuntimeError("platform capability role must have one worker member")
+    zero_keys = (
+        "role_settings",
+        "parent_memberships",
+        "unexpected_members",
+        "web_memberships",
+        "database_settings",
+        "owned_objects",
+        "acl_dependencies",
+        "effective_privileges",
+    )
+    if any(state[key] != 0 for key in zero_keys):
+        raise RuntimeError("platform capability role retains unexpected authority")
+    return state
+
+
+async def provision_platform_scope_capability(
+    *,
+    migration_url: URL,
+    web_role: str,
+    worker_role: str,
+) -> dict:
+    """Converge the database marker membership granted only to the worker."""
+
+    engine = create_async_engine(migration_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("SET LOCAL lock_timeout = '5s'")
+            await connection.exec_driver_sql("SET LOCAL statement_timeout = '30s'")
+            connected_role, database, database_oid = (
+                await connection.execute(
+                    sa.text(
+                        "SELECT current_user, current_database(), "
+                        "(SELECT oid FROM pg_database "
+                        " WHERE datname=current_database())"
+                    )
+                )
+            ).one()
+            if connected_role != migration_url.username or database != migration_url.database:
+                raise RuntimeError("migration connection identity does not match its URL")
+            lock_key = (1_448_366_915 << 32) | int(database_oid)
+            await connection.execute(
+                sa.text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": lock_key},
+            )
+            capability_role = platform_capability_role_name(int(database_oid))
+            capability_ident = _quoted_identifier(connection, capability_role)
+            worker_ident = _quoted_identifier(connection, worker_role)
+            exists = bool(
+                await connection.scalar(
+                    sa.text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=:role)"),
+                    {"role": capability_role},
+                )
+            )
+            if not exists:
+                await connection.exec_driver_sql(
+                    f"CREATE ROLE {capability_ident} NOLOGIN"
+                )
+            await connection.exec_driver_sql(
+                f"ALTER ROLE {capability_ident} WITH NOLOGIN PASSWORD NULL "
+                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT "
+                "NOREPLICATION NOBYPASSRLS"
+            )
+            await _reset_role_authority(
+                connection,
+                migration_role=migration_url.username,
+                runtime_role=capability_role,
+                database=database,
+            )
+            members = list(
+                (
+                    await connection.execute(
+                        sa.text(
+                            "SELECT member.rolname FROM pg_auth_members membership "
+                            "JOIN pg_roles parent ON parent.oid=membership.roleid "
+                            "JOIN pg_roles member ON member.oid=membership.member "
+                            "WHERE parent.rolname=:role ORDER BY member.rolname"
+                        ),
+                        {"role": capability_role},
+                    )
+                ).scalars()
+            )
+            for member_role in members:
+                member_ident = _quoted_identifier(connection, member_role)
+                await connection.exec_driver_sql(
+                    f"REVOKE {capability_ident} FROM {member_ident}"
+                )
+            await connection.exec_driver_sql(
+                f"GRANT {capability_ident} TO {worker_ident}"
+            )
+            state = await _platform_capability_state(
+                connection,
+                capability_role=capability_role,
+                web_role=web_role,
+                worker_role=worker_role,
+            )
+    finally:
+        await engine.dispose()
+
+    return {
+        "status": "completed",
+        "database": migration_url.database,
+        "role": capability_role,
+        "member_role": worker_role,
+        "members": state["members"],
+        "role_memberships": state["parent_memberships"],
+        "role_settings": state["role_settings"] + state["database_settings"],
+        "owned_objects": state["owned_objects"],
+        "extra_privileges": state["acl_dependencies"]
+        + state["effective_privileges"],
+        "login": state["rolcanlogin"],
+        "superuser": state["rolsuper"],
+        "bypass_rls": state["rolbypassrls"],
+    }
+
+
 async def provision_runtime_roles(
     *,
     migration_url: URL,
@@ -747,12 +989,19 @@ async def provision_runtime_roles(
         runtime_url=worker_url,
         execute_routines=WORKER_EXECUTE_ROUTINES,
     )
+    platform_scope = await provision_platform_scope_capability(
+        migration_url=migration_url,
+        web_role=web_url.username,
+        worker_role=worker_url.username,
+    )
+    worker = {**worker, "role_memberships": 1}
     return {
         "status": "completed",
         "database": migration_url.database,
         "migration_role": migration_url.username,
         "web": web,
         "worker": worker,
+        "platform_scope": platform_scope,
     }
 
 

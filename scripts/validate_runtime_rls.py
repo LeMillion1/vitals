@@ -24,10 +24,14 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-
 _REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPOSITORY_ROOT))
+
+from vitals.persistence.rls import (  # noqa: E402
+    PLATFORM_CAPABILITY_PREDICATE,
+    PLATFORM_CAPABILITY_ROLE_PREFIX,
+)
 
 OPERATION = "validate_runtime_rls"
 SUBJECT_SETTING = "vitals.subject_id"
@@ -54,16 +58,38 @@ _SUBJECT_PREDICATE = (
     "(subject_id = (NULLIF(current_setting('vitals.subject_id'::text, true), "
     "''::text))::uuid)"
 )
+_NORMALIZED_CAPABILITY_PREDICATE = (
+    "(EXISTS ( SELECT 1\n"
+    "   FROM pg_roles capability\n"
+    "  WHERE ((capability.rolname = ('vitals_platform_scope_db_'::text || "
+    "( SELECT (database.oid)::text AS oid\n"
+    "           FROM pg_database database\n"
+    "          WHERE (database.datname = current_database())))) AND "
+    "(capability.rolcanlogin = false) AND (capability.rolsuper = false) AND "
+    "(capability.rolcreatedb = false) AND (capability.rolcreaterole = false) "
+    "AND (capability.rolinherit = false) AND "
+    "(capability.rolreplication = false) AND "
+    "(capability.rolbypassrls = false) AND "
+    "pg_has_role(SESSION_USER, capability.oid, 'MEMBER'::text))))"
+)
 _PLATFORM_PREDICATE = (
     "((subject_id = (NULLIF(current_setting('vitals.subject_id'::text, true), "
-    "''::text))::uuid) OR "
-    "(current_setting('vitals.platform_scope'::text, true) = 'on'::text))"
+    "''::text))::uuid) OR ((current_setting('vitals.platform_scope'::text, "
+    "true) = 'on'::text) AND "
+    "__PLATFORM_CAPABILITY_PREDICATE__))"
 )
 _SHARED_PREDICATE = (
     "((subject_id IS NULL) OR "
     "(subject_id = (NULLIF(current_setting('vitals.subject_id'::text, true), "
-    "''::text))::uuid) OR "
-    "(current_setting('vitals.platform_scope'::text, true) = 'on'::text))"
+    "''::text))::uuid) OR ((current_setting('vitals.platform_scope'::text, "
+    "true) = 'on'::text) AND "
+    "__PLATFORM_CAPABILITY_PREDICATE__))"
+)
+_PLATFORM_PREDICATE = _PLATFORM_PREDICATE.replace(
+    "__PLATFORM_CAPABILITY_PREDICATE__", _NORMALIZED_CAPABILITY_PREDICATE
+)
+_SHARED_PREDICATE = _SHARED_PREDICATE.replace(
+    "__PLATFORM_CAPABILITY_PREDICATE__", _NORMALIZED_CAPABILITY_PREDICATE
 )
 _ERROR_CODES = frozenset(
     {
@@ -77,6 +103,8 @@ _ERROR_CODES = frozenset(
         "database_url_invalid",
         "database_url_missing",
         "migration_identity_mismatch",
+        "platform_capability_invalid",
+        "platform_scope_rows_mismatch",
         "required_subject_tables_missing",
         "required_table_policy_invalid",
         "required_table_not_forced",
@@ -86,6 +114,7 @@ _ERROR_CODES = frozenset(
         "runtime_identity_mismatch",
         "subject_data_missing",
         "unbound_subject_rows_visible",
+        "worker_identity_mismatch",
     }
 )
 
@@ -117,10 +146,11 @@ def _postgres_url(environ: Mapping[str, str], name: str) -> URL:
     return url
 
 
-def _database_urls(environ: Mapping[str, str]) -> tuple[URL, URL]:
+def _database_urls(environ: Mapping[str, str]) -> tuple[URL, URL, URL]:
     migration = _postgres_url(environ, "VITALS_MIGRATION_DATABASE_URL")
     runtime = _postgres_url(environ, "VITALS_DATABASE_URL")
-    if migration.username == runtime.username:
+    worker = _postgres_url(environ, "VITALS_WORKER_DATABASE_URL")
+    if len({migration.username, runtime.username, worker.username}) != 3:
         _fail("database_roles_not_distinct")
     migration_endpoint = (
         migration.host.lower(),
@@ -132,9 +162,14 @@ def _database_urls(environ: Mapping[str, str]) -> tuple[URL, URL]:
         runtime.port or 5432,
         runtime.database,
     )
-    if migration_endpoint != runtime_endpoint:
+    worker_endpoint = (
+        worker.host.lower(),
+        worker.port or 5432,
+        worker.database,
+    )
+    if migration_endpoint != runtime_endpoint or migration_endpoint != worker_endpoint:
         _fail("database_endpoint_mismatch")
-    return migration, runtime
+    return migration, runtime, worker
 
 
 async def _connection_identity(connection: Any) -> tuple[str, str, str | None, int]:
@@ -214,11 +249,13 @@ async def validate_runtime_rls(
     *,
     migration_url: URL,
     runtime_url: URL,
+    worker_url: URL,
 ) -> dict[str, int | str]:
     """Return aggregate proof results or raise a bounded validation error."""
 
     migration_engine = create_async_engine(migration_url, poolclass=NullPool)
     runtime_engine = create_async_engine(runtime_url, poolclass=NullPool)
+    worker_engine = create_async_engine(worker_url, poolclass=NullPool)
     try:
         async with migration_engine.connect() as migration:
             migration_identity = await _connection_identity(migration)
@@ -357,6 +394,35 @@ async def validate_runtime_rls(
                             or 0
                         )
 
+                shared_expected_counts: dict[str, int] = {}
+                for table_name in required_tables:
+                    if policy_kinds[table_name] != "shared":
+                        shared_expected_counts[table_name] = 0
+                        continue
+                    table = _quote_table(migration, table_name)
+                    shared_expected_counts[table_name] = int(
+                        await migration.scalar(
+                            sa.text(
+                                f"SELECT count(*) FROM {table} "
+                                "WHERE subject_id IS NULL"
+                            )
+                        )
+                        or 0
+                    )
+
+                platform_expected_counts: dict[str, int] = {}
+                for table_name in required_tables:
+                    if policy_kinds[table_name] == "subject":
+                        platform_expected_counts[table_name] = 0
+                        continue
+                    table = _quote_table(migration, table_name)
+                    platform_expected_counts[table_name] = int(
+                        await migration.scalar(
+                            sa.text(f"SELECT count(*) FROM {table}")
+                        )
+                        or 0
+                    )
+
                 unbound_rows = 0
                 bound_rows = 0
                 await runtime.rollback()
@@ -375,7 +441,7 @@ async def validate_runtime_rls(
                             or 0
                         )
                         unbound_rows += visible
-                        if visible:
+                        if visible != shared_expected_counts[table_name]:
                             _fail("unbound_subject_rows_visible")
 
                     await runtime.execute(
@@ -391,7 +457,7 @@ async def validate_runtime_rls(
                             await runtime.scalar(sa.text(f"SELECT count(*) FROM {table}"))
                             or 0
                         )
-                        if visible:
+                        if visible != shared_expected_counts[table_name]:
                             _fail("bound_subject_rows_mismatch")
 
                 for subject_id in subject_ids:
@@ -413,7 +479,11 @@ async def validate_runtime_rls(
                                 or 0
                             )
                             bound_rows += visible
-                            if visible != expected_counts[subject_id][table_name]:
+                            expected = (
+                                expected_counts[subject_id][table_name]
+                                + shared_expected_counts[table_name]
+                            )
+                            if visible != expected:
                                 _fail("bound_subject_rows_mismatch")
 
                 inspected_rows = sum(
@@ -424,11 +494,148 @@ async def validate_runtime_rls(
                 if inspected_rows < 1:
                     _fail("restored_subject_rows_missing")
 
+                async with worker_engine.connect() as worker:
+                    worker_identity = await _connection_identity(worker)
+                    if (
+                        worker_identity[0] != worker_url.username
+                        or worker_identity[1] != worker_url.database
+                    ):
+                        _fail("worker_identity_mismatch")
+                    if worker_identity[0] in {
+                        migration_identity[0],
+                        runtime_identity[0],
+                    }:
+                        _fail("database_roles_not_distinct")
+                    if migration_identity[1:] != worker_identity[1:]:
+                        _fail("database_identity_mismatch")
+
+                    database_oid = int(
+                        await migration.scalar(
+                            sa.text(
+                                "SELECT oid FROM pg_database "
+                                "WHERE datname=current_database()"
+                            )
+                        )
+                    )
+                    capability_role = (
+                        f"{PLATFORM_CAPABILITY_ROLE_PREFIX}{database_oid}"
+                    )
+                    capability = (
+                        await migration.execute(
+                            sa.text(
+                                "SELECT role.rolcanlogin, role.rolsuper, "
+                                "role.rolcreatedb, role.rolcreaterole, "
+                                "role.rolinherit, role.rolreplication, "
+                                "role.rolbypassrls, "
+                                "COALESCE(cardinality(role.rolconfig), 0), "
+                                "(SELECT count(*) FROM pg_auth_members membership "
+                                " JOIN pg_roles parent "
+                                " ON parent.oid=membership.roleid "
+                                " WHERE parent.rolname=:capability), "
+                                "(SELECT count(*) FROM pg_auth_members membership "
+                                " JOIN pg_roles parent "
+                                " ON parent.oid=membership.roleid "
+                                " JOIN pg_roles member "
+                                " ON member.oid=membership.member "
+                                " WHERE parent.rolname=:capability "
+                                " AND member.rolname=:worker "
+                                " AND NOT membership.admin_option), "
+                                "pg_has_role(:worker, role.oid, 'MEMBER'), "
+                                "pg_has_role(:worker, role.oid, 'USAGE'), "
+                                "pg_has_role(:web, role.oid, 'MEMBER') "
+                                "FROM pg_roles role WHERE role.rolname=:capability"
+                            ),
+                            {
+                                "capability": capability_role,
+                                "web": runtime_url.username,
+                                "worker": worker_url.username,
+                            },
+                        )
+                    ).one_or_none()
+                    if capability is None or tuple(capability) != (
+                        False,
+                        False,
+                        False,
+                        False,
+                        False,
+                        False,
+                        False,
+                        0,
+                        1,
+                        1,
+                        True,
+                        False,
+                        False,
+                    ):
+                        _fail("platform_capability_invalid")
+
+                    await runtime.rollback()
+                    async with runtime.begin():
+                        await runtime.execute(
+                            sa.text("SELECT set_config(:name, '', true)"),
+                            {"name": SUBJECT_SETTING},
+                        )
+                        await runtime.execute(
+                            sa.text("SELECT set_config(:name, 'on', true)"),
+                            {"name": PLATFORM_SETTING},
+                        )
+                        if bool(
+                            await runtime.scalar(
+                                sa.text(
+                                    f"SELECT {PLATFORM_CAPABILITY_PREDICATE}"
+                                )
+                            )
+                        ):
+                            _fail("platform_capability_invalid")
+                        for table_name in required_tables:
+                            table = _quote_table(runtime, table_name)
+                            visible = int(
+                                await runtime.scalar(
+                                    sa.text(f"SELECT count(*) FROM {table}")
+                                )
+                                or 0
+                            )
+                            if visible != shared_expected_counts[table_name]:
+                                _fail("platform_scope_rows_mismatch")
+
+                    platform_visible_rows = 0
+                    await worker.rollback()
+                    async with worker.begin():
+                        await worker.execute(
+                            sa.text("SELECT set_config(:name, '', true)"),
+                            {"name": SUBJECT_SETTING},
+                        )
+                        await worker.execute(
+                            sa.text("SELECT set_config(:name, 'on', true)"),
+                            {"name": PLATFORM_SETTING},
+                        )
+                        if not bool(
+                            await worker.scalar(
+                                sa.text(
+                                    f"SELECT {PLATFORM_CAPABILITY_PREDICATE}"
+                                )
+                            )
+                        ):
+                            _fail("platform_capability_invalid")
+                        for table_name in required_tables:
+                            table = _quote_table(worker, table_name)
+                            visible = int(
+                                await worker.scalar(
+                                    sa.text(f"SELECT count(*) FROM {table}")
+                                )
+                                or 0
+                            )
+                            expected = platform_expected_counts[table_name]
+                            if visible != expected:
+                                _fail("platform_scope_rows_mismatch")
+                            platform_visible_rows += visible
+
                 return {
                     "bound_visible_rows": bound_rows,
                     "forced_rls_tables": len(rls_states),
                     "inspected_subject_rows": inspected_rows,
                     "operation": OPERATION,
+                    "platform_visible_rows": platform_visible_rows,
                     "required_subject_tables": len(required_tables),
                     "result": "ok",
                     "subjects": subject_count,
@@ -436,6 +643,7 @@ async def validate_runtime_rls(
                     "validated_subjects": len(subject_ids),
                 }
     finally:
+        await worker_engine.dispose()
         await runtime_engine.dispose()
         await migration_engine.dispose()
 
@@ -450,11 +658,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(_error_payload("invalid_arguments"), separators=(",", ":")))
         return 2
     try:
-        migration_url, runtime_url = _database_urls(os.environ)
+        migration_url, runtime_url, worker_url = _database_urls(os.environ)
         payload = asyncio.run(
             validate_runtime_rls(
                 migration_url=migration_url,
                 runtime_url=runtime_url,
+                worker_url=worker_url,
             )
         )
     except KeyboardInterrupt:

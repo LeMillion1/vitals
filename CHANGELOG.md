@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security — platform-wide RLS belongs only to the worker login
+
+PostgreSQL platform scope now requires both the transaction-local setting and a
+database-specific, `NOINHERIT` capability role. Runtime-role provisioning
+converges that marker to exactly one member: the dedicated worker login. The web
+login therefore remains subject-bound even if it sets the raw platform GUC,
+while restore validation proves the exact role attributes, membership, policy
+shape, and whole-database worker visibility before accepting a restored system.
+
 ### Security — support opens one opaque record, never a patient directory
 
 The platform support console no longer enumerates patient names or opens the

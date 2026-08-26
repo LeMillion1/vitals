@@ -267,6 +267,76 @@ async def restricted_engine(database_url: str):
     )
 
 
+async def _grant_probe_platform_capability(admin) -> str:
+    """Make the shared restricted probe act as the worker for one test."""
+
+    from scripts.provision_runtime_db_role import platform_capability_role_name
+
+    async with admin.begin() as connection:
+        database_oid = int(
+            await connection.scalar(
+                sa.text(
+                    "SELECT oid FROM pg_database WHERE datname=current_database()"
+                )
+            )
+        )
+        capability_role = platform_capability_role_name(database_oid)
+        capability_ident = connection.dialect.identifier_preparer.quote(
+            capability_role
+        )
+        exists = bool(
+            await connection.scalar(
+                sa.text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=:role)"),
+                {"role": capability_role},
+            )
+        )
+        if not exists:
+            await connection.exec_driver_sql(
+                f"CREATE ROLE {capability_ident} NOLOGIN NOINHERIT"
+            )
+        await connection.exec_driver_sql(
+            f"ALTER ROLE {capability_ident} WITH NOLOGIN PASSWORD NULL "
+            "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT "
+            "NOREPLICATION NOBYPASSRLS"
+        )
+        members = list(
+            (
+                await connection.execute(
+                    sa.text(
+                        "SELECT member.rolname FROM pg_auth_members membership "
+                        "JOIN pg_roles parent ON parent.oid=membership.roleid "
+                        "JOIN pg_roles member ON member.oid=membership.member "
+                        "WHERE parent.rolname=:role"
+                    ),
+                    {"role": capability_role},
+                )
+            ).scalars()
+        )
+        for member in members:
+            member_ident = connection.dialect.identifier_preparer.quote(member)
+            await connection.exec_driver_sql(
+                f"REVOKE {capability_ident} FROM {member_ident}"
+            )
+        await connection.exec_driver_sql(
+            f"ALTER ROLE {RESTRICTED_ROLE} NOINHERIT"
+        )
+        await connection.exec_driver_sql(
+            f"GRANT {capability_ident} TO {RESTRICTED_ROLE}"
+        )
+    return capability_role
+
+
+async def _drop_probe_platform_capability(admin, capability_role: str) -> None:
+    async with admin.begin() as connection:
+        capability_ident = connection.dialect.identifier_preparer.quote(
+            capability_role
+        )
+        await connection.exec_driver_sql(
+            f"REVOKE {capability_ident} FROM {RESTRICTED_ROLE}"
+        )
+        await connection.exec_driver_sql(f"DROP ROLE {capability_ident}")
+
+
 async def _seed_two_subjects(engine) -> tuple[uuid.UUID, uuid.UUID]:
     """One owner and one supplement each, written as the exempt superuser."""
 
@@ -1047,6 +1117,19 @@ def _platform_module():
     return module
 
 
+def _worker_capability_module():
+    spec = importlib.util.spec_from_file_location(
+        "_rev0083",
+        REPOSITORY_ROOT
+        / "migrations"
+        / "versions"
+        / "0083_worker_platform_scope_capability.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _invitation_authorization_module():
     spec = importlib.util.spec_from_file_location(
         "_rev0081",
@@ -1675,6 +1758,7 @@ async def test_real_postgres_public_report_attestation_binds_only_a_live_subject
     from vitals.models.share import SharedReport
     from vitals.models.supplements import Supplement
     from vitals.persistence.rls import (
+        RlsSessionError,
         bind_session_subject,
         bound_subject,
         enter_platform_scope,
@@ -2004,15 +2088,13 @@ async def test_real_postgres_public_report_attestation_binds_only_a_live_subject
             await prebound.rollback()
 
         async with restricted_factory() as platform:
-            await enter_platform_scope(platform)
-            assert (
-                await share_service.resolve_public(
-                    platform, "rls-public-live-token"
-                )
-                is None
-            )
+            with pytest.raises(
+                RlsSessionError,
+                match="not authorized for the platform scope",
+            ):
+                await enter_platform_scope(platform)
             assert bound_subject(platform) is None
-            assert in_platform_scope(platform)
+            assert not in_platform_scope(platform)
             await platform.rollback()
 
         async with restricted_factory() as opener:
@@ -2042,6 +2124,37 @@ def test_the_platform_setting_is_named_the_same_in_both_halves():
     from vitals.persistence.rls import PLATFORM_SETTING
 
     assert _platform_module().PLATFORM_SETTING == PLATFORM_SETTING
+
+
+def test_worker_capability_rewrites_every_live_platform_policy():
+    from scripts.provision_runtime_db_role import PLATFORM_CAPABILITY_ROLE_PREFIX
+    from vitals.persistence.rls import (
+        PLATFORM_CAPABILITY_PREDICATE,
+        PLATFORM_CAPABILITY_ROLE_PREFIX as RUNTIME_PREFIX,
+    )
+
+    migration = _worker_capability_module()
+    rows = migration._tables()
+    kinds = {
+        table_name: kind
+        for table_name, kind in __import__(
+            "scripts.validate_runtime_rls", fromlist=["_policy_kinds"]
+        )._policy_kinds().items()
+        if kind in {"platform", "shared"}
+    }
+
+    assert len(rows) == 66
+    assert {name for name, _shared in rows} == set(kinds)
+    assert sum(shared for _name, shared in rows) == 5
+    assert all(shared is (kinds[name] == "shared") for name, shared in rows)
+    assert migration.PLATFORM_CAPABILITY_ROLE_PREFIX == RUNTIME_PREFIX
+    assert migration.PLATFORM_CAPABILITY_ROLE_PREFIX == (
+        PLATFORM_CAPABILITY_ROLE_PREFIX
+    )
+    assert migration._CAPABILITY == PLATFORM_CAPABILITY_PREDICATE
+    assert "session_user" in migration._GATED_PLATFORM
+    assert "'MEMBER'" in migration._GATED_PLATFORM
+    assert "::regrole" not in migration._GATED_PLATFORM
 
 
 def test_the_rewrite_reaches_every_policy_the_two_revisions_installed():
@@ -2177,6 +2290,7 @@ async def test_real_postgres_platform_scope_reaches_across_subjects(
         database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
     )
     restricted = await restricted_engine(database_url)
+    capability_role: str | None = None
     try:
         first, second = await _seed_two_subjects(admin)
 
@@ -2186,6 +2300,16 @@ async def test_real_postgres_platform_scope_reaches_across_subjects(
                 sa.text("SELECT count(*) FROM supplements")
             ) == 0
 
+            await connection.execute(
+                sa.text("SELECT set_config(:name, 'on', false)"),
+                {"name": PLATFORM_SETTING},
+            )
+            assert await connection.scalar(
+                sa.text("SELECT count(*) FROM supplements")
+            ) == 0, "the web login cannot authorize itself with a custom GUC"
+
+        capability_role = await _grant_probe_platform_capability(admin)
+        async with restricted.connect() as connection:
             await connection.execute(
                 sa.text("SELECT set_config(:name, 'on', false)"),
                 {"name": PLATFORM_SETTING},
@@ -2211,6 +2335,8 @@ async def test_real_postgres_platform_scope_reaches_across_subjects(
                     sa.text("SELECT count(*) FROM supplements")
                 ) == 0, f"{value!r} must not read as the platform scope"
     finally:
+        if capability_role is not None:
+            await _drop_probe_platform_capability(admin, capability_role)
         await restricted.dispose()
         await admin.dispose()
 
@@ -2235,6 +2361,7 @@ async def test_real_postgres_platform_scope_is_transaction_local(
 
     from vitals.persistence.rls import (
         PLATFORM_SETTING,
+        RlsSessionError,
         enter_platform_scope,
         in_platform_scope,
     )
@@ -2248,12 +2375,26 @@ async def test_real_postgres_platform_scope_is_transaction_local(
         database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
     )
     restricted = await restricted_engine(database_url)
+    capability_role: str | None = None
     try:
         await _seed_two_subjects(admin)
         factory = async_sessionmaker(
             restricted, expire_on_commit=False, class_=AsyncSession
         )
 
+        async with factory() as refused:
+            with pytest.raises(
+                RlsSessionError,
+                match="not authorized for the platform scope",
+            ):
+                await enter_platform_scope(refused)
+            assert not in_platform_scope(refused)
+            assert await refused.scalar(
+                sa.text(f"SELECT current_setting('{PLATFORM_SETTING}', true)")
+            ) in (None, "")
+            await refused.rollback()
+
+        capability_role = await _grant_probe_platform_capability(admin)
         async with factory() as session:
             await enter_platform_scope(session)
             assert in_platform_scope(session)
@@ -2279,6 +2420,8 @@ async def test_real_postgres_platform_scope_is_transaction_local(
                 sa.text("SELECT count(*) FROM supplements")
             ) == 0
     finally:
+        if capability_role is not None:
+            await _drop_probe_platform_capability(admin, capability_role)
         await restricted.dispose()
         await admin.dispose()
 
@@ -2321,8 +2464,10 @@ async def test_provider_fanout_discovers_every_account_under_forced_rls(
         database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
     )
     restricted = await restricted_engine(database_url)
+    capability_role: str | None = None
     try:
         first, second = await _seed_two_subjects(admin)
+        capability_role = await _grant_probe_platform_capability(admin)
         corrupt_subject, valid_subject = sorted((first, second))
         valid_ciphertext = credential_vault_service.encrypt_mapping(
             {"email": "synthetic@example.test", "password": "synthetic-password"}
@@ -2404,6 +2549,8 @@ async def test_provider_fanout_discovers_every_account_under_forced_rls(
         assert seen == [corrupt_subject, valid_subject]
         assert configured == [valid_subject]
     finally:
+        if capability_role is not None:
+            await _drop_probe_platform_capability(admin, capability_role)
         await restricted.dispose()
         await admin.dispose()
 

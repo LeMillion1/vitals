@@ -19,6 +19,7 @@ _RUNTIME_COUNT_KEYS = frozenset(
         "bound_visible_rows",
         "forced_rls_tables",
         "inspected_subject_rows",
+        "platform_visible_rows",
         "required_subject_tables",
         "subjects",
         "unbound_visible_rows",

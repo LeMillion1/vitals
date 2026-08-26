@@ -305,6 +305,7 @@ async def test_distinct_web_and_worker_logins_have_exact_routine_sets():
     )
     admin = create_async_engine(admin_url)
     engines = []
+    capability_role: str | None = None
     try:
         result = await provision_runtime_roles(
             migration_url=admin_url,
@@ -313,6 +314,12 @@ async def test_distinct_web_and_worker_logins_have_exact_routine_sets():
         )
         assert result["web"]["runtime_role"] == web_role
         assert result["worker"]["runtime_role"] == worker_role
+        assert result["worker"]["role_memberships"] == 1
+        assert result["platform_scope"]["member_role"] == worker_role
+        assert result["platform_scope"]["members"] == 1
+        assert result["platform_scope"]["role_memberships"] == 0
+        assert result["platform_scope"]["extra_privileges"] == 0
+        capability_role = result["platform_scope"]["role"]
         assert WORKER_EXECUTE_ROUTINES == ()
 
         for url, expected_routines in (
@@ -341,6 +348,56 @@ async def test_distinct_web_and_worker_logins_have_exact_routine_sets():
                     )
                 ).one()
                 assert tuple(attributes) == (False, False, False)
+
+        async with admin.begin() as connection:
+            membership = (
+                await connection.execute(
+                    sa.text(
+                        "SELECT pg_has_role(:worker, role.oid, 'MEMBER'), "
+                        "pg_has_role(:worker, role.oid, 'USAGE'), "
+                        "pg_has_role(:web, role.oid, 'MEMBER'), "
+                        "role.rolcanlogin, role.rolinherit, role.rolbypassrls "
+                        "FROM pg_roles role WHERE role.rolname=:capability"
+                    ),
+                    {
+                        "capability": capability_role,
+                        "web": web_role,
+                        "worker": worker_role,
+                    },
+                )
+            ).one()
+            assert tuple(membership) == (True, False, False, False, False, False)
+
+            capability_ident = connection.dialect.identifier_preparer.quote(
+                capability_role
+            )
+            web_ident = connection.dialect.identifier_preparer.quote(web_role)
+            database_ident = connection.dialect.identifier_preparer.quote(
+                admin_url.database
+            )
+            await connection.exec_driver_sql(
+                f"ALTER ROLE {capability_ident} INHERIT"
+            )
+            await connection.exec_driver_sql(
+                f"ALTER ROLE {capability_ident} SET application_name "
+                "TO 'poisoned-capability'"
+            )
+            await connection.exec_driver_sql(
+                f"GRANT {capability_ident} TO {web_ident} WITH ADMIN OPTION"
+            )
+            await connection.exec_driver_sql(
+                f"GRANT CONNECT ON DATABASE {database_ident} TO {capability_ident}"
+            )
+
+        reconverged = await provision_runtime_roles(
+            migration_url=admin_url,
+            web_url=web_url,
+            worker_url=worker_url,
+        )
+        assert reconverged["platform_scope"]["role"] == capability_role
+        assert reconverged["platform_scope"]["members"] == 1
+        assert reconverged["platform_scope"]["role_settings"] == 0
+        assert reconverged["platform_scope"]["extra_privileges"] == 0
     finally:
         for engine in engines:
             await engine.dispose()
@@ -355,6 +412,16 @@ async def test_distinct_web_and_worker_logins_have_exact_routine_sets():
                     role_ident = connection.dialect.identifier_preparer.quote(role)
                     await connection.exec_driver_sql(f"DROP OWNED BY {role_ident}")
                     await connection.exec_driver_sql(f"DROP ROLE {role_ident}")
+            if capability_role is not None and await connection.scalar(
+                sa.text(
+                    "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=:role)"
+                ),
+                {"role": capability_role},
+            ):
+                capability_ident = connection.dialect.identifier_preparer.quote(
+                    capability_role
+                )
+                await connection.exec_driver_sql(f"DROP ROLE {capability_ident}")
         await admin.dispose()
 
 
