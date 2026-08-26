@@ -90,6 +90,7 @@
     /* Not .v-input — that class is a filled box; here the input is bare text. */
     .lg-input {
         width: 100%;
+        min-height: 2.75rem;
         background: transparent;
         border: 0;
         padding: 0;
@@ -133,6 +134,11 @@
     /* Padding + matching negative margin: the hit area grows past the 11px
        line without moving anything on screen. */
     .lg-reveal {
+        min-width: 2.75rem;
+        min-height: 2.75rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         background: none;
         border: 0;
         padding: .625rem 0;

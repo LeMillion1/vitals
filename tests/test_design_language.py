@@ -343,6 +343,16 @@ def test_the_login_page_is_sized_in_dvh_like_the_app_frame():
     assert "85dvh" in styles and "85vh" not in styles
 
 
+def test_login_fields_and_reveal_are_44px_touch_targets():
+    styles = (ROOT / "web/templates/partials/login_styles.html").read_text(
+        encoding="utf-8"
+    )
+    assert "min-height: 2.75rem" in _rule(styles, ".lg-input")
+    reveal = _rule(styles, ".lg-reveal")
+    assert "min-height: 2.75rem" in reveal
+    assert "min-width: 2.75rem" in reveal
+
+
 def test_a_sideways_ribbon_says_it_scrolls():
     """A row of thumbnails ends flush with the card and reads as "that is all of
     them". The chip rows are exempt: a chip clipped by the screen edge is

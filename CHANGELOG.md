@@ -8,6 +8,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — mobile sign-in touch targets
+
+Password, username, one-time-code, and reveal controls now keep a 44 px touch
+target on phone-width screens without changing the line-field visual language.
+
 ### Changed — active care guidance is visible from the patient hub
 
 The care-team page now leads with active plans and the latest professional
