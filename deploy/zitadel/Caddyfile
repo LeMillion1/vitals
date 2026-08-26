@@ -5,6 +5,7 @@
 	@login path /ui/v2/login*
 	reverse_proxy @login http://vitals_idp_login:3000 {
 		header_up Host {$VITALS_IDP_PUBLIC_AUTHORITY}
+		header_up X-Forwarded-Host {$VITALS_IDP_PUBLIC_AUTHORITY}
 		header_up X-Forwarded-Proto {$VITALS_IDP_PUBLIC_SCHEME}
 	}
 
@@ -13,6 +14,8 @@
 		# header reaches the h2c upstream on an error response.
 		header_up -TE
 		header_up Host {$VITALS_IDP_PUBLIC_AUTHORITY}
+		header_up X-Forwarded-Host {$VITALS_IDP_PUBLIC_AUTHORITY}
+		header_up X-Zitadel-Public-Host {$VITALS_IDP_PUBLIC_AUTHORITY}
 		header_up X-Forwarded-Proto {$VITALS_IDP_PUBLIC_SCHEME}
 	}
 }

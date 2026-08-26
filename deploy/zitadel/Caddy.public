@@ -16,13 +16,18 @@
 	redir @root /ui/v2/login/ 302
 
 	@login path /ui/v2/login /ui/v2/login/*
-	reverse_proxy @login http://vitals_idp_login:3000
+	reverse_proxy @login http://vitals_idp_login:3000 {
+		header_up Host {$VITALS_IDP_PUBLIC_AUTHORITY}
+		header_up X-Forwarded-Host {$VITALS_IDP_PUBLIC_AUTHORITY}
+	}
 
 	reverse_proxy h2c://vitals_idp:8080 {
 		# ZITADEL documents a Caddy/gRPC-gateway hang when this request
 		# header reaches the h2c upstream on an error response.
 		header_up -TE
 		header_up Host {$VITALS_IDP_PUBLIC_AUTHORITY}
+		header_up X-Forwarded-Host {$VITALS_IDP_PUBLIC_AUTHORITY}
+		header_up X-Zitadel-Public-Host {$VITALS_IDP_PUBLIC_AUTHORITY}
 	}
 }
 

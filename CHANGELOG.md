@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — ZITADEL proxy headers cannot change the issuer authority
+
+Both identity gateways now replace the forwarded and ZITADEL public-host
+headers as well as `Host`, and Login V2 uses that same canonical set. A caller
+cannot make discovery or login publish a different issuer merely by spelling
+the default HTTPS port explicitly.
+
 ### Fixed — ZITADEL preflight receives the canonical authority
 
 The identity configuration gate now receives the same public-authority value it

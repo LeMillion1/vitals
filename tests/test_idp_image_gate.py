@@ -220,7 +220,16 @@ def test_public_identity_gateway_is_explicit_tls_profile_without_secrets():
     assert "reverse_proxy @login http://vitals_idp_login:3000" in caddyfile
     assert "reverse_proxy h2c://vitals_idp:8080" in caddyfile
     assert "header_up -TE" in caddyfile
-    assert "header_up Host {$VITALS_IDP_PUBLIC_AUTHORITY}" in caddyfile
+    assert caddyfile.count(
+        "header_up Host {$VITALS_IDP_PUBLIC_AUTHORITY}"
+    ) == 2
+    assert caddyfile.count(
+        "header_up X-Forwarded-Host {$VITALS_IDP_PUBLIC_AUTHORITY}"
+    ) == 2
+    assert (
+        "header_up X-Zitadel-Public-Host {$VITALS_IDP_PUBLIC_AUTHORITY}"
+        in caddyfile
+    )
     assert "admin off" in caddyfile
     assert "trusted_proxies static" in caddyfile
     assert "trusted_proxies_strict" in caddyfile
@@ -250,6 +259,12 @@ def test_identity_surfaces_share_the_canonical_public_authority():
     assert login["CUSTOM_REQUEST_HEADERS"].startswith(
         "Host:${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080},"
     )
+    assert "X-Forwarded-Host:${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}" in (
+        login["CUSTOM_REQUEST_HEADERS"]
+    )
+    assert "X-Zitadel-Public-Host:${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}" in (
+        login["CUSTOM_REQUEST_HEADERS"]
+    )
     assert gateway["VITALS_IDP_PUBLIC_AUTHORITY"] == (
         "${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}"
     )
@@ -259,6 +274,13 @@ def test_identity_surfaces_share_the_canonical_public_authority():
     assert local_caddy.count(
         "header_up Host {$VITALS_IDP_PUBLIC_AUTHORITY}"
     ) == 2
+    assert local_caddy.count(
+        "header_up X-Forwarded-Host {$VITALS_IDP_PUBLIC_AUTHORITY}"
+    ) == 2
+    assert (
+        "header_up X-Zitadel-Public-Host {$VITALS_IDP_PUBLIC_AUTHORITY}"
+        in local_caddy
+    )
 
 
 def test_identity_gateways_cannot_reach_identity_database_network():
