@@ -163,13 +163,8 @@ credentials into the drill record.
 
 ## Scratch restore drill
 
-### 1. Isolate the restore
-
-Use a disposable host or VM with PostgreSQL 15 and a clean Vitals checkout.
-Create a new temporary directory with `mktemp -d`. Never restore over production
-and never mount a production database or file volume into the drill.
-
-From the trusted administration machine:
+Restore an offsite snapshot on a trusted administration machine when that is
+the recovery point under test:
 
 ```bash
 restic snapshots --tag vitals
@@ -178,90 +173,69 @@ restic restore <snapshot-id> --target <temporary-restore-root>
 ```
 
 The restored tree contains `backups/`, `source/vitals.env`, and
-`source/vitals.runtime.env`. Do not `source` either restored environment file.
-Review them offline, provision fresh drill-only credentials, and rotate
-production credentials after any suspected repository or backup-host
-compromise. The drill app must receive a newly generated runtime file and never
-the restored operator file.
-
-### 2. Validate the bundle before extraction
-
-Select one restored `vitals_bundle_*.sha256`. It must contain exactly four lines
-and the expected names for its timestamp. Then run from the restored `backups/`
-directory:
+`source/vitals.runtime.env`. Do not source or pass either restored environment
+file to Compose. Select one exact absolute manifest path, then run the bounded
+orchestrator from the reviewed Vitals checkout:
 
 ```bash
-sha256sum -c vitals_bundle_<timestamp>.sha256
-gzip -t vitals_<timestamp>.sql.gz
+python3 scripts/rehearse_installation_restore.py run \
+  --manifest /absolute/recovery/backups/vitals_bundle_<timestamp>.sha256 \
+  --scratch-parent /var/tmp/vitals-restore-drills
 ```
 
-List each tar before extraction. Reject an absolute path, `..` path component,
-device node, or other unexpected entry. Only then extract into three new empty
-destinations. The legacy upload archive must be restored to
-`web/static/uploads`; the private and Garmin archives belong in their respective
-volumes.
+The command accepts no production environment, database URL, Compose project,
+volume, or credential. It stages the exact Git `HEAD`, verifies and safely
+extracts the exact five-file bundle, renders and audits a scratch-only Compose
+configuration, and restores PostgreSQL with `ON_ERROR_STOP` and one transaction.
+It then migrates to the single Alembic head, records the ownership and scoped-key
+checks in the disposable database, provisions a distinct runtime role, proves
+forced subject RLS through that role, restarts PostgreSQL, and repeats the
+read-only proof. The network is internal, the app port is loopback-only, and
+backup, offsite, and identity services are not part of the active service set.
 
-### 3. Restore PostgreSQL 15
+An ordinary successful run removes its exact Compose project, volumes, copied
+bundle, synthetic secrets, and run directory, and returns one aggregate JSON
+record containing the measured recovery time. A failed run also cleans by
+default. If cleanup itself fails, the error record includes the exact safe
+project and run-directory identifiers that require operator attention; never
+use a Docker-wide prune or a wildcard deletion.
 
-Create an empty disposable PostgreSQL 15 database owned by a drill-only schema
-owner. Restore with fail-fast SQL handling:
+To retain the verified scratch app for browser inspection, use a different
+loopback port:
 
 ```bash
-gzip -dc vitals_<timestamp>.sql.gz \
-  | psql -v ON_ERROR_STOP=1 <drill-migration-database-url>
+python3 scripts/rehearse_installation_restore.py run \
+  --manifest /absolute/recovery/backups/vitals_bundle_<timestamp>.sha256 \
+  --scratch-parent /var/tmp/vitals-restore-drills \
+  --serve --port 18080
 ```
 
-The target must be empty. Never merge a full installation dump into a populated
-database. Confirm that `alembic_version` contains the expected application
-revision and that Alembic can upgrade the restored database to the checked-out
-head without a downgrade.
+The result names a `0600` credential file under the `0700` run directory; do not
+copy its contents into logs or the drill record. Open `http://127.0.0.1:18080`,
+then verify login, Today, reports, settings, care hub, messages, and one page for
+every enabled module at desktop and phone widths. Check protected legacy uploads
+and private attachments only through authenticated routes. Do not expose this
+port beyond loopback.
 
-Point a drill checkout at the restored database and run the aggregate-only
-validators. Run ownership status first, record evidence for the restored graph,
-then do the same for scoped keys:
+After the first browser pass, prove process recovery and repeat the health/RLS
+gate:
 
 ```bash
-.venv/bin/python scripts/validate_subject_ownership.py
-.venv/bin/python scripts/validate_subject_ownership.py --apply
-.venv/bin/python scripts/audit_scoped_keys.py
-.venv/bin/python scripts/audit_scoped_keys.py --apply
+python3 scripts/rehearse_installation_restore.py status --run-dir <exact-run-dir>
+python3 scripts/rehearse_installation_restore.py restart --run-dir <exact-run-dir>
 ```
 
-An otherwise healthy status can be `not_started` after ordinary new writes,
-because the persisted cutover checksum describes an older graph. The two
-`--apply` commands above update aggregate checkpoint evidence only in the
-disposable drill database; either refusal fails the drill. Do not run them on
-production merely to make a drill green. If the recovered revision legitimately
-predates the cutover, follow the
-[ownership cutover runbook](OWNERSHIP_CUTOVER_RUNBOOK.md); do not improvise an
-ownership update. Re-provision the distinct runtime role with
-`scripts/provision_runtime_db_role.py` and verify that the command reports zero
-owned objects, memberships, role settings, and extra privileges. Provisioning is
-convergent: it removes inherited roles, role/database settings, object ownership,
-direct and implicit `PUBLIC` grants outside ordinary DML, and stale default grants
-before restoring the approved runtime grants. The transaction has bounded lock
-and statement timeouts; a timeout is a failed drill, not permission to wait on or
-terminate production sessions. Also verify that the role is not superuser, has
-no `BYPASSRLS`, sees no patient rows without a bound subject context, and sees
-only the bound subject inside a request transaction.
+Destroy it immediately after the browser evidence is recorded:
 
-### 4. Start and inspect the recovered app
+```bash
+python3 scripts/rehearse_installation_restore.py destroy --run-dir <exact-run-dir>
+```
 
-Start the restored stack on a different loopback port and a distinct Compose
-project name. Keep all real outbound integrations disabled. Verify:
-
-- `/health` reports database, Redis, and scheduler healthy;
-- login succeeds with drill credentials;
-- Today, reports, settings, care hub, messages, and one representative page for
-  every enabled health module render in desktop and phone widths;
-- legacy uploads and private-volume attachments can be read only through their
-  authenticated routes;
-- the database runtime role still satisfies the least-privilege/RLS checks;
-- no scheduler job sends a message or calls a real Garmin, Hevy, OpenRouter, or
-  other production endpoint.
-
-Destroy the disposable database, extracted files, and drill secrets after the
-result has been recorded. Keep only the aggregate drill record.
+This drill proves recovery of the health store and the current strict
+subject-data RLS contract. It does not prove that root/control tables form a
+hostile-process tenant boundary, does not recover the independently gated
+identity provider, and does not authorize a production switch. Those are
+separate release gates.
 
 ## Production restore decision
 

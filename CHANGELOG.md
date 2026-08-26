@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — production-copy restores are rehearsed in an isolated stack
+
+One bounded command now validates an exact five-file recovery manifest, stages
+the exact Git revision, restores it into generated PostgreSQL 15 credentials and
+scratch-only Compose resources, migrates to the single Alembic head, and repeats
+ownership, scoped-key, runtime-role, forced-RLS, and database-restart checks. A
+successful ordinary run removes its copied health data and secrets; `--serve`
+retains a loopback-only, outbound-isolated app with synthetic drill credentials
+for browser inspection and an explicit restart/destroy lifecycle.
+
 ### Fixed — runtime database authority is convergent
 
 The database-role provisioner now removes role memberships, persistent role and

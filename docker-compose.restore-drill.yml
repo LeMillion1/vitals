@@ -1,0 +1,53 @@
+services:
+  vitals_db:
+    restart: "no"
+
+  vitals_redis:
+    restart: "no"
+
+  vitals_migrate:
+    restart: "no"
+
+  vitals_db_roles:
+    restart: "no"
+
+  vitals_app:
+    restart: "no"
+    read_only: true
+    volumes:
+      - type: bind
+        source: ${VITALS_DRILL_RUNTIME_ENV_FILE:?VITALS_DRILL_RUNTIME_ENV_FILE is required}
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${VITALS_DRILL_GARMIN_DIR:?VITALS_DRILL_GARMIN_DIR is required}
+        target: /data/garmin_session
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${VITALS_DRILL_LEGACY_UPLOAD_DIR:?VITALS_DRILL_LEGACY_UPLOAD_DIR is required}
+        target: /app/web/static/uploads
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${VITALS_DRILL_PRIVATE_FILES_DIR:?VITALS_DRILL_PRIVATE_FILES_DIR is required}
+        target: /data/private_files
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+
+  # A drill consumes an already published exact bundle. It must never create or
+  # rotate artifacts while proving recovery from that bundle.
+  vitals_backup:
+    profiles: ["restore-drill-disabled"]
+    restart: "no"
+
+networks:
+  default:
+    internal: true
