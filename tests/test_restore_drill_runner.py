@@ -579,10 +579,12 @@ def test_restore_compose_overlay_keeps_drill_inputs_read_only_and_network_intern
         assert f"target: {target}" in overlay
 
 
-def test_runtime_config_enables_only_bounded_restore_stage_markers(tmp_path):
+def test_restore_marker_is_process_control_not_a_runtime_file_setting(tmp_path):
     content = runner._runtime_content(_context(tmp_path))
+    overlay = (ROOT / "docker-compose.restore-drill.yml").read_text(encoding="utf-8")
 
-    assert "VITALS_RESTORE_DRILL=true\n" in content
+    assert "VITALS_RESTORE_DRILL" not in content
+    assert 'VITALS_RESTORE_DRILL: "true"' in overlay
 
 
 def test_login_preparation_rejects_missing_marker_and_non_drill_database(

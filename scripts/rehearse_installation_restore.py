@@ -522,7 +522,6 @@ def _runtime_content(context: Context, *, password_hash: str = SYNTHETIC_HASH) -
         "VITALS_OIDC_REDIRECT_URL": "",
         "VITALS_OPENROUTER_API_KEY": "",
         "VITALS_REDIS_URL": "redis://vitals_redis:6379/0",
-        "VITALS_RESTORE_DRILL": "true",
         "VITALS_SESSION_SECRET": context.compose_env["VITALS_DRILL_SESSION_SECRET"],
         "VITALS_TIMEZONE": "Asia/Almaty",
         "VITALS_WEB_PUSH_ENABLED": "false",
@@ -610,6 +609,8 @@ def _render_and_assert(context: Context) -> dict[str, Any]:
         _fail("compose_sensitive_mount_missing")
     if app.get("read_only") is not True:
         _fail("compose_app_root_not_read_only")
+    if (app.get("environment") or {}).get("VITALS_RESTORE_DRILL") != "true":
+        _fail("compose_restore_marker_missing")
     app_networks = app.get("networks") or {}
     if not app_networks or any(name not in networks for name in app_networks):
         _fail("compose_app_network_invalid")

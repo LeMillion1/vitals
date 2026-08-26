@@ -134,6 +134,7 @@ def test_runtime_allowlist_covers_every_production_app_env_reference():
     control_only = {
         "VITALS_ENV_FILE",
         "VITALS_PUSH_COPY__",
+        "VITALS_RESTORE_DRILL",
         "VITALS_RUNTIME_ENV_ISOLATION_REQUIRED",
         "VITALS_TESTING",
     }
