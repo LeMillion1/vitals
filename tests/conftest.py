@@ -209,6 +209,21 @@ async def db_session(request):
             await conn.exec_driver_sql("CREATE SCHEMA public")
             with relax():
                 await conn.run_sync(Base.metadata.create_all)
+            # ``create_all`` cannot install database routines.  PostgreSQL
+            # service tests still need the same invitation bootstrap that a
+            # migrated production schema provides; otherwise they exercise a
+            # different branch merely because this fixture builds tables from
+            # metadata.  Keep the SQL owned by its historical migration.
+            from importlib import import_module
+
+            invitation_auth = import_module(
+                "migrations.versions.0081_authorize_professional_invitation"
+            )
+            await conn.exec_driver_sql(invitation_auth.CREATE_ROUTINE_SQL)
+            await conn.exec_driver_sql(
+                "REVOKE ALL ON FUNCTION "
+                f"{invitation_auth.ROUTINE_SIGNATURE} FROM PUBLIC"
+            )
         elif _SQLITE_SCHEMA_READY and _SQLITE_SCHEMA_MODE == mode:
             await conn.run_sync(_empty_every_table)
         else:

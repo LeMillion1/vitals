@@ -23,21 +23,48 @@ import pytest
 from vitals.enums import (
     ProfessionalInvitationStatus,
     ProfessionalKind,
+    ProfessionalVerificationStatus,
+    UserRoleName,
     UserStatus,
 )
-from vitals.models.identity import HealthSubject, User
+from vitals.models.identity import HealthSubject, User, UserRole
+from vitals.models.professional import ProfessionalProfile
 from vitals.services.care import invitations
+from vitals.utils.timeutils import now_utc
 
 
-async def _user(session, slug: str, *, status=UserStatus.ACTIVE) -> User:
+async def _user(
+    session,
+    slug: str,
+    *,
+    status=UserStatus.ACTIVE,
+    email: str | None = None,
+    qualified: bool = False,
+) -> User:
     user = User(
         username=slug,
         normalized_username=slug,
+        email=email,
+        normalized_email=email,
+        email_verified_at=now_utc() if email is not None else None,
         password_hash="$synthetic-test-hash",
         status=status.value,
     )
     session.add(user)
     await session.flush()
+    if qualified:
+        session.add(UserRole(user_id=user.id, role=UserRoleName.DOCTOR.value))
+        session.add(
+            ProfessionalProfile(
+                user_id=user.id,
+                kind=ProfessionalKind.DOCTOR.value,
+                verification_status=ProfessionalVerificationStatus.VERIFIED.value,
+                display_name=f"Dr {slug}",
+                verified_at=now_utc(),
+                verified_by_user_id=user.id,
+            )
+        )
+        await session.flush()
     return user
 
 
@@ -152,7 +179,12 @@ def test_folding_an_address_stays_shallow():
 
 async def test_the_addressed_person_can_accept_once(db_session):
     _owner, _subject, issued = await _offer(db_session, slug="inv-accept")
-    doctor = await _user(db_session, "inv-accept-doctor")
+    doctor = await _user(
+        db_session,
+        "inv-accept-doctor",
+        email="doctor@example.test",
+        qualified=True,
+    )
 
     accepted = await invitations.accept(
         db_session,
@@ -178,7 +210,12 @@ async def test_the_address_is_matched_however_it_was_typed(db_session):
     _owner, _subject, issued = await _offer(
         db_session, slug="inv-fold", email="Doctor@Example.TEST"
     )
-    doctor = await _user(db_session, "inv-fold-doctor")
+    doctor = await _user(
+        db_session,
+        "inv-fold-doctor",
+        email="doctor@example.test",
+        qualified=True,
+    )
 
     accepted = await invitations.accept(
         db_session,
@@ -258,6 +295,12 @@ async def test_an_expired_offer_is_refused_and_stops_claiming_to_be_open(db_sess
             accepting_user_id=doctor.id,
             verified_email="doctor@example.test",
         )
+    if db_session.get_bind().dialect.name == "postgresql":
+        # The definer routine performs the expiry update without returning the
+        # refused row's identifier.  This admin-backed compatibility fixture
+        # may refresh the object it already held; the restricted runtime path
+        # intentionally learns no subject from an expired token.
+        await db_session.refresh(issued.invitation)
     assert issued.invitation.status == ProfessionalInvitationStatus.EXPIRED.value
 
 
@@ -298,7 +341,12 @@ async def test_every_refusal_says_exactly_the_same_thing(db_session):
     """
 
     _owner, _subject, issued = await _offer(db_session, slug="inv-uniform")
-    doctor = await _user(db_session, "inv-uniform-doctor")
+    doctor = await _user(
+        db_session,
+        "inv-uniform-doctor",
+        email="doctor@example.test",
+        qualified=True,
+    )
     await invitations.accept(
         db_session,
         token=issued.token,
@@ -368,7 +416,12 @@ async def test_an_accepted_offer_is_not_withdrawn_here(db_session):
     """By then it is a relationship, and ending one has its own record."""
 
     owner, _subject, issued = await _offer(db_session, slug="inv-revoke-accepted")
-    doctor = await _user(db_session, "inv-revoke-accepted-doctor")
+    doctor = await _user(
+        db_session,
+        "inv-revoke-accepted-doctor",
+        email="doctor@example.test",
+        qualified=True,
+    )
     await invitations.accept(
         db_session,
         token=issued.token,
@@ -422,7 +475,12 @@ async def test_accepting_reaches_nothing_by_itself(db_session):
     from vitals.services.access_resolution import resolve_access_context
 
     _owner, subject, issued = await _offer(db_session, slug="inv-not-access")
-    doctor = await _user(db_session, "inv-not-access-doctor")
+    doctor = await _user(
+        db_session,
+        "inv-not-access-doctor",
+        email="doctor@example.test",
+        qualified=db_session.get_bind().dialect.name == "postgresql",
+    )
     await invitations.accept(
         db_session,
         token=issued.token,

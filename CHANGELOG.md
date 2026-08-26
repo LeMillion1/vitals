@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — invitation acceptance no longer opens the platform scope
+
+Accepting a doctor or trainer invitation now crosses the unbound-to-subject
+bootstrap through one exact PostgreSQL routine instead of enabling the
+installation-wide RLS scope. The routine locks the invitation and proves the
+token hash, durable verified email, active account, exact professional role,
+verified same-kind profile, expiry, and non-self relationship before returning
+one subject id. Runtime provisioning grants only that attested routine
+signature; altered ownership, security mode, volatility, configuration, or
+PUBLIC execution makes provisioning fail closed.
+
 ### Fixed — MCP tool failures stay visible without leaking health data
 
 Unexpected MCP tool failures now return a normal structured Vitals error with

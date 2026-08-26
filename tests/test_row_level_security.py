@@ -155,6 +155,15 @@ async def _migrated_engine(database_url: str, alembic_config):
 
     engine = create_async_engine(database_url, poolclass=NullPool)
     async with engine.begin() as connection:
+        # Standalone routines are not part of SQLAlchemy metadata.  Without an
+        # explicit drop this helper's second migrate-from-zero run would leave
+        # revision 0081's function behind while removing its tables.
+        await connection.execute(
+            sa.text(
+                "DROP FUNCTION IF EXISTS public."
+                "authorize_and_lock_professional_invitation(text, uuid, text)"
+            )
+        )
         await connection.run_sync(Base.metadata.drop_all)
         await connection.execute(sa.text("DROP TABLE IF EXISTS alembic_version"))
     await asyncio.to_thread(
@@ -813,6 +822,590 @@ def _platform_module():
     return module
 
 
+def _invitation_authorization_module():
+    spec = importlib.util.spec_from_file_location(
+        "_rev0081",
+        REPOSITORY_ROOT
+        / "migrations"
+        / "versions"
+        / "0081_authorize_professional_invitation.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_invitation_authorization_names_one_exact_runtime_routine():
+    from scripts.provision_runtime_db_role import RUNTIME_EXECUTE_ROUTINES
+    from vitals.services.care.invitations import POSTGRES_AUTHORIZATION_ROUTINE
+
+    migration = _invitation_authorization_module()
+    expected = migration.ROUTINE_SIGNATURE.replace(" ", "")
+    assert POSTGRES_AUTHORIZATION_ROUTINE.replace(" ", "") == expected
+    assert RUNTIME_EXECUTE_ROUTINES == (expected,)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_real_postgres_invitation_authorization_binds_only_the_proven_subject(
+    db_session,
+    monkeypatch,
+):
+    """The definer bridge returns one proven root and never opens the platform."""
+
+    import asyncio
+    from datetime import timedelta
+
+    from alembic.config import Config as AlembicConfig
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from vitals.enums import (
+        CareRelationshipStatus,
+        ProfessionalInvitationStatus,
+        ProfessionalKind,
+        ProfessionalVerificationStatus,
+        UserRoleName,
+        UserStatus,
+    )
+    from vitals.models.identity import HealthSubject, User, UserRole
+    from vitals.models.professional import CareRelationship, ProfessionalProfile
+    from vitals.persistence.rls import bound_subject, in_platform_scope
+    from vitals.services.care import invitations, relationships
+    from vitals.utils.timeutils import now_utc
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
+    await db_session.close()
+
+    admin = await _migrated_engine(
+        database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
+    )
+    restricted = await restricted_engine(database_url)
+    migration = _invitation_authorization_module()
+    signature = migration.ROUTINE_SIGNATURE.replace(" ", "")
+    try:
+        admin_factory = async_sessionmaker(
+            admin, expire_on_commit=False, class_=AsyncSession
+        )
+        async with admin_factory() as seed:
+            owner = User(
+                username="rls-invitation-owner",
+                normalized_username="rls-invitation-owner",
+                email="rls-owner@example.test",
+                normalized_email="rls-owner@example.test",
+                email_verified_at=now_utc(),
+                password_hash="$synthetic",
+                status=UserStatus.ACTIVE.value,
+            )
+            other_owner = User(
+                username="rls-invitation-other-owner",
+                normalized_username="rls-invitation-other-owner",
+                password_hash="$synthetic",
+                status=UserStatus.ACTIVE.value,
+            )
+            doctor = User(
+                username="rls-invitation-doctor",
+                normalized_username="rls-invitation-doctor",
+                email="rls-doctor@example.test",
+                normalized_email="rls-doctor@example.test",
+                email_verified_at=now_utc(),
+                password_hash="$synthetic",
+                status=UserStatus.ACTIVE.value,
+            )
+            suspended = User(
+                username="rls-invitation-suspended",
+                normalized_username="rls-invitation-suspended",
+                email="suspended-doctor@example.test",
+                normalized_email="suspended-doctor@example.test",
+                email_verified_at=now_utc(),
+                password_hash="$synthetic",
+                status=UserStatus.SUSPENDED.value,
+            )
+            concurrent_doctor = User(
+                username="rls-invitation-concurrent-doctor",
+                normalized_username="rls-invitation-concurrent-doctor",
+                email="concurrent-doctor@example.test",
+                normalized_email="concurrent-doctor@example.test",
+                email_verified_at=now_utc(),
+                password_hash="$synthetic",
+                status=UserStatus.ACTIVE.value,
+            )
+            borrower = User(
+                username="rls-invitation-borrower",
+                normalized_username="rls-invitation-borrower",
+                email="borrower@example.test",
+                normalized_email="borrower@example.test",
+                email_verified_at=now_utc(),
+                password_hash="$synthetic",
+                status=UserStatus.ACTIVE.value,
+            )
+            unverified_email_user = User(
+                username="rls-invitation-unverified-email",
+                normalized_username="rls-invitation-unverified-email",
+                email="unverified-doctor@example.test",
+                normalized_email="unverified-doctor@example.test",
+                email_verified_at=None,
+                password_hash="$synthetic",
+                status=UserStatus.ACTIVE.value,
+            )
+            seed.add_all(
+                (
+                    owner,
+                    other_owner,
+                    doctor,
+                    suspended,
+                    concurrent_doctor,
+                    borrower,
+                    unverified_email_user,
+                )
+            )
+            await seed.flush()
+            subject = HealthSubject(
+                owner_user_id=owner.id,
+                display_name="Invitation subject",
+                timezone="Asia/Almaty",
+            )
+            other_subject = HealthSubject(
+                owner_user_id=other_owner.id,
+                display_name="Other invitation subject",
+                timezone="Asia/Almaty",
+            )
+            seed.add_all((subject, other_subject))
+            await seed.flush()
+            for qualified_user, display_name in (
+                (owner, "Dr Owner RLS"),
+                (doctor, "Dr RLS"),
+                (suspended, "Dr Suspended Account RLS"),
+                (concurrent_doctor, "Dr Concurrent RLS"),
+                (borrower, "Dr Borrower RLS"),
+                (unverified_email_user, "Dr Unverified Email RLS"),
+            ):
+                seed.add(
+                    UserRole(
+                        user_id=qualified_user.id,
+                        role=UserRoleName.DOCTOR.value,
+                    )
+                )
+                seed.add(
+                    ProfessionalProfile(
+                        user_id=qualified_user.id,
+                        kind=ProfessionalKind.DOCTOR.value,
+                        verification_status=(
+                            ProfessionalVerificationStatus.VERIFIED.value
+                        ),
+                        display_name=display_name,
+                        verified_at=now_utc(),
+                        verified_by_user_id=owner.id,
+                    )
+                )
+            issued = await invitations.invite(
+                seed,
+                subject_id=subject.id,
+                actor_user_id=owner.id,
+                kind=ProfessionalKind.DOCTOR,
+                email="rls-doctor@example.test",
+            )
+            other_issued = await invitations.invite(
+                seed,
+                subject_id=other_subject.id,
+                actor_user_id=other_owner.id,
+                kind=ProfessionalKind.DOCTOR,
+                email="rls-doctor@example.test",
+            )
+            expired_issued = await invitations.invite(
+                seed,
+                subject_id=subject.id,
+                actor_user_id=owner.id,
+                kind=ProfessionalKind.DOCTOR,
+                email="expired-doctor@example.test",
+            )
+            lapsed = now_utc() - timedelta(days=30)
+            expired_issued.invitation.created_at = lapsed
+            expired_issued.invitation.expires_at = lapsed + timedelta(days=7)
+            concurrent_issued = await invitations.invite(
+                seed,
+                subject_id=other_subject.id,
+                actor_user_id=other_owner.id,
+                kind=ProfessionalKind.DOCTOR,
+                email="concurrent-doctor@example.test",
+            )
+            self_issued = await invitations.invite(
+                seed,
+                subject_id=subject.id,
+                actor_user_id=owner.id,
+                kind=ProfessionalKind.DOCTOR,
+                email="rls-owner@example.test",
+            )
+            suspended_issued = await invitations.invite(
+                seed,
+                subject_id=subject.id,
+                actor_user_id=owner.id,
+                kind=ProfessionalKind.DOCTOR,
+                email="suspended-doctor@example.test",
+            )
+            unverified_email_issued = await invitations.invite(
+                seed,
+                subject_id=subject.id,
+                actor_user_id=owner.id,
+                kind=ProfessionalKind.DOCTOR,
+                email="unverified-doctor@example.test",
+            )
+            # A valid identity proof reaches relationship creation and then
+            # fails deterministically on the existing live pair.  That proves
+            # the invitation mutation still rolls back after the definer gate.
+            seed.add(
+                CareRelationship(
+                    subject_id=other_subject.id,
+                    subject_owner_user_id=other_owner.id,
+                    professional_user_id=doctor.id,
+                    kind=ProfessionalKind.DOCTOR.value,
+                    status=CareRelationshipStatus.ACTIVE.value,
+                )
+            )
+            await seed.commit()
+            subject_id = subject.id
+            other_subject_id = other_subject.id
+            doctor_id = doctor.id
+            suspended_id = suspended.id
+            owner_id = owner.id
+            concurrent_doctor_id = concurrent_doctor.id
+            borrower_id = borrower.id
+            unverified_email_user_id = unverified_email_user.id
+            invitation_id = issued.invitation.id
+            other_invitation_id = other_issued.invitation.id
+            expired_invitation_id = expired_issued.invitation.id
+            concurrent_invitation_id = concurrent_issued.invitation.id
+            self_invitation_id = self_issued.invitation.id
+            suspended_invitation_id = suspended_issued.invitation.id
+            unverified_email_invitation_id = unverified_email_issued.invitation.id
+            token = issued.token
+            other_token = other_issued.token
+            expired_token = expired_issued.token
+            concurrent_token = concurrent_issued.token
+            self_token = self_issued.token
+            suspended_token = suspended_issued.token
+            unverified_email_token = unverified_email_issued.token
+
+        async with admin.begin() as connection:
+            catalog = (
+                await connection.execute(
+                    sa.text(
+                        "SELECT owner.rolname, routine.prosecdef, "
+                        "routine.provolatile, routine.proconfig, "
+                        "NOT EXISTS (SELECT 1 FROM aclexplode(COALESCE("
+                        "routine.proacl, acldefault('f', routine.proowner))) acl "
+                        "WHERE acl.grantee=0 "
+                        "AND upper(acl.privilege_type)='EXECUTE') AS no_public "
+                        "FROM pg_proc routine "
+                        "JOIN pg_roles owner ON owner.oid=routine.proowner "
+                        "WHERE routine.oid=to_regprocedure(:signature)"
+                    ),
+                    {"signature": signature},
+                )
+            ).one()
+            assert catalog.rolname == sa.engine.make_url(database_url).username
+            assert catalog.prosecdef
+            assert catalog.provolatile in ("v", b"v")
+            assert "search_path=pg_catalog, pg_temp" in catalog.proconfig
+            assert "row_security=off" in catalog.proconfig
+            assert catalog.no_public
+            assert not await connection.scalar(
+                sa.text(
+                    "SELECT has_function_privilege("
+                    ":role, :signature, 'EXECUTE')"
+                ),
+                {"role": RESTRICTED_ROLE, "signature": signature},
+            )
+            await connection.exec_driver_sql(
+                "GRANT EXECUTE ON FUNCTION "
+                f"{migration.ROUTINE_SIGNATURE} TO {RESTRICTED_ROLE}"
+            )
+
+        restricted_factory = async_sessionmaker(
+            restricted, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async def assert_refused_without_binding(
+            *,
+            attempted_token: str,
+            user_id: uuid.UUID,
+            email: str,
+            pending_invitation_id: uuid.UUID | None = None,
+        ) -> None:
+            async with restricted_factory() as refused:
+                assert await refused.scalar(
+                    sa.text(
+                        "SELECT count(*) FROM public.professional_invitations"
+                    )
+                ) == 0
+                with pytest.raises(invitations.InvitationRefused):
+                    await invitations.accept(
+                        refused,
+                        token=attempted_token,
+                        accepting_user_id=user_id,
+                        verified_email=email,
+                    )
+                assert bound_subject(refused) is None
+                assert not in_platform_scope(refused)
+                assert await refused.scalar(
+                    sa.text(
+                        "SELECT count(*) FROM public.professional_invitations"
+                    )
+                ) == 0
+                await refused.rollback()
+            if pending_invitation_id is not None:
+                async with admin.connect() as verification:
+                    assert await verification.scalar(
+                        sa.text(
+                            "SELECT status FROM public.professional_invitations "
+                            "WHERE id=:invitation_id"
+                        ),
+                        {"invitation_id": pending_invitation_id},
+                    ) == ProfessionalInvitationStatus.PENDING.value
+
+        await assert_refused_without_binding(
+            attempted_token="never-issued-token",
+            user_id=doctor_id,
+            email="rls-doctor@example.test",
+        )
+        await assert_refused_without_binding(
+            attempted_token=token,
+            user_id=borrower_id,
+            email="rls-doctor@example.test",
+            pending_invitation_id=invitation_id,
+        )
+        await assert_refused_without_binding(
+            attempted_token=unverified_email_token,
+            user_id=unverified_email_user_id,
+            email="unverified-doctor@example.test",
+            pending_invitation_id=unverified_email_invitation_id,
+        )
+        await assert_refused_without_binding(
+            attempted_token=suspended_token,
+            user_id=suspended_id,
+            email="suspended-doctor@example.test",
+            pending_invitation_id=suspended_invitation_id,
+        )
+        await assert_refused_without_binding(
+            attempted_token=self_token,
+            user_id=owner_id,
+            email="rls-owner@example.test",
+            pending_invitation_id=self_invitation_id,
+        )
+        await assert_refused_without_binding(
+            attempted_token=expired_token,
+            user_id=doctor_id,
+            email="expired-doctor@example.test",
+            pending_invitation_id=expired_invitation_id,
+        )
+
+        async with admin.begin() as connection:
+            await connection.execute(
+                sa.text(
+                    "DELETE FROM public.user_roles "
+                    "WHERE user_id=:user_id AND role='doctor'"
+                ),
+                {"user_id": doctor_id},
+            )
+        await assert_refused_without_binding(
+            attempted_token=token,
+            user_id=doctor_id,
+            email="rls-doctor@example.test",
+            pending_invitation_id=invitation_id,
+        )
+        async with admin.begin() as connection:
+            await connection.execute(
+                sa.text(
+                    "INSERT INTO public.user_roles (id, user_id, role, "
+                    "assigned_at) VALUES (gen_random_uuid(), :user_id, "
+                    "'doctor', now())"
+                ),
+                {"user_id": doctor_id},
+            )
+
+        async with admin.begin() as connection:
+            await connection.execute(
+                sa.text(
+                    "UPDATE public.user_roles SET role='trainer' "
+                    "WHERE user_id=:user_id AND role='doctor'"
+                ),
+                {"user_id": doctor_id},
+            )
+        await assert_refused_without_binding(
+            attempted_token=token,
+            user_id=doctor_id,
+            email="rls-doctor@example.test",
+            pending_invitation_id=invitation_id,
+        )
+        async with admin.begin() as connection:
+            await connection.execute(
+                sa.text(
+                    "UPDATE public.user_roles SET role='doctor' "
+                    "WHERE user_id=:user_id AND role='trainer'"
+                ),
+                {"user_id": doctor_id},
+            )
+
+        async def set_doctor_profile(*, kind: str, status: str) -> None:
+            async with admin.begin() as connection:
+                await connection.execute(
+                    sa.text(
+                        "UPDATE public.professional_profiles SET kind=:kind, "
+                        "verification_status=CAST(:status AS varchar), "
+                        "verified_at=CASE WHEN CAST(:status AS varchar)="
+                        "'verified' "
+                        "THEN now() ELSE NULL END, "
+                        "verified_by_user_id=CASE WHEN CAST(:status AS varchar)="
+                        "'verified' "
+                        "THEN CAST(:reviewer_id AS uuid) ELSE NULL::uuid END, "
+                        "review_note=CASE WHEN CAST(:status AS varchar)="
+                        "'suspended' "
+                        "THEN 'Synthetic suspension' ELSE NULL END "
+                        "WHERE user_id=:user_id"
+                    ),
+                    {
+                        "kind": kind,
+                        "reviewer_id": owner_id,
+                        "status": status,
+                        "user_id": doctor_id,
+                    },
+                )
+
+        for profile_kind, profile_status in (
+            (
+                ProfessionalKind.DOCTOR.value,
+                ProfessionalVerificationStatus.PENDING.value,
+            ),
+            (
+                ProfessionalKind.DOCTOR.value,
+                ProfessionalVerificationStatus.SUSPENDED.value,
+            ),
+            (
+                ProfessionalKind.TRAINER.value,
+                ProfessionalVerificationStatus.VERIFIED.value,
+            ),
+        ):
+            await set_doctor_profile(kind=profile_kind, status=profile_status)
+            await assert_refused_without_binding(
+                attempted_token=token,
+                user_id=doctor_id,
+                email="rls-doctor@example.test",
+                pending_invitation_id=invitation_id,
+            )
+            await set_doctor_profile(
+                kind=ProfessionalKind.DOCTOR.value,
+                status=ProfessionalVerificationStatus.VERIFIED.value,
+            )
+
+        async with restricted_factory() as rolled_back:
+            accepted_before_relationship_failure = await invitations.accept(
+                rolled_back,
+                token=other_token,
+                accepting_user_id=doctor_id,
+                verified_email="rls-doctor@example.test",
+            )
+            with pytest.raises(relationships.CareError):
+                await relationships.establish_from_invitation(
+                    rolled_back,
+                    invitation=accepted_before_relationship_failure,
+                )
+            await rolled_back.rollback()
+
+        async with restricted_factory() as accepting:
+            accepted = await invitations.accept(
+                accepting,
+                token=token,
+                accepting_user_id=doctor_id,
+                verified_email="rls-doctor@example.test",
+            )
+            assert accepted.id == invitation_id
+            assert bound_subject(accepting) == subject_id
+            assert not in_platform_scope(accepting)
+            relationship = await relationships.establish_from_invitation(
+                accepting, invitation=accepted
+            )
+            assert relationship.subject_id == subject_id
+            await accepting.commit()
+
+        await assert_refused_without_binding(
+            attempted_token=token,
+            user_id=doctor_id,
+            email="rls-doctor@example.test",
+        )
+
+        async def race_acceptance() -> str:
+            async with restricted_factory() as racing:
+                try:
+                    accepted = await invitations.accept(
+                        racing,
+                        token=concurrent_token,
+                        accepting_user_id=concurrent_doctor_id,
+                        verified_email="concurrent-doctor@example.test",
+                    )
+                    await relationships.establish_from_invitation(
+                        racing, invitation=accepted
+                    )
+                    await racing.commit()
+                    return "accepted"
+                except invitations.InvitationRefused:
+                    await racing.rollback()
+                    assert bound_subject(racing) is None
+                    assert not in_platform_scope(racing)
+                    return "refused"
+
+        race_results = await asyncio.gather(race_acceptance(), race_acceptance())
+        assert sorted(race_results) == ["accepted", "refused"]
+
+        async with admin.connect() as verification:
+            statuses = dict(
+                (
+                    await verification.execute(
+                        sa.text(
+                            "SELECT id, status FROM "
+                            "public.professional_invitations "
+                            "WHERE id IN (:accepted_id, :other_id, "
+                            ":expired_id, :concurrent_id)"
+                        ),
+                        {
+                            "accepted_id": invitation_id,
+                            "other_id": other_invitation_id,
+                            "expired_id": expired_invitation_id,
+                            "concurrent_id": concurrent_invitation_id,
+                        },
+                    )
+                ).all()
+            )
+            assert statuses[invitation_id] == (
+                ProfessionalInvitationStatus.ACCEPTED.value
+            )
+            assert statuses[other_invitation_id] == (
+                ProfessionalInvitationStatus.PENDING.value
+            )
+            assert statuses[expired_invitation_id] == (
+                ProfessionalInvitationStatus.PENDING.value
+            )
+            assert statuses[concurrent_invitation_id] == (
+                ProfessionalInvitationStatus.ACCEPTED.value
+            )
+            relationship_rows = (
+                await verification.execute(
+                    sa.text(
+                        "SELECT subject_id, invitation_id FROM "
+                        "public.care_relationships "
+                        "WHERE invitation_id IS NOT NULL"
+                    )
+                )
+            ).all()
+            assert set(relationship_rows) == {
+                (subject_id, invitation_id),
+                (other_subject_id, concurrent_invitation_id),
+            }
+    finally:
+        await restricted.dispose()
+        await admin.dispose()
+
+
 def test_the_platform_setting_is_named_the_same_in_both_halves():
     """Same contract as the subject: the policy reads what the session writes."""
 
@@ -864,10 +1457,6 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
         # authorization, checked by share_service itself before anything is read.
         ("vitals/services/share_service.py", "resolve_public"),
         ("vitals/services/share_service.py", "register_open"),
-        # The professional accepting an invitation is not bound to this subject
-        # yet — that is what accepting is for — and the token is what authorizes
-        # reading the row at all.
-        ("vitals/services/care/invitations.py", "accept"),
         # An admitted member has no subject-bound session yet. This helper is
         # reached only after an already locked, single-use invitation/request
         # proof has passed, and uses the scope only to materialize that one new

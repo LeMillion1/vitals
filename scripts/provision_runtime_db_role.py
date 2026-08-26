@@ -17,6 +17,18 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 
+# The web login needs one bootstrap capability before it can bind an invitation
+# subject.  Exact regprocedure signatures are intentional: granting by name or
+# granting every future function would turn one reviewed bridge into an open-
+# ended privilege surface.
+RUNTIME_EXECUTE_ROUTINES: tuple[str, ...] = (
+    "public.authorize_and_lock_professional_invitation(text,uuid,text)",
+)
+_REQUIRED_ROUTINE_CONFIG = frozenset(
+    {"search_path=pg_catalog, pg_temp", "row_security=off"}
+)
+
+
 def _postgres_url(name: str) -> URL:
     raw = (os.getenv(name) or "").strip()
     try:
@@ -158,6 +170,46 @@ async def _converge_privileges(
     runtime_ident = _quoted_identifier(connection, runtime_role)
     migration_ident = _quoted_identifier(connection, migration_role)
     database_ident = _quoted_identifier(connection, database)
+
+    # A signature is only an address, not an authority proof.  Refuse before
+    # changing any grants if the migration-owned bridge at that address was
+    # replaced, made invoker-rights, given an unsafe search path, or exposed to
+    # PUBLIC.  The whole provisioning transaction rolls back on this refusal.
+    for routine_signature in RUNTIME_EXECUTE_ROUTINES:
+        routine = (
+            await connection.execute(
+                sa.text(
+                    "SELECT owner.rolname AS owner, language.lanname AS language, "
+                    "routine.prosecdef, routine.provolatile, routine.prokind, "
+                    "routine.proleakproof, routine.proconfig, "
+                    "NOT EXISTS (SELECT 1 FROM aclexplode(COALESCE("
+                    "routine.proacl, acldefault('f', routine.proowner))) acl "
+                    "WHERE acl.grantee=0 "
+                    "AND upper(acl.privilege_type)='EXECUTE') AS no_public "
+                    "FROM pg_proc routine "
+                    "JOIN pg_roles owner ON owner.oid=routine.proowner "
+                    "JOIN pg_language language ON language.oid=routine.prolang "
+                    "WHERE routine.oid=to_regprocedure(:signature)"
+                ),
+                {"signature": routine_signature},
+            )
+        ).mappings().one_or_none()
+        config = (
+            frozenset(routine["proconfig"] or ()) if routine is not None else None
+        )
+        if (
+            routine is None
+            or routine["owner"] != migration_role
+            or routine["language"] != "plpgsql"
+            or not routine["prosecdef"]
+            or routine["provolatile"] not in ("v", b"v")
+            or routine["prokind"] not in ("f", b"f")
+            or routine["proleakproof"]
+            or config != _REQUIRED_ROUTINE_CONFIG
+            or not routine["no_public"]
+        ):
+            raise RuntimeError("required runtime routine is not trusted")
+
     schemas = list(
         (
             await connection.execute(
@@ -305,6 +357,10 @@ async def _converge_privileges(
         "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES "
         f"IN SCHEMA public TO {runtime_ident}"
     )
+    for routine_signature in RUNTIME_EXECUTE_ROUTINES:
+        await connection.exec_driver_sql(
+            f"GRANT EXECUTE ON FUNCTION {routine_signature} TO {runtime_ident}"
+        )
     for object_type in ("TABLES", "SEQUENCES", "FUNCTIONS", "TYPES", "SCHEMAS"):
         await connection.exec_driver_sql(
             f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration_ident} "
@@ -403,9 +459,12 @@ async def _runtime_role_state(
                 " AND upper(acl.privilege_type)<>'CONNECT') AS extra_database_privileges, "
                 "(SELECT count(*) FROM pg_proc object "
                 " JOIN pg_namespace namespace ON namespace.oid=object.pronamespace "
-                " CROSS JOIN LATERAL aclexplode(object.proacl) acl "
+                " CROSS JOIN LATERAL aclexplode(COALESCE("
+                "object.proacl, acldefault('f', object.proowner))) acl "
                 " JOIN pg_roles grantee ON grantee.oid=acl.grantee "
-                " WHERE grantee.rolname=:role) AS routine_privileges, "
+                " WHERE grantee.rolname=:role "
+                " AND object.oid IS DISTINCT FROM "
+                " to_regprocedure(:allowed_routine)) AS routine_privileges, "
                 "(SELECT count(*) FROM pg_type object "
                 " JOIN pg_namespace namespace ON namespace.oid=object.typnamespace "
                 " CROSS JOIN LATERAL aclexplode(object.typacl) acl "
@@ -423,8 +482,21 @@ async def _runtime_role_state(
                 " JOIN pg_namespace namespace ON namespace.oid=object.pronamespace "
                 " WHERE namespace.nspname <> 'information_schema' "
                 " AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
+                " AND object.oid IS DISTINCT FROM "
+                " to_regprocedure(:allowed_routine) "
                 " AND has_function_privilege(:role, object.oid, 'EXECUTE')) AS "
                 "effective_routine_execute, "
+                "(SELECT CASE WHEN to_regprocedure(:allowed_routine) IS NULL "
+                " OR NOT has_function_privilege("
+                ":role, to_regprocedure(:allowed_routine), 'EXECUTE') "
+                " THEN 1 ELSE 0 END) AS missing_required_routine_execute, "
+                "(SELECT count(*) FROM pg_proc object "
+                " JOIN pg_namespace namespace ON namespace.oid=object.pronamespace "
+                " CROSS JOIN LATERAL aclexplode(COALESCE("
+                "object.proacl, acldefault('f', object.proowner))) acl "
+                " WHERE namespace.nspname <> 'information_schema' "
+                " AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
+                " AND acl.grantee=0) AS public_routine_privileges, "
                 "(SELECT count(*) FROM pg_class object "
                 " JOIN pg_namespace namespace ON namespace.oid=object.relnamespace "
                 " WHERE namespace.nspname <> 'information_schema' "
@@ -471,7 +543,11 @@ async def _runtime_role_state(
                 " AND upper(acl.privilege_type)='USAGE')))) AS "
                 "extra_default_privileges"
             ),
-            {"migration_role": migration_role, "role": runtime_role},
+            {
+                "allowed_routine": RUNTIME_EXECUTE_ROUTINES[0],
+                "migration_role": migration_role,
+                "role": runtime_role,
+            },
         )
     ).mappings().one()
     state = {**dict(attributes), **{key: int(value) for key, value in counts.items()}}
@@ -498,6 +574,8 @@ async def _runtime_role_state(
         "extra_type_privileges",
         "effective_schema_create",
         "effective_routine_execute",
+        "missing_required_routine_execute",
+        "public_routine_privileges",
         "effective_extra_relation_privileges",
         "effective_large_object_privileges",
         "effective_database_temp",
@@ -584,6 +662,8 @@ async def provision_runtime_role(*, migration_url: URL, runtime_url: URL) -> dic
             + state["extra_type_privileges"]
             + state["effective_schema_create"]
             + state["effective_routine_execute"]
+            + state["missing_required_routine_execute"]
+            + state["public_routine_privileges"]
             + state["effective_extra_relation_privileges"]
             + state["effective_large_object_privileges"]
             + state["effective_database_temp"]

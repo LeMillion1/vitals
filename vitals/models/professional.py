@@ -249,9 +249,10 @@ class ProfessionalInvitation(Base):
     they own a mailbox, which is exactly what the binding is meant to stop.
 
     ``subject_id`` is here because the invitation is the patient's — it is their
-    record being offered — which also puts it inside row security. Accepting is
-    therefore done in the platform scope: the professional is not bound to this
-    subject yet, and the token is what authorizes reading the row at all.
+    record being offered — which also puts it inside row security. A narrowly
+    granted database routine proves and locks the exact token/address pair
+    before the professional's transaction binds this subject; accepting never
+    opens the installation-wide platform scope.
     """
 
     __tablename__ = "professional_invitations"

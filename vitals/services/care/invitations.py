@@ -26,7 +26,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,7 +42,7 @@ from vitals.services.identity_service import (
     acquire_identity_governance_lock,
     normalize_email as normalize_identity_email,
 )
-from vitals.persistence.rls import enter_platform_scope
+from vitals.persistence.rls import bind_session_subject
 
 #: How long an offer stands. Long enough to survive a weekend and a spam folder,
 #: short enough that a link found in an old mailbox is no longer a way in.
@@ -50,6 +50,14 @@ DEFAULT_TTL = timedelta(days=14)
 
 #: 32 bytes of urandom, URL-safe. The link is the only place this ever exists.
 _TOKEN_BYTES = 32
+
+# PostgreSQL is the production authorization boundary for the bootstrap from an
+# invitation token to one subject.  Keep the exact signature visible here and
+# in the runtime-role provisioner: an overload or a similarly named routine
+# must not inherit this capability accidentally.
+POSTGRES_AUTHORIZATION_ROUTINE = (
+    "public.authorize_and_lock_professional_invitation(text, uuid, text)"
+)
 
 
 class InvitationError(RuntimeError):
@@ -184,16 +192,18 @@ async def accept(
 ) -> ProfessionalInvitation:
     """Spend one invitation on behalf of the person it was addressed to.
 
-    ``verified_email`` is what the caller's *authenticated* session established,
-    and it is a parameter rather than something read from the account on
-    purpose. After the federated cutover an address is a claim the provider
-    makes at sign-in, not a column here, and a service that read a stored
-    address would be trusting whichever half of the system last wrote it.
-    ``None`` means the session established no verified address, which is not a
-    reason to skip the check — it is a refusal.
+    ``verified_email`` is the address established by the caller's current
+    authenticated session. PostgreSQL requires that claim to match both the
+    invitation and the account's durable normalized, verified address; neither
+    the live claim nor the stored identity is sufficient by itself. ``None``
+    means the session established no verified address and is always a refusal.
 
-    Runs in the platform scope: the acceptor is not bound to this subject yet,
-    and the token is what authorizes reading the row at all.
+    PostgreSQL resolves and locks the exact invitation through a narrowly
+    granted security-definer routine.  Only after the token, verified address,
+    account state and two-party rule pass does this session learn and bind the
+    subject. SQLite has no row security and retains only the compatibility ORM
+    behavior used by the fast suite; production identity/role/profile proof is
+    covered by the PostgreSQL integration tests.
     """
 
     if not isinstance(token, str) or not token.strip():
@@ -201,14 +211,54 @@ async def accept(
     if not isinstance(accepting_user_id, uuid.UUID) or accepting_user_id.int == 0:
         raise InvitationValidationError("accepting_user_id must be a non-zero UUID")
 
-    await enter_platform_scope(session)
     await acquire_identity_governance_lock(session)
 
-    invitation = await session.scalar(
-        select(ProfessionalInvitation)
-        .where(ProfessionalInvitation.token_hash == _hash(token))
-        .with_for_update()
-    )
+    token_hash = _hash(token)
+    presented: str | None = None
+    if verified_email is not None:
+        try:
+            presented = normalize_email(verified_email)
+        except InvitationValidationError:
+            # Keep every refusal uniform.  The PostgreSQL routine still sees
+            # the token with a NULL claim so an expired matching row follows
+            # the same state transition as the SQLite path.
+            presented = None
+
+    if session.get_bind().dialect.name == "postgresql":
+        authorized = (
+            await session.execute(
+                text(
+                    "SELECT invitation_id, subject_id FROM "
+                    "public.authorize_and_lock_professional_invitation("
+                    "CAST(:token_hash AS text), "
+                    "CAST(:accepting_user_id AS uuid), "
+                    "CAST(:verified_email AS text))"
+                ),
+                {
+                    "token_hash": token_hash,
+                    "accepting_user_id": accepting_user_id,
+                    "verified_email": presented,
+                },
+            )
+        ).one_or_none()
+        if authorized is None:
+            raise InvitationRefused("this invitation does not open anything")
+        await bind_session_subject(session, authorized.subject_id)
+        invitation = await session.scalar(
+            select(ProfessionalInvitation)
+            .where(
+                ProfessionalInvitation.id == authorized.invitation_id,
+                ProfessionalInvitation.subject_id == authorized.subject_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    else:
+        invitation = await session.scalar(
+            select(ProfessionalInvitation)
+            .where(ProfessionalInvitation.token_hash == token_hash)
+            .with_for_update()
+        )
     # Everything below raises the same thing. See InvitationRefused.
     if invitation is None:
         raise InvitationRefused("this invitation does not open anything")
@@ -222,12 +272,8 @@ async def accept(
         await session.flush()
         raise InvitationRefused("this invitation does not open anything")
 
-    if verified_email is None:
+    if presented is None:
         raise InvitationRefused("this invitation does not open anything")
-    try:
-        presented = normalize_email(verified_email)
-    except InvitationValidationError:
-        raise InvitationRefused("this invitation does not open anything") from None
     if not secrets.compare_digest(presented, invitation.invited_email):
         raise InvitationRefused("this invitation does not open anything")
 

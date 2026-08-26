@@ -44,13 +44,13 @@ verdict:
    are included in the inventory now.
 4. `ARCHITECTURE.html` was a historical snapshot presented as a live reference.
    Its live counters and authorization bases have been resynchronized at 88
-   tables, 71 RLS policies, revision `0080`, and the shipped break-glass path.
+   tables, 71 RLS policies, revision `0081`, and the shipped break-glass path.
 
 ## Reproducible current facts
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0080 (head)`; 80 files in `migrations/versions` | Verified |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0081 (head)`; 81 files in `migrations/versions` | Verified |
 | SQLAlchemy tables | `len(Base.metadata.tables)` → 88 | Verified |
 | Ownership registry | `len(OWNERSHIP_REGISTRY)` → 88 | Verified and exhaustive in code |
 | Subject-scoped tables | 71 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
@@ -61,6 +61,7 @@ verdict:
 | Web routers | 34 tracked non-`__init__` modules under `web/routers` | Verified |
 | Application services | 101 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
 | Flat service debt | 54 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 20 |
+| Platform-scope callers | the AST contract in `tests/test_row_level_security.py` enumerates 15 exact application functions; invitation acceptance is no longer one of them | Verified and shrinking |
 | Browser scenarios | `pytest tests/ui -m ui -q` → 39 passed in 150.04s | Verified on the final runtime tree |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
@@ -303,7 +304,7 @@ remain operator gates that local tests cannot prove.
 ### `ARCHITECTURE.md` — mostly current method, incomplete generated sources
 
 Its reproducible-counter idea is right. The RLS source list and HTML counters
-are synchronized through revision `0080`. It documents the first bounded-context
+are synchronized through revision `0081`. It documents the first bounded-context
 moves, but the live flat-service debt is still substantial.
 
 ### `ARCHITECTURE.html` — synchronized during this audit
@@ -431,6 +432,21 @@ fixture correction at `19e67f4`, passed the release gate:
 The Compose/browser checks used only synthetic local accounts and a disposable
 test identity bridge. No production data, credential, provider API, or message
 transport was used.
+
+Post-audit invitation authorization validation on the revision `0081` tree:
+
+- the full fast suite passed 5,688 tests, skipped 202, and deselected 39 in
+  229.48 seconds;
+- the focused PostgreSQL invitation/RLS run passed 25 tests, including borrowed
+  and unverified email, missing/wrong professional role, pending/suspended or
+  wrong-kind profile, expiry, self-invitation, rollback after a downstream
+  relationship refusal, exact binding, and same-token concurrency;
+- the PostgreSQL runtime-role suite passed 9 tests after a full migration
+  `head → 0034 → head` cycle through `0081`, including refusal of an altered
+  routine owner, security mode, volatility, configuration, search path, or
+  PUBLIC execution grant;
+- `ruff check .`, `git diff --check`, the single-head check (`0081 (head)`), and
+  the 81-file migration inventory all passed on the same worktree.
 
 Post-audit credential cutover validation on `7523d26`:
 
