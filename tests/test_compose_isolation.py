@@ -31,6 +31,27 @@ def test_app_has_one_configurable_loopback_mapping():
     assert "127.0.0.1:8000:8000" not in ports
 
 
+def test_schema_migration_and_runtime_roles_are_separate_startup_steps():
+    compose = _compose()
+    migrate = compose["services"]["vitals_migrate"]
+    roles = compose["services"]["vitals_db_roles"]
+    app = compose["services"]["vitals_app"]
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert migrate["environment"]["VITALS_DATABASE_URL"].startswith(
+        "${VITALS_MIGRATION_DATABASE_URL:"
+    )
+    assert migrate["command"] == ["alembic", "upgrade", "head"]
+    assert roles["depends_on"]["vitals_migrate"]["condition"] == (
+        "service_completed_successfully"
+    )
+    assert roles["command"] == ["python", "scripts/provision_runtime_db_role.py"]
+    assert app["depends_on"]["vitals_db_roles"]["condition"] == (
+        "service_completed_successfully"
+    )
+    assert "alembic upgrade" not in dockerfile
+
+
 def test_configurable_app_port_is_documented_in_both_operator_languages():
     example = (ROOT / ".env.example").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")

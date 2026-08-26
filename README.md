@@ -524,7 +524,8 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 # Bcrypt-хеш пароля для входа
 python -c "import bcrypt; print(bcrypt.hashpw(b'ваш-пароль', bcrypt.gensalt()).decode())"
 
-# URL-safe пароль PostgreSQL (вставьте одно значение в обе переменные ниже)
+# Два разных URL-safe пароля PostgreSQL: сначала admin, затем runtime
+python -c "import secrets; print(secrets.token_hex(24))"
 python -c "import secrets; print(secrets.token_hex(24))"
 ```
 
@@ -535,9 +536,13 @@ VITALS_SESSION_SECRET="результат-первой-команды"
 VITALS_AUTH_USERNAME="your-username"
 VITALS_AUTH_PASSWORD_HASH="результат-второй-команды"
 
-# Эти две настройки обязаны содержать один и тот же URL-safe пароль PostgreSQL
-VITALS_DB_PASSWORD="PASTE_THIRD_COMMAND_RESULT"
-VITALS_DATABASE_URL="postgresql+asyncpg://vitals:PASTE_THIRD_COMMAND_RESULT@vitals_db:5432/vitals_db"
+# Владелец схемы используется только миграциями и backup-sidecar.
+VITALS_DB_USER="vitals_admin"
+VITALS_DB_PASSWORD="PASTE_ADMIN_PASSWORD"
+VITALS_MIGRATION_DATABASE_URL="postgresql+asyncpg://vitals_admin:PASTE_ADMIN_PASSWORD@vitals_db:5432/vitals_db"
+
+# Web/runtime — отдельная ограниченная роль; Compose создаст её и выдаст DML.
+VITALS_DATABASE_URL="postgresql+asyncpg://vitals_runtime:PASTE_RUNTIME_PASSWORD@vitals_db:5432/vitals_db"
 
 # Только для локального http://127.0.0.1; за HTTPS оставьте true
 VITALS_COOKIE_SECURE=false
@@ -553,7 +558,10 @@ docker compose up -d --build vitals_db vitals_redis vitals_app
 ```
 
 > [!NOTE]
-> Миграции Alembic применяются автоматически при старте `vitals_app`. PostgreSQL 15 — внутри Docker-сети. Команда запускает только приложение и его зависимости; backup sidecar включайте отдельно после настройки каталога резервных копий.
+> Перед `vitals_app` Compose последовательно запускает одноразовые сервисы
+> `vitals_migrate` (владелец схемы) и `vitals_db_roles` (выдача минимальных
+> runtime-прав). Сам web-процесс не может менять схему или обходить RLS.
+> Backup sidecar включайте отдельно после настройки каталога резервных копий.
 
 #### 5. Проверьте
 
@@ -653,7 +661,8 @@ curl -s http://127.0.0.1:8000/health
 | Переменная | Описание | Дефолт |
 | :--- | :--- | :--- |
 | `VITALS_DATABASE_URL` | PostgreSQL (asyncpg) | `postgresql+asyncpg://...` |
-| `VITALS_DB_USER` | Пользователь PostgreSQL (для контейнера БД) | `vitals` |
+| `VITALS_DB_USER` | Владелец схемы PostgreSQL (контейнер БД и backup) | `vitals_admin` |
+| `VITALS_MIGRATION_DATABASE_URL` | Привилегированный URL только для Alembic/операций | — |
 | `VITALS_DB_PASSWORD` | Пароль PostgreSQL | *Обязательный* |
 | `VITALS_DB_NAME` | Имя базы | `vitals_db` |
 | `VITALS_REDIS_URL` | Redis для кэша и локов | `redis://vitals_redis:6379/0` |
@@ -1285,7 +1294,8 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 # Bcrypt password hash
 python -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt()).decode())"
 
-# URL-safe PostgreSQL password (use the same value in both variables below)
+# Two distinct URL-safe PostgreSQL passwords: admin first, then runtime
+python -c "import secrets; print(secrets.token_hex(24))"
 python -c "import secrets; print(secrets.token_hex(24))"
 ```
 
@@ -1296,9 +1306,13 @@ VITALS_SESSION_SECRET="your-session-secret"
 VITALS_AUTH_USERNAME="your-username"
 VITALS_AUTH_PASSWORD_HASH="your-bcrypt-hash"
 
-# These two settings must contain the same URL-safe PostgreSQL password
-VITALS_DB_PASSWORD="PASTE_THIRD_COMMAND_RESULT"
-VITALS_DATABASE_URL="postgresql+asyncpg://vitals:PASTE_THIRD_COMMAND_RESULT@vitals_db:5432/vitals_db"
+# The schema owner is used only by migrations and the backup sidecar.
+VITALS_DB_USER="vitals_admin"
+VITALS_DB_PASSWORD="PASTE_ADMIN_PASSWORD"
+VITALS_MIGRATION_DATABASE_URL="postgresql+asyncpg://vitals_admin:PASTE_ADMIN_PASSWORD@vitals_db:5432/vitals_db"
+
+# Web/runtime uses a distinct restricted role; Compose creates and grants it.
+VITALS_DATABASE_URL="postgresql+asyncpg://vitals_runtime:PASTE_RUNTIME_PASSWORD@vitals_db:5432/vitals_db"
 
 # Local http://127.0.0.1 only; keep true behind HTTPS
 VITALS_COOKIE_SECURE=false
@@ -1314,7 +1328,10 @@ docker compose up -d --build vitals_db vitals_redis vitals_app
 ```
 
 > [!NOTE]
-> Alembic migrations run automatically when `vitals_app` starts. PostgreSQL 15 runs inside the Docker network. This starts only the app and its dependencies; enable the backup sidecar separately after configuring its host directory.
+> Before `vitals_app`, Compose runs the one-shot `vitals_migrate` (schema owner)
+> and `vitals_db_roles` (least-privilege grants) services in order. The web
+> process itself cannot change the schema or bypass RLS. Enable the backup
+> sidecar separately after configuring its host directory.
 
 #### 5. Verify
 
@@ -1416,7 +1433,8 @@ A traditional setup using Nginx as a reverse proxy.
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `VITALS_DATABASE_URL` | PostgreSQL (asyncpg) | `postgresql+asyncpg://...` |
-| `VITALS_DB_USER` | PostgreSQL user (for the DB container) | `vitals` |
+| `VITALS_DB_USER` | PostgreSQL schema owner (DB container and backup) | `vitals_admin` |
+| `VITALS_MIGRATION_DATABASE_URL` | Privileged URL for Alembic/operator work only | — |
 | `VITALS_DB_PASSWORD` | PostgreSQL password | *Required* |
 | `VITALS_DB_NAME` | Database name | `vitals_db` |
 | `VITALS_REDIS_URL` | Redis for cache and locks | `redis://vitals_redis:6379/0` |

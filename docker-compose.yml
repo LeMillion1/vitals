@@ -2,14 +2,14 @@ services:
   vitals_db:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: ${VITALS_DB_USER:-vitals}
+      POSTGRES_USER: ${VITALS_DB_USER:-vitals_admin}
       POSTGRES_PASSWORD: ${VITALS_DB_PASSWORD:?VITALS_DB_PASSWORD must be set}
       POSTGRES_DB: ${VITALS_DB_NAME:-vitals_db}
     volumes:
       - vitals_pgdata:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-vitals} -d $${POSTGRES_DB:-vitals_db}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-vitals_admin} -d $${POSTGRES_DB:-vitals_db}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -20,11 +20,37 @@ services:
     volumes:
       - vitals_redis_data:/data
 
-  vitals_app:
+  # Schema changes run with the owner/exempt role, never with the web runtime
+  # credential. This service is intentionally one-shot and contains no provider
+  # credentials or application settings beyond the migration database URL.
+  vitals_migrate:
     build: .
     depends_on:
       vitals_db:
         condition: service_healthy
+    environment:
+      VITALS_DATABASE_URL: ${VITALS_MIGRATION_DATABASE_URL:?VITALS_MIGRATION_DATABASE_URL must be set}
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  # Re-apply least-privilege grants after every migration so newly created
+  # tables and sequences are available without making the application an owner.
+  vitals_db_roles:
+    build: .
+    depends_on:
+      vitals_migrate:
+        condition: service_completed_successfully
+    environment:
+      VITALS_MIGRATION_DATABASE_URL: ${VITALS_MIGRATION_DATABASE_URL:?VITALS_MIGRATION_DATABASE_URL must be set}
+      VITALS_DATABASE_URL: ${VITALS_DATABASE_URL:?VITALS_DATABASE_URL must be set}
+    command: ["python", "scripts/provision_runtime_db_role.py"]
+    restart: "no"
+
+  vitals_app:
+    build: .
+    depends_on:
+      vitals_db_roles:
+        condition: service_completed_successfully
       vitals_redis:
         condition: service_started
     environment:
@@ -167,7 +193,7 @@ services:
     environment:
       TZ: Europe/Chisinau
       PGHOST: vitals_db
-      PGUSER: ${VITALS_DB_USER:-vitals}
+      PGUSER: ${VITALS_DB_USER:-vitals_admin}
       PGPASSWORD: ${VITALS_DB_PASSWORD:?VITALS_DB_PASSWORD must be set}
       PGDATABASE: ${VITALS_DB_NAME:-vitals_db}
       VITALS_BACKUP_RETENTION_DAYS: ${VITALS_BACKUP_RETENTION_DAYS:-7}

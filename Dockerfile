@@ -16,8 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Run alembic migrations, then launch FastAPI + APScheduler process.
+# Launch FastAPI + APScheduler as the restricted runtime role. Compose runs
+# Alembic and role provisioning in separate one-shot services before this starts.
 # --forwarded-allow-ips="*": trust X-Forwarded-For so per-IP login throttling
 # sees the real client IP, not Caddy's. Safe here — the port binds loopback only
 # and Caddy is the sole upstream.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn web.main:app --host 0.0.0.0 --port 8000 --forwarded-allow-ips=*"]
+CMD ["uvicorn", "web.main:app", "--host", "0.0.0.0", "--port", "8000", "--forwarded-allow-ips=*"]

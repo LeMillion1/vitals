@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — web runtime no longer owns or migrates the database
+
+Compose now runs Alembic and runtime-role provisioning as ordered one-shot
+services before FastAPI. The schema/backup role remains privileged, while the
+web process receives ordinary DML grants through a distinct login that is
+forced to `NOSUPERUSER`, `NOBYPASSRLS`, and zero relation ownership. Future
+migrations reapply table, sequence, and default privileges before the app starts.
+
 ### Fixed — staged ownership backups follow the installed schema
 
 The operational full-v1 backup and restore path now reflects the database shape

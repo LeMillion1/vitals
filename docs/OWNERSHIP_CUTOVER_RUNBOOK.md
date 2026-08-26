@@ -6,8 +6,8 @@ Last reviewed: 2026-08-24
 
 This whole document is about a lake that already holds somebody's history. A
 **new** installation needs none of it: `alembic upgrade head` reaches head on its
-own, which is what the container's start command already runs, and FastAPI
-lifespan bootstraps the owner before the first request is served.
+own. Compose runs that in the one-shot `vitals_migrate` service, provisions a
+separate restricted role in `vitals_db_roles`, and only then starts FastAPI.
 
 That was not true until 2026-08-24 — revision `0005` seeded five rows nobody
 could ever own, and revision `0049` refused over them, so a fresh deployment
@@ -33,14 +33,14 @@ executed and not merely written down.
 
 ## 1. Migrate as far as an unstamped lake can go
 
-```
-alembic upgrade 0048
+```bash
+docker compose run --rm --no-deps vitals_migrate alembic upgrade 0048
 ```
 
 Every ownership column exists and is still nullable. This is a safe place to
 stop, but do not start the current application image on this intermediate
-schema: its normal command immediately runs `alembic upgrade head`, and current
-runtime code may query tables added after 0048.
+schema: current runtime code may query tables added after 0048. Do not run
+`docker compose up vitals_app` yet: its migration dependency advances to head.
 
 ## 2. Bootstrap the roots, then run the phases in order
 
@@ -52,8 +52,8 @@ From the host checkout:
 
 ```bash
 docker compose up -d vitals_db vitals_redis
-docker compose run --rm --no-deps --entrypoint python vitals_app \
-  scripts/bootstrap_ownership_roots.py
+docker compose run --rm --no-deps vitals_migrate \
+  python scripts/bootstrap_ownership_roots.py
 ```
 
 The command performs database work only, commits once, prints
@@ -62,7 +62,15 @@ scheduler or call Garmin, Hevy, OpenRouter, Telegram, or another external
 service. Do not replace it with the normal container command: that command
 upgrades to head before Uvicorn starts.
 
-Each command is resumable and reports one line of JSON. A phase is done when its
+Each command is resumable and reports one line of JSON. Run every listed Python
+command through the same privileged one-shot wrapper:
+
+```bash
+docker compose run --rm --no-deps vitals_migrate \
+  python scripts/<phase-script>.py --apply --batch-size 1000
+```
+
+Replace the script and arguments with each line below. A phase is done when its
 `status` is `completed`; re-running a completed phase is a no-op. Run them in
 this order — a child cannot inherit an owner its parent does not have yet, and a
 normalized fact takes its provenance from a raw payload that must already be
@@ -113,9 +121,14 @@ Between any two, the upgrade can pause indefinitely.
 
 ## 3. Migrate the rest of the way
 
+```bash
+docker compose up -d --build vitals_app
 ```
-alembic upgrade head
-```
+
+The dependency chain upgrades to head as the migration role, reapplies DML and
+default grants to the distinct restricted runtime role, and starts FastAPI only
+after both one-shot services exit successfully. Verify the running web role is
+neither a superuser nor `BYPASSRLS`, and owns zero relations.
 
 Revision `0049` counts the remaining nulls in every
 target column before it alters anything, and refuses with the table, the column
