@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — platform control can live on a recordless operator account
+
+OIDC startup now accepts an active linked platform administrator without a
+health subject after the initial owner bootstrap. A shell-only, audited role
+command grants or revokes platform control while preserving the last-active
+administrator invariant, and a recordless operator lands directly on the
+platform hub. This lets the ordinary health owner lose access to restart,
+OpenRouter, registration, professional verification, and support controls.
+
 ### Fixed — deploy cannot silently switch production data volumes
 
 Before migration or container recreation, deployment now compares PostgreSQL,

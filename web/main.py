@@ -1018,12 +1018,17 @@ async def health(
 
 @app.get("/")
 async def root(request: Request):
-    destination = (
-        "/care"
-        if not bool(getattr(request.state, "has_own_record", False))
-        and bool(getattr(request.state, "is_professional", False))
-        else "/today"
-    )
+    has_own_record = bool(getattr(request.state, "has_own_record", False))
+    is_professional = bool(getattr(request.state, "is_professional", False))
+    is_platform_admin = bool(getattr(request.state, "is_platform_admin", False))
+    if has_own_record:
+        destination = "/today"
+    elif is_professional:
+        destination = "/care"
+    elif is_platform_admin:
+        destination = "/settings/platform"
+    else:
+        destination = "/today"
     return RedirectResponse(url=destination, status_code=status.HTTP_303_SEE_OTHER)
 
 

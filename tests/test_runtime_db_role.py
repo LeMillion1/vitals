@@ -603,8 +603,19 @@ async def test_oidc_startup_uses_subject_binding_under_restricted_runtime_role(
     if not raw_admin_url or not raw_admin_url.startswith("postgresql+asyncpg://"):
         pytest.skip("integration test requires VITALS_TEST_DATABASE_URL")
 
-    from vitals.enums import UserStatus
-    from vitals.models.identity import HealthSubject, User, UserFederatedIdentity
+    from vitals.enums import UserRoleName, UserStatus
+    from vitals.models.identity import (
+        HealthSubject,
+        User,
+        UserFederatedIdentity,
+        UserRole,
+    )
+    from vitals.models.supplements import Supplement
+    from vitals.persistence.rls import (
+        PLATFORM_SCOPE_PREDICATE,
+        RlsSessionError,
+        enter_platform_scope,
+    )
     from web.main import _bootstrap_legacy_identity, _load_oidc_identity_state
 
     expected = await _bootstrap_legacy_identity(
@@ -660,16 +671,99 @@ async def test_oidc_startup_uses_subject_binding_under_restricted_runtime_role(
         )
         db_session.add(second)
         await db_session.flush()
-        db_session.add(
-            HealthSubject(
-                owner_user_id=second.id,
-                display_name="Second person",
-                timezone="Asia/Almaty",
+        second_subject = HealthSubject(
+            owner_user_id=second.id,
+            display_name="Second person",
+            timezone="Asia/Almaty",
+        )
+        db_session.add(second_subject)
+        await db_session.flush()
+        owner_subject_id = await db_session.scalar(
+            sa.select(HealthSubject.id).where(HealthSubject.owner_user_id == owner.id)
+        )
+        db_session.add_all(
+            (
+                Supplement(
+                    subject_id=owner_subject_id,
+                    actor_user_id=owner.id,
+                    name="Owner row",
+                    key="owner-row",
+                ),
+                Supplement(
+                    subject_id=second_subject.id,
+                    actor_user_id=second.id,
+                    name="Second row",
+                    key="second-row",
+                ),
             )
         )
         await db_session.commit()
 
         assert await _load_oidc_identity_state(runtime_factory) is None
+
+        operator = User(
+            username="platform-operator",
+            normalized_username="platform-operator",
+            password_hash=None,
+            status=UserStatus.ACTIVE.value,
+        )
+        db_session.add(operator)
+        await db_session.flush()
+        db_session.add_all(
+            (
+                UserRole(
+                    user_id=operator.id,
+                    role=UserRoleName.PLATFORM_SUPERADMIN.value,
+                ),
+                UserFederatedIdentity(
+                    user_id=operator.id,
+                    issuer="https://idp.example.test",
+                    subject="provider-platform-operator",
+                ),
+            )
+        )
+        owner_admin = await db_session.scalar(
+            sa.select(UserRole).where(
+                UserRole.user_id == owner.id,
+                UserRole.role == UserRoleName.PLATFORM_SUPERADMIN.value,
+            )
+        )
+        await db_session.delete(owner_admin)
+        await db_session.commit()
+
+        monkeypatch.setenv("VITALS_OIDC_BOOTSTRAP_SUBJECT", "")
+        assert await _load_oidc_identity_state(runtime_factory) is None
+
+        # The PostgreSQL fixture intentionally rebuilds model tables with
+        # ``create_all()`` after exercising Alembic, and SQLAlchemy metadata
+        # cannot express RLS policies. Install the current production predicate
+        # on this representative subject-owned table before asserting the
+        # recordless operator's database boundary.
+        predicate = (
+            "subject_id = NULLIF(current_setting('vitals.subject_id', true), "
+            "'')::uuid OR (" + PLATFORM_SCOPE_PREDICATE + ")"
+        )
+        async with admin.begin() as connection:
+            await connection.exec_driver_sql(
+                "ALTER TABLE supplements ENABLE ROW LEVEL SECURITY"
+            )
+            await connection.exec_driver_sql(
+                "ALTER TABLE supplements FORCE ROW LEVEL SECURITY"
+            )
+            await connection.exec_driver_sql(
+                "CREATE POLICY rls_subject_isolation ON supplements "
+                f"USING ({predicate}) WITH CHECK ({predicate})"
+            )
+        async with runtime_factory() as runtime_session:
+            assert await runtime_session.scalar(
+                sa.text("SELECT count(*) FROM supplements")
+            ) == 0
+            with pytest.raises(
+                RlsSessionError,
+                match="not authorized for the platform scope",
+            ):
+                await enter_platform_scope(runtime_session)
+            await runtime_session.rollback()
     finally:
         if runtime is not None:
             await runtime.dispose()

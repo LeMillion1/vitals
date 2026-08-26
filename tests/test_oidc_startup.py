@@ -134,6 +134,56 @@ async def test_linked_oidc_startup_needs_no_bootstrap_subject(db_session):
         bootstrap_subject="",
     )
 
+async def test_linked_recordless_platform_operator_keeps_oidc_startup_reachable(
+    db_session,
+):
+    operator = await _user(db_session, "platform-operator")
+    db_session.add(
+        UserFederatedIdentity(
+            user_id=operator.id,
+            issuer=ISSUER,
+            subject="provider-platform-operator",
+        )
+    )
+    await db_session.flush()
+
+    await validate_oidc_startup_state(
+        db_session,
+        issuer=ISSUER,
+        bootstrap_subject="",
+    )
+
+    with pytest.raises(OidcStartupStateError, match="existing owner binding"):
+        await validate_oidc_startup_state(
+            db_session,
+            issuer=ISSUER,
+            bootstrap_subject="provider-platform-operator",
+        )
+
+
+async def test_linked_recordless_account_without_platform_role_is_not_reachable(
+    db_session,
+):
+    account = await _user(db_session, "recordless-member", with_roles=False)
+    db_session.add_all(
+        (
+            UserRole(user_id=account.id, role=UserRoleName.MEMBER.value),
+            UserFederatedIdentity(
+                user_id=account.id,
+                issuer=ISSUER,
+                subject="provider-recordless-member",
+            ),
+        )
+    )
+    await db_session.flush()
+
+    with pytest.raises(OidcStartupStateError, match="no active platform"):
+        await validate_oidc_startup_state(
+            db_session,
+            issuer=ISSUER,
+            bootstrap_subject="",
+        )
+
 
 async def test_linked_oidc_startup_rejects_stale_wrong_bootstrap_subject(db_session):
     owner = await _user(db_session)

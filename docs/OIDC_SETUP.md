@@ -24,9 +24,11 @@ OIDC startup does not require `VITALS_AUTH_USERNAME` or
 instead fails closed unless the database has exactly one active owner with the
 member and platform-superadmin roles, exactly that owner's one health subject,
 and an explicit `VITALS_OIDC_BOOTSTRAP_SUBJECT`. After the first owner login,
-startup requires an active platform administrator with an owned subject bound
-to the configured issuer. A typo or unplanned provider switch therefore cannot
-start a process that has no usable recovery administrator.
+startup requires an active platform administrator bound to the configured
+issuer. That administrator may deliberately be a recordless installation
+operator; subject ownership is not platform authority. A typo or unplanned
+provider switch therefore cannot start a process that has no usable recovery
+administrator.
 
 ## Before you start
 
@@ -370,6 +372,52 @@ only because a machine talking to itself cannot be intercepted. Startup rejects
 userinfo, invalid ports, query/fragment components, ambiguous paths, deceptive
 `localhost` suffixes, and any callback that is not the exact
 `VITALS_PUBLIC_URL` origin plus `/auth/callback`.
+
+## Separating the platform operator from the health owner
+
+After finalization, create a distinct provider identity for the installation
+operator and copy its opaque `sub`. The narrow host command atomically creates
+an active locked-password account with exactly the platform role, no health
+record, and that exact provider binding. It refuses before the original owner
+has a binding for the same issuer. Run it from the exact production Compose
+project and image:
+
+```bash
+export VITALS_IMAGE_TAG="$(sed -n 's/^current_sha=//p' .vitals-deploy-state)"
+test -n "$VITALS_IMAGE_TAG"
+docker compose --env-file .env --env-file .env.idp \
+  run --rm --no-deps vitals_migrate \
+  python scripts/manage_platform_admin.py provision \
+    --actor-username <current-owner-username> \
+    --username platform-operator \
+    --issuer https://idp.example.com \
+    --subject <opaque-provider-subject> \
+    --confirm 'PROVISION RECORDLESS PLATFORM OPERATOR'
+```
+
+Complete a fresh provider login as `platform-operator` and prove that `/`
+lands on `/settings/platform`, then sign out and back in as the health owner.
+Only after that proof may the new operator remove installation control from the
+health account:
+
+```bash
+docker compose --env-file .env --env-file .env.idp \
+  run --rm --no-deps vitals_migrate \
+  python scripts/manage_platform_admin.py revoke \
+    --actor-username platform-operator \
+    --target-username <current-owner-username> \
+    --issuer https://idp.example.com \
+    --confirm 'REVOKE PLATFORM ADMIN ROLE'
+```
+
+The command verifies that the actor has the exact recordless operator shape and
+a successful login through that issuer after its local identity was linked. The
+last-active-platform-admin invariant also makes it fail closed if the new
+operator is not active. No container restart is required for a role change:
+navigation and every control-plane authorization re-read the durable role. The
+health owner retains the `member` role and their record, but no longer sees or
+may invoke container restart, OpenRouter, registration, professional
+verification, or support controls.
 
 ## Adding another person by invitation
 

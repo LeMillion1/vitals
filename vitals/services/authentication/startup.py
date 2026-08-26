@@ -112,7 +112,6 @@ async def validate_oidc_startup_state(
             select(func.count(func.distinct(UserFederatedIdentity.id)))
             .select_from(UserFederatedIdentity)
             .join(User, User.id == UserFederatedIdentity.user_id)
-            .join(HealthSubject, HealthSubject.owner_user_id == User.id)
             .join(UserRole, UserRole.user_id == User.id)
             .where(
                 UserFederatedIdentity.issuer == issuer,
@@ -150,7 +149,7 @@ async def validate_oidc_startup_state(
     if current_link_count:
         raise OidcStartupStateError(
             "the configured OIDC issuer has no active platform administrator "
-            "with an owned health subject"
+            "with a local identity binding"
         )
 
     any_link_count = int(

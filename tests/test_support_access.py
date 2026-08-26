@@ -2579,6 +2579,9 @@ async def test_the_console_has_a_link_somebody_can_actually_click(
     await db_session.commit()
 
     _sign_in(client, "rail-admin")
+    root = await client.get("/", follow_redirects=False)
+    assert root.status_code == 303
+    assert root.headers["location"] == "/settings/platform"
     # ``/care`` is a professional workspace, not a fake empty directory used
     # as a stepping stone by a platform-only account.
     landing = await client.get(
