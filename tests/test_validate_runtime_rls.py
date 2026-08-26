@@ -129,9 +129,24 @@ def test_cli_does_not_render_database_exception_details(monkeypatch, capsys):
     assert "postgresql" not in rendered
 
 
+def test_required_table_inventory_refuses_a_partial_schema(monkeypatch):
+    supplement = validator.OWNERSHIP_REGISTRY["supplements"]
+    monkeypatch.setattr(
+        validator,
+        "OWNERSHIP_REGISTRY",
+        {"supplements": supplement, "weight_logs": supplement},
+    )
+
+    with pytest.raises(
+        validator.RuntimeRlsValidationError,
+        match="^required_subject_tables_missing$",
+    ):
+        validator._required_subject_tables({"supplements": (True, True)})
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_real_postgres_proves_forced_rls_with_split_roles():
+async def test_real_postgres_proves_forced_rls_with_split_roles(monkeypatch):
     raw_admin_url = os.getenv("VITALS_TEST_DATABASE_URL")
     if not raw_admin_url or not raw_admin_url.startswith("postgresql+asyncpg://"):
         pytest.skip("integration test requires VITALS_TEST_DATABASE_URL")
@@ -209,8 +224,11 @@ async def test_real_postgres_proves_forced_rls_with_split_roles():
                     "subject_id uuid NOT NULL REFERENCES health_subjects(id))"
                 )
                 await connection.execute(
-                    sa.text("INSERT INTO supplements (subject_id) VALUES (:subject)"),
-                    {"subject": first_subject},
+                    sa.text(
+                        "INSERT INTO supplements (subject_id) "
+                        "VALUES (:first), (:second)"
+                    ),
+                    {"first": first_subject, "second": second_subject},
                 )
                 await connection.exec_driver_sql(
                     "ALTER TABLE supplements ENABLE ROW LEVEL SECURITY"
@@ -221,6 +239,8 @@ async def test_real_postgres_proves_forced_rls_with_split_roles():
                 await connection.exec_driver_sql(
                     "CREATE POLICY rls_subject_isolation ON supplements "
                     "USING (subject_id = NULLIF(current_setting("
+                    "'vitals.subject_id', true), '')::uuid) "
+                    "WITH CHECK (subject_id = NULLIF(current_setting("
                     "'vitals.subject_id', true), '')::uuid)"
                 )
                 await connection.exec_driver_sql(
@@ -232,21 +252,54 @@ async def test_real_postgres_proves_forced_rls_with_split_roles():
         finally:
             await migration.dispose()
 
+        monkeypatch.setattr(
+            validator,
+            "OWNERSHIP_REGISTRY",
+            {"supplements": validator.OWNERSHIP_REGISTRY["supplements"]},
+        )
+
         result = await validator.validate_runtime_rls(
             migration_url=migration_url,
             runtime_url=runtime_url,
         )
 
         assert result == {
-            "bound_visible_rows": 1,
+            "bound_visible_rows": 2,
             "forced_rls_tables": 1,
-            "inspected_subject_rows": 1,
+            "inspected_subject_rows": 2,
             "operation": "validate_runtime_rls",
             "required_subject_tables": 1,
             "result": "ok",
             "subjects": 2,
             "unbound_visible_rows": 0,
+            "validated_subjects": 2,
         }
+
+        migration = create_async_engine(migration_url, poolclass=NullPool)
+        try:
+            async with migration.begin() as connection:
+                await connection.exec_driver_sql(
+                    "DROP POLICY rls_subject_isolation ON supplements"
+                )
+                permissive = (
+                    "((subject_id = subject_id) AND "
+                    "current_setting('vitals.subject_id', true) <> '')"
+                )
+                await connection.exec_driver_sql(
+                    "CREATE POLICY rls_subject_isolation ON supplements "
+                    f"USING ({permissive}) WITH CHECK ({permissive})"
+                )
+        finally:
+            await migration.dispose()
+
+        with pytest.raises(
+            validator.RuntimeRlsValidationError,
+            match="^bound_subject_rows_mismatch$",
+        ):
+            await validator.validate_runtime_rls(
+                migration_url=migration_url,
+                runtime_url=runtime_url,
+            )
     finally:
         if database_created or roles_created:
             async with admin.connect() as connection:

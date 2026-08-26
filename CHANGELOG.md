@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — restore validation proves the complete RLS boundary
+
+The restore validator now refuses a schema missing any registry-required
+subject table or its one canonical forced-RLS policy. It also tests an unknown
+subject and up to two real subjects through the restricted login, so a policy
+that merely accepts any non-empty subject setting can no longer produce a false
+successful restore.
+
 ### Fixed — restored authorization routines close PostgreSQL defaults
 
 The runtime-role provisioner now removes the default `PUBLIC EXECUTE` grant

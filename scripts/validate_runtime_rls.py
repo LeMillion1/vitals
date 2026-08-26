@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -45,6 +46,7 @@ _ERROR_CODES = frozenset(
         "database_url_missing",
         "migration_identity_mismatch",
         "required_subject_tables_missing",
+        "required_table_policy_invalid",
         "required_table_not_forced",
         "restored_subject_rows_missing",
         "row_security_missing",
@@ -120,6 +122,21 @@ def _quote_table(connection: Any, table_name: str) -> str:
     return f"{preparer.quote('public')}.{preparer.quote(table_name)}"
 
 
+def _required_subject_tables(
+    relation_state: Mapping[str, tuple[bool, bool]],
+) -> list[str]:
+    """Require the complete current ownership registry, never an intersection."""
+
+    required = sorted(
+        table_name
+        for table_name, spec in OWNERSHIP_REGISTRY.items()
+        if spec.subject is TargetColumn.REQUIRED
+    )
+    if not required or any(table_name not in relation_state for table_name in required):
+        _fail("required_subject_tables_missing")
+    return required
+
+
 async def validate_runtime_rls(
     *,
     migration_url: URL,
@@ -143,11 +160,25 @@ async def validate_runtime_rls(
                 )
                 or 0
             )
-            subject_id = await migration.scalar(
-                sa.text("SELECT id FROM public.health_subjects ORDER BY id LIMIT 1")
+            subject_ids = list(
+                (
+                    await migration.execute(
+                        sa.text(
+                            "SELECT id FROM public.health_subjects ORDER BY id LIMIT 2"
+                        )
+                    )
+                ).scalars()
             )
-            if subject_count < 1 or subject_id is None:
+            if subject_count < 1 or not subject_ids:
                 _fail("subject_data_missing")
+            unknown_subject_id = uuid.uuid4()
+            while await migration.scalar(
+                sa.text(
+                    "SELECT EXISTS (SELECT 1 FROM public.health_subjects WHERE id=:id)"
+                ),
+                {"id": unknown_subject_id},
+            ):
+                unknown_subject_id = uuid.uuid4()
 
             async with runtime_engine.connect() as runtime:
                 runtime_identity = await _connection_identity(runtime)
@@ -179,14 +210,7 @@ async def validate_runtime_rls(
                     name: (bool(enabled), bool(forced))
                     for name, enabled, forced in relation_rows
                 }
-                required_tables = sorted(
-                    table_name
-                    for table_name, spec in OWNERSHIP_REGISTRY.items()
-                    if spec.subject is TargetColumn.REQUIRED
-                    and table_name in relation_state
-                )
-                if not required_tables:
-                    _fail("required_subject_tables_missing")
+                required_tables = _required_subject_tables(relation_state)
 
                 rls_states = [
                     state for state in relation_state.values() if state[0]
@@ -202,19 +226,63 @@ async def validate_runtime_rls(
                 ):
                     _fail("required_table_not_forced")
 
-                expected_counts: dict[str, int] = {}
-                for table_name in required_tables:
-                    table = _quote_table(migration, table_name)
-                    expected_counts[table_name] = int(
-                        await migration.scalar(
-                            sa.text(
-                                f"SELECT count(*) FROM {table} "
-                                "WHERE subject_id=:subject_id"
-                            ),
-                            {"subject_id": subject_id},
-                        )
-                        or 0
+                policy_rows = (
+                    await runtime.execute(
+                        sa.text(
+                            "SELECT object.relname, policy.polname, "
+                            "policy.polpermissive, policy.polcmd, policy.polroles, "
+                            "pg_get_expr(policy.polqual, policy.polrelid), "
+                            "pg_get_expr(policy.polwithcheck, policy.polrelid) "
+                            "FROM pg_policy policy "
+                            "JOIN pg_class object ON object.oid=policy.polrelid "
+                            "JOIN pg_namespace namespace "
+                            "ON namespace.oid=object.relnamespace "
+                            "WHERE namespace.nspname='public' "
+                            "AND object.relname = ANY(:tables) "
+                            "ORDER BY object.relname, policy.polname"
+                        ),
+                        {"tables": required_tables},
                     )
+                ).all()
+                policies: dict[str, list[tuple[Any, ...]]] = {
+                    table_name: [] for table_name in required_tables
+                }
+                for row in policy_rows:
+                    policies[row[0]].append(tuple(row[1:]))
+                for table_name in required_tables:
+                    rows = policies[table_name]
+                    if len(rows) != 1:
+                        _fail("required_table_policy_invalid")
+                    name, permissive, command, roles, using, check = rows[0]
+                    using_text = str(using or "")
+                    check_text = str(check or "")
+                    if (
+                        name != "rls_subject_isolation"
+                        or not permissive
+                        or command not in ("*", b"*")
+                        or list(roles or ()) != [0]
+                        or "subject_id" not in using_text
+                        or SUBJECT_SETTING not in using_text
+                        or "subject_id" not in check_text
+                        or SUBJECT_SETTING not in check_text
+                    ):
+                        _fail("required_table_policy_invalid")
+
+                expected_counts: dict[uuid.UUID, dict[str, int]] = {}
+                for subject_id in subject_ids:
+                    expected_counts[subject_id] = {}
+                    for table_name in required_tables:
+                        table = _quote_table(migration, table_name)
+                        expected_counts[subject_id][table_name] = int(
+                            await migration.scalar(
+                                sa.text(
+                                    f"SELECT count(*) FROM {table} "
+                                    "WHERE subject_id=:subject_id"
+                                ),
+                                {"subject_id": subject_id},
+                            )
+                            or 0
+                        )
 
                 unbound_rows = 0
                 bound_rows = 0
@@ -223,6 +291,9 @@ async def validate_runtime_rls(
                     await runtime.execute(
                         sa.text("SELECT set_config(:name, '', true)"),
                         {"name": SUBJECT_SETTING},
+                    )
+                    await runtime.execute(
+                        sa.text("SELECT set_config('vitals.platform_scope', '', true)")
                     )
                     for table_name in required_tables:
                         table = _quote_table(runtime, table_name)
@@ -236,7 +307,10 @@ async def validate_runtime_rls(
 
                     await runtime.execute(
                         sa.text("SELECT set_config(:name, :subject_id, true)"),
-                        {"name": SUBJECT_SETTING, "subject_id": str(subject_id)},
+                        {
+                            "name": SUBJECT_SETTING,
+                            "subject_id": str(unknown_subject_id),
+                        },
                     )
                     for table_name in required_tables:
                         table = _quote_table(runtime, table_name)
@@ -244,11 +318,36 @@ async def validate_runtime_rls(
                             await runtime.scalar(sa.text(f"SELECT count(*) FROM {table}"))
                             or 0
                         )
-                        bound_rows += visible
-                        if visible != expected_counts[table_name]:
+                        if visible:
                             _fail("bound_subject_rows_mismatch")
 
-                inspected_rows = sum(expected_counts.values())
+                for subject_id in subject_ids:
+                    await runtime.rollback()
+                    async with runtime.begin():
+                        await runtime.execute(
+                            sa.text("SELECT set_config('vitals.platform_scope', '', true)")
+                        )
+                        await runtime.execute(
+                            sa.text("SELECT set_config(:name, :subject_id, true)"),
+                            {"name": SUBJECT_SETTING, "subject_id": str(subject_id)},
+                        )
+                        for table_name in required_tables:
+                            table = _quote_table(runtime, table_name)
+                            visible = int(
+                                await runtime.scalar(
+                                    sa.text(f"SELECT count(*) FROM {table}")
+                                )
+                                or 0
+                            )
+                            bound_rows += visible
+                            if visible != expected_counts[subject_id][table_name]:
+                                _fail("bound_subject_rows_mismatch")
+
+                inspected_rows = sum(
+                    count
+                    for subject_counts in expected_counts.values()
+                    for count in subject_counts.values()
+                )
                 if inspected_rows < 1:
                     _fail("restored_subject_rows_missing")
 
@@ -261,6 +360,7 @@ async def validate_runtime_rls(
                     "result": "ok",
                     "subjects": subject_count,
                     "unbound_visible_rows": unbound_rows,
+                    "validated_subjects": len(subject_ids),
                 }
     finally:
         await runtime_engine.dispose()
