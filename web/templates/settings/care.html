@@ -58,6 +58,55 @@
     </div>
     {% endif %}
 
+    <!-- ─── WHAT MY TEAM HAS ASKED ME TO DO ──────────────────────────────── -->
+    <div class="v-card p-6 space-y-4{% if not guidance.active_plans and not guidance.recent_notes %} is-empty{% endif %}">
+        {{ card_header(t("care.patient_guidance_title")) }}
+
+        {% if guidance.active_plans %}
+        <section class="space-y-3" aria-labelledby="patient-active-plans">
+            <h2 id="patient-active-plans" class="v-label">{{ t("care.patient_active_plans") }}</h2>
+            {% for plan in guidance.active_plans %}
+            <div class="v-card-inset p-4 space-y-1">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <span class="v-text-body font-semibold">{{ plan.title }}</span>
+                    <span class="v-chip v-chip-sm">{{ t("care.plan_status.active") }}</span>
+                </div>
+                <div class="v-text-micro" style="color: var(--muted)">
+                    {{ guidance_author_names.get(plan.actor_user_id, plan.author.username) }}
+                    · {{ plan.effective_from | format_date }}{% if plan.effective_to %} — {{ plan.effective_to | format_date }}{% endif %}
+                </div>
+                <p class="v-text-body" style="white-space: pre-wrap">{{ plan.body }}</p>
+            </div>
+            {% endfor %}
+        </section>
+        {% endif %}
+
+        {% if guidance.has_more_active_plans %}
+        <a href="/care/{{ subject_id }}#care-plans" class="v-btn-ghost text-xs">
+            {{ t("common.show_more") }}
+        </a>
+        {% endif %}
+
+        {% if guidance.recent_notes %}
+        <section class="space-y-3" aria-labelledby="patient-recent-notes">
+            <h2 id="patient-recent-notes" class="v-label">{{ t("care.patient_recent_notes") }}</h2>
+            {% for note in guidance.recent_notes %}
+            <div class="v-card-inset p-4 space-y-1">
+                <div class="v-text-micro" style="color: var(--muted)">
+                    {{ guidance_author_names.get(note.actor_user_id, note.author.username) }}
+                    · {{ note.created_at | format_date }}
+                </div>
+                <p class="v-text-body" style="white-space: pre-wrap">{{ note.body }}</p>
+            </div>
+            {% endfor %}
+        </section>
+        {% endif %}
+
+        {% if not guidance.active_plans and not guidance.recent_notes %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("care.patient_guidance_empty") }}</p>
+        {% endif %}
+    </div>
+
     <!-- ─── WHO HOLDS THIS RECORD ──────────────────────────────────────────── -->
     <div class="v-card p-6 space-y-4">
         {{ card_header(t("consents.people_title")) }}

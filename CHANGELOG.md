@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — active care guidance is visible from the patient hub
+
+The care-team page now leads with active plans and the latest professional
+notes. The compact hub links to the wider published history when needed; draft
+plans stay private working material while archived plans remain visible to the
+patient, so current instructions no longer require navigating into a
+professional workspace.
+
 ### Added — opt-in encrypted off-host recovery replication
 
 An isolated Compose profile can now send only checksum-verified complete local

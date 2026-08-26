@@ -24,6 +24,7 @@ patient cannot hold anybody to. Plans are archived; notes simply accumulate.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import date as date_type
 from datetime import datetime, timezone
 
@@ -49,6 +50,8 @@ PLAN_ARTIFACT = "care_plan"
 
 _MAX_BODY = 20000
 _MAX_TITLE = 200
+_MAX_ACTIVE_PLAN_SUMMARY = 5
+_MAX_RECENT_NOTES = 20
 
 
 class ProfessionalRecordError(RuntimeError):
@@ -69,6 +72,15 @@ class NotTheAuthor(ProfessionalRecordError):
 
 class RecordNotFound(ProfessionalRecordError):
     """No such record in this subject's scope."""
+
+
+@dataclass(frozen=True, slots=True)
+class CareGuidanceSummary:
+    """The small working set a patient needs on their care-team hub."""
+
+    active_plans: tuple[CarePlan, ...]
+    has_more_active_plans: bool
+    recent_notes: tuple[ProfessionalNote, ...]
 
 
 def _text(value: object, field: str, *, limit: int) -> str:
@@ -284,9 +296,13 @@ async def set_plan_status(
 
 
 async def list_plans(
-    session: AsyncSession, *, context: AccessContext, include_archived: bool = False
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    include_archived: bool = False,
+    include_drafts: bool = True,
 ) -> list[CarePlan]:
-    """What this record is being asked to do, and optionally what it once was."""
+    """Published plans, with working drafts/history included only when asked."""
 
     _require_scope(context, artifact=PLAN_ARTIFACT, action=PolicyAction.LIST)
     statement = (
@@ -298,6 +314,8 @@ async def list_plans(
         statement = statement.where(
             CarePlan.status != CarePlanStatus.ARCHIVED.value
         )
+    if not include_drafts:
+        statement = statement.where(CarePlan.status != CarePlanStatus.DRAFT.value)
     return list(
         await session.scalars(
             statement.order_by(CarePlan.effective_from.desc(), CarePlan.id)
@@ -305,7 +323,70 @@ async def list_plans(
     )
 
 
+async def care_guidance_summary(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    recent_note_limit: int = 3,
+) -> CareGuidanceSummary:
+    """Active instructions and a bounded recent-note window for the patient.
+
+    Draft plans remain the professional's working material and archived plans
+    remain history, so neither belongs in the patient's at-a-glance care hub.
+    The patient's wider record exposes published history. The hub is bounded so
+    a pile of long plans cannot bury the relationship safety controls; it says
+    when the wider record has more. Both queries ask the same artifact policy
+    as those full lists.
+    """
+
+    if (
+        isinstance(recent_note_limit, bool)
+        or not isinstance(recent_note_limit, int)
+        or not 1 <= recent_note_limit <= _MAX_RECENT_NOTES
+    ):
+        raise ProfessionalRecordValidationError(
+            f"recent_note_limit must be between 1 and {_MAX_RECENT_NOTES}"
+        )
+    _require_scope(
+        context,
+        artifact=PLAN_ARTIFACT,
+        action=PolicyAction.LIST,
+    )
+    _require_scope(
+        context,
+        artifact=NOTE_ARTIFACT,
+        action=PolicyAction.LIST,
+    )
+    active_plan_window = tuple(
+        await session.scalars(
+            select(CarePlan)
+            .where(
+                CarePlan.subject_id == context.subject_id,
+                CarePlan.status == CarePlanStatus.ACTIVE.value,
+            )
+            .options(selectinload(CarePlan.author))
+            .order_by(CarePlan.effective_from.desc(), CarePlan.id)
+            .limit(_MAX_ACTIVE_PLAN_SUMMARY + 1)
+        )
+    )
+    recent_notes = tuple(
+        await session.scalars(
+            select(ProfessionalNote)
+            .where(ProfessionalNote.subject_id == context.subject_id)
+            .options(selectinload(ProfessionalNote.author))
+            .order_by(ProfessionalNote.created_at.desc(), ProfessionalNote.id)
+            .limit(recent_note_limit)
+        )
+    )
+    return CareGuidanceSummary(
+        active_plans=active_plan_window[:_MAX_ACTIVE_PLAN_SUMMARY],
+        has_more_active_plans=len(active_plan_window) > _MAX_ACTIVE_PLAN_SUMMARY,
+        recent_notes=recent_notes,
+    )
+
+
 __all__ = [
+    "CareGuidanceSummary",
     "NOTE_ARTIFACT",
     "PLAN_ARTIFACT",
     "NotInLiveCare",
@@ -313,6 +394,7 @@ __all__ = [
     "ProfessionalRecordError",
     "ProfessionalRecordValidationError",
     "RecordNotFound",
+    "care_guidance_summary",
     "list_notes",
     "list_plans",
     "revise_note",

@@ -398,7 +398,16 @@ async def patient(
         resource_type=PolicyResourceType.OPERATION,
     )
     notes = await records.list_notes(db, context=care.access) if may_read_notes else []
-    plans = await records.list_plans(db, context=care.access) if may_read_plans else []
+    plans = (
+        await records.list_plans(
+            db,
+            context=care.access,
+            include_archived=care.is_owner,
+            include_drafts=not care.is_owner,
+        )
+        if may_read_plans
+        else []
+    )
     author_names = await _professional_display_names(
         db,
         {item.actor_user_id for item in (*notes, *plans)},

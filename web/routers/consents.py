@@ -37,9 +37,11 @@ from vitals.models.professional import (
     ProfessionalProfile,
 )
 from vitals.services import modules_service
-from vitals.services.care import invitations, record_projection, relationships
+from vitals.services.care import invitations, record_projection, records, relationships
 from vitals.services.access_resolution import (
+    AccessContext,
     AccessResolutionError,
+    enter_subject_scope,
     resolve_access_context,
 )
 from web.care_context import principal_user_id
@@ -127,7 +129,9 @@ def _selected_scopes(
     return frozenset(scopes)
 
 
-async def _own_subject(request: Request, db: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
+async def _own_subject(
+    request: Request, db: AsyncSession
+) -> tuple[uuid.UUID, AccessContext]:
     """This account and the record it owns.
 
     ``subject_id=None`` means "the subject this principal owns" — never "the
@@ -148,7 +152,8 @@ async def _own_subject(request: Request, db: AsyncSession) -> tuple[uuid.UUID, u
         raise NoPersonalRecordError(
             "this account keeps no health record of its own"
         ) from exc
-    return user_id, access.subject_id
+    await enter_subject_scope(db, access)
+    return user_id, access
 
 
 def _redirect(fragment: str = "") -> RedirectResponse:
@@ -171,7 +176,8 @@ async def consent_centre(
 async def _render(
     request: Request, db: AsyncSession, *, username: str, issued_link: str | None
 ) -> HTMLResponse:
-    _user_id, subject_id = await _own_subject(request, db)
+    _user_id, owner_access = await _own_subject(request, db)
+    subject_id = owner_access.subject_id
     enabled_modules = await modules_service.get_enabled_modules(
         db, subject_id=subject_id
     )
@@ -254,6 +260,28 @@ async def _render(
         }
         for row in rows
     ]
+    guidance = await records.care_guidance_summary(
+        db,
+        context=owner_access,
+    )
+    guidance_author_ids = {
+        item.actor_user_id
+        for item in (*guidance.active_plans, *guidance.recent_notes)
+    }
+    guidance_author_names = (
+        dict(
+            (
+                await db.execute(
+                    select(
+                        ProfessionalProfile.user_id,
+                        ProfessionalProfile.display_name,
+                    ).where(ProfessionalProfile.user_id.in_(guidance_author_ids))
+                )
+            ).all()
+        )
+        if guidance_author_ids
+        else {}
+    )
 
     pending = list(
         await db.scalars(
@@ -275,6 +303,9 @@ async def _render(
             # chrome without it.
             "username": username,
             "professionals": professionals,
+            "guidance": guidance,
+            "guidance_author_names": guidance_author_names,
+            "subject_id": subject_id,
             "pending": pending,
             "kinds": [kind.value for kind in ProfessionalKind],
             "shareable_domains": [domain.value for domain in shareable_domains],
@@ -295,7 +326,8 @@ async def invite(
 ):
     """Offer somebody a way in. The link is shown once and never again."""
 
-    user_id, subject_id = await _own_subject(request, db)
+    user_id, owner_access = await _own_subject(request, db)
+    subject_id = owner_access.subject_id
     try:
         result = await invitations.invite(
             db,
@@ -324,7 +356,7 @@ async def withdraw_invitation(
     db: AsyncSession = Depends(get_session),
     _username: str = Depends(require_auth),
 ):
-    user_id, _subject_id = await _own_subject(request, db)
+    user_id, _owner_access = await _own_subject(request, db)
     try:
         await invitations.revoke(
             db, invitation_id=invitation_id, actor_user_id=user_id
@@ -349,7 +381,7 @@ async def pause(
     resuming must not cost a new invitation and a new consent.
     """
 
-    user_id, _subject_id = await _own_subject(request, db)
+    user_id, _owner_access = await _own_subject(request, db)
     try:
         await relationships.set_consent_paused(
             db,
@@ -372,7 +404,7 @@ async def revoke(
 ):
     """Withdraw permission now. Not a pause, and it does not come back."""
 
-    user_id, _subject_id = await _own_subject(request, db)
+    user_id, _owner_access = await _own_subject(request, db)
     try:
         await relationships.revoke_consent(
             db, relationship_id=relationship_id, actor_user_id=user_id
@@ -401,7 +433,8 @@ async def grant(
     what they should be looking at.
     """
 
-    user_id, subject_id = await _own_subject(request, db)
+    user_id, owner_access = await _own_subject(request, db)
+    subject_id = owner_access.subject_id
     try:
         enabled_modules = await modules_service.get_enabled_modules(
             db, subject_id=subject_id
@@ -449,7 +482,7 @@ async def end(
 ):
     """End the care, and every consent under it with it."""
 
-    user_id, _subject_id = await _own_subject(request, db)
+    user_id, _owner_access = await _own_subject(request, db)
     try:
         await relationships.end_relationship(
             db, relationship_id=relationship_id, actor_user_id=user_id

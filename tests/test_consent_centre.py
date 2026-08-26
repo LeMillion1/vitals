@@ -509,6 +509,129 @@ async def test_the_page_says_what_each_person_can_see(in_care, db_session):
     assert "nav.milestones" not in response.text
 
 
+async def test_patient_hub_surfaces_active_guidance_not_drafts(in_care, db_session):
+    from vitals.models.professional import CarePlan, CareRelationship
+
+    owner_client, doctor_client, subject_id, _relationship_id = in_care
+    await doctor_client.post(
+        f"/care/{subject_id}/note",
+        data={"body": "Keep an eye on recovery this week."},
+    )
+    await doctor_client.post(
+        f"/care/{subject_id}/plan",
+        data={
+            "title": "Easy week",
+            "body": "Keep every session conversational.",
+            "effective_from": "2026-09-01",
+        },
+    )
+    active_plan = await db_session.scalar(
+        select(CarePlan).where(CarePlan.title == "Easy week")
+    )
+    assert active_plan is not None
+    await doctor_client.post(
+        f"/care/{subject_id}/plan/{active_plan.id}/status",
+        data={"plan_status": "active"},
+    )
+    await doctor_client.post(
+        f"/care/{subject_id}/plan",
+        data={
+            "title": "Private draft",
+            "body": "Not ready for the patient.",
+            "effective_from": "2026-10-01",
+        },
+    )
+    await doctor_client.post(
+        f"/care/{subject_id}/plan",
+        data={
+            "title": "Finished plan",
+            "body": "No longer current.",
+            "effective_from": "2026-08-01",
+        },
+    )
+    archived_plan = await db_session.scalar(
+        select(CarePlan).where(CarePlan.title == "Finished plan")
+    )
+    assert archived_plan is not None
+    await doctor_client.post(
+        f"/care/{subject_id}/plan/{archived_plan.id}/status",
+        data={"plan_status": "active"},
+    )
+    await doctor_client.post(
+        f"/care/{subject_id}/plan/{archived_plan.id}/status",
+        data={"plan_status": "archived"},
+    )
+
+    # A row for another record must never leak into this owner's hub, even
+    # though the same professional authored it.
+    other_owner = await _user(db_session, "cc-guidance-other")
+    other_subject = HealthSubject(
+        owner_user_id=other_owner.id,
+        display_name="Other synthetic record",
+        timezone="Asia/Almaty",
+    )
+    db_session.add(other_subject)
+    await db_session.flush()
+    doctor = await db_session.scalar(
+        select(User).where(User.username == "cc-incare")
+    )
+    assert doctor is not None
+    other_relationship = CareRelationship(
+        subject_id=other_subject.id,
+        subject_owner_user_id=other_owner.id,
+        professional_user_id=doctor.id,
+        kind=ProfessionalKind.DOCTOR.value,
+    )
+    db_session.add(other_relationship)
+    await db_session.flush()
+    db_session.add(
+        ProfessionalNote(
+            subject_id=other_subject.id,
+            relationship_id=other_relationship.id,
+            actor_user_id=doctor.id,
+            body="OTHER SUBJECT SENTINEL",
+        )
+    )
+    await db_session.commit()
+
+    page = await owner_client.get(
+        "/settings/care",
+        headers={"Accept": "text/html"},
+    )
+
+    assert page.status_code == 200
+    assert "Easy week" in page.text
+    assert "Keep every session conversational." in page.text
+    assert "Keep an eye on recovery this week." in page.text
+    assert "Private draft" not in page.text
+    assert "Not ready for the patient." not in page.text
+    assert "Finished plan" not in page.text
+    assert "No longer current." not in page.text
+    assert "OTHER SUBJECT SENTINEL" not in page.text
+
+    wider_record = await owner_client.get(
+        f"/care/{subject_id}",
+        headers={"Accept": "text/html"},
+    )
+    assert wider_record.status_code == 200
+    assert "Easy week" in wider_record.text
+    assert "Finished plan" in wider_record.text
+    assert "Private draft" not in wider_record.text
+    assert "Not ready for the patient." not in wider_record.text
+
+    # Ending care closes the professional's door, not the patient's history.
+    ended = await owner_client.post(f"/settings/care/{_relationship_id}/end")
+    assert ended.status_code == 303
+    history = await owner_client.get(
+        "/settings/care",
+        headers={"Accept": "text/html"},
+    )
+    assert history.status_code == 200
+    assert "Easy week" in history.text
+    assert "Keep an eye on recovery this week." in history.text
+    assert "Dr cc-incare" in history.text
+
+
 async def test_a_stranger_cannot_withdraw_somebody_elses_consent(
     in_care, db_session
 ):

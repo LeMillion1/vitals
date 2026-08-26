@@ -13,7 +13,7 @@ write. Only the author may change what they wrote. Nothing is deleted.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -406,6 +406,114 @@ async def test_an_archived_plan_stays_archived(db_session):
     with pytest.raises(records.ProfessionalRecordValidationError):
         await records.set_plan_status(
             db_session, context=context, plan_id=plan.id, status=CarePlanStatus.ACTIVE
+        )
+
+
+async def test_patient_guidance_is_active_plans_and_bounded_recent_notes(db_session):
+    owner, subject, doctor, _relationship = await _in_care_with_consent(
+        db_session, "rec-guidance"
+    )
+    doctor_context = await _context(db_session, doctor, subject)
+    active_plan = await records.write_plan(
+        db_session,
+        context=doctor_context,
+        title="Current plan",
+        body="Keep the next two sessions easy.",
+        effective_from=date(2026, 9, 1),
+    )
+    await records.set_plan_status(
+        db_session,
+        context=doctor_context,
+        plan_id=active_plan.id,
+        status=CarePlanStatus.ACTIVE,
+    )
+    draft_plan = await records.write_plan(
+        db_session,
+        context=doctor_context,
+        title="Private draft",
+        body="Still being considered.",
+        effective_from=date(2026, 10, 1),
+    )
+    archived_plan = await records.write_plan(
+        db_session,
+        context=doctor_context,
+        title="Finished plan",
+        body="Kept only as history.",
+        effective_from=date(2026, 8, 1),
+    )
+    await records.set_plan_status(
+        db_session,
+        context=doctor_context,
+        plan_id=archived_plan.id,
+        status=CarePlanStatus.ACTIVE,
+    )
+    await records.set_plan_status(
+        db_session,
+        context=doctor_context,
+        plan_id=archived_plan.id,
+        status=CarePlanStatus.ARCHIVED,
+    )
+    note_start = datetime(2026, 8, 20, 9, tzinfo=timezone.utc)
+    for offset, body in enumerate(("First note", "Second note", "Third note")):
+        note = await records.write_note(
+            db_session,
+            context=doctor_context,
+            body=body,
+        )
+        note.created_at = note_start + timedelta(hours=offset)
+    await db_session.flush()
+
+    owner_context = await _context(db_session, owner, subject)
+    summary = await records.care_guidance_summary(
+        db_session,
+        context=owner_context,
+        recent_note_limit=2,
+    )
+
+    assert [plan.id for plan in summary.active_plans] == [active_plan.id]
+    assert draft_plan.id not in {plan.id for plan in summary.active_plans}
+    assert archived_plan.id not in {plan.id for plan in summary.active_plans}
+    assert [note.body for note in summary.recent_notes] == [
+        "Third note",
+        "Second note",
+    ]
+    assert summary.has_more_active_plans is False
+
+    for index in range(5):
+        plan = await records.write_plan(
+            db_session,
+            context=doctor_context,
+            title=f"Additional current plan {index}",
+            body="Bounded on the hub, preserved in the wider record.",
+            effective_from=date(2026, 9, 2 + index),
+        )
+        await records.set_plan_status(
+            db_session,
+            context=doctor_context,
+            plan_id=plan.id,
+            status=CarePlanStatus.ACTIVE,
+        )
+
+    bounded = await records.care_guidance_summary(
+        db_session,
+        context=owner_context,
+    )
+    assert len(bounded.active_plans) == 5
+    assert bounded.has_more_active_plans is True
+
+
+@pytest.mark.parametrize("limit", [0, 21, True, "3"])
+async def test_patient_guidance_refuses_an_invalid_note_limit(db_session, limit):
+    owner, subject, _doctor, _relationship = await _in_care_with_consent(
+        db_session, f"rec-guidance-limit-{limit}"
+    )
+    owner_context = await _context(db_session, owner, subject)
+
+    with pytest.raises(records.ProfessionalRecordValidationError):
+        await records.care_guidance_summary(
+            db_session,
+            context=owner_context,
+            recent_note_limit=limit,
         )
 
 

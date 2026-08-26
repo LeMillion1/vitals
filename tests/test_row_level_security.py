@@ -341,6 +341,132 @@ async def test_real_postgres_policies_isolate_subjects_and_fail_closed(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_patient_guidance_requires_and_honours_subject_binding(
+    db_session,
+    monkeypatch,
+):
+    """The patient hub's service is empty unbound and exact once owner-bound."""
+
+    from alembic.config import Config as AlembicConfig
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from vitals.services.care import records
+    from vitals.services.access_resolution import (
+        enter_subject_scope,
+        resolve_access_context,
+    )
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
+    await db_session.close()
+
+    admin = await _migrated_engine(
+        database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
+    )
+    restricted = await restricted_engine(database_url)
+    try:
+        mine, theirs = await _seed_two_subjects(admin)
+        async with admin.begin() as connection:
+            mine_owner = await connection.scalar(
+                sa.text("SELECT owner_user_id FROM health_subjects WHERE id = :id"),
+                {"id": mine},
+            )
+            theirs_owner = await connection.scalar(
+                sa.text("SELECT owner_user_id FROM health_subjects WHERE id = :id"),
+                {"id": theirs},
+            )
+            doctor = await connection.scalar(
+                sa.text(
+                    "INSERT INTO users (id, username, normalized_username, "
+                    "password_hash, status, created_at, updated_at) VALUES "
+                    "(gen_random_uuid(), 'rls-guidance-doctor', "
+                    "'rls-guidance-doctor', '$synthetic', 'active', now(), "
+                    "now()) RETURNING id"
+                )
+            )
+            for subject, owner, label in (
+                (mine, mine_owner, "mine"),
+                (theirs, theirs_owner, "theirs"),
+            ):
+                relationship = await connection.scalar(
+                    sa.text(
+                        "INSERT INTO care_relationships "
+                        "(id, subject_id, subject_owner_user_id, "
+                        "professional_user_id, kind, status, established_at, "
+                        "created_at, updated_at) VALUES "
+                        "(gen_random_uuid(), :subject, :owner, :doctor, "
+                        "'doctor', 'active', now(), now(), now()) RETURNING id"
+                    ),
+                    {"subject": subject, "owner": owner, "doctor": doctor},
+                )
+                await connection.execute(
+                    sa.text(
+                        "INSERT INTO professional_notes "
+                        "(id, subject_id, relationship_id, actor_user_id, body, "
+                        "created_at, updated_at) VALUES "
+                        "(gen_random_uuid(), :subject, :relationship, :doctor, "
+                        ":body, now(), now())"
+                    ),
+                    {
+                        "subject": subject,
+                        "relationship": relationship,
+                        "doctor": doctor,
+                        "body": f"Guidance note {label}",
+                    },
+                )
+                await connection.execute(
+                    sa.text(
+                        "INSERT INTO care_plans "
+                        "(id, subject_id, relationship_id, actor_user_id, title, "
+                        "body, status, effective_from, created_at, updated_at) "
+                        "VALUES (gen_random_uuid(), :subject, :relationship, "
+                        ":doctor, :title, :body, 'active', DATE '2026-08-26', "
+                        "now(), now())"
+                    ),
+                    {
+                        "subject": subject,
+                        "relationship": relationship,
+                        "doctor": doctor,
+                        "title": f"Guidance plan {label}",
+                        "body": f"Plan details {label}",
+                    },
+                )
+
+        factory = async_sessionmaker(
+            restricted, expire_on_commit=False, class_=AsyncSession
+        )
+        async with factory() as session:
+            owner_context = await resolve_access_context(
+                session,
+                user_id=mine_owner,
+                subject_id=None,
+            )
+            unbound = await records.care_guidance_summary(
+                session,
+                context=owner_context,
+            )
+            assert unbound.active_plans == ()
+            assert unbound.recent_notes == ()
+
+            await enter_subject_scope(session, owner_context)
+            bound = await records.care_guidance_summary(
+                session,
+                context=owner_context,
+            )
+            assert [plan.title for plan in bound.active_plans] == [
+                "Guidance plan mine"
+            ]
+            assert [note.body for note in bound.recent_notes] == [
+                "Guidance note mine"
+            ]
+    finally:
+        await restricted.dispose()
+        await admin.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_real_postgres_write_check_and_force_hold(db_session, monkeypatch):
     """``WITH CHECK`` refuses a write addressed elsewhere, and ``FORCE`` is on.
 

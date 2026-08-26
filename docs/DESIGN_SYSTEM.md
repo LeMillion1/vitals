@@ -854,6 +854,14 @@ desktop rail, the phone's More screen, and Settings before the first invitation
 and after the last relationship ends. Messages are a separate immediate task;
 access, invitations, pause, and end controls belong in the team hub.
 
+The same patient hub leads with the current working result: active care plans
+and a short recent-note window. Show at most five active plans there, with a
+clear path to the wider published record when more exist, so long guidance does
+not bury the relationship safety controls. Draft plans remain professional
+working material and archived plans remain patient-visible history. A patient
+should not have to open the professional record route accidentally to discover
+what their specialist asked them to do.
+
 Patient and professional read the same conversation template. The subject and
 authorization basis stay visible above it, active participants are named in the
 thread, and opening a thread replaces the inbox/new-thread form rather than
