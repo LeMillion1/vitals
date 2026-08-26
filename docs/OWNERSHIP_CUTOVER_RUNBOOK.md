@@ -52,7 +52,8 @@ From the host checkout:
 
 ```bash
 docker compose up -d vitals_db vitals_redis
-docker compose run --rm --no-deps vitals_migrate \
+docker compose run --rm --no-deps \
+  --volume "$PWD/.env:/app/.env:ro" vitals_migrate \
   python scripts/bootstrap_ownership_roots.py
 ```
 
@@ -66,8 +67,9 @@ Each command is resumable and reports one line of JSON. Run every listed Python
 command through the same privileged one-shot wrapper:
 
 ```bash
-docker compose run --rm --no-deps vitals_migrate \
-  python scripts/<phase-script>.py --apply --batch-size 1000
+docker compose run --rm --no-deps \
+  --volume "$PWD/.env:/app/.env:ro" vitals_migrate \
+  python scripts/<phase-script>.py --apply --batch-size 1000 --max-batches 100
 ```
 
 Replace the script and arguments with each line below. A phase is done when its
@@ -76,45 +78,45 @@ this order — a child cannot inherit an owner its parent does not have yet, and
 normalized fact takes its provenance from a raw payload that must already be
 stamped:
 
-  1. `python scripts/backfill_subject_ownership.py --apply --batch-size 1000`  
+  1. `python scripts/backfill_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.raw_payloads.v1`
-  2. `python scripts/backfill_normalized_subject_ownership.py --apply --batch-size 1000`  
+  2. `python scripts/backfill_normalized_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.normalized_manual.v1`
-  3. `python scripts/backfill_hrt_child_subject_ownership.py --apply --batch-size 1000`  
+  3. `python scripts/backfill_hrt_child_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.inherited_children.hrt.v1`
-  4. `python scripts/backfill_provider_raw_subject_ownership.py --apply --batch-size 1000`  
+  4. `python scripts/backfill_provider_raw_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.provider_raw_linked.v1`
-  5. `python scripts/backfill_hevy_child_subject_ownership.py --apply --batch-size 1000`  
+  5. `python scripts/backfill_hevy_child_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.inherited_children.hevy.v1`
-  6. `python scripts/backfill_hrt_compound_subject_ownership.py --apply --batch-size 1000`  
+  6. `python scripts/backfill_hrt_compound_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.mixed_catalog.hrt.v1`
-  7. `python scripts/backfill_conflict_rule_subject_ownership.py --apply --batch-size 1000`  
+  7. `python scripts/backfill_conflict_rule_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.mixed_catalog.conflict_rules.v1`
-  8. `python scripts/backfill_progress_photo_subject_ownership.py --apply --batch-size 1000`  
+  8. `python scripts/backfill_progress_photo_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.file_backed.progress_photos.v1`
- 9. `python scripts/backfill_shared_report_subject_ownership.py --apply --batch-size 1000`  
+ 9. `python scripts/backfill_shared_report_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.retained_artifact.shared_reports.v1`
-10. `python scripts/backfill_weight_log_subject_ownership.py --apply --batch-size 1000`  
+10. `python scripts/backfill_weight_log_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.channel_optional.weight_logs.v1`
-11. `python scripts/backfill_lab_result_subject_ownership.py --apply --batch-size 1000`  
+11. `python scripts/backfill_lab_result_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.raw_linked_facts.lab_results.v1`
-12. `python scripts/backfill_genetic_variant_subject_ownership.py --apply --batch-size 1000`  
+12. `python scripts/backfill_genetic_variant_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.raw_linked_facts.genetic_variants.v1`
-13. `python scripts/backfill_body_scan_subject_ownership.py --apply --batch-size 1000`  
+13. `python scripts/backfill_body_scan_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.file_backed.body_scans.v1`
-14. `python scripts/backfill_body_scan_metric_subject_ownership.py --apply --batch-size 1000`  
+14. `python scripts/backfill_body_scan_metric_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.inherited_children.body_scan_metrics.v1`
-15. `python scripts/backfill_garmin_weight_export_subject_ownership.py --apply --batch-size 1000`  
+15. `python scripts/backfill_garmin_weight_export_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.provider_outbox.garmin_weight_exports.v1`
-16. `python scripts/backfill_weekly_digest_subject_ownership.py --apply --batch-size 1000`  
+16. `python scripts/backfill_weekly_digest_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.retained_artifact.weekly_digests.v1`
-17. `python scripts/backfill_retired_signal_ownership.py --apply --batch-size 1000`
+17. `python scripts/backfill_retired_signal_ownership.py --apply --batch-size 1000 --max-batches 100`
     compatibility phase `stage3.retired_signals.v1`; these legacy Telegram
     tables are removed by revision `0058`, but revision `0049` still requires
     their existing rows to cross the ownership contract first
-18. `python scripts/backfill_notification_subject_ownership.py --apply --batch-size 1000`
+18. `python scripts/backfill_notification_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.delivery_artifact.notifications.v1`
-19. `python scripts/backfill_system_alert_subject_ownership.py --apply --batch-size 1000`
+19. `python scripts/backfill_system_alert_subject_ownership.py --apply --batch-size 1000 --max-batches 100`
     checkpoint phase `stage3.subject_optional.system_alerts.v1`
 
 Between any two, the upgrade can pause indefinitely.

@@ -438,12 +438,12 @@ def test_the_runbook_lists_the_phases_in_the_sequence_order():
     """
 
     runbook = (REPOSITORY_ROOT / "docs" / "OWNERSHIP_CUTOVER_RUNBOOK.md").read_text()
-    listed = [
-        line.split("scripts/")[1].split(" ")[0]
-        for line in runbook.splitlines()
-        if "scripts/backfill_" in line
+    listed_lines = [
+        line for line in runbook.splitlines() if "scripts/backfill_" in line
     ]
+    listed = [line.split("scripts/")[1].split(" ")[0] for line in listed_lines]
     assert listed == [step.script for step in OWNERSHIP_BACKFILL_SEQUENCE]
+    assert all("--max-batches 100" in line for line in listed_lines)
     for step in OWNERSHIP_BACKFILL_SEQUENCE:
         assert step.phase in runbook, step.phase
 
@@ -454,6 +454,7 @@ def test_the_runbook_lists_the_phases_in_the_sequence_order():
     assert "sys.path.insert(0, str(_REPOSITORY_ROOT))" in bootstrap_source
     assert "scripts/bootstrap_ownership_roots.py" in runbook
     assert "docker compose run --rm --no-deps" in runbook
+    assert runbook.count('$PWD/.env:/app/.env:ro') == 2
 
 
 async def test_the_bounded_root_bootstrap_is_idempotent(
