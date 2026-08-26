@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — MCP discovery fails closed on module-state errors
+
+Connector scopes are now applied before optional-module visibility is read.
+When module state is unavailable, a connector sees only grant-authorized core
+tools; an unresolved grant sees none, rather than receiving the installation's
+full schema catalog and failing later with opaque direct-call errors.
+
 ### Fixed — product documentation distinguishes records from modules
 
 The repository guidance and feature template now describe the shared,

@@ -223,13 +223,19 @@ class VitalsMCPServer(MCPServer):
 
     Resolved per call rather than latched at import, so a toggle in Settings
     takes effect on the next request — and under the stateless transport there
-    is no reconnect to wait for. Fails open: if module state cannot be read, the
-    full surface is listed rather than an empty one, because a connector with no
-    tools looks broken and a connector with too many is merely untidy.
+    is no reconnect to wait for. Authorization is projected first and never
+    depends on module-state availability. If that state cannot be read, only
+    grant-authorized tools outside optional modules are listed: core work stays
+    usable without advertising a domain that may be disabled.
     """
 
     async def list_tools(self, *args, **kwargs):
         tools = [_described_for_a_model(t) for t in await super().list_tools(*args, **kwargs)]
+        try:
+            tools = [tool for tool in tools if _tool_listing_allowed(tool.name)]
+        except McpActorUnresolved:
+            logger.warning("mcp: connector grant unavailable; listing no tools")
+            return []
         try:
             session_factory = get_session_factory()
             async with session_factory() as session:
@@ -240,14 +246,14 @@ class VitalsMCPServer(MCPServer):
                 )
         except Exception:
             logger.warning(
-                "mcp: module state unavailable; listing every tool", exc_info=True
+                "mcp: module state unavailable; listing grant-authorized core tools only",
+                exc_info=True,
             )
-            return tools
+            return [tool for tool in tools if tool.name not in TOOL_MODULES]
         return [
             tool
             for tool in tools
             if enabled.get(TOOL_MODULES.get(tool.name, ""), True)
-            and _tool_listing_allowed(tool.name)
         ]
 
     async def call_tool(self, name, arguments, context=None):

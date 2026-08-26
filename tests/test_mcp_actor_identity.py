@@ -199,6 +199,38 @@ async def test_tool_listing_and_direct_invocation_use_the_same_exact_scopes(
         auth_context_var.reset(restore)
 
 
+async def test_module_state_failure_keeps_the_listing_scoped_and_core_only(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    """A settings outage cannot widen either half of the advertised surface."""
+
+    async def unavailable(*_args, **_kwargs):
+        raise RuntimeError("synthetic module-state outage")
+
+    monkeypatch.setattr(
+        mcp_router.modules_service,
+        "get_enabled_modules",
+        unavailable,
+    )
+    restore = _grant_context(
+        user_id=legacy_owner_roots.user_id,
+        subject_id=legacy_owner_roots.subject_id,
+        scopes=("domain:weight:list", "domain:nutrition:list"),
+    )
+    try:
+        listed = {tool.name for tool in await mcp_router.mcp.list_tools()}
+    finally:
+        auth_context_var.reset(restore)
+
+    assert "get_weight_logs" in listed
+    assert "get_lab_results" not in listed  # outside the exact grant
+    assert "log_weight" not in listed  # action outside the exact grant
+    assert "get_nutrition_summary" not in listed  # optional state is unknown
+    assert "search_meals" not in listed
+
+
 def test_every_mcp_tool_has_an_explicit_authorization_classification():
     registered = {tool.name for tool in mcp_router.mcp._tool_manager.list_tools()}
     assert set(mcp_router.TOOL_ACCESS) == registered

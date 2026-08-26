@@ -125,6 +125,66 @@ async def test_tools_are_listed_without_any_handshake(endpoint):
     assert "get_weight_logs" in {tool.name for tool in listed.tools}
 
 
+async def test_module_state_failure_is_fail_closed_on_the_wire(
+    endpoint,
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    """The connector sees granted core schemas, never optional or wider ones."""
+    from vitals.access import AccessScope, PolicyAction, PolicyResourceType
+    from vitals.services.authentication import mcp_tokens
+    from web.auth import _get_mcp_serializer
+    from web.config import get_web_config
+
+    async def unavailable(*_args, **_kwargs):
+        raise RuntimeError("synthetic module-state outage")
+
+    monkeypatch.setattr(
+        mcp_router.modules_service,
+        "get_enabled_modules",
+        unavailable,
+    )
+    granted_scopes = frozenset(
+        {
+            AccessScope(
+                PolicyResourceType.DOMAIN,
+                "weight",
+                PolicyAction.LIST,
+            ),
+            AccessScope(
+                PolicyResourceType.DOMAIN,
+                "nutrition",
+                PolicyAction.LIST,
+            ),
+        }
+    )
+    config = get_web_config()
+    payload, _record = await mcp_tokens.issue(
+        db_session,
+        username=config.auth_username,
+        client_id=config.mcp_client_id,
+        audience=mcp_tokens.audience_for(config.public_url),
+        issuer=config.public_url,
+        subject_id=legacy_owner_roots.subject_id,
+        scopes=granted_scopes,
+    )
+    await db_session.commit()
+    token = _get_mcp_serializer().dumps(payload)
+
+    async with _serving(endpoint) as app:
+        async with _connect(app, token) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                listed = await session.list_tools()
+
+    names = {tool.name for tool in listed.tools}
+    assert "get_weight_logs" in names
+    assert "get_lab_results" not in names
+    assert "log_weight" not in names
+    assert "get_nutrition_summary" not in names
+    assert "search_meals" not in names
+
+
 async def test_a_tool_call_crosses_the_wire_and_comes_back(
     endpoint, db_session, legacy_owner_roots
 ):
