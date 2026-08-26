@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — public report links attest one subject before binding it
+
+Anonymous report reads and open counters no longer enable the installation-wide
+RLS scope. A migration-owned PostgreSQL routine returns only a non-PHI
+attestation for one bounded token: report and subject roots, owner state,
+liveness flags, and the ownership-backfill checkpoint. The service validates
+that complete projection before binding the exact subject, then rereads and
+revalidates the report under ordinary forced RLS. Unknown, expired, revoked,
+purged, corrupt, cross-subject, and platform-scoped attempts fail without
+creating or switching a subject binding. Runtime-role provisioning now grants
+and audits the exact set of two reviewed bootstrap routines and rejects any
+altered or additional routine authority.
+
 ### Fixed — member admission binds its new subject instead of opening the platform
 
 Invitation, administrator-approved, and open-registration member provisioning

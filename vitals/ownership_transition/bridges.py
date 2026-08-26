@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -80,6 +80,28 @@ class SharedReportHistoricalBridgeState:
     processed_high_watermark_id: int
     snapshot_high_watermark_id: int
     completed: bool
+    historical_subject_id: uuid.UUID | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class SharedReportCheckpointAttestation:
+    """Non-PHI checkpoint projection returned by the public-token boundary."""
+
+    phase_key: str | None
+    subject_id: uuid.UUID | None
+    status: str | None
+    scan_high_watermark_id: int | None
+    snapshot_rows: int | None
+    last_scanned_id: int | None
+    scanned_rows: int | None
+    updated_rows: int | None
+    unchanged_rows: int | None
+    data_checksum_before: str | None
+    data_checksum_after: str | None
+    ownership_checksum_after: str | None
+    started_at: Any
+    updated_at: Any
+    completed_at: Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,12 +300,93 @@ async def shared_report_historical_bridge_state(
     checkpoint = await _load_checkpoint(
         session, phase=_SHARED_REPORT_CHECKPOINT_PHASE
     )
-    if checkpoint is None:
+    attestation = (
+        None
+        if checkpoint is None
+        else SharedReportCheckpointAttestation(
+            phase_key=checkpoint.phase_key,
+            subject_id=checkpoint.subject_id,
+            status=checkpoint.status,
+            scan_high_watermark_id=checkpoint.scan_high_watermark_id,
+            snapshot_rows=checkpoint.snapshot_rows,
+            last_scanned_id=checkpoint.last_scanned_id,
+            scanned_rows=checkpoint.scanned_rows,
+            updated_rows=checkpoint.updated_rows,
+            unchanged_rows=checkpoint.unchanged_rows,
+            data_checksum_before=checkpoint.data_checksum_before,
+            data_checksum_after=checkpoint.data_checksum_after,
+            ownership_checksum_after=checkpoint.ownership_checksum_after,
+            started_at=checkpoint.started_at,
+            updated_at=checkpoint.updated_at,
+            completed_at=checkpoint.completed_at,
+        )
+    )
+    return shared_report_historical_bridge_state_from_attestation(
+        attestation,
+        subject_id=subject_id,
+    )
+
+
+def shared_report_historical_bridge_state_from_attestation(
+    attestation: SharedReportCheckpointAttestation | None,
+    *,
+    subject_id: uuid.UUID,
+) -> SharedReportHistoricalBridgeState:
+    """Validate an attested Stage-3K checkpoint without another database read."""
+
+    if not isinstance(subject_id, uuid.UUID):
+        raise SharedReportOwnershipBackfillValidationError(
+            "subject_id must be a UUID"
+        )
+    if attestation is None or attestation.phase_key is None:
+        if attestation is not None and any(
+            value is not None
+            for value in (
+                attestation.subject_id,
+                attestation.status,
+                attestation.scan_high_watermark_id,
+                attestation.snapshot_rows,
+                attestation.last_scanned_id,
+                attestation.scanned_rows,
+                attestation.updated_rows,
+                attestation.unchanged_rows,
+                attestation.data_checksum_before,
+                attestation.data_checksum_after,
+                attestation.ownership_checksum_after,
+                attestation.started_at,
+                attestation.updated_at,
+                attestation.completed_at,
+            )
+        ):
+            raise SharedReportOwnershipBackfillStateError(
+                "an ownership checkpoint attestation is incomplete"
+            )
         return SharedReportHistoricalBridgeState(0, 0, False)
+    checkpoint = _CheckpointProjection(
+        phase_key=attestation.phase_key,
+        subject_id=attestation.subject_id,  # type: ignore[arg-type]
+        status=attestation.status,  # type: ignore[arg-type]
+        scan_high_watermark_id=attestation.scan_high_watermark_id,  # type: ignore[arg-type]
+        snapshot_rows=attestation.snapshot_rows,  # type: ignore[arg-type]
+        last_scanned_id=attestation.last_scanned_id,  # type: ignore[arg-type]
+        scanned_rows=attestation.scanned_rows,  # type: ignore[arg-type]
+        updated_rows=attestation.updated_rows,  # type: ignore[arg-type]
+        unchanged_rows=attestation.unchanged_rows,  # type: ignore[arg-type]
+        data_checksum_before=attestation.data_checksum_before,  # type: ignore[arg-type]
+        data_checksum_after=attestation.data_checksum_after,  # type: ignore[arg-type]
+        ownership_checksum_after=attestation.ownership_checksum_after,  # type: ignore[arg-type]
+        started_at=attestation.started_at,
+        updated_at=attestation.updated_at,
+        completed_at=attestation.completed_at,
+    )
+    if not isinstance(checkpoint.subject_id, uuid.UUID):
+        raise SharedReportOwnershipBackfillStateError(
+            "an ownership checkpoint has an invalid subject"
+        )
     status = _validate_checkpoint(
         checkpoint,
         phase=_SHARED_REPORT_CHECKPOINT_PHASE,
-        subject_id=subject_id,
+        subject_id=checkpoint.subject_id,
         error=SharedReportOwnershipBackfillStateError,
     )
     if status == "restore_blocked":
@@ -292,11 +395,17 @@ async def shared_report_historical_bridge_state(
         )
     snapshot_high = checkpoint.scan_high_watermark_id
     if status == "completed":
-        return SharedReportHistoricalBridgeState(snapshot_high, snapshot_high, True)
+        return SharedReportHistoricalBridgeState(
+            snapshot_high,
+            snapshot_high,
+            True,
+            checkpoint.subject_id,
+        )
     return SharedReportHistoricalBridgeState(
         checkpoint.last_scanned_id,
         snapshot_high,
         False,
+        checkpoint.subject_id,
     )
 
 
@@ -308,10 +417,12 @@ __all__ = [
     "ProgressPhotoOwnershipBackfillStateError",
     "ProgressPhotoOwnershipBackfillValidationError",
     "SharedReportHistoricalBridgeState",
+    "SharedReportCheckpointAttestation",
     "SharedReportOwnershipBackfillError",
     "SharedReportOwnershipBackfillStateError",
     "SharedReportOwnershipBackfillValidationError",
     "body_scan_historical_processed_bound",
     "progress_photo_historical_processed_bound",
     "shared_report_historical_bridge_state",
+    "shared_report_historical_bridge_state_from_attestation",
 ]

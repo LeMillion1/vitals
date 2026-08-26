@@ -33,8 +33,9 @@ import uuid
 from datetime import date as date_type, datetime, timedelta
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from vitals.enums import Domain, UserStatus
 from vitals.models.identity import HealthSubject, User
@@ -42,13 +43,22 @@ from vitals.models.share import SharedReport
 from vitals.ownership import WriteIdentity
 from vitals.ownership_transition import bridges as ownership_bridges
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.persistence.rls import enter_platform_scope
+from vitals.persistence.rls import (
+    RlsSessionError,
+    bind_session_subject,
+    bound_subject,
+    enter_platform_scope,
+    in_platform_scope,
+)
 from vitals.utils.passwords import hash_password
 from vitals.utils.timeutils import now_local, today_local
 
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_VERSION = 1
+POSTGRES_PUBLIC_AUTHORIZATION_ROUTINE = (
+    "public.attest_shared_report_token(text)"
+)
 
 
 class ShareOwnershipError(ValueError):
@@ -453,6 +463,7 @@ def _validate_report_roots(
     """Validate stored roots; return whether this is fully-null legacy history."""
     checkpoint_absent = _bridge_is_absent(bridge_state)
     within_snapshot = report_id <= bridge_state.snapshot_high_watermark_id
+    historical_subject_id = getattr(bridge_state, "historical_subject_id", None)
     if subject_id is None:
         if created_by_user_id is not None or revoked_by_user_id is not None:
             raise error_type(
@@ -473,6 +484,15 @@ def _validate_report_roots(
         )
     if subject_id != expected_subject_id:
         raise error_type("shared report belongs to another subject")
+    if (
+        not checkpoint_absent
+        and within_snapshot
+        and historical_subject_id is not None
+        and expected_subject_id != historical_subject_id
+    ):
+        raise error_type(
+            "shared report is attributed outside its historical subject"
+        )
     if not checkpoint_absent and not within_snapshot:
         if created_by_user_id != owner_user_id:
             raise error_type(
@@ -1257,6 +1277,250 @@ def _report_is_publicly_live(row: SharedReport) -> bool:
     )
 
 
+async def _authorize_and_bind_public_report(
+    session: AsyncSession,
+    token: str,
+) -> tuple[int, uuid.UUID] | None:
+    """Turn one exact public bearer into one ordinary subject binding.
+
+    PostgreSQL must cross the initial forced-RLS lookup through the reviewed
+    migration-owned routine.  Historical pre-ownership tests may run against a
+    PostgreSQL schema with neither RLS nor that later routine; direct lookup is
+    allowed only after the catalog proves row security is disabled.  SQLite has
+    no RLS and follows the same compatibility path.
+    """
+
+    if in_platform_scope(session):
+        return None
+    await acquire_identity_governance_lock(session)
+
+    dialect_name = session.get_bind().dialect.name
+    if dialect_name == "postgresql":
+        routine_exists = bool(
+            await session.scalar(
+                text("SELECT to_regprocedure(:signature) IS NOT NULL"),
+                {"signature": POSTGRES_PUBLIC_AUTHORIZATION_ROUTINE},
+            )
+        )
+        if routine_exists:
+            attestation = (
+                await session.execute(
+                    text(
+                        "SELECT * FROM "
+                        "public.attest_shared_report_token(:token)"
+                    ),
+                    {"token": token},
+                )
+            ).mappings().one_or_none()
+            if attestation is None:
+                return None
+            try:
+                report_id, subject_id = _validate_public_attestation(attestation)
+            except _PublicReportOwnershipError:
+                _refresh_cached_public_attestation(
+                    session,
+                    token=token,
+                    attestation=attestation,
+                )
+                return None
+            return await _bind_public_subject(
+                session,
+                report_id=report_id,
+                subject_id=subject_id,
+            )
+        else:
+            row_security_enabled = bool(
+                await session.scalar(
+                    text(
+                        "SELECT relrowsecurity FROM pg_class "
+                        "WHERE oid=to_regclass('public.shared_reports')"
+                    )
+                )
+            )
+            if row_security_enabled:
+                return None
+
+    # SQLite and a historical PostgreSQL schema without row security use this
+    # projection-only compatibility path.  Validate every capability property
+    # before binding; never materialize the report snapshot while unbound.
+    roots = (
+        await session.execute(
+            select(
+                SharedReport.id,
+                SharedReport.subject_id,
+                SharedReport.created_by_user_id,
+                SharedReport.revoked_by_user_id,
+                SharedReport.revoked_at,
+                SharedReport.expires_at,
+                SharedReport.snapshot.is_not(None).label("has_snapshot"),
+            ).where(SharedReport.token == token)
+        )
+    ).one_or_none()
+    if roots is None:
+        return None
+    (
+        report_id,
+        subject_id,
+        created_by_user_id,
+        revoked_by_user_id,
+        revoked_at,
+        expires_at,
+        has_snapshot,
+    ) = roots
+    try:
+        subject_id, _owner_user_id, _bridge = await _public_subject_owner(
+            session,
+            report_id=report_id,
+            subject_id=subject_id,
+            created_by_user_id=created_by_user_id,
+            revoked_by_user_id=revoked_by_user_id,
+            revoked_at=revoked_at,
+            for_update=True,
+        )
+    except _PublicReportOwnershipError:
+        return None
+    if (
+        revoked_at is not None
+        or has_snapshot is not True
+        or not isinstance(expires_at, datetime)
+        or expires_at <= now_local()
+    ):
+        return None
+    return await _bind_public_subject(
+        session,
+        report_id=report_id,
+        subject_id=subject_id,
+    )
+
+
+def _validate_public_attestation(attestation: Any) -> tuple[int, uuid.UUID]:
+    """Prove a public bearer is safe before granting its subject capability."""
+
+    report_id = attestation["report_id"]
+    subject_id = attestation["subject_id"]
+    created_by_user_id = attestation["created_by_user_id"]
+    revoked_by_user_id = attestation["revoked_by_user_id"]
+    revoked_at = attestation["revoked_at"]
+    expires_at = attestation["expires_at"]
+    has_snapshot = attestation["has_snapshot"]
+    owner_user_id = attestation["owner_user_id"]
+    owner_status = attestation["owner_status"]
+    if (
+        not isinstance(report_id, int)
+        or isinstance(report_id, bool)
+        or report_id <= 0
+        or not isinstance(subject_id, uuid.UUID)
+        or subject_id.int == 0
+        or not isinstance(owner_user_id, uuid.UUID)
+        or owner_user_id.int == 0
+        or owner_status != UserStatus.ACTIVE.value
+        or (
+            created_by_user_id is not None
+            and not isinstance(created_by_user_id, uuid.UUID)
+        )
+        or (
+            revoked_by_user_id is not None
+            and not isinstance(revoked_by_user_id, uuid.UUID)
+        )
+        or (revoked_at is not None and not isinstance(revoked_at, datetime))
+        or not isinstance(expires_at, datetime)
+    ):
+        raise _PublicReportOwnershipError("public report attestation is malformed")
+    checkpoint = ownership_bridges.SharedReportCheckpointAttestation(
+        phase_key=attestation["checkpoint_phase_key"],
+        subject_id=attestation["checkpoint_subject_id"],
+        status=attestation["checkpoint_status"],
+        scan_high_watermark_id=attestation[
+            "checkpoint_scan_high_watermark_id"
+        ],
+        snapshot_rows=attestation["checkpoint_snapshot_rows"],
+        last_scanned_id=attestation["checkpoint_last_scanned_id"],
+        scanned_rows=attestation["checkpoint_scanned_rows"],
+        updated_rows=attestation["checkpoint_updated_rows"],
+        unchanged_rows=attestation["checkpoint_unchanged_rows"],
+        data_checksum_before=attestation["checkpoint_data_checksum_before"],
+        data_checksum_after=attestation["checkpoint_data_checksum_after"],
+        ownership_checksum_after=attestation[
+            "checkpoint_ownership_checksum_after"
+        ],
+        started_at=attestation["checkpoint_started_at"],
+        updated_at=attestation["checkpoint_updated_at"],
+        completed_at=attestation["checkpoint_completed_at"],
+    )
+    try:
+        bridge_state = (
+            ownership_bridges.shared_report_historical_bridge_state_from_attestation(
+                checkpoint,
+                subject_id=subject_id,
+            )
+        )
+    except ownership_bridges.SharedReportOwnershipBackfillError as exc:
+        raise _PublicReportOwnershipError(
+            "public report checkpoint attestation is not authoritative"
+        ) from exc
+    _validate_report_roots(
+        report_id=report_id,
+        expected_subject_id=subject_id,
+        owner_user_id=owner_user_id,
+        subject_id=subject_id,
+        created_by_user_id=created_by_user_id,
+        revoked_by_user_id=revoked_by_user_id,
+        revoked_at=revoked_at,
+        bridge_state=bridge_state,
+        error_type=_PublicReportOwnershipError,
+    )
+    if revoked_at is not None or has_snapshot is not True or expires_at <= now_local():
+        raise _PublicReportOwnershipError("public report is not live")
+    return report_id, subject_id
+
+
+def _refresh_cached_public_attestation(
+    session: AsyncSession,
+    *,
+    token: str,
+    attestation: Any,
+) -> None:
+    """Apply safe invalidation facts to an already-loaded report instance."""
+
+    report_id = attestation.get("report_id")
+    if not isinstance(report_id, int) or isinstance(report_id, bool):
+        return
+    cached = next(
+        (
+            instance
+            for instance in session.sync_session.identity_map.values()
+            if isinstance(instance, SharedReport)
+            and instance.id == report_id
+            and instance.token == token
+        ),
+        None,
+    )
+    if cached is None:
+        return
+    for attribute in ("revoked_by_user_id", "revoked_at", "expires_at"):
+        set_committed_value(cached, attribute, attestation.get(attribute))
+    if attestation.get("has_snapshot") is False:
+        set_committed_value(cached, "snapshot", None)
+
+
+async def _bind_public_subject(
+    session: AsyncSession,
+    *,
+    report_id: int,
+    subject_id: uuid.UUID,
+) -> tuple[int, uuid.UUID] | None:
+    """Bind one already-attested subject without permitting scope switching."""
+
+    current_subject = bound_subject(session)
+    if current_subject is not None and current_subject != subject_id:
+        return None
+    try:
+        await bind_session_subject(session, subject_id)
+    except RlsSessionError:
+        return None
+    return report_id, subject_id
+
+
 async def resolve_public(session: AsyncSession, token: str) -> Optional[SharedReport]:
     """The row behind a public token, or ``None``.
 
@@ -1266,20 +1530,20 @@ async def resolve_public(session: AsyncSession, token: str) -> Optional[SharedRe
     """
     if not token:
         return None
-    # No account, so no subject to bind: the token is what authorizes this
-    # read, and the row is one the policies would otherwise hide from a visitor
-    # who is entitled to see it.
-    await enter_platform_scope(session)
-    await acquire_identity_governance_lock(session)
+    authorized = await _authorize_and_bind_public_report(session, token)
+    if authorized is None:
+        _discard_cached_public_snapshot(session, token=token)
+        return None
+    report_id, authorized_subject_id = authorized
     row = await session.scalar(
         select(SharedReport)
-        .where(SharedReport.token == token)
+        .where(SharedReport.id == report_id, SharedReport.token == token)
         .execution_options(populate_existing=True)
     )
     if row is None:
         return None
     try:
-        await _public_subject_owner(
+        resolved_subject_id, _owner_user_id, _bridge = await _public_subject_owner(
             session,
             report_id=row.id,
             subject_id=row.subject_id,
@@ -1294,6 +1558,8 @@ async def resolve_public(session: AsyncSession, token: str) -> Optional[SharedRe
             row.id,
         )
         return None
+    if resolved_subject_id != authorized_subject_id:
+        return None
     return row if _report_is_publicly_live(row) else None
 
 
@@ -1304,25 +1570,26 @@ async def register_open(
     """Lock and count one still-live token after password verification."""
     if not token:
         return None
-    # Same visitor, same token, one step later: still no account to bind.
-    await enter_platform_scope(session)
-    await acquire_identity_governance_lock(session)
+    authorized = await _authorize_and_bind_public_report(session, token)
+    if authorized is None:
+        _discard_cached_public_snapshot(session, token=token)
+        return None
+    report_id, authorized_subject_id = authorized
     roots = (
         await session.execute(
             select(
-                SharedReport.id,
                 SharedReport.subject_id,
                 SharedReport.created_by_user_id,
                 SharedReport.revoked_by_user_id,
                 SharedReport.revoked_at,
-            ).where(SharedReport.token == token)
+            ).where(SharedReport.id == report_id, SharedReport.token == token)
         )
     ).one_or_none()
     if roots is None:
         return None
-    report_id, subject_id, created_by_user_id, revoked_by_user_id, revoked_at = roots
+    subject_id, created_by_user_id, revoked_by_user_id, revoked_at = roots
     try:
-        await _public_subject_owner(
+        resolved_subject_id, _owner_user_id, _bridge = await _public_subject_owner(
             session,
             report_id=report_id,
             subject_id=subject_id,
@@ -1337,24 +1604,20 @@ async def register_open(
             report_id,
         )
         return None
+    if resolved_subject_id != authorized_subject_id:
+        return None
     row = await session.scalar(
         select(SharedReport)
         .where(SharedReport.id == report_id, SharedReport.token == token)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    if row is None:
-        return None
-    if (
+    if row is None or (
         row.subject_id != subject_id
         or row.created_by_user_id != created_by_user_id
         or row.revoked_by_user_id != revoked_by_user_id
         or row.revoked_at != revoked_at
     ):
-        logger.warning(
-            "shared report %s ownership changed while registering an open",
-            report_id,
-        )
         return None
     if not _report_is_publicly_live(row):
         return None
@@ -1362,6 +1625,14 @@ async def register_open(
     row.last_opened_at = now_local()
     await session.flush()
     return row
+
+
+def _discard_cached_public_snapshot(session: AsyncSession, *, token: str) -> None:
+    """Fail closed for a report instance retained across public transactions."""
+
+    for instance in session.sync_session.identity_map.values():
+        if isinstance(instance, SharedReport) and instance.token == token:
+            set_committed_value(instance, "snapshot", None)
 
 
 async def _lock_owner_report(

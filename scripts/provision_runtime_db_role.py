@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 # ended privilege surface.
 RUNTIME_EXECUTE_ROUTINES: tuple[str, ...] = (
     "public.authorize_and_lock_professional_invitation(text,uuid,text)",
+    "public.attest_shared_report_token(text)",
 )
 _REQUIRED_ROUTINE_CONFIG = frozenset(
     {"search_path=pg_catalog, pg_temp", "row_security=off"}
@@ -197,18 +198,32 @@ async def _converge_privileges(
         config = (
             frozenset(routine["proconfig"] or ()) if routine is not None else None
         )
-        if (
-            routine is None
-            or routine["owner"] != migration_role
-            or routine["language"] != "plpgsql"
-            or not routine["prosecdef"]
-            or routine["provolatile"] not in ("v", b"v")
-            or routine["prokind"] not in ("f", b"f")
-            or routine["proleakproof"]
-            or config != _REQUIRED_ROUTINE_CONFIG
-            or not routine["no_public"]
-        ):
-            raise RuntimeError("required runtime routine is not trusted")
+        failures = []
+        if routine is None:
+            failures.append("missing")
+        else:
+            if routine["owner"] != migration_role:
+                failures.append("wrong-owner")
+            if routine["language"] != "plpgsql":
+                failures.append("wrong-language")
+            if not routine["prosecdef"]:
+                failures.append("security-invoker")
+            if routine["provolatile"] not in ("v", b"v"):
+                failures.append("not-volatile")
+            if routine["prokind"] not in ("f", b"f"):
+                failures.append("not-function")
+            if routine["proleakproof"]:
+                failures.append("leakproof")
+            if config != _REQUIRED_ROUTINE_CONFIG:
+                failures.append("unsafe-config")
+            if not routine["no_public"]:
+                failures.append("public-execute")
+        if failures:
+            reasons = ", ".join(failures)
+            raise RuntimeError(
+                "required runtime routine is not trusted: "
+                f"{routine_signature} ({reasons})"
+            )
 
     schemas = list(
         (
@@ -463,8 +478,9 @@ async def _runtime_role_state(
                 "object.proacl, acldefault('f', object.proowner))) acl "
                 " JOIN pg_roles grantee ON grantee.oid=acl.grantee "
                 " WHERE grantee.rolname=:role "
-                " AND object.oid IS DISTINCT FROM "
-                " to_regprocedure(:allowed_routine)) AS routine_privileges, "
+                " AND object.oid NOT IN (SELECT to_regprocedure(signature) "
+                " FROM unnest(CAST(:allowed_routines AS text[])) signature)) "
+                "AS routine_privileges, "
                 "(SELECT count(*) FROM pg_type object "
                 " JOIN pg_namespace namespace ON namespace.oid=object.typnamespace "
                 " CROSS JOIN LATERAL aclexplode(object.typacl) acl "
@@ -482,14 +498,16 @@ async def _runtime_role_state(
                 " JOIN pg_namespace namespace ON namespace.oid=object.pronamespace "
                 " WHERE namespace.nspname <> 'information_schema' "
                 " AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
-                " AND object.oid IS DISTINCT FROM "
-                " to_regprocedure(:allowed_routine) "
+                " AND object.oid NOT IN (SELECT to_regprocedure(signature) "
+                " FROM unnest(CAST(:allowed_routines AS text[])) signature) "
                 " AND has_function_privilege(:role, object.oid, 'EXECUTE')) AS "
                 "effective_routine_execute, "
-                "(SELECT CASE WHEN to_regprocedure(:allowed_routine) IS NULL "
+                "(SELECT count(*) FROM "
+                " unnest(CAST(:allowed_routines AS text[])) signature "
+                " WHERE to_regprocedure(signature) IS NULL "
                 " OR NOT has_function_privilege("
-                ":role, to_regprocedure(:allowed_routine), 'EXECUTE') "
-                " THEN 1 ELSE 0 END) AS missing_required_routine_execute, "
+                ":role, to_regprocedure(signature), 'EXECUTE')) "
+                "AS missing_required_routine_execute, "
                 "(SELECT count(*) FROM pg_proc object "
                 " JOIN pg_namespace namespace ON namespace.oid=object.pronamespace "
                 " CROSS JOIN LATERAL aclexplode(COALESCE("
@@ -544,7 +562,7 @@ async def _runtime_role_state(
                 "extra_default_privileges"
             ),
             {
-                "allowed_routine": RUNTIME_EXECUTE_ROUTINES[0],
+                "allowed_routines": list(RUNTIME_EXECUTE_ROUTINES),
                 "migration_role": migration_role,
                 "role": runtime_role,
             },

@@ -348,11 +348,11 @@ tbody tr:hover td { background: var(--surface-2); }
   <p class="standfirst">A self-hosted health-data service — fourteen domains, five external integration modules and one data lake — where every medical fact belongs to a named health subject and cross-subject access requires relationship consent, an exact support grant, or an independently approved read-only break-glass session.</p>
   <div class="meta">
     <span><b>88</b> tables</span>
-    <span><b>81</b> migrations</span>
+    <span><b>82</b> migrations</span>
     <span><b>14</b> domains</span>
     <span><b>101</b> application services</span>
     <span><b>71</b> RLS tables</span>
-    <span>Reviewed <b>2026-08-25</b></span>
+    <span>Reviewed <b>2026-08-26</b></span>
   </div>
 </header>
 
@@ -729,7 +729,7 @@ flowchart TB
 
   <div class="invariant">
     <span class="tag">Narrow by construction</span>
-    <p>Transaction-local like the subject binding, so a scope that reads across everybody cannot ride a pooled connection into the next request. Asked for by name through <code>enter_platform_scope</code>, never drifted into. Opened only by the exact string <code>on</code>, so a stray or truncated value closes. And all fourteen call sites are enumerated by a contract test — a fifteenth is something a reviewer reads, not something that accumulates.</p>
+    <p>Transaction-local like the subject binding, so a scope that reads across everybody cannot ride a pooled connection into the next request. Asked for by name through <code>enter_platform_scope</code>, never drifted into. Opened only by the exact string <code>on</code>, so a stray or truncated value closes. And all twelve call sites are enumerated by a contract test — a thirteenth is something a reviewer reads, not something that accumulates.</p>
   </div>
 
   <p>The line that keeps it honest: this is for work that <em>has</em> no subject, not work that failed to find one. A path that merely forgot to resolve its subject should see nothing — that is the boundary working — and its fix is to bind, never to declare itself the installation.</p>

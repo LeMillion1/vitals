@@ -11,11 +11,13 @@ import json
 from datetime import date, timedelta
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from vitals.enums import Domain
 from vitals.models.labs import LabResult
 from vitals.models.supplements import Supplement
 from vitals.models.weight import ProgressPhoto, WeightLog
+from vitals.persistence.rls import bound_subject, in_platform_scope
 from vitals.services import share_service
 from vitals.services.modules_service import MODULE_REGISTRY
 from vitals.utils.timeutils import now_local
@@ -382,11 +384,21 @@ async def test_resolve_public_hides_missing_revoked_and_expired_alike(
     await share_service.revoke(db_session, revoked.id, prepared_owner=owner)
     await db_session.commit()
 
-    assert await share_service.resolve_public(db_session, live.token) is not None
-    assert await share_service.resolve_public(db_session, revoked.token) is None
-    assert await share_service.resolve_public(db_session, expired.token) is None
-    assert await share_service.resolve_public(db_session, "no-such-token") is None
-    assert await share_service.resolve_public(db_session, "") is None
+    public_factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
+    async with public_factory() as public:
+        assert await share_service.resolve_public(public, revoked.token) is None
+        assert bound_subject(public) is None
+        assert await share_service.resolve_public(public, expired.token) is None
+        assert bound_subject(public) is None
+        assert await share_service.resolve_public(public, "no-such-token") is None
+        assert bound_subject(public) is None
+        assert await share_service.resolve_public(public, "") is None
+        assert bound_subject(public) is None
+        assert not in_platform_scope(public)
+
+        assert await share_service.resolve_public(public, live.token) is not None
+        assert bound_subject(public) == legacy_owner_roots.subject_id
+        assert not in_platform_scope(public)
 
 
 @pytest.mark.asyncio
@@ -397,9 +409,14 @@ async def test_register_open_counts_and_timestamps(db_session, legacy_owner_root
     await db_session.commit()
     assert row.opened_count == 0 and row.last_opened_at is None
 
-    await share_service.register_open(db_session, row.token)
-    await share_service.register_open(db_session, row.token)
-    await db_session.commit()
+    public_factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
+    async with public_factory() as public:
+        await share_service.register_open(public, row.token)
+        await share_service.register_open(public, row.token)
+        assert bound_subject(public) == legacy_owner_roots.subject_id
+        assert not in_platform_scope(public)
+        await public.commit()
+    await db_session.refresh(row)
 
     assert row.opened_count == 2
     assert row.last_opened_at is not None
@@ -441,5 +458,3 @@ async def test_delete_removes_the_row(legacy_owner_roots, db_session):
     assert await share_service.list_reports(
         db_session, prepared_owner=await _prepared_owner(db_session)
     ) == []
-
-

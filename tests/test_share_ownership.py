@@ -4,11 +4,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import uuid
 from datetime import date, timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vitals.enums import Domain, UserStatus
@@ -120,6 +121,40 @@ def _bridge(
     )
 
 
+def test_checkpoint_boundary_allows_only_new_rows_for_a_later_subject():
+    historical_subject_id = uuid.uuid4()
+    later_subject_id = uuid.uuid4()
+    later_owner_id = uuid.uuid4()
+    state = SharedReportHistoricalBridgeState(
+        processed_high_watermark_id=10,
+        snapshot_high_watermark_id=10,
+        completed=True,
+        historical_subject_id=historical_subject_id,
+    )
+
+    assert not share_service._validate_report_roots(
+        report_id=11,
+        expected_subject_id=later_subject_id,
+        owner_user_id=later_owner_id,
+        subject_id=later_subject_id,
+        created_by_user_id=later_owner_id,
+        revoked_by_user_id=None,
+        revoked_at=None,
+        bridge_state=state,
+    )
+    with pytest.raises(share_service.ShareOwnershipError, match="historical subject"):
+        share_service._validate_report_roots(
+            report_id=10,
+            expected_subject_id=later_subject_id,
+            owner_user_id=later_owner_id,
+            subject_id=later_subject_id,
+            created_by_user_id=later_owner_id,
+            revoked_by_user_id=None,
+            revoked_at=None,
+            bridge_state=state,
+        )
+
+
 @pytest.mark.asyncio
 async def test_create_stamps_subject_creator_and_keeps_ids_out_of_snapshot(
     db_session,
@@ -188,9 +223,38 @@ async def test_running_bridge_exposes_migrated_prefix_and_unprocessed_legacy(
     rows = await share_service.list_reports(db_session, prepared_owner=prepared)
     assert {row.id for row in rows} == {migrated.id, unprocessed.id}
     assert await share_service.resolve_public(db_session, migrated.token) is migrated
-    assert await share_service.resolve_public(db_session, unprocessed.token) is unprocessed
-    assert await share_service.register_open(db_session, unprocessed.token) is unprocessed
-    assert unprocessed.opened_count == 1
+    routine_exists = False
+    if db_session.get_bind().dialect.name == "postgresql":
+        routine_exists = bool(
+            await db_session.scalar(
+                text(
+                    "SELECT to_regprocedure("
+                    "'public.attest_shared_report_token(text)') IS NOT NULL"
+                )
+            )
+        )
+    if routine_exists:
+        # Revision 0082 is installed only after ownership became NOT NULL and
+        # forced RLS was enabled.  Its strict boundary must not manufacture a
+        # subject capability for the artificial pre-contract NULL row seeded
+        # by this compatibility test.
+        assert (
+            await share_service.resolve_public(db_session, unprocessed.token) is None
+        )
+        assert (
+            await share_service.register_open(db_session, unprocessed.token) is None
+        )
+        assert unprocessed.opened_count == 0
+    else:
+        assert (
+            await share_service.resolve_public(db_session, unprocessed.token)
+            is unprocessed
+        )
+        assert (
+            await share_service.register_open(db_session, unprocessed.token)
+            is unprocessed
+        )
+        assert unprocessed.opened_count == 1
 
 
 @pytest.mark.asyncio
@@ -361,7 +425,10 @@ async def test_checkpoint_errors_fail_owner_and_purge_and_are_public_not_found(
     assert await share_service.register_open(db_session, report.token) is None
     with pytest.raises(share_service.ShareOwnershipError, match="checkpoint"):
         await share_service.purge_expired(db_session)
-    assert report.snapshot is not None
+    assert report.snapshot is None
+    assert await db_session.scalar(
+        select(SharedReport.snapshot).where(SharedReport.id == report.id)
+    ) is not None
 
 
 @pytest.mark.asyncio

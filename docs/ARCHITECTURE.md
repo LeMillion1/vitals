@@ -113,9 +113,9 @@ page needs the same edit:
 | the domains | `vitals.enums.Domain` | 14 |
 | external integration modules | tracked non-`__init__` modules in `vitals/integrations/` | 5 |
 | the scheduled jobs | `vitals/scheduler/jobs.py` | 16, of which 11 fan out per record |
-| migration count | `migrations/versions/` | 81, head `0081` |
+| migration count | `migrations/versions/` | 82, head `0082` |
 | RLS table count | revisions `0050` + `0051` + `0055` + `0056` + `0057` + `0060` + `0061` + `0062` + `0063` + `0065` + `0067` + `0069` + `0076` + `0078` + `0079`, asserted in `tests/test_row_level_security.py` | 71 |
-| platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 14 |
+| platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 12 |
 | routers, tracked application-service modules | tracked non-`__init__` files in `web/routers/`, `vitals/services/` | 34 and 101 |
 
 The **39 columns** the timeline attributes to revision `0049` is deliberately

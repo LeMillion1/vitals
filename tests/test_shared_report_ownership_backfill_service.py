@@ -233,6 +233,16 @@ async def test_running_bridge_exposes_only_processed_cursor(
         rows[-1].id,
         False,
     )
+    assert state.historical_subject_id == legacy_owner_roots.subject_id
+    other_subject_state = await service.shared_report_historical_bridge_state(
+        db_session,
+        subject_id=uuid.uuid4(),
+    )
+    assert other_subject_state == state
+    assert (
+        other_subject_state.historical_subject_id
+        == legacy_owner_roots.subject_id
+    )
     assert rows[0].subject_id == legacy_owner_roots.subject_id
     assert rows[1].subject_id is None
 

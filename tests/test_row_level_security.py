@@ -157,7 +157,12 @@ async def _migrated_engine(database_url: str, alembic_config):
     async with engine.begin() as connection:
         # Standalone routines are not part of SQLAlchemy metadata.  Without an
         # explicit drop this helper's second migrate-from-zero run would leave
-        # revision 0081's function behind while removing its tables.
+        # revisions 0081/0082 leave functions behind while removing their tables.
+        await connection.execute(
+            sa.text(
+                "DROP FUNCTION IF EXISTS public.attest_shared_report_token(text)"
+            )
+        )
         await connection.execute(
             sa.text(
                 "DROP FUNCTION IF EXISTS public."
@@ -1055,14 +1060,39 @@ def _invitation_authorization_module():
     return module
 
 
-def test_invitation_authorization_names_one_exact_runtime_routine():
+def _shared_report_authorization_module():
+    spec = importlib.util.spec_from_file_location(
+        "_rev0082",
+        REPOSITORY_ROOT
+        / "migrations"
+        / "versions"
+        / "0082_authorize_shared_report_token.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_authorization_bridges_name_the_exact_runtime_routines():
     from scripts.provision_runtime_db_role import RUNTIME_EXECUTE_ROUTINES
     from vitals.services.care.invitations import POSTGRES_AUTHORIZATION_ROUTINE
+    from vitals.services.share_service import (
+        POSTGRES_PUBLIC_AUTHORIZATION_ROUTINE,
+    )
 
-    migration = _invitation_authorization_module()
-    expected = migration.ROUTINE_SIGNATURE.replace(" ", "")
-    assert POSTGRES_AUTHORIZATION_ROUTINE.replace(" ", "") == expected
-    assert RUNTIME_EXECUTE_ROUTINES == (expected,)
+    invitation = _invitation_authorization_module()
+    shared_report = _shared_report_authorization_module()
+    invitation_signature = invitation.ROUTINE_SIGNATURE.replace(" ", "")
+    shared_report_signature = shared_report.ROUTINE_SIGNATURE.replace(" ", "")
+    assert POSTGRES_AUTHORIZATION_ROUTINE.replace(" ", "") == invitation_signature
+    assert (
+        POSTGRES_PUBLIC_AUTHORIZATION_ROUTINE.replace(" ", "")
+        == shared_report_signature
+    )
+    assert RUNTIME_EXECUTE_ROUTINES == (
+        invitation_signature,
+        shared_report_signature,
+    )
 
 
 @pytest.mark.integration
@@ -1626,6 +1656,386 @@ async def test_real_postgres_invitation_authorization_binds_only_the_proven_subj
         await admin.dispose()
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_real_postgres_public_report_attestation_binds_only_a_live_subject(
+    db_session,
+    monkeypatch,
+):
+    """A public bearer proves one live artifact before it gains subject scope."""
+
+    from datetime import date, timedelta
+
+    from alembic.config import Config as AlembicConfig
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from vitals.enums import Domain, UserStatus
+    from vitals.models.identity import HealthSubject, User
+    from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
+    from vitals.models.share import SharedReport
+    from vitals.models.supplements import Supplement
+    from vitals.persistence.rls import (
+        bind_session_subject,
+        bound_subject,
+        enter_platform_scope,
+        in_platform_scope,
+    )
+    from vitals.services import share_service
+    from vitals.utils.timeutils import now_local, now_utc
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
+    await db_session.close()
+
+    admin = await _migrated_engine(
+        database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
+    )
+    restricted = await restricted_engine(database_url)
+    migration = _shared_report_authorization_module()
+    try:
+        admin_factory = async_sessionmaker(
+            admin, expire_on_commit=False, class_=AsyncSession
+        )
+        async with admin_factory() as seed:
+            owner = User(
+                username="rls-public-owner",
+                normalized_username="rls-public-owner",
+                password_hash="$synthetic",
+                status=UserStatus.ACTIVE.value,
+            )
+            suspended_owner = User(
+                username="rls-public-suspended-owner",
+                normalized_username="rls-public-suspended-owner",
+                password_hash="$synthetic",
+                status=UserStatus.SUSPENDED.value,
+            )
+            later_owner = User(
+                username="rls-public-later-owner",
+                normalized_username="rls-public-later-owner",
+                password_hash="$synthetic",
+                status=UserStatus.ACTIVE.value,
+            )
+            seed.add_all((owner, suspended_owner, later_owner))
+            await seed.flush()
+            subject = HealthSubject(
+                owner_user_id=owner.id,
+                display_name="Public subject",
+                timezone="Asia/Almaty",
+            )
+            other_subject = HealthSubject(
+                owner_user_id=suspended_owner.id,
+                display_name="Other public subject",
+                timezone="Asia/Almaty",
+            )
+            later_subject = HealthSubject(
+                owner_user_id=later_owner.id,
+                display_name="Later public subject",
+                timezone="Asia/Almaty",
+            )
+            seed.add_all((subject, other_subject, later_subject))
+            await seed.flush()
+
+            def report(
+                token: str,
+                *,
+                subject_id: uuid.UUID,
+                owner_id: uuid.UUID,
+                expires_at,
+                revoked: bool = False,
+            ) -> SharedReport:
+                return SharedReport(
+                    subject_id=subject_id,
+                    created_by_user_id=owner_id,
+                    revoked_by_user_id=owner_id if revoked else None,
+                    revoked_at=now_local() if revoked else None,
+                    token=token,
+                    password_hash="$2b$12$" + "x" * 53,
+                    title="Synthetic public report",
+                    domains=[Domain.WEIGHT.value],
+                    period_start=date(2026, 8, 1),
+                    period_end=date(2026, 8, 2),
+                    snapshot={"version": 1, "blocks": {}},
+                    expires_at=expires_at,
+                )
+
+            live = report(
+                "rls-public-live-token",
+                subject_id=subject.id,
+                owner_id=owner.id,
+                expires_at=now_local() + timedelta(days=1),
+            )
+            seed.add(live)
+            await seed.flush()
+            checkpoint_time = now_utc()
+            empty_digest = (
+                "e3b0c44298fc1c149afbf4c8996fb924"
+                "27ae41e4649b934ca495991b7852b855"
+            )
+            seed.add(
+                OwnershipBackfillCheckpoint(
+                    phase_key=(
+                        "stage3.retained_artifact.shared_reports.v1.shared_reports"
+                    ),
+                    subject_id=subject.id,
+                    status="completed",
+                    scan_high_watermark_id=live.id,
+                    snapshot_rows=1,
+                    last_scanned_id=live.id,
+                    scanned_rows=1,
+                    updated_rows=1,
+                    unchanged_rows=0,
+                    data_checksum_before=empty_digest,
+                    data_checksum_after=empty_digest,
+                    ownership_checksum_after=empty_digest,
+                    started_at=checkpoint_time,
+                    updated_at=checkpoint_time,
+                    completed_at=checkpoint_time,
+                )
+            )
+            expired = report(
+                "rls-public-expired-token",
+                subject_id=subject.id,
+                owner_id=owner.id,
+                expires_at=now_local() - timedelta(minutes=1),
+            )
+            revoked = report(
+                "rls-public-revoked-token",
+                subject_id=subject.id,
+                owner_id=owner.id,
+                expires_at=now_local() + timedelta(days=1),
+                revoked=True,
+            )
+            suspended = report(
+                "rls-public-suspended-token",
+                subject_id=other_subject.id,
+                owner_id=suspended_owner.id,
+                expires_at=now_local() + timedelta(days=1),
+            )
+            later_live = report(
+                "rls-public-later-live-token",
+                subject_id=later_subject.id,
+                owner_id=later_owner.id,
+                expires_at=now_local() + timedelta(days=1),
+            )
+            seed.add_all(
+                (
+                    expired,
+                    revoked,
+                    suspended,
+                    later_live,
+                    Supplement(
+                        subject_id=subject.id,
+                        name="Subject A",
+                        key="subject-a",
+                    ),
+                    Supplement(
+                        subject_id=other_subject.id,
+                        name="Subject B",
+                        key="subject-b",
+                    ),
+                    Supplement(
+                        subject_id=later_subject.id,
+                        name="Subject C",
+                        key="subject-c",
+                    ),
+                )
+            )
+            await seed.flush()
+            await seed.commit()
+            subject_id = subject.id
+            other_subject_id = other_subject.id
+            later_subject_id = later_subject.id
+            live_id = live.id
+            later_live_id = later_live.id
+
+        async with admin.begin() as connection:
+            await connection.exec_driver_sql(
+                f"GRANT EXECUTE ON FUNCTION {migration.ROUTINE_SIGNATURE} "
+                f"TO {RESTRICTED_ROLE}"
+            )
+
+        expected_projection = {
+            "report_id",
+            "subject_id",
+            "created_by_user_id",
+            "revoked_by_user_id",
+            "revoked_at",
+            "expires_at",
+            "has_snapshot",
+            "owner_user_id",
+            "owner_status",
+            "checkpoint_phase_key",
+            "checkpoint_subject_id",
+            "checkpoint_status",
+            "checkpoint_scan_high_watermark_id",
+            "checkpoint_snapshot_rows",
+            "checkpoint_last_scanned_id",
+            "checkpoint_scanned_rows",
+            "checkpoint_updated_rows",
+            "checkpoint_unchanged_rows",
+            "checkpoint_data_checksum_before",
+            "checkpoint_data_checksum_after",
+            "checkpoint_ownership_checksum_after",
+            "checkpoint_started_at",
+            "checkpoint_updated_at",
+            "checkpoint_completed_at",
+        }
+        async with restricted.connect() as connection:
+            assert (
+                await connection.scalar(
+                    sa.text("SELECT count(*) FROM public.shared_reports")
+                )
+                == 0
+            )
+            attested = (
+                await connection.execute(
+                    sa.text(
+                        "SELECT * FROM public.attest_shared_report_token(:token)"
+                    ),
+                    {"token": "rls-public-live-token"},
+                )
+            ).mappings().one()
+            assert set(attested) == expected_projection
+            assert attested["report_id"] == live_id
+            assert attested["subject_id"] == subject_id
+            assert expected_projection.isdisjoint(
+                {"token", "password_hash", "title", "domains", "note", "snapshot"}
+            )
+
+        restricted_factory = async_sessionmaker(
+            restricted, expire_on_commit=False, class_=AsyncSession
+        )
+        for refused_token in (
+            "missing-public-token",
+            "rls-public-expired-token",
+            "rls-public-revoked-token",
+            "rls-public-suspended-token",
+        ):
+            async with restricted_factory() as refused:
+                assert await share_service.resolve_public(refused, refused_token) is None
+                assert bound_subject(refused) is None
+                assert not in_platform_scope(refused)
+                await refused.rollback()
+
+        async with admin.begin() as corrupt_checkpoint:
+            await corrupt_checkpoint.execute(
+                sa.text(
+                    "UPDATE public.ownership_backfill_checkpoints "
+                    "SET data_checksum_after=:corrupt "
+                    "WHERE phase_key=:phase_key"
+                ),
+                {
+                    "corrupt": "f" * 64,
+                    "phase_key": (
+                        "stage3.retained_artifact.shared_reports.v1.shared_reports"
+                    ),
+                },
+            )
+        async with restricted_factory() as corrupt:
+            assert (
+                await share_service.resolve_public(
+                    corrupt, "rls-public-live-token"
+                )
+                is None
+            )
+            assert bound_subject(corrupt) is None
+            assert not in_platform_scope(corrupt)
+            await corrupt.rollback()
+        async with admin.begin() as restore_checkpoint:
+            await restore_checkpoint.execute(
+                sa.text(
+                    "UPDATE public.ownership_backfill_checkpoints "
+                    "SET data_checksum_after=data_checksum_before "
+                    "WHERE phase_key=:phase_key"
+                ),
+                {
+                    "phase_key": (
+                        "stage3.retained_artifact.shared_reports.v1.shared_reports"
+                    )
+                },
+            )
+
+        async with restricted_factory() as reader:
+            resolved = await share_service.resolve_public(
+                reader, "rls-public-live-token"
+            )
+            assert resolved is not None and resolved.id == live_id
+            assert bound_subject(reader) == subject_id
+            assert not in_platform_scope(reader)
+            assert (
+                await reader.scalar(sa.text("SELECT count(*) FROM supplements"))
+                == 1
+            )
+            assert (
+                await reader.scalar(
+                    sa.text(
+                        "SELECT count(*) FROM shared_reports "
+                        "WHERE subject_id=:other_subject"
+                    ),
+                    {"other_subject": other_subject_id},
+                )
+                == 0
+            )
+            await reader.rollback()
+
+        async with restricted_factory() as later_reader:
+            resolved = await share_service.resolve_public(
+                later_reader, "rls-public-later-live-token"
+            )
+            assert resolved is not None and resolved.id == later_live_id
+            assert bound_subject(later_reader) == later_subject_id
+            assert not in_platform_scope(later_reader)
+            assert (
+                await later_reader.scalar(sa.text("SELECT count(*) FROM supplements"))
+                == 1
+            )
+            await later_reader.rollback()
+
+        async with restricted_factory() as prebound:
+            await bind_session_subject(prebound, other_subject_id)
+            assert (
+                await share_service.resolve_public(
+                    prebound, "rls-public-live-token"
+                )
+                is None
+            )
+            assert bound_subject(prebound) == other_subject_id
+            await prebound.rollback()
+
+        async with restricted_factory() as platform:
+            await enter_platform_scope(platform)
+            assert (
+                await share_service.resolve_public(
+                    platform, "rls-public-live-token"
+                )
+                is None
+            )
+            assert bound_subject(platform) is None
+            assert in_platform_scope(platform)
+            await platform.rollback()
+
+        async with restricted_factory() as opener:
+            opened = await share_service.register_open(
+                opener, "rls-public-live-token"
+            )
+            assert opened is not None and opened.opened_count == 1
+            await opener.rollback()
+        async with admin.connect() as verification:
+            assert (
+                await verification.scalar(
+                    sa.text(
+                        "SELECT opened_count FROM shared_reports WHERE id=:report_id"
+                    ),
+                    {"report_id": live_id},
+                )
+                == 0
+            )
+    finally:
+        await restricted.dispose()
+        await admin.dispose()
+
+
 def test_the_platform_setting_is_named_the_same_in_both_halves():
     """Same contract as the subject: the policy reads what the session writes."""
 
@@ -1673,10 +2083,6 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
     import ast
 
     permitted = {
-        # The visitor holding a published link has no account; the token is the
-        # authorization, checked by share_service itself before anything is read.
-        ("vitals/services/share_service.py", "resolve_public"),
-        ("vitals/services/share_service.py", "register_open"),
         # The compatibility startup transaction must discover the sole durable
         # subject before it can bind one. Its identity, connection, settings,
         # and preference reconciliation is bounded by one commit/rollback.

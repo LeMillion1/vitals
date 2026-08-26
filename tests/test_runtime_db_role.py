@@ -38,30 +38,37 @@ async def test_runtime_role_is_restricted_and_receives_future_table_grants():
     runtime_url = admin_url.set(username=role, password=password)
     admin = create_async_engine(admin_url)
     large_object_oid: int | None = None
-    allowed_routine_created = False
+    allowed_routines_created: list[str] = []
 
     try:
         async with admin.begin() as connection:
-            allowed_routine = RUNTIME_EXECUTE_ROUTINES[0]
-            if await connection.scalar(
-                sa.text("SELECT to_regprocedure(:signature) IS NULL"),
-                {"signature": allowed_routine},
-            ):
-                await connection.exec_driver_sql(
+            synthetic_sql = {
+                RUNTIME_EXECUTE_ROUTINES[0]: (
                     "CREATE FUNCTION public."
                     "authorize_and_lock_professional_invitation(text, uuid, text) "
                     "RETURNS TABLE(invitation_id uuid, subject_id uuid) "
                     "LANGUAGE plpgsql VOLATILE SECURITY DEFINER "
                     "SET search_path = pg_catalog, pg_temp "
-                    "SET row_security = off "
-                    "AS 'BEGIN RETURN; END'"
-                )
+                    "SET row_security = off AS 'BEGIN RETURN; END'"
+                ),
+                RUNTIME_EXECUTE_ROUTINES[1]: (
+                    "CREATE FUNCTION public.attest_shared_report_token(text) "
+                    "RETURNS integer LANGUAGE plpgsql VOLATILE SECURITY DEFINER "
+                    "SET search_path = pg_catalog, pg_temp "
+                    "SET row_security = off AS 'BEGIN RETURN 1; END'"
+                ),
+            }
+            for allowed_routine in RUNTIME_EXECUTE_ROUTINES:
+                if not await connection.scalar(
+                    sa.text("SELECT to_regprocedure(:signature) IS NULL"),
+                    {"signature": allowed_routine},
+                ):
+                    continue
+                await connection.exec_driver_sql(synthetic_sql[allowed_routine])
                 await connection.exec_driver_sql(
-                    "REVOKE ALL ON FUNCTION public."
-                    "authorize_and_lock_professional_invitation(text, uuid, text) "
-                    "FROM PUBLIC"
+                    f"REVOKE ALL ON FUNCTION {allowed_routine} FROM PUBLIC"
                 )
-                allowed_routine_created = True
+                allowed_routines_created.append(allowed_routine)
 
         result = await provision_runtime_role(
             migration_url=admin_url,
@@ -202,13 +209,14 @@ async def test_runtime_role_is_restricted_and_receives_future_table_grants():
                         f"'public.\"{owned_function}\"()', 'EXECUTE')"
                     )
                 )
-                assert await connection.scalar(
-                    sa.text(
-                        "SELECT has_function_privilege("
-                        "current_user, :signature, 'EXECUTE')"
-                    ),
-                    {"signature": RUNTIME_EXECUTE_ROUTINES[0]},
-                )
+                for allowed_routine in RUNTIME_EXECUTE_ROUTINES:
+                    assert await connection.scalar(
+                        sa.text(
+                            "SELECT has_function_privilege("
+                            "current_user, :signature, 'EXECUTE')"
+                        ),
+                        {"signature": allowed_routine},
+                    )
                 assert not await connection.scalar(
                     sa.text(
                         "SELECT EXISTS (SELECT 1 FROM pg_largeobject_metadata object "
@@ -242,10 +250,9 @@ async def test_runtime_role_is_restricted_and_receives_future_table_grants():
             await connection.exec_driver_sql(
                 f'DROP FUNCTION IF EXISTS "{owned_function}"()'
             )
-            if allowed_routine_created:
+            for allowed_routine in allowed_routines_created:
                 await connection.exec_driver_sql(
-                    "DROP FUNCTION IF EXISTS public."
-                    "authorize_and_lock_professional_invitation(text, uuid, text)"
+                    f"DROP FUNCTION IF EXISTS {allowed_routine}"
                 )
             await connection.exec_driver_sql(f'DROP TYPE IF EXISTS "{enum_type}"')
             await connection.exec_driver_sql(
@@ -299,7 +306,18 @@ async def test_runtime_role_cannot_equal_migration_role():
         "wrong-owner",
     ),
 )
-async def test_runtime_role_refuses_an_untrusted_required_routine(tamper_sql):
+@pytest.mark.parametrize(
+    "migration_module",
+    (
+        "migrations.versions.0081_authorize_professional_invitation",
+        "migrations.versions.0082_authorize_shared_report_token",
+    ),
+    ids=("invitation", "shared-report"),
+)
+async def test_runtime_role_refuses_an_untrusted_required_routine(
+    tamper_sql,
+    migration_module,
+):
     raw_admin_url = os.getenv("VITALS_TEST_DATABASE_URL")
     if not raw_admin_url or not raw_admin_url.startswith("postgresql+asyncpg://"):
         pytest.skip("integration test requires VITALS_TEST_DATABASE_URL")
@@ -312,23 +330,30 @@ async def test_runtime_role_refuses_an_untrusted_required_routine(tamper_sql):
         username=runtime_role,
         password=secrets.token_urlsafe(24),
     )
-    migration = import_module(
-        "migrations.versions.0081_authorize_professional_invitation"
+    migrations = tuple(
+        import_module(module_name)
+        for module_name in (
+            "migrations.versions.0081_authorize_professional_invitation",
+            "migrations.versions.0082_authorize_shared_report_token",
+        )
     )
+    migration = import_module(migration_module)
     admin = create_async_engine(admin_url)
 
-    async def install_trusted_routine(connection) -> None:
-        await connection.exec_driver_sql(
-            f"DROP FUNCTION IF EXISTS {migration.ROUTINE_SIGNATURE}"
-        )
-        await connection.exec_driver_sql(migration.CREATE_ROUTINE_SQL)
-        await connection.exec_driver_sql(
-            f"REVOKE ALL ON FUNCTION {migration.ROUTINE_SIGNATURE} FROM PUBLIC"
-        )
+    async def install_trusted_routines(connection) -> None:
+        for trusted_migration in migrations:
+            await connection.exec_driver_sql(
+                f"DROP FUNCTION IF EXISTS {trusted_migration.ROUTINE_SIGNATURE}"
+            )
+            await connection.exec_driver_sql(trusted_migration.CREATE_ROUTINE_SQL)
+            await connection.exec_driver_sql(
+                "REVOKE ALL ON FUNCTION "
+                f"{trusted_migration.ROUTINE_SIGNATURE} FROM PUBLIC"
+            )
 
     try:
         async with admin.begin() as connection:
-            await install_trusted_routine(connection)
+            await install_trusted_routines(connection)
             other_owner_ident = connection.dialect.identifier_preparer.quote(
                 other_owner
             )
@@ -357,7 +382,7 @@ async def test_runtime_role_refuses_an_untrusted_required_routine(tamper_sql):
             )
     finally:
         async with admin.begin() as connection:
-            await install_trusted_routine(connection)
+            await install_trusted_routines(connection)
             other_owner_ident = connection.dialect.identifier_preparer.quote(
                 other_owner
             )
