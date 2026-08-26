@@ -14,8 +14,12 @@ services:
   vitals_app:
     restart: "no"
     read_only: true
+    ports: !reset []
     environment:
       VITALS_RESTORE_DRILL: "true"
+    networks:
+      - default
+      - proxy_backend
     volumes:
       - type: bind
         source: ${VITALS_DRILL_RUNTIME_ENV_FILE:?VITALS_DRILL_RUNTIME_ENV_FILE is required}
@@ -44,6 +48,27 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m
 
+  # Docker does not publish host ports for a container attached only to an
+  # internal bridge. This fixed byte proxy carries no credentials or mounts;
+  # only it reaches the non-internal ingress bridge, while the app keeps no
+  # outbound route.
+  vitals_drill_proxy:
+    build: .
+    command: ["python", "scripts/serve_restore_drill_proxy.py"]
+    environment:
+      VITALS_RESTORE_DRILL_PROXY: "true"
+    ports:
+      - "127.0.0.1:${VITALS_APP_PORT:?VITALS_APP_PORT is required}:8000"
+    networks:
+      - proxy_backend
+      - ingress
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    restart: "no"
+
   # A drill consumes an already published exact bundle. It must never create or
   # rotate artifacts while proving recovery from that bundle.
   vitals_backup:
@@ -53,3 +78,6 @@ services:
 networks:
   default:
     internal: true
+  proxy_backend:
+    internal: true
+  ingress:

@@ -190,8 +190,10 @@ configuration, and restores PostgreSQL with `ON_ERROR_STOP` and one transaction.
 It then migrates to the single Alembic head, records the ownership and scoped-key
 checks in the disposable database, provisions a distinct runtime role, proves
 forced subject RLS through that role, restarts PostgreSQL, and repeats the
-read-only proof. The network is internal, the app port is loopback-only, and
-backup, offsite, and identity services are not part of the active service set.
+read-only proof. The app and data services have only internal networks. A
+credential-free byte proxy on a separate app-only network publishes the
+loopback browser port without giving the app an outbound route; backup, offsite,
+and identity services are not part of the active service set.
 
 An ordinary successful run removes its exact Compose project, volumes, copied
 bundle, synthetic secrets, and run directory, and returns one aggregate JSON

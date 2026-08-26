@@ -562,16 +562,22 @@ def _render_and_assert(context: Context) -> dict[str, Any]:
     except (UnicodeDecodeError, json.JSONDecodeError):
         _fail("compose_render_invalid")
     networks = rendered.get("networks", {})
-    if not networks or any(
-        item.get("internal") is not True or item.get("external") is True
-        for item in networks.values()
-    ):
+    internal_networks = {
+        name for name, item in networks.items() if item.get("internal") is True
+    }
+    ingress_networks = {
+        name
+        for name, item in networks.items()
+        if item.get("internal") is not True and item.get("external") is not True
+    }
+    if len(internal_networks) != 2 or len(ingress_networks) != 1:
         _fail("compose_network_not_internal")
     services = rendered.get("services", {})
     expected_services = {
         "vitals_app",
         "vitals_db",
         "vitals_db_roles",
+        "vitals_drill_proxy",
         "vitals_migrate",
         "vitals_redis",
     }
@@ -579,6 +585,10 @@ def _render_and_assert(context: Context) -> dict[str, Any]:
         _fail("compose_service_set_invalid")
     app = services.get("vitals_app", {})
     ports = app.get("ports") or []
+    if ports:
+        _fail("compose_app_port_exposed")
+    proxy = services.get("vitals_drill_proxy", {})
+    ports = proxy.get("ports") or []
     if len(ports) != 1:
         _fail("compose_port_count_invalid")
     port = ports[0]
@@ -611,9 +621,33 @@ def _render_and_assert(context: Context) -> dict[str, Any]:
         _fail("compose_app_root_not_read_only")
     if (app.get("environment") or {}).get("VITALS_RESTORE_DRILL") != "true":
         _fail("compose_restore_marker_missing")
-    app_networks = app.get("networks") or {}
-    if not app_networks or any(name not in networks for name in app_networks):
+    app_networks = set(app.get("networks") or {})
+    proxy_networks = set(proxy.get("networks") or {})
+    data_networks = set((services.get("vitals_db") or {}).get("networks") or {})
+    if (
+        app_networks != internal_networks
+        or len(data_networks) != 1
+        or not data_networks < app_networks
+        or proxy_networks & internal_networks != app_networks - data_networks
+        or proxy_networks & ingress_networks != ingress_networks
+        or len(proxy_networks) != 2
+        or proxy.get("volumes")
+        or proxy.get("read_only") is not True
+        or proxy.get("command")
+        != ["python", "scripts/serve_restore_drill_proxy.py"]
+        or (proxy.get("environment") or {}).get("VITALS_RESTORE_DRILL_PROXY")
+        != "true"
+    ):
         _fail("compose_app_network_invalid")
+    for service_name, service in services.items():
+        if service_name == "vitals_drill_proxy":
+            continue
+        if not set(service.get("networks") or {}).issubset(internal_networks):
+            _fail("compose_service_network_invalid")
+    for service_name in ("vitals_app", "vitals_db_roles", "vitals_migrate", "vitals_drill_proxy"):
+        context_value = ((services[service_name].get("build") or {}).get("context"))
+        if Path(str(context_value)).resolve(strict=True) != context.source_dir:
+            _fail("compose_build_context_invalid")
     for volume in (rendered.get("volumes") or {}).values():
         name = str(volume.get("name", ""))
         if not name.startswith(f"{context.project}_") or volume.get("external") is True:
@@ -1089,7 +1123,13 @@ def run_drill(args: argparse.Namespace) -> dict[str, Any]:
         _write_state(context, phase="building", extracted_bytes=extracted_size)
         _run(
             _compose(context)
-            + ["build", "vitals_migrate", "vitals_db_roles", "vitals_app"],
+            + [
+                "build",
+                "vitals_migrate",
+                "vitals_db_roles",
+                "vitals_app",
+                "vitals_drill_proxy",
+            ],
             cwd=context.source_dir,
             env=_safe_env(),
             code="compose_build_failed",
@@ -1316,7 +1356,15 @@ def run_drill(args: argparse.Namespace) -> dict[str, Any]:
             f"username=drill-{context.run_id}\npassword={password}\n",
         )
         _run(
-            _compose(context) + ["up", "-d", "--no-deps", "--no-build", "vitals_app"],
+            _compose(context)
+            + [
+                "up",
+                "-d",
+                "--no-deps",
+                "--no-build",
+                "vitals_app",
+                "vitals_drill_proxy",
+            ],
             cwd=context.source_dir,
             env=_safe_env(),
             code="drill_app_start_failed",

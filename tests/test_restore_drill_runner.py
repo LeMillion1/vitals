@@ -567,8 +567,11 @@ def test_restore_compose_overlay_keeps_drill_inputs_read_only_and_network_intern
     overlay = (ROOT / "docker-compose.restore-drill.yml").read_text(encoding="utf-8")
 
     assert "internal: true" in overlay
+    assert "ports: !reset []" in overlay
+    assert "vitals_drill_proxy:" in overlay
+    assert "VITALS_RESTORE_DRILL_PROXY" in overlay
     assert 'profiles: ["restore-drill-disabled"]' in overlay
-    assert overlay.count("read_only: true") == 5
+    assert overlay.count("read_only: true") == 6
     assert overlay.count("create_host_path: false") == 4
     for target in (
         "/app/.env",
