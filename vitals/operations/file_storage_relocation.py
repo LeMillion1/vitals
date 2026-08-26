@@ -35,6 +35,7 @@ from vitals.models.weight import ProgressPhoto
 from vitals.persistence.file_storage import (
     copy_legacy_file_to_private,
     extension_for_relocation,
+    media_type_for_relocation,
     private_storage_ref,
     remove_stored_file,
 )
@@ -310,6 +311,7 @@ async def _prepare_one(
     try:
         purpose = FileAssetPurpose(asset.purpose)
         extension = extension_for_relocation(asset.storage_ref)
+        media_type = media_type_for_relocation(extension)
         destination_ref = private_storage_ref(purpose, extension)
     except ValueError as exc:
         raise FileStorageRelocationError("legacy locator is not relocatable") from exc
@@ -339,11 +341,21 @@ async def _prepare_one(
             scan.file_key = destination_ref
         for photo in photos:
             photo.file_key = destination_ref
+        changed_fields = [
+            "storage_backend",
+            "storage_ref",
+            "byte_size",
+            "sha256_hex",
+        ]
         asset.storage_backend = FileStorageBackend.PRIVATE_LOCAL.value
         asset.storage_ref = destination_ref
         asset.byte_size = copied.byte_size
         asset.sha256_hex = copied.sha256_hex
+        if asset.media_type is None:
+            asset.media_type = media_type
+            changed_fields.append("media_type")
         asset.status = FileAssetStatus.ACTIVE.value
+        changed_fields.append("status")
         session.add(
             AuditEvent(
                 actor_user_id=None,
@@ -358,13 +370,7 @@ async def _prepare_one(
                     "reason_code": "private_storage_cutover",
                     "resource_type": "file_asset",
                     "resource_id": str(asset.id),
-                    "changed_fields": [
-                        "storage_backend",
-                        "storage_ref",
-                        "byte_size",
-                        "sha256_hex",
-                        "status",
-                    ],
+                    "changed_fields": changed_fields,
                     "record_count": 1 + len(raw_rows) + len(scans) + len(photos),
                 },
             )

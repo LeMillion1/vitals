@@ -22,6 +22,15 @@ CHUNK_SIZE = 1024 * 1024
 _PRIVATE_EXTENSIONS = frozenset(
     {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"}
 )
+_PRIVATE_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+}
 _PURPOSE_PREFIXES = {
     FileAssetPurpose.PROGRESS_PHOTO: "uploads",
     FileAssetPurpose.LAB_DOCUMENT: "labs",
@@ -639,6 +648,15 @@ def extension_for_relocation(storage_ref: str) -> str:
     return extension
 
 
+def media_type_for_relocation(extension: str) -> str:
+    """Return the canonical MIME type for one reviewed legacy extension."""
+
+    try:
+        return _PRIVATE_MEDIA_TYPES[extension]
+    except (KeyError, TypeError):
+        raise ValueError("legacy file extension has no reviewed media type") from None
+
+
 __all__ = [
     "CHUNK_SIZE",
     "CopiedPrivateFile",
@@ -646,6 +664,7 @@ __all__ = [
     "VerifiedPrivateFile",
     "copy_legacy_file_to_private",
     "extension_for_relocation",
+    "media_type_for_relocation",
     "iter_verified_file",
     "legacy_upload_disk_path",
     "open_verified_file",

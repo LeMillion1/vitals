@@ -48,7 +48,7 @@ async def _legacy_photo(
         uploaded_by_user_id=roots.user_id,
         purpose=FileAssetPurpose.PROGRESS_PHOTO,
         storage_ref=storage_ref,
-        media_type="image/png",
+        media_type=None,
         size_bytes=len(body),
         content_sha256=hashlib.sha256(body).hexdigest(),
     )
@@ -231,7 +231,7 @@ async def _legacy_body_scan_alias(
     actor_user_id=None,
 ) -> tuple[FileAsset, RawPayload, BodyScan, IntegrationConnection]:
     body = b"synthetic-legacy-body-scan-document"
-    storage_ref = "body/legacy-body-scan.png"
+    storage_ref = "body/legacy-body-scan.jpg"
     source = static_dir / "uploads" / storage_ref
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(body)
@@ -241,7 +241,7 @@ async def _legacy_body_scan_alias(
         uploaded_by_user_id=roots.user_id,
         purpose=FileAssetPurpose.BODY_SCAN_DOCUMENT,
         storage_ref=storage_ref,
-        media_type="image/png",
+        media_type=None,
         size_bytes=len(body),
         content_sha256=hashlib.sha256(body).hexdigest(),
     )
@@ -310,6 +310,7 @@ async def test_relocation_moves_reviewed_historical_parser_alias(
     stored_raw = await db_session.get(RawPayload, raw_id, populate_existing=True)
     stored_scan = await db_session.get(BodyScan, scan_id, populate_existing=True)
     assert stored_asset.storage_backend == FileStorageBackend.PRIVATE_LOCAL.value
+    assert stored_asset.media_type == "image/jpeg"
     assert stored_raw.external_id == stored_asset.storage_ref
     assert stored_scan.file_key == stored_asset.storage_ref
     assert stored_raw.file_asset_id is None
