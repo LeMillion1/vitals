@@ -245,12 +245,17 @@ def test_public_contract_is_fixed():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("category", ["brief", "test"])
 async def test_history_gains_subject_recipient_and_channel(
-    db_session, legacy_owner_roots
+    db_session, legacy_owner_roots, category
 ):
     await _ready(db_session, legacy_owner_roots)
     recipient = await _recipient(db_session, legacy_owner_roots)
-    row = _notification(dedupe_key="brief:2026-01-02", external_id="4242")
+    row = _notification(
+        category=category,
+        dedupe_key=f"{category}:2026-01-02",
+        external_id="4242",
+    )
     db_session.add(row)
     await db_session.flush()
     original = (
