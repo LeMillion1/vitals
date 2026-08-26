@@ -230,10 +230,14 @@ def test_public_identity_gateway_is_explicit_tls_profile_without_secrets():
 
 def test_identity_surfaces_share_the_canonical_public_authority():
     services = _compose()["services"]
+    preflight = services["vitals_idp_config_check"]["environment"]
     setup = services["vitals_idp_setup"]["environment"]
     login = services["vitals_idp_login"]["environment"]
     gateway = services["vitals_idp_gateway"]["environment"]
 
+    assert preflight["VITALS_IDP_PUBLIC_AUTHORITY"] == (
+        "${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}"
+    )
     assert all(
         "${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}" in setup[name]
         for name in (

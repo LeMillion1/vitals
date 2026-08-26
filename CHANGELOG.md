@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — ZITADEL preflight receives the canonical authority
+
+The identity configuration gate now receives the same public-authority value it
+validates for Login V2 and both gateways, so a safe production Compose restart
+does not reject a correctly configured canonical issuer.
+
 ### Added — care conversations have direct shared actions
 
 Patients and their current doctor or trainer can correct only their own message
