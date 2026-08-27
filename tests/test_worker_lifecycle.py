@@ -32,7 +32,7 @@ def test_process_mode_defaults_to_combined_and_rejects_unknown_values():
 
 async def test_worker_lifecycle_preserves_startup_and_shutdown_order(monkeypatch):
     from vitals.scheduler import jobs, scheduler
-    from vitals.services import conflict_registrations
+    from vitals.services.conflicts import registrations
 
     calls: list[object] = []
 
@@ -52,7 +52,7 @@ async def test_worker_lifecycle_preserves_startup_and_shutdown_order(monkeypatch
         lambda settings: calls.append(("register", settings)),
     )
     monkeypatch.setattr(
-        conflict_registrations,
+        registrations,
         "register_all_resolvers",
         lambda: calls.append("resolvers"),
     )
@@ -192,14 +192,14 @@ async def test_pending_heartbeat_seed_is_retained_until_confirmed(monkeypatch):
 
 async def test_prepared_web_lifecycle_never_starts_scheduler(monkeypatch):
     from vitals.scheduler import jobs
-    from vitals.services import conflict_registrations
+    from vitals.services.conflicts import registrations
 
-    registrations = []
-    monkeypatch.setattr(jobs, "register_all_jobs", registrations.append)
+    registered_jobs = []
+    monkeypatch.setattr(jobs, "register_all_jobs", registered_jobs.append)
     monkeypatch.setattr(
-        conflict_registrations,
+        registrations,
         "register_all_resolvers",
-        lambda: registrations.append("resolvers"),
+        lambda: registered_jobs.append("resolvers"),
     )
     lifecycle = WorkerLifecycle(
         session_factory=object(),
@@ -210,7 +210,7 @@ async def test_prepared_web_lifecycle_never_starts_scheduler(monkeypatch):
     lifecycle.prepare(None)
     lifecycle.shutdown()
 
-    assert registrations == ["resolvers", None]
+    assert registered_jobs == ["resolvers", None]
     assert lifecycle.scheduler is None
 
 

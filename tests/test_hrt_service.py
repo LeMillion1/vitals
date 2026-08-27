@@ -13,7 +13,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from vitals.models.hrt import DOMAIN, HrtCompound, HrtCompoundComponent
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 from vitals.services.hrt import catalog, cycles, records
 from vitals.utils.timeutils import today_local
 
@@ -110,7 +110,7 @@ async def test_scoped_curated_reads_require_exact_domain_and_source(db_session):
         is None
     )
     with pytest.raises(
-        conflict_engine.ConflictScopeError,
+        engine.ConflictScopeError,
         match="another subject scope",
     ):
         await cycles._resolve_scoped_compound(
@@ -604,7 +604,7 @@ async def test_resolve_active_reports_one_entity_per_dose_of_one_compound(
     oxa = [i for i in items if i["compound_key"] == "oxandrolone"]
     assert len(oxa) == 3
     assert {i["compound_class"] for i in oxa} == {"oral_aas"}
-    assert len({i[conflict_engine.CONFLICT_ENTITY_KEY] for i in oxa}) == 3
+    assert len({i[engine.CONFLICT_ENTITY_KEY] for i in oxa}) == 3
 
 
 # ── Dashboard route ───────────────────────────────────────────────────────────

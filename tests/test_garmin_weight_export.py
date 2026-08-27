@@ -30,13 +30,8 @@ from vitals.models.garmin import (
     GarminWeightExport,
 )
 from vitals.models.weight import WeightLog
-from vitals.services import (
-    alerts_service,
-    conflict_engine,
-    garmin_service,
-    garmin_weight_service,
-    weight_service,
-)
+from vitals.services import alerts_service, garmin_service, garmin_weight_service, weight_service
+from vitals.services.conflicts import engine
 from vitals.services.proactive import prefs
 from web.config import get_web_config
 
@@ -254,7 +249,7 @@ async def _session_weight_write(session, *, on_date=None):
     belongs to the transaction that issued it — so each side mints its own
     instead of borrowing the fixture's.
     """
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         session,
         actor_username=get_web_config().auth_username,
         evaluation_date=on_date,

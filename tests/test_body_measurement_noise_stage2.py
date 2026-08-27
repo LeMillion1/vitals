@@ -20,7 +20,8 @@ from vitals.models.system_alert import SystemAlert
 from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, NoiseMarker, WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, weight_service
+from vitals.services import weight_service
+from vitals.services.conflicts import engine
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped
@@ -46,14 +47,14 @@ def _context(
     *,
     on_date: date = MEASUREMENT_DATE,
     legacy: bool = False,
-) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=on_date,
         legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            engine.LegacyConflictBridge.FULLY_UNOWNED
             if legacy
-            else conflict_engine.LegacyConflictBridge.REJECT
+            else engine.LegacyConflictBridge.REJECT
         ),
     )
 
@@ -64,8 +65,8 @@ async def _prepared(
     *,
     on_date: date = MEASUREMENT_DATE,
     legacy: bool = False,
-) -> conflict_engine.PreparedConflictWrite:
-    return await conflict_engine.prepare_scoped_write(
+) -> engine.PreparedConflictWrite:
+    return await engine.prepare_scoped_write(
         session,
         context=_context(identity, on_date=on_date, legacy=legacy),
     )
@@ -406,14 +407,14 @@ async def test_measurement_block_is_write_free_and_override_is_attributed(
         del session, scope
         return [{"marker": "synthetic-risk"}]
 
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.WEIGHT.value,
         weight_service.resolve_active_scoped,
     )
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
+    engine.register_domain_resolver(Domain.LABS.value, labs)
     prepared = await _prepared(db_session, identity)
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await weight_service.upsert_body_measurement(
             db_session,
             on_date=MEASUREMENT_DATE,
@@ -685,7 +686,7 @@ async def test_wrong_identity_and_committed_capability_are_rejected_before_write
     prepared = await _prepared(db_session, identity)
     wrong = WriteIdentity(identity.subject_id, uuid.uuid4())
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await weight_service.upsert_body_measurement(
             db_session,
             on_date=MEASUREMENT_DATE,
@@ -694,7 +695,7 @@ async def test_wrong_identity_and_committed_capability_are_rejected_before_write
             prepared_conflict_write=prepared,
         )
     await db_session.commit()
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await weight_service.add_noise_marker(
             db_session,
             start_date=MEASUREMENT_DATE,
@@ -742,7 +743,7 @@ async def test_web_and_mcp_writes_are_scoped_and_keep_surface_provenance(
 
     def capture_scoped_call(name, original):
         async def wrapped(session, *args, **kwargs):
-            context = conflict_engine.require_prepared_identity(
+            context = engine.require_prepared_identity(
                 session,
                 prepared=kwargs["prepared_conflict_write"],
                 identity=kwargs["identity"],
@@ -826,35 +827,35 @@ async def test_web_and_mcp_writes_are_scoped_and_keep_surface_provenance(
             "upsert_body_measurement",
             _identity(legacy_owner_roots),
             legacy_owner_roots.subject_id,
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            engine.LegacyConflictBridge.FULLY_UNOWNED,
             Source.MCP.value,
         ),
         (
             "add_noise_marker",
             _identity(legacy_owner_roots),
             legacy_owner_roots.subject_id,
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            engine.LegacyConflictBridge.FULLY_UNOWNED,
             Source.MCP.value,
         ),
         (
             "update_body_measurement",
             _identity(legacy_owner_roots),
             legacy_owner_roots.subject_id,
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            engine.LegacyConflictBridge.FULLY_UNOWNED,
             None,
         ),
         (
             "update_body_measurement_note",
             _identity(legacy_owner_roots),
             legacy_owner_roots.subject_id,
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            engine.LegacyConflictBridge.FULLY_UNOWNED,
             None,
         ),
         (
             "delete_noise_marker",
             _identity(legacy_owner_roots),
             legacy_owner_roots.subject_id,
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            engine.LegacyConflictBridge.FULLY_UNOWNED,
             None,
         ),
     ]

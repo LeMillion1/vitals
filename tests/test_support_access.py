@@ -46,7 +46,8 @@ from vitals.models.identity import (
 from vitals.models.conflict_rule import ConflictRule
 from vitals.models.system_alert import SystemAlert
 from vitals.models.weight import BodyMeasurement
-from vitals.services import conflict_engine, support_access_service as support
+from vitals.services import support_access_service as support
+from vitals.services.conflicts import engine
 from vitals.services.access_resolution import resolve_access_context
 
 
@@ -2761,8 +2762,8 @@ async def test_exact_repair_http_surfaces_complete_the_reviewed_flow(
         assert scope.subject_id == legacy_owner_roots.subject_id
         return [{"present": True}]
 
-    conflict_engine.register_domain_resolver(Domain.WEIGHT.value, current_weight)
-    conflict_engine.register_domain_resolver(Domain.LABS.value, current_labs)
+    engine.register_domain_resolver(Domain.WEIGHT.value, current_weight)
+    engine.register_domain_resolver(Domain.LABS.value, current_labs)
 
     workspace_url = (
         f"/settings/platform/support/{legacy_owner_roots.subject_id}"

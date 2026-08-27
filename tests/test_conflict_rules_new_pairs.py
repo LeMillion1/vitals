@@ -6,14 +6,9 @@ from sqlalchemy import select
 
 from vitals.enums import Domain
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import (
-    conflict_registrations,
-    conflict_catalog,
-    conflict_engine,
-    glp1_service,
-    labs_service,
-    skincare_service,
-)
+from vitals.services import glp1_service, labs_service, skincare_service
+from vitals.services.conflicts import catalog as conflict_catalog
+from vitals.services.conflicts import engine, registrations
 from vitals.services.hrt import catalog
 from vitals.utils.timeutils import today_local
 
@@ -30,7 +25,7 @@ async def _glp1_on_lipase(db_session, owner_write, *, value: float):
     await conflict_catalog.sync_catalog(db_session)
     # GLP-1 is closed, so the dose phase is written and read inside the
     # subject's scope; labs is still bridged and keeps its legacy resolver.
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await glp1_service.add_dose_phase(
         db_session,
         start_date=today_local(),
@@ -46,9 +41,9 @@ async def _glp1_on_lipase(db_session, owner_write, *, value: float):
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    return await conflict_engine.evaluate_scoped(
+    return await engine.evaluate_scoped(
         db_session,
-        scope=conflict_engine.ConflictScope(
+        scope=engine.ConflictScope(
             subject_id=owner_write.subject_id,
             evaluation_date=today_local(),
         ),
@@ -74,7 +69,7 @@ async def _androgen_over_skincare(db_session, *, peel: bool, owner_write):
     await catalog.sync_catalog(db_session)
     await conflict_catalog.sync_catalog(db_session)
     # A scoped write consults every registered domain, so register them all.
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await skincare_service.upsert_log(
         db_session, on_date=today_local(), peel=peel, moisturizer=True,
         identity=owner_write.identity,
@@ -83,7 +78,7 @@ async def _androgen_over_skincare(db_session, *, peel: bool, owner_write):
     await db_session.commit()
     # The write was scoped, so the read has to be too: the compatibility
     # resolver only sees rows that belong to nobody.
-    return await conflict_engine.evaluate_legacy_single_subject(
+    return await engine.evaluate_legacy_single_subject(
         db_session,
         Domain.HRT.value,
         {"compound_key": "testosterone_enanthate", "compound_class": "testosterone"},

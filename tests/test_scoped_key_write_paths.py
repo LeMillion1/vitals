@@ -33,7 +33,8 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import alerts_service, conflict_catalog, garmin_service
+from vitals.services import alerts_service, garmin_service
+from vitals.services.conflicts import catalog as conflict_catalog
 from vitals.services.hrt import catalog
 
 

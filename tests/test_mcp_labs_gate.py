@@ -13,8 +13,9 @@ from datetime import date
 import pytest
 
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import conflict_registrations, labs_service, supplements_service
-from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services import labs_service, supplements_service
+from vitals.services.conflicts import registrations
+from vitals.services.conflicts.engine import ConflictBlocked
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
@@ -29,7 +30,7 @@ def _use_test_factory(session_factory, monkeypatch, legacy_owner_roots):
 async def _potassium_hard_rule(session, owner_write):
     """The catalog's real lab_safety block, added directly so the test doesn't
     depend on the whole rule catalog being synced."""
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     session.add(
         ConflictRule(
             rule_type="hard_block",

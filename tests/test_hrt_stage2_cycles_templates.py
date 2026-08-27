@@ -17,7 +17,7 @@ from vitals.models.hrt import (
 from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 from vitals.services.hrt import catalog, cycles, templates
 
 
@@ -41,15 +41,15 @@ async def _identity(session, slug: str) -> WriteIdentity:
 
 
 async def _prepared(session, identity: WriteIdentity, *, legacy: bool = False):
-    return await conflict_engine.prepare_scoped_write(
+    return await engine.prepare_scoped_write(
         session,
-        context=conflict_engine.ConflictWriteContext(
+        context=engine.ConflictWriteContext(
             identity=identity,
             evaluation_date=ON_DATE,
             legacy_bridge=(
-                conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                engine.LegacyConflictBridge.FULLY_UNOWNED
                 if legacy
-                else conflict_engine.LegacyConflictBridge.REJECT
+                else engine.LegacyConflictBridge.REJECT
             ),
         ),
     )
@@ -121,7 +121,7 @@ async def test_invalid_prepared_capability_is_rejected_before_cycle_target_use(d
     second = await _identity(db_session, "hrt-capability-second")
     cycle, item, first_prepared = await _owned_cycle(db_session, first)
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await cycles.update_cycle_item(
             db_session,
             item.id,
@@ -202,7 +202,7 @@ async def test_template_snapshot_export_and_materialization_keep_scope_and_prove
     assert templates.export_template(
         template, subject_id=first.subject_id
     )["name"] == "Scoped template"
-    with pytest.raises(conflict_engine.ConflictScopeError):
+    with pytest.raises(engine.ConflictScopeError):
         templates.export_template(template, subject_id=second.subject_id)
 
     materialized = await templates.create_cycle_from_template(
@@ -302,7 +302,7 @@ async def test_template_graph_rejects_foreign_child_and_partial_legacy_parent(
             )
         )
 
-    with pytest.raises(conflict_engine.ConflictScopeError):
+    with pytest.raises(engine.ConflictScopeError):
         await templates.get_template(
             db_session, template.id, subject_id=first.subject_id
         )

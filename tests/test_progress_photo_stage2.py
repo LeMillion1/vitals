@@ -27,12 +27,8 @@ from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.tenancy import FileAsset
 from vitals.models.weight import ProgressPhoto
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    conflict_engine,
-    file_asset_service,
-    timeline_service,
-    weight_service,
-)
+from vitals.services import file_asset_service, timeline_service, weight_service
+from vitals.services.conflicts import engine
 from vitals.utils.timeutils import now_local
 
 
@@ -79,14 +75,14 @@ def _context(
     *,
     on_date: date = PHOTO_DATE,
     legacy: bool = False,
-) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=on_date,
         legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            engine.LegacyConflictBridge.FULLY_UNOWNED
             if legacy
-            else conflict_engine.LegacyConflictBridge.REJECT
+            else engine.LegacyConflictBridge.REJECT
         ),
     )
 
@@ -98,7 +94,7 @@ async def _prepared(
     on_date: date = PHOTO_DATE,
     legacy: bool = False,
 ):
-    return await conflict_engine.prepare_scoped_write(
+    return await engine.prepare_scoped_write(
         session,
         context=_context(identity, on_date=on_date, legacy=legacy),
     )
@@ -969,7 +965,7 @@ async def test_prepared_capability_is_required_and_checked_before_file_resolutio
     asset = await _asset(db_session, identity, "capability-required")
     wrong = await _prepared(db_session, foreign)
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await weight_service.add_progress_photo(
             db_session,
             on_date=PHOTO_DATE,
@@ -977,7 +973,7 @@ async def test_prepared_capability_is_required_and_checked_before_file_resolutio
             file_asset_id=asset.id,
             prepared_conflict_write=wrong,
         )
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await weight_service.add_progress_photo(
             db_session,
             on_date=PHOTO_DATE,
@@ -985,7 +981,7 @@ async def test_prepared_capability_is_required_and_checked_before_file_resolutio
             file_asset_id=foreign.subject_id,
             prepared_conflict_write=wrong,
         )
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await weight_service.delete_progress_photo(
             db_session,
             999_999,

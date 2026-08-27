@@ -90,7 +90,7 @@ from vitals.ownership import (
 )
 from vitals.ownership_transition.portability_v1 import PortabilityV1OwnershipHooks
 from vitals.i18n import t
-from vitals.services.conflict_catalog import (
+from vitals.services.conflicts.catalog import (
     sync_catalog as sync_conflict_catalog,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock

@@ -15,7 +15,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 from vitals.services.genetics import variants as variant_records
 from vitals.services.genetics.vcf import ParsedVariant
 from vitals.utils.timeutils import now_local
@@ -46,15 +46,15 @@ async def _prepared(
     *,
     legacy: bool = False,
 ):
-    return await conflict_engine.prepare_scoped_write(
+    return await engine.prepare_scoped_write(
         session,
-        context=conflict_engine.ConflictWriteContext(
+        context=engine.ConflictWriteContext(
             identity=identity,
-            evaluation_date=conflict_engine.today_local(),
+            evaluation_date=engine.today_local(),
             legacy_bridge=(
-                conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                engine.LegacyConflictBridge.FULLY_UNOWNED
                 if legacy
-                else conflict_engine.LegacyConflictBridge.REJECT
+                else engine.LegacyConflictBridge.REJECT
             ),
         ),
     )
@@ -204,10 +204,10 @@ async def test_partial_legacy_fact_fails_closed_in_conflict_resolver(
     with pytest.raises(variant_records.GeneticsOwnershipError, match="partial"):
         await variant_records.resolve_variants_scoped(
             db_session,
-            scope=conflict_engine.ConflictScope(
+            scope=engine.ConflictScope(
                 subject_id=legacy_owner_roots.subject_id,
-                evaluation_date=conflict_engine.today_local(),
-                legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+                evaluation_date=engine.today_local(),
+                legacy_bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
             ),
         )
 
@@ -1260,16 +1260,16 @@ async def test_replay_propagates_inner_conflict_scope_error(
     prepared = await _prepared(db_session, system)
 
     async def reject_inner_prepare(*args, **kwargs):
-        raise conflict_engine.ConflictActorInactive("synthetic inactive actor")
+        raise engine.ConflictActorInactive("synthetic inactive actor")
 
     monkeypatch.setattr(
-        conflict_engine,
+        engine,
         "prepare_scoped_write",
         reject_inner_prepare,
     )
 
     with pytest.raises(
-        conflict_engine.ConflictActorInactive,
+        engine.ConflictActorInactive,
         match="inactive actor",
     ):
         await variant_records.reparse_owned_pending(
@@ -1572,13 +1572,13 @@ async def test_postgres_legacy_write_holds_exact_one_governance_through_commit(
 
     async def legacy_write() -> None:
         async with factory() as session:
-            context = await conflict_engine.resolve_legacy_conflict_write_context(
+            context = await engine.resolve_legacy_conflict_write_context(
                 session,
                 actor_username="tester",
             )
             bridge_locked.set()
             await asyncio.wait_for(release_legacy_write.wait(), timeout=5)
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=context,
             )

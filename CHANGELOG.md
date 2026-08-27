@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — safety conflicts form one bounded context
+
+Curated conflict catalogs, subject activation, scoped evaluation, and resolver
+registration now live under `vitals.services.conflicts`. All domain writers,
+web/MCP readers, ownership operations, scheduler lifecycle code, and tests use
+the semantic package directly; the guarded flat-service ceiling falls from 43
+modules to 39 without changing rules, behavior, or schema.
+
 ### Changed — body-scan services form one bounded context
 
 Body-composition scan persistence and the platform-funded document parser now

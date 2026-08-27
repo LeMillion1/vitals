@@ -27,12 +27,9 @@ from vitals.enums import Source
 from vitals.models.base import Base
 from vitals.ownership import WriteIdentity
 from vitals.operations.ownership import portability_v1
-from vitals.services import (
-    conflict_catalog,
-    conflict_engine,
-    data_portability_service,
-    weight_service,
-)
+from vitals.services import data_portability_service, weight_service
+from vitals.services.conflicts import catalog as conflict_catalog
+from vitals.services.conflicts import engine as conflict_engine
 from vitals.services.hrt import catalog
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,

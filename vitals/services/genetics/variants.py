@@ -28,7 +28,8 @@ from vitals.models.genetics import DOMAIN, GeneticVariant
 from vitals.models.identity import HealthSubject
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, raw_payload_service
+from vitals.services import raw_payload_service
+from vitals.services.conflicts import engine
 from vitals.services.genetics.vcf import INTERPRETATIONS, ParsedVariant, interpret
 from vitals.utils.timeutils import now_local
 
@@ -54,7 +55,7 @@ class GeneticsOwnershipError(GeneticsServiceError):
 
 class GeneticsRawProvenanceError(
     GeneticsOwnershipError,
-    conflict_engine.ConflictRawOwnershipError,
+    engine.ConflictRawOwnershipError,
 ):
     """A VCF raw/fact provenance graph is missing or inconsistent."""
 
@@ -86,15 +87,15 @@ def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
     identity: WriteIdentity | None,
-    prepared: conflict_engine.PreparedConflictWrite | None,
-) -> conflict_engine.ConflictWriteContext | None:
+    prepared: engine.PreparedConflictWrite | None,
+) -> engine.ConflictWriteContext | None:
     if identity is None and prepared is None:
         return None
     if identity is None or prepared is None:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "scoped genetics writes require identity and a prepared conflict write"
         )
-    return conflict_engine.require_prepared_identity(
+    return engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
@@ -647,7 +648,7 @@ async def _lock_scoped_variant(
     session: AsyncSession,
     variant_id: int,
     *,
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ) -> GeneticVariant | None:
     row = await session.scalar(
         select(GeneticVariant)
@@ -698,7 +699,7 @@ async def add_variant(
     source: str = Source.MANUAL.value,
     raw_payload_id: int | None = None,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> GeneticVariant:
     context = _require_scoped_prepared_write(
         session,
@@ -709,7 +710,7 @@ async def add_variant(
         _validate_source(source)
         owner_user_id = await _subject_owner_user_id(session, identity.subject_id)
         if identity.actor_user_id != owner_user_id:
-            raise conflict_engine.ConflictPreparedWriteError(
+            raise engine.ConflictPreparedWriteError(
                 "genetics writes require the subject owner actor"
             )
         if source in {Source.MANUAL.value, Source.MCP.value}:
@@ -762,7 +763,7 @@ async def _lock_by_rsid(
     session: AsyncSession,
     *,
     rsid: str,
-    context: conflict_engine.ConflictWriteContext | None,
+    context: engine.ConflictWriteContext | None,
     replacement_raw: RawPayload | None = None,
 ) -> GeneticVariant | None:
     rsid = _normalize_rsid(rsid)
@@ -837,7 +838,7 @@ async def upsert_by_rsid(
     source: str = Source.VCF_IMPORT.value,
     raw_payload_id: int | None = None,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> GeneticVariant:
     """Locked rsID upsert; corrections preserve origin/source/raw provenance."""
 
@@ -853,7 +854,7 @@ async def upsert_by_rsid(
         _validate_source(source)
         owner_user_id = await _subject_owner_user_id(session, identity.subject_id)
         if identity.actor_user_id != owner_user_id:
-            raise conflict_engine.ConflictPreparedWriteError(
+            raise engine.ConflictPreparedWriteError(
                 "genetics writes require the subject owner actor"
             )
         if (
@@ -1038,7 +1039,7 @@ async def _replace_vcf_rows(
     parsed: Sequence[ParsedVariant],
     only_interpreted: bool,
     raw: RawPayload,
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ) -> tuple[int, int]:
     # Last occurrence wins, then rsID sorting gives every worker the same lock
     # order and prevents a batch from updating one rsID twice.
@@ -1127,7 +1128,7 @@ async def ingest_vcf_batch(
     truncated: bool,
     only_interpreted: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> VcfIngestSummary:
     """Persist bounded raw rows first, then normalize the tiny curated batch."""
 
@@ -1179,7 +1180,7 @@ async def ingest_vcf_batch(
     assert context is not None
     owner_user_id = await _subject_owner_user_id(session, identity.subject_id)
     if identity.actor_user_id != owner_user_id:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "initial owned VCF ingestion requires the subject owner actor"
         )
     # Preserve the established header-only behavior: capability/ownership was
@@ -1252,7 +1253,7 @@ async def store_raw_vcf(
     variants: Sequence[Sequence[str]],
     truncated: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> RawPayload:
     """Retired raw-only adapter. Use ``ingest_vcf_batch``.
 
@@ -1275,7 +1276,7 @@ async def delete_variant(
     variant_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     context = _require_scoped_prepared_write(
         session,
@@ -1285,7 +1286,7 @@ async def delete_variant(
     if True:
         owner_user_id = await _subject_owner_user_id(session, identity.subject_id)
         if identity.actor_user_id != owner_user_id:
-            raise conflict_engine.ConflictPreparedWriteError(
+            raise engine.ConflictPreparedWriteError(
                 "genetics writes require the subject owner actor"
             )
         row = await _lock_scoped_variant(
@@ -1320,7 +1321,7 @@ async def legacy_unowned_present(session: AsyncSession) -> bool:
 async def resolve_variants_scoped(
     session: AsyncSession,
     *,
-    scope: conflict_engine.ConflictScope,
+    scope: engine.ConflictScope,
 ) -> list[dict]:
     """Resolve one subject's markers for the conflict engine.
 
@@ -1367,7 +1368,7 @@ async def reparse_owned_pending(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
     limit: int = raw_payload_service.REPARSE_BATCH,
     since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
 ) -> int:
@@ -1454,16 +1455,16 @@ async def reparse_owned_pending(
                     None if is_fully_legacy else probe.actor_user_id
                 )
                 origin_identity = WriteIdentity(identity.subject_id, origin_actor)
-                row_context = conflict_engine.ConflictWriteContext(
+                row_context = engine.ConflictWriteContext(
                     identity=origin_identity,
                     evaluation_date=outer_context.evaluation_date,
-                    legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
+                    legacy_bridge=engine.LegacyConflictBridge.REJECT,
                 )
-                prepared = await conflict_engine.prepare_scoped_write(
+                prepared = await engine.prepare_scoped_write(
                     session,
                     context=row_context,
                 )
-                context = conflict_engine.require_prepared_identity(
+                context = engine.require_prepared_identity(
                     session,
                     prepared=prepared,
                     identity=origin_identity,
@@ -1486,7 +1487,7 @@ async def reparse_owned_pending(
                 )
                 raw.processed_at = now_local()
                 await session.flush()
-        except (GeneticsServiceError, conflict_engine.ConflictScopeError):
+        except (GeneticsServiceError, engine.ConflictScopeError):
             raise
         except Exception:
             logger.warning(

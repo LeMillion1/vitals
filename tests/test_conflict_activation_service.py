@@ -14,8 +14,8 @@ from vitals.enums import UserStatus
 from vitals.models.conflict_rule import ConflictRule
 from vitals.models.identity import HealthSubject, User
 from vitals.models.scoped_settings import SubjectSetting
-from vitals.services import conflict_activation_service as activation
-from vitals.services import conflict_catalog
+from vitals.services.conflicts import activation
+from vitals.services.conflicts import catalog
 
 
 LegacyConflictBridge = activation.LegacyConflictActivationBridge
@@ -78,7 +78,7 @@ def _custom_rule(
 
 
 async def _catalog_rows(session: AsyncSession) -> list[ConflictRule]:
-    await conflict_catalog.sync_catalog(session)
+    await catalog.sync_catalog(session)
     return list(
         await session.scalars(
             select(ConflictRule)
@@ -113,7 +113,7 @@ async def test_strict_missing_setting_enables_the_catalog_and_requires_subject(d
 
 async def test_scoped_document_is_exact_detached_and_state_is_immutable(db_session):
     subject = await _subject(db_session)
-    codes = sorted(entry["code"] for entry in conflict_catalog.load_rule_catalog())[:2]
+    codes = sorted(entry["code"] for entry in catalog.load_rule_catalog())[:2]
     persisted = {"v": 1, "disabled_codes": codes}
     db_session.add(
         SubjectSetting(
@@ -346,7 +346,7 @@ async def test_foreign_rule_fails_without_mutation(db_session):
 
 async def test_catalog_copy_unknown_global_and_tampered_global_fail_closed(db_session):
     subject = await _subject(db_session)
-    entries = conflict_catalog.load_rule_catalog()
+    entries = catalog.load_rule_catalog()
     copied = ConflictRule(
         subject_id=subject.id,
         code=entries[0]["code"],

@@ -38,7 +38,8 @@ from vitals.models.tenancy import (
     PlatformIntegrationConnection,
 )
 from vitals.services import ai_gateway_service as gateway
-from vitals.services import conflict_engine, labs_service
+from vitals.services import labs_service
+from vitals.services.conflicts import engine
 from vitals.services import lab_document_ai_service as lab_ai
 from vitals.services.legacy_ownership import LegacySubjectResolutionError
 from web.config import get_web_config
@@ -666,12 +667,12 @@ async def test_replay_normalizes_only_successful_platform_extraction(
         AIInvocationSource.WEB.value,
     )
 
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         db_session,
         actor_username=None,
         evaluation_date=DAY,
     )
-    prepared_write = await conflict_engine.prepare_scoped_write(
+    prepared_write = await engine.prepare_scoped_write(
         db_session, context=context
     )
     done = await labs_service.reparse_owned_pending(

@@ -21,7 +21,8 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.models.weight import NoiseMarker, WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, glp1_service, modules_service
+from vitals.services import glp1_service, modules_service
+from vitals.services.conflicts import engine
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped
@@ -40,20 +41,20 @@ def _context(
     *,
     on_date: date = EVALUATION_DATE,
     legacy_bridge: bool = False,
-) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=on_date,
         legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            engine.LegacyConflictBridge.FULLY_UNOWNED
             if legacy_bridge
-            else conflict_engine.LegacyConflictBridge.REJECT
+            else engine.LegacyConflictBridge.REJECT
         ),
     )
 
 
 async def _prepared(session: AsyncSession, context):
-    return await conflict_engine.prepare_scoped_write(session, context=context)
+    return await engine.prepare_scoped_write(session, context=context)
 
 
 async def _identity(session: AsyncSession, slug: str) -> WriteIdentity:
@@ -72,7 +73,7 @@ async def _identity(session: AsyncSession, slug: str) -> WriteIdentity:
 
 
 async def _legacy_context(session: AsyncSession, *, on_date=EVALUATION_DATE):
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         session,
         actor_username="tester",
         evaluation_date=on_date,
@@ -105,8 +106,8 @@ def _register_resolvers() -> None:
         del session, scope
         return [{"marker": "synthetic-risk"}]
 
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(Domain.LABS.value, labs)
+    engine.register_domain_resolver(
         Domain.GLP1.value,
         glp1_service.resolve_active_scoped,
     )
@@ -192,7 +193,7 @@ async def test_prepared_identity_and_date_fail_before_target_read(
 
     monkeypatch.setattr(glp1_service, "_owned_row_for_update", target_probe)
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError, match="date"):
+    with pytest.raises(engine.ConflictPreparedWriteError, match="date"):
         await glp1_service.update_injection(
             db_session,
             1,
@@ -202,7 +203,7 @@ async def test_prepared_identity_and_date_fail_before_target_read(
             identity=identity,
             prepared_conflict_write=prepared,
         )
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await glp1_service.delete_injection(
             db_session,
             1,
@@ -224,7 +225,7 @@ async def test_conflict_block_is_write_free_and_override_is_human_attributed(
     _register_resolvers()
     prepared = await _prepared(db_session, _context(identity))
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await glp1_service.log_injection(
             db_session,
             on_date=EVALUATION_DATE,
@@ -280,7 +281,7 @@ async def test_blocked_phase_does_not_close_existing_phase(
     await _blocking_rule(db_session, identity)
     _register_resolvers()
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await glp1_service.add_dose_phase(
             db_session,
             start_date=EVALUATION_DATE,
@@ -811,7 +812,7 @@ async def test_plateau_rejects_weight_linked_to_foreign_raw_provenance(
     )
     await db_session.commit()
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+    with pytest.raises(engine.ConflictRawOwnershipError):
         await glp1_service.evaluate_plateau(
             db_session,
             subject_id=identity.subject_id,
@@ -1279,7 +1280,7 @@ async def test_postgres_legacy_phase_write_serializes_subject_governance(
 
     async def legacy_phase_write() -> None:
         async with factory() as session:
-            context = await conflict_engine.resolve_legacy_conflict_write_context(
+            context = await engine.resolve_legacy_conflict_write_context(
                 session,
                 actor_username="tester",
                 evaluation_date=EVALUATION_DATE,

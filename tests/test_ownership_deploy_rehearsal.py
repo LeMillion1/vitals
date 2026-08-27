@@ -43,7 +43,7 @@ from vitals.ownership import (
     required_ownership_columns,
 )
 from vitals.ownership_deploy import OWNERSHIP_BACKFILL_SEQUENCE
-from vitals.services import conflict_catalog
+from vitals.services.conflicts import catalog as conflict_catalog
 from vitals.services.hrt import catalog
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
 from vitals.persistence.rls import SUBJECT_SETTING

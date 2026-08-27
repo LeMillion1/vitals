@@ -33,11 +33,11 @@ _EXPECTED_LEGACY_CALLS = Counter(
 _ALLOWED_ACTIVE_WRITER_SCOPES = frozenset(
     {
         (
-            "vitals/services/conflict_activation_service.py",
+            "vitals/services/conflicts/activation.py",
             "set_rule_activation",
         ),
         (
-            "vitals/services/conflict_activation_service.py",
+            "vitals/services/conflicts/activation.py",
             "toggle_rule_activation",
         ),
     }
@@ -45,13 +45,13 @@ _ALLOWED_ACTIVE_WRITER_SCOPES = frozenset(
 _REQUIRED_CURRENT_ACTIVE_WRITER_SCOPES = frozenset(
     {
         (
-            "vitals/services/conflict_activation_service.py",
+            "vitals/services/conflicts/activation.py",
             "set_rule_activation",
         ),
     }
 )
 _EXPECTED_DYNAMIC_RULE_WRITER_SCOPES = frozenset(
-    {("vitals/services/conflict_catalog.py", "sync_catalog")}
+    {("vitals/services/conflicts/catalog.py", "sync_catalog")}
 )
 
 
@@ -173,18 +173,18 @@ class _Visitor(ast.NodeVisitor):
         self.scope.pop()
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if node.module == "vitals.services":
+        if node.module == "vitals.services.conflicts":
             for name in node.names:
-                if name.name != "conflict_engine":
+                if name.name != "engine":
                     continue
                 if name.asname is None:
                     self.has_canonical_engine_import = True
                 else:
                     self._legacy_bypass(
                         node,
-                        f"conflict_engine module alias {name.asname!r} is forbidden",
+                        f"engine module alias {name.asname!r} is forbidden",
                     )
-        elif node.module == "vitals.services.conflict_engine":
+        elif node.module == "vitals.services.conflicts.engine":
             for name in node.names:
                 if name.name in _LEGACY_WRITER_APIS or name.name == "*":
                     self._legacy_bypass(
@@ -195,7 +195,7 @@ class _Visitor(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for name in node.names:
-            if name.name == "vitals.services.conflict_engine":
+            if name.name == "vitals.services.conflicts.engine":
                 self._legacy_bypass(
                     node,
                     "import conflict engine through `import` is forbidden; use the "
@@ -204,13 +204,17 @@ class _Visitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_arg(self, node: ast.arg) -> None:
-        if node.arg == "conflict_engine":
-            self._legacy_bypass(node, "local conflict_engine binding is forbidden")
+        if self.has_canonical_engine_import and node.arg == "engine":
+            self._legacy_bypass(node, "local engine binding is forbidden")
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
-        if node.id == "conflict_engine" and isinstance(node.ctx, ast.Store):
-            self._legacy_bypass(node, "rebinding conflict_engine is forbidden")
+        if (
+            self.has_canonical_engine_import
+            and node.id == "engine"
+            and isinstance(node.ctx, ast.Store)
+        ):
+            self._legacy_bypass(node, "rebinding engine is forbidden")
         if node.id in _LEGACY_WRITER_APIS and isinstance(node.ctx, ast.Load):
             self._legacy_bypass(
                 node,
@@ -222,7 +226,7 @@ class _Visitor(ast.NodeVisitor):
         if (
             node.attr in _LEGACY_WRITER_APIS
             and isinstance(node.value, ast.Name)
-            and node.value.id == "conflict_engine"
+            and node.value.id == "engine"
             and id(node) not in self._direct_writer_call_nodes
         ):
             self._legacy_bypass(
@@ -238,7 +242,7 @@ class _Visitor(ast.NodeVisitor):
                 isinstance(value, ast.Attribute)
                 and value.attr == "__dict__"
                 and isinstance(value.value, ast.Name)
-                and value.value.id == "conflict_engine"
+                and value.value.id == "engine"
             )
             engine_vars = (
                 isinstance(value, ast.Call)
@@ -246,7 +250,7 @@ class _Visitor(ast.NodeVisitor):
                 and value.func.id == "vars"
                 and value.args
                 and isinstance(value.args[0], ast.Name)
-                and value.args[0].id == "conflict_engine"
+                and value.args[0].id == "engine"
             )
             if engine_dict or engine_vars:
                 self._legacy_bypass(
@@ -256,8 +260,12 @@ class _Visitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        if isinstance(node.value, ast.Name) and node.value.id == "conflict_engine":
-            self._legacy_bypass(node, "aliasing the conflict_engine module is forbidden")
+        if (
+            self.has_canonical_engine_import
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "engine"
+        ):
+            self._legacy_bypass(node, "aliasing the engine module is forbidden")
         if self.imports_conflict_rule:
             for target in node.targets:
                 if any(_target_sets_active(item) for item in _assignment_targets(target)):
@@ -293,7 +301,7 @@ class _Visitor(ast.NodeVisitor):
             self._direct_writer_call_nodes.add(id(func))
             if (
                 isinstance(func.value, ast.Name)
-                and func.value.id == "conflict_engine"
+                and func.value.id == "engine"
             ):
                 self.legacy_calls.append(
                     (self.relative_path, self.function, func.attr)
@@ -302,7 +310,7 @@ class _Visitor(ast.NodeVisitor):
                 self._legacy_bypass(
                     node,
                     f"legacy writer {func.attr!r} must be called on canonical "
-                    "conflict_engine",
+                    "engine",
                 )
         elif isinstance(func, ast.Name) and func.id in _LEGACY_WRITER_APIS:
             self._legacy_bypass(
@@ -315,7 +323,7 @@ class _Visitor(ast.NodeVisitor):
             and func.id == "getattr"
             and len(node.args) >= 2
             and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == "conflict_engine"
+            and node.args[0].id == "engine"
             and _string_key(node.args[1]) in _LEGACY_WRITER_APIS
         ):
             self._legacy_bypass(node, "dynamic legacy writer lookup is forbidden")
@@ -333,9 +341,9 @@ class _Visitor(ast.NodeVisitor):
             dynamic_import
             and node.args
             and isinstance(node.args[0], ast.Constant)
-            and node.args[0].value == "vitals.services.conflict_engine"
+            and node.args[0].value == "vitals.services.conflicts.engine"
         ):
-            self._legacy_bypass(node, "dynamic conflict_engine import is forbidden")
+            self._legacy_bypass(node, "dynamic engine import is forbidden")
 
         if self.imports_conflict_rule:
             if (
@@ -385,7 +393,7 @@ def _audit() -> _Audit:
         visitor.visit(tree)
         if visitor.legacy_calls and not visitor.has_canonical_engine_import:
             visitor.legacy_bypasses.append(
-                f"{relative}: canonical conflict_engine import is missing"
+                f"{relative}: canonical engine import is missing"
             )
         calls.extend(visitor.legacy_calls)
         legacy_bypasses.extend(visitor.legacy_bypasses)
@@ -404,7 +412,7 @@ def _audit() -> _Audit:
 
 
 def _catalog_fields() -> tuple[str, ...]:
-    path = REPO_ROOT / "vitals/services/conflict_catalog.py"
+    path = REPO_ROOT / "vitals/services/conflicts/catalog.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     values = [
         node.value
@@ -447,11 +455,11 @@ def test_the_unscoped_engine_entry_points_are_gone() -> None:
     and left it unused, and the next caller would find it waiting.
     """
 
-    from vitals.services import conflict_engine
+    from vitals.services.conflicts import engine
 
     for name in sorted(_LEGACY_WRITER_APIS | {"evaluate"}):
-        assert not hasattr(conflict_engine, name), (
-            f"conflict_engine.{name} is back. Every evaluation is scoped: use "
+        assert not hasattr(engine, name), (
+            f"engine.{name} is back. Every evaluation is scoped: use "
             "evaluate_scoped/enforce_scoped, or enforce_prepared when the write "
             "path already holds a prepared capability."
         )
@@ -473,6 +481,6 @@ def test_conflict_rule_active_writers_are_confined_to_activation_seams() -> None
         audit.dynamic_rule_writer_scopes == _EXPECTED_DYNAMIC_RULE_WRITER_SCOPES
     )
     assert "active" not in _catalog_fields(), (
-        "conflict_catalog.sync_catalog uses dynamic setattr; adding active to "
+        "catalog.sync_catalog uses dynamic setattr; adding active to "
         "_CATALOG_FIELDS would overwrite the user's activation choice"
     )

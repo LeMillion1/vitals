@@ -12,7 +12,8 @@ from __future__ import annotations
 import pytest
 
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import conflict_registrations, supplements_service, weight_service
+from vitals.services import supplements_service, weight_service
+from vitals.services.conflicts import registrations
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
@@ -58,7 +59,7 @@ async def _seed_meal_block(db_session, owner_write):
 # ── Override plumbing ─────────────────────────────────────────────────────────
 async def test_log_meal_blocked_returns_payload_not_500(db_session, session_factory, monkeypatch, owner_write):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await _seed_meal_block(db_session, owner_write)
 
     result = await mcp_router.log_meal(name="steak", calories=600)
@@ -71,7 +72,7 @@ async def test_log_meal_blocked_returns_payload_not_500(db_session, session_fact
 
 async def test_log_meal_override_saves_through_block(db_session, session_factory, monkeypatch, owner_write):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await _seed_meal_block(db_session, owner_write)
 
     saved = await mcp_router.log_meal(name="steak", calories=600, override=True)

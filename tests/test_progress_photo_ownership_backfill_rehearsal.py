@@ -25,7 +25,8 @@ from sqlalchemy.pool import NullPool
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.operations.ownership import portability_v1
-from vitals.services import conflict_catalog, data_portability_service, weight_service
+from vitals.services import data_portability_service, weight_service
+from vitals.services.conflicts import catalog as conflict_catalog
 from vitals.services.hrt import catalog
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,

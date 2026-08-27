@@ -30,7 +30,8 @@ from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, weight_service
+from vitals.services import weight_service
+from vitals.services.conflicts import engine
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped
@@ -56,21 +57,21 @@ def _context(
     *,
     on_date: date = EVALUATION_DATE,
     legacy_bridge: bool = False,
-) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=on_date,
         legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            engine.LegacyConflictBridge.FULLY_UNOWNED
             if legacy_bridge
-            else conflict_engine.LegacyConflictBridge.REJECT
+            else engine.LegacyConflictBridge.REJECT
         ),
     )
 
 
 async def _prepared(
     session: AsyncSession,
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ) -> weight_service.PreparedWeightWrite:
     return await weight_service.prepare_weight_write(session, context=context)
 
@@ -80,10 +81,10 @@ async def _legacy_prepared(
     *,
     on_date: date = EVALUATION_DATE,
 ) -> tuple[
-    conflict_engine.ConflictWriteContext,
+    engine.ConflictWriteContext,
     weight_service.PreparedWeightWrite,
 ]:
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         session,
         actor_username="tester",
         evaluation_date=on_date,
@@ -151,7 +152,7 @@ async def test_prepared_weight_write_is_opaque_and_immutable(
     legacy_owner_roots,
 ):
     with pytest.raises(
-        conflict_engine.ConflictPreparedWriteError,
+        engine.ConflictPreparedWriteError,
         match="issued only",
     ):
         weight_service.PreparedWeightWrite()
@@ -596,7 +597,7 @@ async def test_provider_weight_without_raw_payload_is_rejected_write_free(
     )
 
     with pytest.raises(
-        conflict_engine.ConflictRawOwnershipError,
+        engine.ConflictRawOwnershipError,
         match="raw",
     ):
         await weight_service.log_weight(
@@ -663,10 +664,10 @@ async def test_garmin_rejects_strict_weight_capability_before_provider_mutation(
 @pytest.mark.parametrize(
     ("mismatch", "expected_error"),
     [
-        ("weight_raw_connection", conflict_engine.ConflictRawOwnershipError),
-        ("weight_raw_actor", conflict_engine.ConflictRawOwnershipError),
-        ("weight_raw_source", conflict_engine.ConflictRawOwnershipError),
-        ("raw_domain", conflict_engine.ConflictRawOwnershipError),
+        ("weight_raw_connection", engine.ConflictRawOwnershipError),
+        ("weight_raw_actor", engine.ConflictRawOwnershipError),
+        ("weight_raw_source", engine.ConflictRawOwnershipError),
+        ("raw_domain", engine.ConflictRawOwnershipError),
         ("wrong_provider", weight_service.WeightOwnershipError),
         ("wrong_connection_type", weight_service.WeightOwnershipError),
     ],
@@ -831,8 +832,8 @@ async def _unsafe_reactivation_fixture(
         del _session, scope
         return [{"marker": "synthetic-risk"}]
 
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(Domain.LABS.value, labs)
+    engine.register_domain_resolver(
         Domain.WEIGHT.value,
         weight_service.resolve_active_scoped,
     )
@@ -958,8 +959,8 @@ async def test_resolver_replacement_excludes_the_edited_weight(
         del session, scope
         return [{"marker": "synthetic-risk"}]
 
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(Domain.LABS.value, labs)
+    engine.register_domain_resolver(
         Domain.WEIGHT.value,
         weight_service.resolve_active_scoped,
     )
@@ -975,7 +976,7 @@ async def test_resolver_replacement_excludes_the_edited_weight(
     assert updated is row
     assert row.weight_kg == 80.0
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await weight_service.update_weight_log(
             db_session,
             row.id,
@@ -995,7 +996,7 @@ async def test_wrong_session_transaction_identity_and_date_are_rejected(
     context = _context(identity)
     prepared = await _prepared(db_session, context)
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError, match="date"):
+    with pytest.raises(engine.ConflictPreparedWriteError, match="date"):
         await weight_service.log_weight(
             db_session,
             on_date=OTHER_DATE,
@@ -1003,7 +1004,7 @@ async def test_wrong_session_transaction_identity_and_date_are_rejected(
             identity=identity,
             prepared_weight_write=prepared,
         )
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await weight_service.log_weight(
             db_session,
             on_date=EVALUATION_DATE,
@@ -1020,7 +1021,7 @@ async def test_wrong_session_transaction_identity_and_date_are_rejected(
     )
     async with factory() as other_session:
         with pytest.raises(
-            conflict_engine.ConflictPreparedWriteError,
+            engine.ConflictPreparedWriteError,
             match="session",
         ):
             await weight_service.log_weight(
@@ -1032,7 +1033,7 @@ async def test_wrong_session_transaction_identity_and_date_are_rejected(
             )
 
     await db_session.commit()
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await weight_service.log_weight(
             db_session,
             on_date=EVALUATION_DATE,

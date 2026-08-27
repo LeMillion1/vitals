@@ -32,10 +32,10 @@ from vitals.services.legacy_ownership import (
     LegacyOwnershipError,
     NoPersonalRecordError,
 )
-from vitals.services.conflict_activation_service import (
+from vitals.services.conflicts.activation import (
     ConflictActivationLegacyBridgeError,
 )
-from vitals.services.conflict_engine import ConflictLegacyBridgeError
+from vitals.services.conflicts.engine import ConflictLegacyBridgeError
 from vitals.services.digest_service import DigestOwnershipError
 from vitals.services.garmin_weight_service import (
     GarminWeightExportLegacyBridgeError,
@@ -275,7 +275,8 @@ async def lifespan(app: FastAPI):
     # process-local background execution.
     from vitals.config import load_config
     from vitals.scheduler.lifecycle import WorkerLifecycle
-    from vitals.services import conflict_catalog, conflict_engine
+    from vitals.services.conflicts import catalog as conflict_catalog
+    from vitals.services.conflicts import engine
     from vitals.services.hrt import catalog
 
     config = load_config()
@@ -334,13 +335,13 @@ async def lifespan(app: FastAPI):
     async with session_factory() as session:
         try:
             conflict_context = (
-                await conflict_engine.resolve_legacy_conflict_write_context(
+                await engine.resolve_legacy_conflict_write_context(
                     session,
                     actor_username=None,
                     evaluation_date=today_local(),
                 )
             )
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )

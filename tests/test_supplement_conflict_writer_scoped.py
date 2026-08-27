@@ -13,7 +13,8 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.models.supplements import Supplement
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, supplements_service
+from vitals.services import supplements_service
+from vitals.services.conflicts import engine
 
 
 EVALUATION_DATE = date(2026, 8, 20)
@@ -41,15 +42,15 @@ def _register_resolvers() -> None:
         del session, scope
         return [{"marker": "synthetic-risk"}]
 
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(Domain.LABS.value, labs)
+    engine.register_domain_resolver(
         Domain.SUPPLEMENTS.value,
         supplements_service.resolve_active_scoped,
     )
 
 
-def _context(legacy_owner_roots) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+def _context(legacy_owner_roots) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=WriteIdentity(
             legacy_owner_roots.subject_id,
             legacy_owner_roots.user_id,
@@ -62,12 +63,12 @@ async def test_scoped_create_block_is_write_free(db_session, legacy_owner_roots)
     await _seed_blocking_rule(db_session, legacy_owner_roots.subject_id)
     _register_resolvers()
     context = _context(legacy_owner_roots)
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await supplements_service.add_supplement(
             db_session,
             name="Iron",
@@ -91,7 +92,7 @@ async def test_scoped_create_override_stamps_row_and_alert(
     rule = await _seed_blocking_rule(db_session, legacy_owner_roots.subject_id)
     _register_resolvers()
     context = _context(legacy_owner_roots)
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
@@ -130,7 +131,7 @@ async def test_scoped_activation_blocks_then_overrides_without_losing_identity(
     rule = await _seed_blocking_rule(db_session, legacy_owner_roots.subject_id)
     _register_resolvers()
     context = _context(legacy_owner_roots)
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
@@ -144,11 +145,11 @@ async def test_scoped_activation_blocks_then_overrides_without_losing_identity(
     )
     await db_session.commit()
 
-    blocked = await conflict_engine.prepare_scoped_write(
+    blocked = await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await supplements_service.set_active(
             db_session,
             row.id,
@@ -161,7 +162,7 @@ async def test_scoped_activation_blocks_then_overrides_without_losing_identity(
         select(func.count()).select_from(SystemAlert)
     ) == 0
 
-    overridden = await conflict_engine.prepare_scoped_write(
+    overridden = await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
@@ -189,13 +190,13 @@ async def test_prepared_identity_mismatch_is_rejected_before_create(
 ):
     _register_resolvers()
     context = _context(legacy_owner_roots)
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
     mismatched = WriteIdentity(context.identity.subject_id, uuid.uuid4())
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await supplements_service.add_supplement(
             db_session,
             name="Magnesium",
@@ -260,12 +261,12 @@ async def test_deactivation_rejects_mismatched_or_committed_capability(
     db_session.add(row)
     await db_session.commit()
 
-    mismatched_prepared = await conflict_engine.prepare_scoped_write(
+    mismatched_prepared = await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
     mismatched = WriteIdentity(context.identity.subject_id, uuid.uuid4())
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await supplements_service.set_active(
             db_session,
             row.id,
@@ -276,7 +277,7 @@ async def test_deactivation_rejects_mismatched_or_committed_capability(
     assert row.active is True
 
     await db_session.commit()
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await supplements_service.set_active(
             db_session,
             row.id,
@@ -315,12 +316,12 @@ async def test_activation_refreshes_locked_row_before_conflict_evaluation(
         execution_options={"synchronize_session": False},
     )
     assert row.key == "not_iron"
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await supplements_service.set_active(
             db_session,
             row.id,
@@ -356,7 +357,7 @@ async def test_scoped_update_replaces_old_resolver_entity_without_false_block(
     )
     db_session.add(row)
     await db_session.commit()
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
@@ -396,12 +397,12 @@ async def test_scoped_update_to_conflicting_state_is_blocked_write_free(
     )
     db_session.add(row)
     await db_session.commit()
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await supplements_service.update_supplement(
             db_session,
             row.id,
@@ -543,7 +544,7 @@ async def test_internal_replacement_marker_is_not_custom_rule_input(
             condition_a={"marker": "synthetic-risk"},
             domain_b=Domain.SUPPLEMENTS.value,
             condition_b={
-                conflict_engine.CONFLICT_ENTITY_KEY: str(row.id),
+                engine.CONFLICT_ENTITY_KEY: str(row.id),
             },
             severity=Severity.BLOCK.value,
             message="Internal resolver identity must stay private.",
@@ -553,7 +554,7 @@ async def test_internal_replacement_marker_is_not_custom_rule_input(
     await db_session.commit()
     _register_resolvers()
 
-    assert await conflict_engine.evaluate_scoped(
+    assert await engine.evaluate_scoped(
         db_session,
         scope=context.scope,
         domain=Domain.LABS,

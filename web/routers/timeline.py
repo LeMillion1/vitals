@@ -12,7 +12,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import AnnotationKind, Domain
-from vitals.services import conflict_engine, timeline_service
+from vitals.services import timeline_service
+from vitals.services.conflicts import engine
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
@@ -44,7 +45,7 @@ async def timeline_feed(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    scope = await conflict_engine.resolve_legacy_conflict_scope(
+    scope = await engine.resolve_legacy_conflict_scope(
         db,
         actor_username=username,
         evaluation_date=today_local(),

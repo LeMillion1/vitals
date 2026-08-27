@@ -35,7 +35,7 @@ from vitals.services.access_resolution import (
 )
 from vitals.services.emergency import access as emergency_access
 from vitals.services.legacy_ownership import NoPersonalRecordError
-from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
 from web.care_context import principal_user_id
 from web.deps import get_session, require_auth, require_recent_auth

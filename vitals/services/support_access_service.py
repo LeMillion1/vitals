@@ -79,7 +79,7 @@ from vitals.models.support_repair import (
 from vitals.models.weight import BodyMeasurement
 from vitals.ownership import WriteIdentity
 from vitals.services import data_portability_service
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 from vitals.services.identity_service import acquire_identity_governance_lock
 
 #: How long an unanswered ask stays answerable. A request nobody replied to is
@@ -1565,9 +1565,9 @@ async def execute_repair(
     )
     if target_date is None:
         raise RepairNotFound("the repair target no longer exists")
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         session,
-        context=conflict_engine.ConflictWriteContext(
+        context=engine.ConflictWriteContext(
             identity=WriteIdentity(
                 subject_id=action.subject_id,
                 actor_user_id=context.principal.user_id,
@@ -1603,7 +1603,7 @@ async def execute_repair(
         await session.flush()
         return action
 
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared,
         domain=Domain.WEIGHT,
@@ -1661,9 +1661,9 @@ async def revert_repair(
     )
     if target_date is None:
         raise RepairNotFound("the repair target no longer exists")
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         session,
-        context=conflict_engine.ConflictWriteContext(
+        context=engine.ConflictWriteContext(
             identity=WriteIdentity(
                 subject_id=action.subject_id, actor_user_id=owner_user_id
             ),
@@ -1687,7 +1687,7 @@ async def revert_repair(
         or target.updated_at != action.target_updated_at_after_execute
     ):
         raise RepairStateError("the measurement changed after repair; revert refused")
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared,
         domain=Domain.WEIGHT,

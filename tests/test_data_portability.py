@@ -45,7 +45,8 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import BodyMeasurement, ProgressPhoto, WeightLog
 from vitals.operations.ownership import portability_v1
 from vitals.operations.ownership.portability_v1 import import_full
-from vitals.services import conflict_catalog, data_portability_service
+from vitals.services import data_portability_service
+from vitals.services.conflicts import catalog
 from vitals.services.data_portability_service import (
     PortabilityError,
     export_full,
@@ -261,7 +262,7 @@ async def _seed(session, *, garmin_connection_id, hevy_connection_id, legacy_own
             ),
         ]
     )
-    await conflict_catalog.sync_catalog(session)
+    await catalog.sync_catalog(session)
     await session.commit()
 
 
@@ -1400,7 +1401,7 @@ async def test_full_import_atomically_restores_current_conflict_catalog(
         },
     )
 
-    definitions = conflict_catalog.load_rule_catalog()
+    definitions = catalog.load_rule_catalog()
     rows = list(await db_session.scalars(select(ConflictRule)))
     assert {row.code for row in rows} == {entry["code"] for entry in definitions}
     phase = CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["conflict_rules"]

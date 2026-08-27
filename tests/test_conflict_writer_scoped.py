@@ -16,7 +16,7 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.models.identity import HealthSubject, User
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 
 
 EVALUATION_DATE = date(2026, 8, 19)
@@ -26,11 +26,11 @@ def _context(
     subject_id: uuid.UUID,
     actor_user_id: uuid.UUID | None,
     *,
-    bridge: conflict_engine.LegacyConflictBridge = (
-        conflict_engine.LegacyConflictBridge.REJECT
+    bridge: engine.LegacyConflictBridge = (
+        engine.LegacyConflictBridge.REJECT
     ),
-) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=WriteIdentity(subject_id, actor_user_id),
         evaluation_date=EVALUATION_DATE,
         legacy_bridge=bridge,
@@ -100,8 +100,8 @@ def _register_matching_pair(*, matching_subject_id: uuid.UUID | None = None) -> 
             return []
         return [{"present": True}]
 
-    conflict_engine.register_domain_resolver(Domain.WEIGHT.value, weight)
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
+    engine.register_domain_resolver(Domain.WEIGHT.value, weight)
+    engine.register_domain_resolver(Domain.LABS.value, labs)
 
 
 async def test_writer_keeps_rules_and_alerts_in_exact_subject(
@@ -113,7 +113,7 @@ async def test_writer_keeps_rules_and_alerts_in_exact_subject(
     await db_session.commit()
     _register_matching_pair(matching_subject_id=subject_b.id)
 
-    violations_a = await conflict_engine.enforce_scoped(
+    violations_a = await engine.enforce_scoped(
         db_session,
         context=_context(
             legacy_owner_roots.subject_id,
@@ -125,7 +125,7 @@ async def test_writer_keeps_rules_and_alerts_in_exact_subject(
     assert violations_a == []
     assert list(await db_session.scalars(select(SystemAlert))) == []
 
-    violations_b = await conflict_engine.enforce_scoped(
+    violations_b = await engine.enforce_scoped(
         db_session,
         context=_context(subject_b.id, user_b.id),
         domain=Domain.WEIGHT,
@@ -141,12 +141,12 @@ async def test_legacy_write_context_proves_owner_or_system_under_exact_one(
     db_session,
     legacy_owner_roots,
 ):
-    human = await conflict_engine.resolve_legacy_conflict_write_context(
+    human = await engine.resolve_legacy_conflict_write_context(
         db_session,
         actor_username="tester",
         evaluation_date=EVALUATION_DATE,
     )
-    system = await conflict_engine.resolve_legacy_conflict_write_context(
+    system = await engine.resolve_legacy_conflict_write_context(
         db_session,
         actor_username=None,
         evaluation_date=EVALUATION_DATE,
@@ -156,14 +156,14 @@ async def test_legacy_write_context_proves_owner_or_system_under_exact_one(
         legacy_owner_roots.user_id,
     )
     assert system.identity == WriteIdentity(legacy_owner_roots.subject_id, None)
-    assert human.legacy_bridge is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+    assert human.legacy_bridge is engine.LegacyConflictBridge.FULLY_UNOWNED
 
     # A second person alone does not close it. The bridge widens to rows nobody
     # owns, and with none of those in the database it widens to nothing — the
     # write is an ordinary scoped one, and demanding a sole subject for it was
     # stopping seven pages that were asking nothing of the bridge.
     await _add_subject(db_session, "second")
-    await conflict_engine.prepare_scoped_write(db_session, context=human)
+    await engine.prepare_scoped_write(db_session, context=human)
 
     # Give it a rule that belongs to nobody and names nothing, and the refusal
     # comes back — that row genuinely cannot say whose state it is about.
@@ -182,8 +182,8 @@ async def test_legacy_write_context_proves_owner_or_system_under_exact_one(
         )
     )
     await db_session.flush()
-    with pytest.raises(conflict_engine.ConflictLegacyBridgeError):
-        await conflict_engine.prepare_scoped_write(db_session, context=human)
+    with pytest.raises(engine.ConflictLegacyBridgeError):
+        await engine.prepare_scoped_write(db_session, context=human)
 
 
 async def test_prepare_rejects_missing_and_inactive_actors(
@@ -191,16 +191,16 @@ async def test_prepare_rejects_missing_and_inactive_actors(
     legacy_owner_roots,
 ):
     missing = _context(legacy_owner_roots.subject_id, uuid.uuid4())
-    with pytest.raises(conflict_engine.ConflictActorNotFound):
-        await conflict_engine.prepare_scoped_write(db_session, context=missing)
+    with pytest.raises(engine.ConflictActorNotFound):
+        await engine.prepare_scoped_write(db_session, context=missing)
 
     owner = await db_session.get(User, legacy_owner_roots.user_id)
     assert owner is not None
     owner.status = UserStatus.SUSPENDED.value
     await db_session.flush()
     inactive = _context(legacy_owner_roots.subject_id, owner.id)
-    with pytest.raises(conflict_engine.ConflictActorInactive):
-        await conflict_engine.prepare_scoped_write(db_session, context=inactive)
+    with pytest.raises(engine.ConflictActorInactive):
+        await engine.prepare_scoped_write(db_session, context=inactive)
 
 
 async def test_legacy_bridge_rejects_an_active_non_owner_actor(
@@ -218,10 +218,10 @@ async def test_legacy_bridge_rejects_an_active_non_owner_actor(
     context = _context(
         legacy_owner_roots.subject_id,
         outsider.id,
-        bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+        bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
     )
-    with pytest.raises(conflict_engine.ConflictActorOwnershipError):
-        await conflict_engine.prepare_scoped_write(db_session, context=context)
+    with pytest.raises(engine.ConflictActorOwnershipError):
+        await engine.prepare_scoped_write(db_session, context=context)
 
 
 async def test_blocking_write_mutates_zero_alerts(
@@ -242,8 +242,8 @@ async def test_blocking_write_mutates_zero_alerts(
     await db_session.commit()
     _register_matching_pair()
 
-    with pytest.raises(conflict_engine.ConflictBlocked) as exc_info:
-        await conflict_engine.enforce_scoped(
+    with pytest.raises(engine.ConflictBlocked) as exc_info:
+        await engine.enforce_scoped(
             db_session,
             context=_context(
                 legacy_owner_roots.subject_id,
@@ -268,7 +268,7 @@ async def test_human_override_stamps_actor_on_exact_health_alert(
     await db_session.commit()
     _register_matching_pair()
 
-    await conflict_engine.enforce_scoped(
+    await engine.enforce_scoped(
         db_session,
         context=_context(
             legacy_owner_roots.subject_id,
@@ -303,8 +303,8 @@ async def test_system_override_is_rejected_before_alert_mutation(
     await db_session.commit()
     _register_matching_pair()
 
-    with pytest.raises(conflict_engine.ConflictOverrideActorRequired):
-        await conflict_engine.enforce_scoped(
+    with pytest.raises(engine.ConflictOverrideActorRequired):
+        await engine.enforce_scoped(
             db_session,
             context=_context(legacy_owner_roots.subject_id, None),
             domain=Domain.WEIGHT,
@@ -331,7 +331,7 @@ async def test_passive_system_write_is_actorless_and_rule_order_is_stable(
     await db_session.commit()
     _register_matching_pair()
 
-    violations = await conflict_engine.enforce_scoped(
+    violations = await engine.enforce_scoped(
         db_session,
         context=_context(legacy_owner_roots.subject_id, None),
         domain=Domain.WEIGHT,
@@ -372,11 +372,11 @@ async def test_day_end_scoped_raises_then_clears_only_subject_alert(
         del session, scope
         return [{"present": True}] if state["fires"] else []
 
-    conflict_engine.register_domain_resolver(Domain.WEIGHT.value, weight)
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
+    engine.register_domain_resolver(Domain.WEIGHT.value, weight)
+    engine.register_domain_resolver(Domain.LABS.value, labs)
     context = _context(legacy_owner_roots.subject_id, None)
 
-    await conflict_engine.reconcile_day_end_scoped(
+    await engine.reconcile_day_end_scoped(
         db_session,
         context=context,
         domain=Domain.WEIGHT,
@@ -392,7 +392,7 @@ async def test_day_end_scoped_raises_then_clears_only_subject_alert(
     )
 
     state["fires"] = False
-    await conflict_engine.reconcile_day_end_scoped(
+    await engine.reconcile_day_end_scoped(
         db_session,
         context=context,
         domain=Domain.WEIGHT,
@@ -419,13 +419,13 @@ async def test_legacy_alert_adoption_rolls_back_without_hidden_commit(
     await db_session.commit()
     legacy_id = legacy.id
     _register_matching_pair()
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         db_session,
         actor_username=None,
         evaluation_date=EVALUATION_DATE,
     )
 
-    await conflict_engine.enforce_scoped(
+    await engine.enforce_scoped(
         db_session,
         context=context,
         domain=Domain.WEIGHT,
@@ -447,13 +447,13 @@ async def test_prepared_write_cannot_cross_a_transaction_boundary(
     db_session,
     legacy_owner_roots,
 ):
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db_session,
         context=_context(legacy_owner_roots.subject_id, None),
     )
     await db_session.commit()
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
-        await conflict_engine.enforce_prepared(
+    with pytest.raises(engine.ConflictPreparedWriteError):
+        await engine.enforce_prepared(
             db_session,
             prepared=prepared,
             domain=Domain.WEIGHT,
@@ -466,7 +466,7 @@ async def test_prepared_write_cannot_be_constructed_or_context_replaced(
     legacy_owner_roots,
 ):
     context = _context(legacy_owner_roots.subject_id, None)
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
@@ -475,8 +475,8 @@ async def test_prepared_write_cannot_be_constructed_or_context_replaced(
         legacy_owner_roots.user_id,
     )
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
-        conflict_engine.PreparedConflictWrite()
+    with pytest.raises(engine.ConflictPreparedWriteError):
+        engine.PreparedConflictWrite()
     with pytest.raises(TypeError):
         replace(prepared, context=forged_context)
 
@@ -487,13 +487,13 @@ async def test_prepared_write_cannot_escape_its_savepoint(
 ):
     context = _context(legacy_owner_roots.subject_id, None)
     async with db_session.begin_nested():
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             db_session,
             context=context,
         )
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
-        await conflict_engine.enforce_prepared(
+    with pytest.raises(engine.ConflictPreparedWriteError):
+        await engine.enforce_prepared(
             db_session,
             prepared=prepared,
             domain=Domain.WEIGHT,
@@ -522,7 +522,7 @@ async def test_postgres_same_conflict_key_converges_under_concurrency(
 
     async def run_once() -> None:
         async with factory() as session:
-            await conflict_engine.enforce_scoped(
+            await engine.enforce_scoped(
                 session,
                 context=context,
                 domain=Domain.WEIGHT,

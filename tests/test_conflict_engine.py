@@ -9,8 +9,9 @@ import pytest
 
 from vitals.enums import Domain
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import alerts_service, conflict_engine, conflict_registrations, labs_service, supplements_service
-from vitals.services.conflict_engine import ConflictBlocked, _matches
+from vitals.services import alerts_service, labs_service, supplements_service
+from vitals.services.conflicts import engine, registrations
+from vitals.services.conflicts.engine import ConflictBlocked, _matches
 from vitals.utils.timeutils import today_local
 
 # No module-level asyncio mark: async DB tests are auto-detected (asyncio_mode=
@@ -160,7 +161,8 @@ async def test_glp1_resolve_active_empty_without_phase(db_session, owner_write):
 
 
 async def test_glp1_resolve_active_shape(db_session, owner_write):
-    from vitals.services import conflict_engine as engine, glp1_service
+    from vitals.services import glp1_service
+    from vitals.services.conflicts import engine
 
     await glp1_service.add_dose_phase(
         db_session,
@@ -202,7 +204,7 @@ async def test_labs_resolve_latest_shape(db_session, owner_write):
     await db_session.commit()
     items = await labs_service.resolve_latest_scoped(
         db_session,
-        scope=conflict_engine.ConflictScope(
+        scope=engine.ConflictScope(
             subject_id=owner_write.subject_id,
             evaluation_date=today_local(),
         ),
@@ -228,7 +230,7 @@ async def test_nutrition_resolve_today_shape(db_session, owner_write):
     await db_session.commit()
     items = await nutrition_service.resolve_today_scoped(
         db_session,
-        scope=conflict_engine.ConflictScope(
+        scope=engine.ConflictScope(
             subject_id=owner_write.subject_id,
             evaluation_date=today_local(),
         ),
@@ -244,7 +246,7 @@ async def test_nutrition_resolve_today_shape(db_session, owner_write):
 # ``enforce()`` call, which never passes include_day_end).
 
 async def test_day_end_only_rule_skipped_by_default(db_session, owner_write):
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
             rule_type="soft_warn",
@@ -268,7 +270,7 @@ async def test_day_end_only_rule_skipped_by_default(db_session, owner_write):
     )
     await db_session.commit()
 
-    live = await conflict_engine.evaluate_scoped(
+    live = await engine.evaluate_scoped(
         db_session,
         # These rules are this person's own custom state, which the engine
         # reaches through the same compatibility scope a legacy writer uses.
@@ -278,7 +280,7 @@ async def test_day_end_only_rule_skipped_by_default(db_session, owner_write):
     )
     assert live == []
 
-    day_end = await conflict_engine.evaluate_scoped(
+    day_end = await engine.evaluate_scoped(
         db_session,
         # These rules are this person's own custom state, which the engine
         # reaches through the same compatibility scope a legacy writer uses.
@@ -297,10 +299,11 @@ async def test_glp1_low_intake_rules_skip_mid_day_but_fire_at_day_end(
     """End-to-end against the real curated catalog — the exact bug reported:
     a small breakfast while on GLP-1 must not raise the low-calorie/protein
     warnings live, only once the day-end job re-checks with include_day_end."""
-    from vitals.services import conflict_catalog, glp1_service, nutrition_service
+    from vitals.services import glp1_service, nutrition_service
+    from vitals.services.conflicts import catalog
 
-    conflict_registrations.register_all_resolvers()
-    await conflict_catalog.sync_catalog(db_session)
+    registrations.register_all_resolvers()
+    await catalog.sync_catalog(db_session)
     # Both halves of the rule belong to the same person, so both are written
     # inside that scope — otherwise the scoped evaluation sees only one of them.
     await glp1_service.add_dose_phase(
@@ -324,18 +327,18 @@ async def test_glp1_low_intake_rules_skip_mid_day_but_fire_at_day_end(
 
     # Nutrition is closed, so the day's totals are read inside the subject's
     # scope rather than across the installation.
-    scope = conflict_engine.ConflictScope(
+    scope = engine.ConflictScope(
         subject_id=owner_write.subject_id,
         evaluation_date=today_local(),
     )
-    live = await conflict_engine.evaluate_scoped(
+    live = await engine.evaluate_scoped(
         db_session, scope=scope, domain="nutrition"
     )
     assert not any("низкое" in v.message.lower() for v in live), (
         "a partial-day total must not raise the low-calorie/protein warnings"
     )
 
-    day_end = await conflict_engine.evaluate_scoped(
+    day_end = await engine.evaluate_scoped(
         db_session, scope=scope, domain="nutrition", include_day_end=True
     )
     messages = [v.message for v in day_end]
@@ -346,7 +349,7 @@ async def test_glp1_low_intake_rules_skip_mid_day_but_fire_at_day_end(
 # ── enforce_day_end: raises AND auto-clears (unlike plain enforce()) ───────
 
 async def test_enforce_day_end_raises_the_alert_when_violated(db_session, owner_write):
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
             rule_type="soft_warn",
@@ -371,7 +374,7 @@ async def test_enforce_day_end_raises_the_alert_when_violated(db_session, owner_
     )
     await db_session.commit()
 
-    await conflict_engine.reconcile_day_end_scoped(
+    await engine.reconcile_day_end_scoped(
         db_session,
         context=owner_write.context,
         domain=Domain.SUPPLEMENTS,
@@ -389,7 +392,7 @@ async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session, o
     its earlier alert cleared automatically, not left active forever."""
     from datetime import timedelta
 
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
             rule_type="soft_warn",
@@ -413,7 +416,7 @@ async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session, o
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    await conflict_engine.reconcile_day_end_scoped(
+    await engine.reconcile_day_end_scoped(
         db_session,
         context=owner_write.context,
         domain=Domain.SUPPLEMENTS,
@@ -441,12 +444,12 @@ async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session, o
     await db_session.commit()
     # The scoped resolver anchors at the day it is asked about, so the check
     # that should clear the alert has to be the *next* day's check.
-    tomorrow_context = await conflict_engine.resolve_legacy_conflict_write_context(
+    tomorrow_context = await engine.resolve_legacy_conflict_write_context(
         db_session,
         actor_username=None,
         evaluation_date=today_local() + timedelta(days=1),
     )
-    await conflict_engine.reconcile_day_end_scoped(
+    await engine.reconcile_day_end_scoped(
         db_session,
         context=tomorrow_context,
         domain=Domain.SUPPLEMENTS,
@@ -476,13 +479,13 @@ async def _seed_iron_zinc_timing_rule(db_session):
 
 
 async def test_timing_separation_fires_when_same_slot(db_session, owner_write):
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await _seed_iron_zinc_timing_rule(db_session)
     await supplements_service.add_supplement(db_session, name="Iron", key="iron", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
-    violations = await conflict_engine.evaluate_scoped(
+    violations = await engine.evaluate_scoped(
         db_session,
         scope=owner_write.context.scope,
         domain="supplements",
@@ -491,13 +494,13 @@ async def test_timing_separation_fires_when_same_slot(db_session, owner_write):
 
 
 async def test_timing_separation_silent_when_different_slot(db_session, owner_write):
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await _seed_iron_zinc_timing_rule(db_session)
     await supplements_service.add_supplement(db_session, name="Iron", key="iron", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", timing="вечер", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
-    violations = await conflict_engine.evaluate_scoped(
+    violations = await engine.evaluate_scoped(
         db_session,
         scope=owner_write.context.scope,
         domain="supplements",
@@ -506,13 +509,13 @@ async def test_timing_separation_silent_when_different_slot(db_session, owner_wr
 
 
 async def test_timing_separation_silent_when_slot_unknown(db_session, owner_write):
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await _seed_iron_zinc_timing_rule(db_session)
     await supplements_service.add_supplement(db_session, name="Iron", key="iron", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())  # no timing
     await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())  # no timing
     await db_session.commit()
 
-    violations = await conflict_engine.evaluate_scoped(
+    violations = await engine.evaluate_scoped(
         db_session,
         scope=owner_write.context.scope,
         domain="supplements",
@@ -523,7 +526,7 @@ async def test_timing_separation_silent_when_slot_unknown(db_session, owner_writ
 # ── Operator-based rule end to end: labs value threshold blocks a supplement ─
 
 async def test_operator_rule_fires_on_lab_value_threshold(db_session, owner_write):
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
             rule_type="hard_block",
@@ -551,7 +554,7 @@ async def test_operator_rule_fires_on_lab_value_threshold(db_session, owner_writ
 
 
 async def test_violation_carries_catalog_metadata(db_session, owner_write):
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
             rule_type="hard_block",
@@ -573,7 +576,7 @@ async def test_violation_carries_catalog_metadata(db_session, owner_write):
     )
     await db_session.commit()
 
-    violations = await conflict_engine.evaluate_scoped(
+    violations = await engine.evaluate_scoped(
         db_session,
         # These rules are this person's own custom state, which the engine
         # reaches through the same compatibility scope a legacy writer uses.
@@ -590,7 +593,7 @@ async def test_violation_carries_catalog_metadata(db_session, owner_write):
 
 
 async def test_operator_rule_silent_when_lab_value_below_threshold(db_session, owner_write):
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
             rule_type="hard_block",

@@ -11,7 +11,8 @@ from sqlalchemy import func, select
 from vitals.enums import Source
 from vitals.models.weight import WeightLog
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
-from vitals.services import alerts_service, conflict_engine, weight_service
+from vitals.services import alerts_service, weight_service
+from vitals.services.conflicts import engine
 from vitals.utils.timeutils import today_local
 
 
@@ -907,14 +908,14 @@ async def test_blocked_weight_date_move_keeps_original_row(db_session, monkeypat
     await db_session.commit()
 
     async def block(*args, **kwargs):
-        raise conflict_engine.ConflictBlocked([])
+        raise engine.ConflictBlocked([])
 
     # The scoped writer is the only one left, so the block has to come from the
     # prepared enforcement rather than the legacy singleton one.
     monkeypatch.setattr(
-        weight_service.conflict_engine, "enforce_prepared", block
+        weight_service.engine, "enforce_prepared", block
     )
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await weight_service.update_weight_log(
             db_session,
             original_id,

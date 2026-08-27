@@ -14,7 +14,8 @@ from vitals.models.labs import LabMarker, LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import alerts_service, conflict_engine, labs_service
+from vitals.services import alerts_service, labs_service
+from vitals.services.conflicts import engine
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped
@@ -40,20 +41,20 @@ def _context(
     *,
     on_date: date = RESULT_DATE,
     legacy: bool = False,
-) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=on_date,
         legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            engine.LegacyConflictBridge.FULLY_UNOWNED
             if legacy
-            else conflict_engine.LegacyConflictBridge.REJECT
+            else engine.LegacyConflictBridge.REJECT
         ),
     )
 
 
 async def _prepared(db_session, context):
-    return await conflict_engine.prepare_scoped_write(
+    return await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
@@ -78,8 +79,8 @@ async def _blocking_rule(db_session, identity: WriteIdentity) -> ConflictRule:
         del session, scope
         return [{"key": "synthetic", "active": True}]
 
-    conflict_engine.register_domain_resolver(Domain.SUPPLEMENTS.value, supplements)
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(Domain.SUPPLEMENTS.value, supplements)
+    engine.register_domain_resolver(
         Domain.LABS.value,
         labs_service.resolve_latest_scoped,
     )
@@ -94,7 +95,7 @@ async def test_scoped_add_blocks_before_marker_mutation_and_attributes_override(
     rule = await _blocking_rule(db_session, identity)
     prepared = await _prepared(db_session, _context(identity))
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await labs_service.add_result(
             db_session,
             on_date=RESULT_DATE,
@@ -150,7 +151,7 @@ async def test_invalid_capability_fails_before_target_lock(
 
     monkeypatch.setattr(labs_service, "_get_result_for_update", target_probe)
     mismatched = WriteIdentity(identity.subject_id, uuid.uuid4())
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await labs_service.update_result(
             db_session,
             1,
@@ -160,7 +161,7 @@ async def test_invalid_capability_fails_before_target_lock(
         )
     # The signature now refuses a write with no capability at all, so what is
     # left to prove at runtime is a capability that does not match the writer.
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await labs_service.delete_result(
             db_session,
             1,
@@ -214,7 +215,7 @@ async def test_update_replaces_exact_result_and_preserves_origin(
         captured.update(kwargs)
         return []
 
-    monkeypatch.setattr(conflict_engine, "enforce_prepared", enforce_probe)
+    monkeypatch.setattr(engine, "enforce_prepared", enforce_probe)
     updated = await labs_service.update_result(
         db_session,
         row.id,
@@ -226,7 +227,7 @@ async def test_update_replaces_exact_result_and_preserves_origin(
 
     assert updated is row
     assert captured["replace_entity_key"] == str(row.id)
-    assert captured["proposed_state"][conflict_engine.CONFLICT_ENTITY_KEY] == str(
+    assert captured["proposed_state"][engine.CONFLICT_ENTITY_KEY] == str(
         row.id
     )
     assert (row.actor_user_id, row.source, row.raw_payload_id) == (
@@ -273,7 +274,7 @@ async def test_structured_mcp_batch_requires_exact_mcp_raw_roots(
     )
     db_session.add(parser_raw)
     await db_session.flush()
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError, match="source"):
+    with pytest.raises(engine.ConflictRawOwnershipError, match="source"):
         await labs_service.ingest_structured_results(
             db_session,
             {"date": RESULT_DATE.isoformat(), "results": []},
@@ -388,7 +389,7 @@ async def test_scoped_list_rejects_unowned_raw_without_bridge(
     )
     await db_session.flush()
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+    with pytest.raises(engine.ConflictRawOwnershipError):
         await labs_service.list_results(
             db_session,
             subject_id=identity.subject_id,
@@ -516,7 +517,7 @@ async def test_owned_reparse_rejects_partial_normalized_provenance(
     )
 
     with pytest.raises(
-        conflict_engine.ConflictRawOwnershipError,
+        engine.ConflictRawOwnershipError,
         match="partial normalized provenance",
     ):
         await labs_service.reparse_owned_pending(

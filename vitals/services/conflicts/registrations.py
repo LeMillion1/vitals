@@ -25,7 +25,7 @@ mutates the global resolver registry (the test fixture clears it per test).
 from __future__ import annotations
 
 from vitals.enums import Domain
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 from vitals.services import (
     glp1_service,
     labs_service,
@@ -42,48 +42,48 @@ from vitals.services.genetics import variants
 def register_all_resolvers() -> None:
     """Register every domain's conflict resolver. Idempotent (re-registering a
     domain replaces it), so safe to call once per startup."""
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.SUPPLEMENTS.value,
         supplements_service.resolve_active_scoped,
         legacy_probe=supplements_service.legacy_unowned_present,
     )
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.GENETICS.value,
         variants.resolve_variants_scoped,
         legacy_probe=variants.legacy_unowned_present,
     )
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.SKINCARE.value,
         skincare_service.resolve_today_scoped,
         legacy_probe=skincare_service.legacy_unowned_present,
     )
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.GLP1.value,
         glp1_service.resolve_active_scoped,
         legacy_probe=glp1_service.legacy_unowned_present,
     )
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.LABS.value,
         labs_service.resolve_latest_scoped,
         legacy_probe=labs_service.legacy_unowned_present,
     )
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.NUTRITION.value,
         nutrition_service.resolve_today_scoped,
         legacy_probe=nutrition_service.legacy_unowned_present,
     )
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.HRT.value,
         records.resolve_active_scoped,
         legacy_probe=records.legacy_unowned_present,
     )
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.WEIGHT.value,
         weight_service.resolve_active_scoped,
-        legacy_probe=conflict_engine.legacy_unowned_raw_present,
+        legacy_probe=engine.legacy_unowned_raw_present,
     )
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.BODY_COMPOSITION.value,
         scans.resolve_active_scoped,
-        legacy_probe=conflict_engine.legacy_unowned_raw_present,
+        legacy_probe=engine.legacy_unowned_raw_present,
     )

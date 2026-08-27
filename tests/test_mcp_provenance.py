@@ -12,7 +12,8 @@ import pytest
 
 from vitals.enums import Source
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, weight_service
+from vitals.services import weight_service
+from vitals.services.conflicts import engine
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
@@ -97,7 +98,7 @@ async def test_mcp_weight_outranks_garmin_both_ways(session_factory, owner_write
         )
         # The capability belongs to the session it locks in, so this one is
         # minted here rather than borrowed from the fixture's session.
-        context = await conflict_engine.resolve_legacy_conflict_write_context(
+        context = await engine.resolve_legacy_conflict_write_context(
             session,
             actor_username=None,
             evaluation_date=on_date,
@@ -142,7 +143,7 @@ async def test_mcp_weight_outranks_garmin_both_ways(session_factory, owner_write
             external_id=f"garmin:weight:late:{on_date.isoformat()}",
             payload={"date": on_date.isoformat(), "weight_kg": 82.0},
         )
-        later_context = await conflict_engine.resolve_legacy_conflict_write_context(
+        later_context = await engine.resolve_legacy_conflict_write_context(
             session,
             actor_username=None,
             evaluation_date=on_date,

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Domain, Source
 from vitals.models.supplements import DOMAIN, Supplement
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 from vitals.utils.identifiers import slugify as slugify
 
 
@@ -87,11 +87,11 @@ def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared: conflict_engine.PreparedConflictWrite,
-) -> conflict_engine.ConflictWriteContext:
+    prepared: engine.PreparedConflictWrite,
+) -> engine.ConflictWriteContext:
     """Bind one supplement write to its subject and its conflict decision."""
 
-    return conflict_engine.require_prepared_identity(
+    return engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
@@ -124,7 +124,7 @@ async def get_supplement_for_update(
     supplement_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[Supplement]:
     """Lock and refresh one scoped row for a caller-side partial update merge."""
 
@@ -175,7 +175,7 @@ async def add_supplement(
     override: bool = False,
     source: str = Source.MANUAL.value,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Supplement:
     _require_scoped_prepared_write(
         session,
@@ -186,11 +186,11 @@ async def add_supplement(
         resolved_key = key
     else:
         # Keep catalog/YAML loading out of paths that supply an explicit key.
-        from vitals.services import conflict_catalog
+        from vitals.services.conflicts import catalog
 
-        resolved_key = conflict_catalog.normalize_ingredient(name)
+        resolved_key = catalog.normalize_ingredient(name)
     proposed = _proposed(resolved_key, active, _parse_slot(timing))
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.SUPPLEMENTS,
@@ -231,7 +231,7 @@ async def update_supplement(
     note: Optional[str] = None,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[Supplement]:
     _require_scoped_prepared_write(
         session,
@@ -249,11 +249,11 @@ async def update_supplement(
         resolved_key = key
     else:
         # Keep catalog/YAML loading out of paths that supply an explicit key.
-        from vitals.services import conflict_catalog
+        from vitals.services.conflicts import catalog
 
-        resolved_key = conflict_catalog.normalize_ingredient(name)
+        resolved_key = catalog.normalize_ingredient(name)
     proposed = _proposed(resolved_key, active, _parse_slot(timing))
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.SUPPLEMENTS,
@@ -281,7 +281,7 @@ async def set_active(
     *,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[Supplement]:
     """Toggle a catalog row's active flag — runs the conflict check so activating
     a contraindicated supplement surfaces the block/override flow."""
@@ -299,7 +299,7 @@ async def set_active(
         return None
     if active:
         proposed = _proposed(row.key, True, _parse_slot(row.timing))
-        await conflict_engine.enforce_prepared(
+        await engine.enforce_prepared(
             session,
             prepared=prepared_conflict_write,
             domain=Domain.SUPPLEMENTS,
@@ -362,7 +362,7 @@ async def legacy_unowned_present(session: AsyncSession) -> bool:
 async def resolve_active_scoped(
     session: AsyncSession,
     *,
-    scope: conflict_engine.ConflictScope,
+    scope: engine.ConflictScope,
 ) -> list[dict]:
     """Conflict resolver restricted to one explicit subject boundary.
 
@@ -383,7 +383,7 @@ async def resolve_active_scoped(
     rows = await session.scalars(select(Supplement).where(subject_scope))
     return [
         {
-            conflict_engine.CONFLICT_ENTITY_KEY: str(row.id),
+            engine.CONFLICT_ENTITY_KEY: str(row.id),
             "key": row.key,
             "active": row.active,
             "name": row.name,

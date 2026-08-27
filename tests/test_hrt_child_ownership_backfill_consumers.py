@@ -13,7 +13,7 @@ from vitals.models.hrt import (
     HrtCycleTemplateItem,
 )
 from vitals.services.hrt import cycles, templates
-from vitals.services.conflict_engine import ConflictScopeError
+from vitals.services.conflicts.engine import ConflictScopeError
 from vitals.operations.ownership.hrt_child import (
     HrtChildOwnershipBackfillStatus,
     run_hrt_child_ownership_backfill_batch,

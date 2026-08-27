@@ -26,12 +26,10 @@ import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.ownership import WriteIdentity
 from vitals.operations.ownership import portability_v1
-from vitals.services import (
-    conflict_catalog,
-    conflict_engine,
-    conflict_registrations,
-    data_portability_service,
-)
+from vitals.services import data_portability_service
+from vitals.services.conflicts import catalog as conflict_catalog
+from vitals.services.conflicts import engine as conflict_engine
+from vitals.services.conflicts import registrations
 from vitals.services.hrt import catalog
 from vitals.services.genetics import variants
 from vitals.operations.ownership.conflict_rule import (
@@ -601,7 +599,7 @@ async def test_real_postgres_0034_genetic_variant_stop_resume_volatility_and_res
         # Supported post-completion volatility: a strict live manual variant
         # above the frozen high-water mark.
         write_identity = WriteIdentity(identity.subject_id, identity.user_id)
-        conflict_registrations.register_all_resolvers()
+        registrations.register_all_resolvers()
         async with factory() as session:
             prepared = await conflict_engine.prepare_scoped_write(
                 session,

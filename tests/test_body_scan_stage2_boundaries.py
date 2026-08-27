@@ -34,12 +34,8 @@ from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    conflict_engine,
-    file_asset_service,
-    raw_payload_service,
-    weight_service,
-)
+from vitals.services import file_asset_service, raw_payload_service, weight_service
+from vitals.services.conflicts import engine
 from vitals.services import modules_service
 from vitals.services.body_scan import scans
 from vitals.utils.timeutils import now_local
@@ -68,14 +64,14 @@ def _context(
     *,
     on_date: date = SCAN_DATE,
     legacy: bool = False,
-) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=on_date,
         legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            engine.LegacyConflictBridge.FULLY_UNOWNED
             if legacy
-            else conflict_engine.LegacyConflictBridge.REJECT
+            else engine.LegacyConflictBridge.REJECT
         ),
     )
 
@@ -411,7 +407,7 @@ async def test_mcp_structured_write_is_raw_first_and_splits_scan_from_weight_sou
         (
             "ingest",
             _identity(legacy_owner_roots),
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            engine.LegacyConflictBridge.FULLY_UNOWNED,
             Source.MCP.value,
             None,
             None,
@@ -419,7 +415,7 @@ async def test_mcp_structured_write_is_raw_first_and_splits_scan_from_weight_sou
         (
             "refresh",
             _identity(legacy_owner_roots),
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            engine.LegacyConflictBridge.FULLY_UNOWNED,
             legacy_owner_roots.subject_id,
             SCAN_DATE,
         ),
@@ -545,14 +541,14 @@ async def test_web_upload_and_confirm_keep_owned_boundary_kwargs_and_chain(
             "save",
             _identity(legacy_owner_roots),
             legacy_owner_roots.subject_id,
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            engine.LegacyConflictBridge.FULLY_UNOWNED,
             SCAN_DATE,
         ),
         (
             "refresh",
             _identity(legacy_owner_roots),
             legacy_owner_roots.subject_id,
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            engine.LegacyConflictBridge.FULLY_UNOWNED,
             SCAN_DATE,
         ),
     ]
@@ -577,7 +573,7 @@ async def test_web_upload_and_confirm_keep_owned_boundary_kwargs_and_chain(
         "save",
         _identity(legacy_owner_roots),
         legacy_owner_roots.subject_id,
-        conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+        engine.LegacyConflictBridge.FULLY_UNOWNED,
         SCAN_DATE,
     )
     assert await db_session.scalar(select(func.count()).select_from(BodyScan)) == 1
@@ -962,7 +958,7 @@ async def test_stage3a_parser_history_replays_scan_and_weight_without_file_adopt
     await db_session.commit()
 
     with pytest.raises(
-        conflict_engine.ConflictRawOwnershipError,
+        engine.ConflictRawOwnershipError,
         match="no file root",
     ):
         await scans.save_scan(
@@ -1052,7 +1048,7 @@ async def test_stage3a_mcp_history_without_a_subject_is_unreadable_and_unlinkabl
         subject_id=identity.subject_id,
     ) == []
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+    with pytest.raises(engine.ConflictRawOwnershipError):
         await scans.save_scan(
             db_session,
             on_date=NEXT_DATE,
@@ -1156,7 +1152,7 @@ async def test_exact_upload_chain_cannot_share_one_foreign_actor(
     db_session.add(scan)
     await db_session.commit()
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+    with pytest.raises(engine.ConflictRawOwnershipError):
         await scans.list_scans(
             db_session,
             subject_id=identity.subject_id,
@@ -1190,7 +1186,7 @@ async def test_exact_mcp_chain_cannot_share_one_foreign_actor(
     db_session.add(scan)
     await db_session.commit()
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+    with pytest.raises(engine.ConflictRawOwnershipError):
         await scans.list_scans(
             db_session,
             subject_id=identity.subject_id,
@@ -1344,7 +1340,7 @@ async def test_owned_replay_rejects_foreign_or_partial_link_suppression(
         return
 
     with pytest.raises(
-        conflict_engine.ConflictRawOwnershipError,
+        engine.ConflictRawOwnershipError,
         match="foreign or partial normalized provenance",
     ):
         await scans.reparse_owned_pending(
@@ -1472,7 +1468,7 @@ async def test_every_partial_scan_metric_and_raw_chain_fails_closed(
     with pytest.raises(
         (
             scans.BodyScanOwnershipError,
-            conflict_engine.ConflictRawOwnershipError,
+            engine.ConflictRawOwnershipError,
         )
     ):
         await scans.list_scans(
@@ -1533,7 +1529,7 @@ async def test_upload_chain_validates_uploader_asset_raw_and_openrouter(
         connection.status = IntegrationConnectionStatus.PENDING.value
     await db_session.commit()
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+    with pytest.raises(engine.ConflictRawOwnershipError):
         await scans.save_scan(
             db_session,
             on_date=SCAN_DATE,
@@ -1555,7 +1551,7 @@ async def test_capability_is_rejected_before_raw_or_scan_target_resolution(
     _, _, foreign, _ = await _new_owner(db_session, "body-capability-foreign")
     wrong_capability = await _prepared_weight(db_session, foreign)
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await scans.save_scan(
             db_session,
             on_date=SCAN_DATE,
@@ -1565,7 +1561,7 @@ async def test_capability_is_rejected_before_raw_or_scan_target_resolution(
             identity=owner,
             prepared_weight_write=wrong_capability,
         )
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await scans.delete_scan(
             db_session,
             999_999,
@@ -1588,7 +1584,7 @@ async def test_scoped_source_matrix_and_persisted_source_tamper_fail_closed(
         suffix="source-matrix",
     )
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+    with pytest.raises(engine.ConflictRawOwnershipError):
         await scans.save_scan(
             db_session,
             on_date=SCAN_DATE,
@@ -1597,7 +1593,7 @@ async def test_scoped_source_matrix_and_persisted_source_tamper_fail_closed(
             identity=identity,
             prepared_weight_write=await _prepared_weight(db_session, identity),
         )
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+    with pytest.raises(engine.ConflictRawOwnershipError):
         await scans.save_scan(
             db_session,
             on_date=SCAN_DATE,
@@ -1636,7 +1632,7 @@ async def test_scoped_source_matrix_and_persisted_source_tamper_fail_closed(
 
     manual.source = Source.BODY_SCAN.value
     await db_session.commit()
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+    with pytest.raises(engine.ConflictRawOwnershipError):
         await scans.get_scan(
             db_session,
             manual.id,
@@ -1716,13 +1712,13 @@ async def test_conflict_block_is_write_free_and_override_is_attributed(
         del session, scope
         return [{"marker": "synthetic-body-risk"}]
 
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.BODY_COMPOSITION.value,
         scans.resolve_active_scoped,
     )
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
+    engine.register_domain_resolver(Domain.LABS.value, labs)
     prepared = await _prepared_weight(db_session, identity)
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await scans.save_scan(
             db_session,
             on_date=SCAN_DATE,
@@ -1859,11 +1855,11 @@ async def test_same_day_scans_keep_independent_conflicts_and_resolver_entities(
         del session, scope
         return [{"marker": "synthetic-same-day-risk"}]
 
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.BODY_COMPOSITION.value,
         scans.resolve_active_scoped,
     )
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
+    engine.register_domain_resolver(Domain.LABS.value, labs)
     first = await scans.save_scan(
         db_session,
         on_date=SCAN_DATE,
@@ -1902,25 +1898,25 @@ async def test_same_day_scans_keep_independent_conflicts_and_resolver_entities(
 
     resolved = await scans.resolve_active_scoped(
         db_session,
-        scope=conflict_engine.ConflictScope(
+        scope=engine.ConflictScope(
             subject_id=identity.subject_id,
             evaluation_date=SCAN_DATE,
         ),
     )
     assert resolved == [
         {
-            conflict_engine.CONFLICT_ENTITY_KEY: f"body_scan:{second.id}",
+            engine.CONFLICT_ENTITY_KEY: f"body_scan:{second.id}",
             "scan": True,
             "source": Source.MANUAL.value,
         },
         {
-            conflict_engine.CONFLICT_ENTITY_KEY: f"body_scan:{first.id}",
+            engine.CONFLICT_ENTITY_KEY: f"body_scan:{first.id}",
             "scan": True,
             "source": Source.MANUAL.value,
         },
     ]
     assert all(
-        row[conflict_engine.CONFLICT_ENTITY_KEY] != f"body_scan:{historical.id}"
+        row[engine.CONFLICT_ENTITY_KEY] != f"body_scan:{historical.id}"
         for row in resolved
     )
 

@@ -23,7 +23,7 @@ from vitals.models.skincare import (
     SkincareProduct,
 )
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 
 _FLAGS = (
     "retinoid", "azelaic", "peel", "niacinamide_spf", "moisturizer",
@@ -40,11 +40,11 @@ def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared: conflict_engine.PreparedConflictWrite,
-) -> conflict_engine.ConflictWriteContext:
+    prepared: engine.PreparedConflictWrite,
+) -> engine.ConflictWriteContext:
     """Bind one skincare write to its subject and its conflict decision."""
 
-    return conflict_engine.require_prepared_identity(
+    return engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
@@ -52,11 +52,11 @@ def _require_scoped_prepared_write(
 
 
 def _require_evaluation_date(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     on_date: date_type,
 ) -> None:
     if context.evaluation_date != on_date:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "skincare write date does not match prepared conflict evaluation date"
         )
 
@@ -85,7 +85,7 @@ async def _get_log(
         stmt = stmt.with_for_update().execution_options(populate_existing=True)
     rows = list(await session.scalars(stmt))
     if len(rows) > 1:
-        raise conflict_engine.ConflictScopeError(
+        raise engine.ConflictScopeError(
             "multiple skincare logs match one subject and date"
         )
     return rows[0] if rows else None
@@ -120,7 +120,7 @@ async def upsert_log(
     source: str = Source.MANUAL.value,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> SkincareLog:
     context = _require_scoped_prepared_write(
         session,
@@ -143,7 +143,7 @@ async def upsert_log(
         subject_id=identity.subject_id,
         for_update=True,
     )
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.SKINCARE,
@@ -219,7 +219,7 @@ async def delete_log(
     log_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
@@ -245,7 +245,7 @@ async def update_log_note(
     *,
     note: str,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[SkincareLog]:
     _require_scoped_prepared_write(
         session,
@@ -276,7 +276,7 @@ async def add_observation(
     note: Optional[str] = None,
     source: str = Source.MANUAL.value,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> SkincareObservation:
     context = _require_scoped_prepared_write(
         session,
@@ -328,7 +328,7 @@ async def delete_observation(
     observation_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
@@ -369,7 +369,7 @@ async def legacy_unowned_present(session: AsyncSession) -> bool:
 async def resolve_today_scoped(
     session: AsyncSession,
     *,
-    scope: conflict_engine.ConflictScope,
+    scope: engine.ConflictScope,
 ) -> list[dict]:
     """Resolve the selected subject's checklist on its evaluation day.
 
@@ -399,14 +399,14 @@ async def resolve_today_scoped(
         )
     )
     if len(rows) > 1:
-        raise conflict_engine.ConflictScopeError(
+        raise engine.ConflictScopeError(
             "multiple skincare logs match one subject and evaluation date"
         )
     if not rows:
         return []
     return [
         {
-            conflict_engine.CONFLICT_ENTITY_KEY: _day_entity_key(
+            engine.CONFLICT_ENTITY_KEY: _day_entity_key(
                 scope.evaluation_date
             ),
             **{flag: getattr(rows[0], flag) for flag in _FLAGS},
@@ -446,7 +446,7 @@ async def add_product(
     schedule_days: Sequence[int] = (),
     active: bool = True,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> SkincareProduct:
     _require_scoped_prepared_write(
         session,
@@ -483,7 +483,7 @@ async def update_product(
     schedule_days: Sequence[int] = (),
     active: bool = True,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[SkincareProduct]:
     _require_scoped_prepared_write(
         session,
@@ -517,7 +517,7 @@ async def delete_product(
     product_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,

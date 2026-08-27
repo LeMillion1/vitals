@@ -9,11 +9,11 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.models.identity import HealthSubject
 from vitals.models.scoped_settings import SubjectSetting
 from vitals.models.system_alert import SystemAlert
-from vitals.services import conflict_catalog, conflict_activation_service
+from vitals.services.conflicts import catalog, activation
 
 
 async def test_dashboard_renders_synced_catalog(auth_client, db_session):
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
 
     r = await auth_client.get("/interactions", headers={"Accept": "text/html"})
@@ -24,7 +24,7 @@ async def test_dashboard_renders_synced_catalog(auth_client, db_session):
 
 
 async def test_dashboard_filters_by_domain(auth_client, db_session):
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
 
     r = await auth_client.get("/interactions", params={"domain": "genetics"}, headers={"Accept": "text/html"})
@@ -35,7 +35,7 @@ async def test_dashboard_filters_by_domain(auth_client, db_session):
 
 
 async def test_toggle_flips_active_and_persists(auth_client, db_session):
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
 
     result = await db_session.execute(select(ConflictRule).limit(1))
@@ -60,7 +60,7 @@ async def test_toggle_flips_active_and_persists(auth_client, db_session):
     subject_id = await db_session.scalar(select(HealthSubject.id))
     setting = await db_session.get(
         SubjectSetting,
-        (subject_id, conflict_activation_service.SETTING_KEY),
+        (subject_id, activation.SETTING_KEY),
     )
     assert setting.value == {
         "v": 1,
@@ -74,7 +74,7 @@ async def test_dashboard_uses_subject_activation_instead_of_global_flag(
     auth_client,
     db_session,
 ):
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
     rule = await db_session.scalar(
         select(ConflictRule).where(ConflictRule.code.is_not(None)).limit(1)
@@ -115,7 +115,7 @@ async def test_toggle_rejects_non_positive_rule_id(auth_client):
 
 
 async def test_firing_now_badge_reflects_active_alert(auth_client, db_session):
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
 
     result = await db_session.execute(select(ConflictRule).limit(1))

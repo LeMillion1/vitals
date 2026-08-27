@@ -18,7 +18,8 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.nutrition import MealLog
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, nutrition_service
+from vitals.services import nutrition_service
+from vitals.services.conflicts import engine
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped
@@ -37,20 +38,20 @@ def _context(
     *,
     on_date: date = EVALUATION_DATE,
     actor_user_id: uuid.UUID | None | object = ...,
-) -> conflict_engine.ConflictWriteContext:
+) -> engine.ConflictWriteContext:
     actor = (
         legacy_owner_roots.user_id
         if actor_user_id is ...
         else actor_user_id
     )
-    return conflict_engine.ConflictWriteContext(
+    return engine.ConflictWriteContext(
         identity=WriteIdentity(legacy_owner_roots.subject_id, actor),
         evaluation_date=on_date,
     )
 
 
 async def _prepared(db_session, context):
-    return await conflict_engine.prepare_scoped_write(
+    return await engine.prepare_scoped_write(
         db_session,
         context=context,
     )
@@ -86,8 +87,8 @@ def _register_resolvers() -> None:
         del session, scope
         return [{"marker": "synthetic-risk"}]
 
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(Domain.LABS.value, labs)
+    engine.register_domain_resolver(
         Domain.NUTRITION.value,
         nutrition_service.resolve_today_scoped,
     )
@@ -128,7 +129,7 @@ async def test_create_evaluates_post_write_daily_aggregate(
     await db_session.commit()
     context = _context(legacy_owner_roots)
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await nutrition_service.log_meal(
             db_session,
             on_date=EVALUATION_DATE,
@@ -158,7 +159,7 @@ async def test_create_evaluates_per_meal_name_rule(
     _register_resolvers()
     context = _context(legacy_owner_roots)
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await nutrition_service.log_meal(
             db_session,
             on_date=EVALUATION_DATE,
@@ -224,7 +225,7 @@ async def test_move_date_evaluates_the_destination_day_and_is_write_free_on_bloc
     await db_session.commit()
     context = _context(legacy_owner_roots)
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await nutrition_service.update_meal(
             db_session,
             moving.id,
@@ -249,7 +250,7 @@ async def test_prepared_date_mismatch_is_rejected_before_any_write(
     _register_resolvers()
     context = _context(legacy_owner_roots, on_date=OTHER_DATE)
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await nutrition_service.log_meal(
             db_session,
             on_date=EVALUATION_DATE,
@@ -279,7 +280,7 @@ async def test_block_is_write_free_and_override_stamps_subject_actor_and_alert(
     context = _context(legacy_owner_roots)
     prepared = await _prepared(db_session, context)
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await nutrition_service.log_meal(
             db_session,
             on_date=EVALUATION_DATE,
@@ -405,7 +406,7 @@ async def test_foreign_partial_and_legacy_roots_obey_bridge_contract(
     await db_session.flush()
     await db_session.delete(foreign_user)
     await db_session.commit()
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         db_session,
         actor_username="tester",
         evaluation_date=EVALUATION_DATE,
@@ -445,7 +446,7 @@ async def test_prepared_mismatch_and_committed_capability_are_rejected(
     prepared = await _prepared(db_session, context)
     mismatched = WriteIdentity(context.identity.subject_id, uuid.uuid4())
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await nutrition_service.log_meal(
             db_session,
             on_date=EVALUATION_DATE,
@@ -454,7 +455,7 @@ async def test_prepared_mismatch_and_committed_capability_are_rejected(
             prepared_conflict_write=prepared,
         )
     await db_session.commit()
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await nutrition_service.log_meal(
             db_session,
             on_date=EVALUATION_DATE,
@@ -492,7 +493,7 @@ async def test_day_end_job_uses_system_actor_and_exact_subject_date(
     )
     await db_session.commit()
     monkeypatch.setattr(nutrition_service, "today_local", lambda: EVALUATION_DATE)
-    original = conflict_engine.resolve_subject_conflict_write_context
+    original = engine.resolve_subject_conflict_write_context
     captured = {}
 
     async def capture_context(session, *, subject_id, evaluation_date=None):
@@ -507,7 +508,7 @@ async def test_day_end_job_uses_system_actor_and_exact_subject_date(
         return context
 
     monkeypatch.setattr(
-        conflict_engine,
+        engine,
         "resolve_subject_conflict_write_context",
         capture_context,
     )
@@ -764,7 +765,7 @@ async def test_postgres_same_subject_concurrent_creates_serialize_daily_threshol
 
     async def create(name: str) -> str:
         async with factory() as session:
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=context,
             )
@@ -777,7 +778,7 @@ async def test_postgres_same_subject_concurrent_creates_serialize_daily_threshol
                     identity=context.identity,
                     prepared_conflict_write=prepared,
                 )
-            except conflict_engine.ConflictBlocked:
+            except engine.ConflictBlocked:
                 await session.rollback()
                 return "blocked"
             await session.commit()

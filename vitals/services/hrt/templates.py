@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import CycleKind, DoseUnit, Source
 from vitals.models.hrt import DOMAIN, HrtCycle, HrtCycleTemplate, HrtCycleTemplateItem
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 from vitals.services.hrt import cycles
 
 # Portable-JSON envelope. Bump the version if the item shape ever changes so an
@@ -48,15 +48,15 @@ def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared: conflict_engine.PreparedConflictWrite,
-) -> conflict_engine.ConflictWriteContext:
+    prepared: engine.PreparedConflictWrite,
+) -> engine.ConflictWriteContext:
     """Prove the session/transaction/identity before any target lookup.
 
     Templates are date-free, so the prepared context's evaluation date is a
     governance serialization token rather than a semantic template field.
     """
 
-    context = conflict_engine.require_prepared_identity(
+    context = engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
@@ -90,7 +90,7 @@ def _validate_template_graph(
         template,
         subject_id=subject_id,
     ):
-        raise conflict_engine.ConflictScopeError(
+        raise engine.ConflictScopeError(
             "HRT template is outside the requested subject scope"
         )
     for item in items:
@@ -98,7 +98,7 @@ def _validate_template_graph(
             item,
             subject_id=subject_id,
         ):
-            raise conflict_engine.ConflictScopeError(
+            raise engine.ConflictScopeError(
                 "HRT template contains an item outside the requested subject scope"
             )
 
@@ -199,7 +199,7 @@ async def delete_template(
     template_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
@@ -228,7 +228,7 @@ async def save_cycle_as_template(
     note: Optional[str] = None,
     source: str | Source = Source.MANUAL.value,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[HrtCycleTemplate]:
     """Snapshot a cycle's plan into a new template. The snapshot is by value —
     later edits to the cycle don't touch the template."""
@@ -291,7 +291,7 @@ async def create_cycle_from_template(
     name: Optional[str] = None,
     source: str | Source = Source.MANUAL.value,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[HrtCycle]:
     """Materialize a template into a real cycle starting on ``start_date``.
     Goes through ``cycles`` item-by-item so compound resolution and
@@ -404,7 +404,7 @@ async def import_template(
     *,
     source: str | Source = Source.MANUAL.value,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> HrtCycleTemplate:
     """Validate a pasted share payload and save it as a new local template.
     Rejects (with a message naming the problem) rather than half-importing:

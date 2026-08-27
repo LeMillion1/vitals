@@ -9,8 +9,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain
-from vitals.services import alerts_service, conflict_engine, nutrition_service
-from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services import alerts_service, nutrition_service
+from vitals.services.conflicts import engine
+from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -41,7 +42,7 @@ async def nutrition_dashboard(
 ):
     today = today_local()
     selected_date = date or today
-    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+    conflict_context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
         evaluation_date=selected_date,
@@ -117,13 +118,13 @@ async def add_meal(
     parsed_time = time_type.fromisoformat(eaten_at) if eaten_at and eaten_at.strip() else None
     try:
         conflict_context = (
-            await conflict_engine.resolve_legacy_conflict_write_context(
+            await engine.resolve_legacy_conflict_write_context(
                 db,
                 actor_username=username,
                 evaluation_date=on_date,
             )
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             db,
             context=conflict_context,
         )
@@ -174,11 +175,11 @@ async def delete_meal(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+    conflict_context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
     )
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db,
         context=conflict_context,
     )

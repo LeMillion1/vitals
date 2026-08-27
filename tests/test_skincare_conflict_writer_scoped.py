@@ -20,7 +20,8 @@ from vitals.models.skincare import (
 )
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, skincare_service
+from vitals.services import skincare_service
+from vitals.services.conflicts import engine
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped
@@ -54,27 +55,27 @@ def _context(
     *,
     on_date: date = EVALUATION_DATE,
     legacy_bridge: bool = False,
-) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=on_date,
         legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            engine.LegacyConflictBridge.FULLY_UNOWNED
             if legacy_bridge
-            else conflict_engine.LegacyConflictBridge.REJECT
+            else engine.LegacyConflictBridge.REJECT
         ),
     )
 
 
 async def _prepared(
     session: AsyncSession,
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ):
-    return await conflict_engine.prepare_scoped_write(session, context=context)
+    return await engine.prepare_scoped_write(session, context=context)
 
 
 async def _legacy_context(db_session, *, on_date=EVALUATION_DATE):
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         db_session,
         actor_username="tester",
         evaluation_date=on_date,
@@ -83,7 +84,7 @@ async def _legacy_context(db_session, *, on_date=EVALUATION_DATE):
 
 
 def _register_skincare_resolver() -> None:
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.SKINCARE.value,
         skincare_service.resolve_today_scoped,
     )
@@ -160,7 +161,7 @@ async def test_dated_writes_reject_prepared_evaluation_date_mismatch(
     identity = await _identity(db_session, f"skin-date-{writer}")
     prepared = await _prepared(db_session, _context(identity, on_date=OTHER_DATE))
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError, match="date"):
+    with pytest.raises(engine.ConflictPreparedWriteError, match="date"):
         if writer == "log":
             await skincare_service.upsert_log(
                 db_session,
@@ -189,7 +190,7 @@ async def test_writes_reject_identity_mismatch_missing_and_stale_capabilities(
     prepared = await _prepared(db_session, context)
     mismatched = WriteIdentity(identity.subject_id, uuid.uuid4())
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await skincare_service.upsert_log(
             db_session,
             on_date=EVALUATION_DATE,
@@ -212,7 +213,7 @@ async def test_writes_reject_identity_mismatch_missing_and_stale_capabilities(
         )
 
     await db_session.commit()
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await skincare_service.upsert_log(
             db_session,
             on_date=EVALUATION_DATE,
@@ -257,7 +258,7 @@ async def test_hard_block_is_write_free_and_override_attributes_alert(db_session
     _register_skincare_resolver()
     context = _context(identity)
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await skincare_service.upsert_log(
             db_session,
             on_date=EVALUATION_DATE,
@@ -442,18 +443,18 @@ async def test_duplicate_subject_day_is_an_explicit_scope_error(db_session):
     )
     await db_session.flush()
 
-    with pytest.raises(conflict_engine.ConflictScopeError, match="multiple"):
+    with pytest.raises(engine.ConflictScopeError, match="multiple"):
         await skincare_service.get_log(
             db_session,
             EVALUATION_DATE,
             subject_id=identity.subject_id,
         )
-    with pytest.raises(conflict_engine.ConflictScopeError, match="multiple"):
+    with pytest.raises(engine.ConflictScopeError, match="multiple"):
         await skincare_service.resolve_today_scoped(
             db_session,
             scope=_context(identity).scope,
         )
-    with pytest.raises(conflict_engine.ConflictScopeError, match="multiple"):
+    with pytest.raises(engine.ConflictScopeError, match="multiple"):
         await skincare_service.upsert_log(
             db_session,
             on_date=EVALUATION_DATE,
@@ -749,7 +750,7 @@ async def test_postgres_legacy_bridge_write_serializes_against_subject_creation(
 
     async def legacy_write() -> None:
         async with factory() as session:
-            context = await conflict_engine.resolve_legacy_conflict_write_context(
+            context = await engine.resolve_legacy_conflict_write_context(
                 session,
                 actor_username="tester",
                 evaluation_date=EVALUATION_DATE,

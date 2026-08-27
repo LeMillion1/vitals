@@ -37,12 +37,8 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.timeline import Annotation
 from vitals.models.weight import NoiseMarker, ProgressPhoto
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    conflict_engine,
-    milestones_service,
-    supplements_service,
-    timeline_service,
-)
+from vitals.services import milestones_service, supplements_service, timeline_service
+from vitals.services.conflicts import engine
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped
@@ -274,16 +270,16 @@ async def _prepared_supplement_write(
     *,
     legacy_bridge: bool = False,
 ):
-    context = conflict_engine.ConflictWriteContext(
+    context = engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=date(2026, 8, 19),
         legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            engine.LegacyConflictBridge.FULLY_UNOWNED
             if legacy_bridge
-            else conflict_engine.LegacyConflictBridge.REJECT
+            else engine.LegacyConflictBridge.REJECT
         ),
     )
-    return await conflict_engine.prepare_scoped_write(session, context=context)
+    return await engine.prepare_scoped_write(session, context=context)
 
 
 async def _add_owned_supplement(session, identity: WriteIdentity, **kwargs):

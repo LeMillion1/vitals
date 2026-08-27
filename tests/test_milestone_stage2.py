@@ -17,8 +17,9 @@ from vitals.enums import Domain, UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.models.milestones import Milestone
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, milestones_service
-from vitals.services.conflict_engine import ConflictLegacyBridgeError
+from vitals.services import milestones_service
+from vitals.services.conflicts import engine
+from vitals.services.conflicts.engine import ConflictLegacyBridgeError
 from vitals.services.digest_service import DigestOwnershipError
 from vitals.services.scoped_settings_service import (
     LegacyScopedSettingBridgeClosedError,
@@ -58,14 +59,14 @@ def _context(
     identity: WriteIdentity,
     *,
     legacy: bool = False,
-) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=TODAY,
         legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            engine.LegacyConflictBridge.FULLY_UNOWNED
             if legacy
-            else conflict_engine.LegacyConflictBridge.REJECT
+            else engine.LegacyConflictBridge.REJECT
         ),
     )
 
@@ -75,8 +76,8 @@ async def _prepared(
     identity: WriteIdentity,
     *,
     legacy: bool = False,
-) -> conflict_engine.PreparedConflictWrite:
-    return await conflict_engine.prepare_scoped_write(
+) -> engine.PreparedConflictWrite:
+    return await engine.prepare_scoped_write(
         session,
         context=_context(identity, legacy=legacy),
     )
@@ -142,7 +143,7 @@ async def test_scoped_writer_capability_is_required_live_and_human(
             name="missing token",
             identity=identity,
         )
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await milestones_service.create_milestone(
             db_session,
             name="wrong actor",
@@ -151,7 +152,7 @@ async def test_scoped_writer_capability_is_required_live_and_human(
         )
 
     await db_session.commit()
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(engine.ConflictPreparedWriteError):
         await milestones_service.create_milestone(
             db_session,
             name="expired token",
@@ -161,7 +162,7 @@ async def test_scoped_writer_capability_is_required_live_and_human(
 
     system_identity = _identity(legacy_owner_roots, system=True)
     with pytest.raises(
-        conflict_engine.ConflictPreparedWriteError,
+        engine.ConflictPreparedWriteError,
         match="human actor",
     ):
         await milestones_service.create_milestone(

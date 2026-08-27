@@ -33,12 +33,8 @@ from vitals.i18n import current_lang, t
 from vitals.models.hrt import DOMAIN, HrtCycle, HrtCycleItem
 from vitals.models.identity import HealthSubject
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    alerts_service,
-    conflict_engine,
-    labs_service,
-    modules_service,
-)
+from vitals.services import alerts_service, labs_service, modules_service
+from vitals.services.conflicts import engine
 from vitals.services.hrt import cycles, records
 from vitals.utils.timeutils import today_local
 
@@ -80,13 +76,13 @@ def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared: conflict_engine.PreparedConflictWrite,
-) -> conflict_engine.ConflictWriteContext:
+    prepared: engine.PreparedConflictWrite,
+) -> engine.ConflictWriteContext:
     if identity is None or prepared is None:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "scoped HRT reminders require identity and a prepared conflict write"
         )
-    return conflict_engine.require_prepared_identity(
+    return engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
@@ -94,26 +90,26 @@ def _require_scoped_prepared_write(
 
 
 def _reminder_date(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     on_date: date_type | None,
 ) -> date_type:
     if on_date is not None and on_date != context.evaluation_date:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "HRT reminder date does not match prepared conflict evaluation date"
         )
     return context.evaluation_date
 
 
 def _alert_bridge(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ) -> alerts_service.LegacyAlertBridge:
-    if context.legacy_bridge is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED:
+    if context.legacy_bridge is engine.LegacyConflictBridge.FULLY_UNOWNED:
         return alerts_service.LegacyAlertBridge.FULLY_UNOWNED
     return alerts_service.LegacyAlertBridge.REJECT
 
 
 def _system_alert_context(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ) -> alerts_service.HealthAlertContext:
     return alerts_service.HealthAlertContext(
         WriteIdentity(context.identity.subject_id, None)
@@ -121,7 +117,7 @@ def _system_alert_context(
 
 
 def _cycle_scope(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ):
     scope = HrtCycle.subject_id == context.identity.subject_id
     if context.scope.include_legacy_unowned:
@@ -139,7 +135,7 @@ async def _active_cycle(
     session: AsyncSession,
     *,
     on_date: date_type,
-    context: conflict_engine.ConflictWriteContext | None,
+    context: engine.ConflictWriteContext | None,
 ) -> HrtCycle | None:
     cycle = await session.scalar(
         select(HrtCycle)
@@ -175,7 +171,7 @@ async def _active_cycle(
         .limit(1)
     )
     if invalid_item is not None:
-        raise conflict_engine.ConflictScopeError(
+        raise engine.ConflictScopeError(
             "HRT reminder cycle contains an item outside the subject scope"
         )
     return cycle
@@ -186,7 +182,7 @@ async def _resolve_alert(
     *,
     alert_key: str,
     entity_ref: str,
-    context: conflict_engine.ConflictWriteContext | None,
+    context: engine.ConflictWriteContext | None,
 ) -> object | None:
     return await alerts_service.resolve_scoped_by_key(
         session,
@@ -203,7 +199,7 @@ async def _was_dismissed_today(
     alert_key: str,
     entity_ref: str,
     on_date: date_type,
-    context: conflict_engine.ConflictWriteContext | None,
+    context: engine.ConflictWriteContext | None,
 ) -> bool:
     return await alerts_service.was_scoped_dismissed_today(
         session,
@@ -222,7 +218,7 @@ async def _raise_alert(
     message: str,
     alert_key: str,
     entity_ref: str,
-    context: conflict_engine.ConflictWriteContext | None,
+    context: engine.ConflictWriteContext | None,
 ) -> object:
     return await alerts_service.raise_scoped_alert(
         session,
@@ -240,7 +236,7 @@ async def seed_hormone_panel(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> dict[str, int]:
     """Register the panel markers in this subject's Labs catalog. Idempotent —
     creates a missing marker, and backfills ``category``/``retest_interval_days``
@@ -269,7 +265,7 @@ async def _latest_panel_result_date(
     session: AsyncSession,
     *,
     on_date: date_type,
-    context: conflict_engine.ConflictWriteContext | None,
+    context: engine.ConflictWriteContext | None,
 ) -> Optional[date_type]:
     keys = {labs_service.normalize_marker_key(n) for n in HORMONE_PANEL}
     rows = await labs_service.list_results(
@@ -286,7 +282,7 @@ async def refresh_labs_due(
     *,
     on_date: Optional[date_type] = None,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> None:
     """Raise/clear the bloodwork-due warn for the active cycle. No cycle → clear."""
     context = _require_scoped_prepared_write(
@@ -342,7 +338,7 @@ async def _compound_display_name(
     session: AsyncSession,
     key: str,
     *,
-    context: conflict_engine.ConflictWriteContext | None,
+    context: engine.ConflictWriteContext | None,
 ) -> str:
     """Localized catalog name for a compound key (falls back to the key for a
     free-text/custom compound not in the catalog)."""
@@ -363,7 +359,7 @@ async def _last_actual_dose_date(
     compound_key: str,
     *,
     on_date: date_type,
-    context: conflict_engine.ConflictWriteContext | None,
+    context: engine.ConflictWriteContext | None,
 ) -> Optional[date_type]:
     rows = await records.list_doses(
         session,
@@ -378,7 +374,7 @@ async def refresh_injection_due(
     *,
     on_date: Optional[date_type] = None,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> None:
     """Per active-cycle-item: nag if the last shot the fixed grid expected by
     today hasn't been logged. Resolves per compound once caught up, and clears any
@@ -471,7 +467,7 @@ async def refresh_all(
     *,
     on_date: Optional[date_type] = None,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> None:
     """Run both reminders — called from the dashboard load and the scheduled job."""
     await refresh_labs_due(
@@ -494,12 +490,12 @@ async def reminders_job(
     """Daily HRT reminders (registered in vitals/scheduler/jobs.py)."""
     async with session_factory() as session:
         today = today_local()
-        context = await conflict_engine.resolve_subject_conflict_write_context(
+        context = await engine.resolve_subject_conflict_write_context(
             session,
             subject_id=subject_id,
             evaluation_date=today,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=context,
         )

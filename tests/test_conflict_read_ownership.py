@@ -26,12 +26,7 @@ from vitals.models.nutrition import MealLog
 from vitals.models.raw_payload import RawPayload
 from vitals.models.skincare import SkincareLog
 from vitals.models.supplements import Supplement
-from vitals.services import (
-    conflict_activation_service,
-    conflict_catalog,
-    conflict_engine,
-    conflict_registrations,
-)
+from vitals.services.conflicts import activation, catalog, engine, registrations
 from vitals.services.genetics import variants
 from vitals.services.legacy_ownership import (
     LegacyOwnerResolutionError,
@@ -82,10 +77,10 @@ def _strict_scope(subject_id: uuid.UUID):
     Stage-1 slice is being implemented in the shared tree.
     """
 
-    return conflict_engine.ConflictScope(
+    return engine.ConflictScope(
         subject_id=subject_id,
         evaluation_date=EVALUATION_DATE,
-        legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
+        legacy_bridge=engine.LegacyConflictBridge.REJECT,
     )
 
 
@@ -236,8 +231,8 @@ def test_registered_primary_resolvers_require_keyword_only_scope(monkeypatch):
         del args, kwargs
         captured[domain] = resolver
 
-    monkeypatch.setattr(conflict_engine, "register_domain_resolver", capture)
-    conflict_registrations.register_all_resolvers()
+    monkeypatch.setattr(engine, "register_domain_resolver", capture)
+    registrations.register_all_resolvers()
 
     assert set(captured) == set(REGISTERED_RESOLVER_DOMAINS)
     for domain, resolver in captured.items():
@@ -275,12 +270,12 @@ async def test_each_resolver_keeps_subject_facts_isolated(
     )
     await db_session.commit()
 
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
     proposed = {"probe": True}
     scope_a = _strict_scope(legacy_owner_roots.subject_id)
 
-    assert await conflict_engine.evaluate_scoped(
+    assert await engine.evaluate_scoped(
         db_session,
         scope=scope_a,
         domain=PROBE_DOMAIN,
@@ -295,7 +290,7 @@ async def test_each_resolver_keeps_subject_facts_isolated(
     )
     await db_session.commit()
 
-    violations = await conflict_engine.evaluate_scoped(
+    violations = await engine.evaluate_scoped(
         db_session,
         scope=scope_a,
         domain=PROBE_DOMAIN,
@@ -309,7 +304,7 @@ async def test_rule_loader_includes_global_and_same_subject_but_not_foreign_cust
     legacy_owner_roots,
 ):
     subject_b, _ = await _add_subject(db_session, label="subject-b")
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     common = {
         "rule_type": "soft_warn",
         "domain_a": Domain.SUPPLEMENTS.value,
@@ -331,7 +326,7 @@ async def test_rule_loader_includes_global_and_same_subject_but_not_foreign_cust
     )
     await db_session.commit()
 
-    rows = await conflict_engine.load_scoped_rules(
+    rows = await engine.load_scoped_rules(
         db_session,
         scope=_strict_scope(legacy_owner_roots.subject_id),
         active_only=False,
@@ -340,7 +335,7 @@ async def test_rule_loader_includes_global_and_same_subject_but_not_foreign_cust
     messages = {row.message for row in rows}
     assert "subject-a" in messages
     assert "subject-b" not in messages
-    assert {entry["code"] for entry in conflict_catalog.load_rule_catalog()} <= {
+    assert {entry["code"] for entry in catalog.load_rule_catalog()} <= {
         row.code for row in rows
     }
 
@@ -349,7 +344,7 @@ async def test_unclassified_global_rule_blocks_legacy_activation_bridge(
     db_session,
     legacy_owner_roots,
 ):
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     common = {
         "rule_type": "soft_warn",
         "domain_a": Domain.SUPPLEMENTS.value,
@@ -383,7 +378,7 @@ async def test_unclassified_global_rule_blocks_legacy_activation_bridge(
     )
     await db_session.commit()
 
-    strict = await conflict_engine.load_scoped_rules(
+    strict = await engine.load_scoped_rules(
         db_session,
         scope=_strict_scope(legacy_owner_roots.subject_id),
         active_only=False,
@@ -394,14 +389,14 @@ async def test_unclassified_global_rule_blocks_legacy_activation_bridge(
     assert "forged portable" not in strict_messages
 
     with pytest.raises(
-        conflict_activation_service.ConflictActivationCatalogIntegrityError
+        activation.ConflictActivationCatalogIntegrityError
     ):
-        await conflict_engine.load_scoped_rules(
+        await engine.load_scoped_rules(
             db_session,
-            scope=conflict_engine.ConflictScope(
+            scope=engine.ConflictScope(
                 subject_id=legacy_owner_roots.subject_id,
                 evaluation_date=EVALUATION_DATE,
-                legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+                legacy_bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
             ),
             active_only=False,
         )
@@ -411,14 +406,14 @@ async def test_forged_known_catalog_rule_fails_integrity_check(
     db_session,
     legacy_owner_roots,
 ):
-    definition = dict(conflict_catalog.load_rule_catalog()[0])
+    definition = dict(catalog.load_rule_catalog()[0])
     code = definition.pop("code")
     definition["message"] = "forged catalog definition"
     db_session.add(ConflictRule(code=code, subject_id=None, **definition))
     await db_session.commit()
 
-    with pytest.raises(conflict_engine.ConflictCatalogIntegrityError):
-        await conflict_engine.load_scoped_rules(
+    with pytest.raises(engine.ConflictCatalogIntegrityError):
+        await engine.load_scoped_rules(
             db_session,
             scope=_strict_scope(legacy_owner_roots.subject_id),
             active_only=False,
@@ -429,8 +424,8 @@ async def test_tampered_catalog_domains_fail_before_domain_scoped_filter(
     db_session,
     legacy_owner_roots,
 ):
-    await conflict_catalog.sync_catalog(db_session)
-    definition = conflict_catalog.load_rule_catalog()[0]
+    await catalog.sync_catalog(db_session)
+    definition = catalog.load_rule_catalog()[0]
     declared_domain = definition["domain_a"]
     moved_domain = next(
         domain.value for domain in Domain if domain.value != declared_domain
@@ -445,16 +440,16 @@ async def test_tampered_catalog_domains_fail_before_domain_scoped_filter(
     await db_session.commit()
 
     scope = _strict_scope(legacy_owner_roots.subject_id)
-    with pytest.raises(conflict_engine.ConflictCatalogIntegrityError):
-        await conflict_engine.load_scoped_rules(
+    with pytest.raises(engine.ConflictCatalogIntegrityError):
+        await engine.load_scoped_rules(
             db_session,
             scope=scope,
             domain=declared_domain,
             active_only=False,
         )
 
-    with pytest.raises(conflict_engine.ConflictCatalogIntegrityError):
-        await conflict_engine.evaluate_scoped(
+    with pytest.raises(engine.ConflictCatalogIntegrityError):
+        await engine.evaluate_scoped(
             db_session,
             scope=scope,
             domain=declared_domain,
@@ -491,11 +486,11 @@ async def test_scope_evaluation_date_reaches_every_resolver(
         )
     )
     await db_session.commit()
-    conflict_engine.register_domain_resolver(Domain.SUPPLEMENTS.value, left)
-    conflict_engine.register_domain_resolver(Domain.LABS.value, right)
+    engine.register_domain_resolver(Domain.SUPPLEMENTS.value, left)
+    engine.register_domain_resolver(Domain.LABS.value, right)
     scope = _strict_scope(legacy_owner_roots.subject_id)
 
-    violations = await conflict_engine.evaluate_scoped(
+    violations = await engine.evaluate_scoped(
         db_session,
         scope=scope,
         domain=Domain.SUPPLEMENTS.value,
@@ -528,10 +523,10 @@ async def test_labs_resolver_does_not_read_results_after_evaluation_date(
     )
     db_session.add(future)
     await db_session.commit()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
-    assert await conflict_engine.evaluate_scoped(
+    assert await engine.evaluate_scoped(
         db_session,
         scope=_strict_scope(legacy_owner_roots.subject_id),
         domain=PROBE_DOMAIN,
@@ -557,13 +552,13 @@ async def test_active_rule_with_missing_resolver_fails_closed(
         )
     )
     await db_session.commit()
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.SUPPLEMENTS.value,
         _matching_scoped_resolver,
     )
 
-    with pytest.raises(conflict_engine.ConflictResolverUnavailable, match="labs"):
-        await conflict_engine.evaluate_scoped(
+    with pytest.raises(engine.ConflictResolverUnavailable, match="labs"):
+        await engine.evaluate_scoped(
             db_session,
             scope=_strict_scope(legacy_owner_roots.subject_id),
             domain=Domain.SUPPLEMENTS.value,
@@ -595,12 +590,12 @@ async def test_legacy_adapter_accepts_only_fully_unowned_facts(
         actor_user_id=legacy_owner_roots.user_id,
     )
     await db_session.commit()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
     if fact_domain == Domain.GENETICS.value:
         with pytest.raises(variants.GeneticsOwnershipError, match="partial"):
-            await conflict_engine.evaluate_legacy_single_subject(
+            await engine.evaluate_legacy_single_subject(
                 db_session,
                 domain=PROBE_DOMAIN,
                 proposed_state={"probe": True},
@@ -608,7 +603,7 @@ async def test_legacy_adapter_accepts_only_fully_unowned_facts(
             )
         return
 
-    partial_only = await conflict_engine.evaluate_legacy_single_subject(
+    partial_only = await engine.evaluate_legacy_single_subject(
         db_session,
         domain=PROBE_DOMAIN,
         proposed_state={"probe": True},
@@ -623,7 +618,7 @@ async def test_legacy_adapter_accepts_only_fully_unowned_facts(
         actor_user_id=None,
     )
     await db_session.commit()
-    fully_unowned = await conflict_engine.evaluate_legacy_single_subject(
+    fully_unowned = await engine.evaluate_legacy_single_subject(
         db_session,
         domain=PROBE_DOMAIN,
         proposed_state={"probe": True},
@@ -640,7 +635,7 @@ async def test_legacy_adapter_closes_when_second_subject_exists(
     await db_session.commit()
 
     with pytest.raises(LegacySubjectResolutionError):
-        await conflict_engine.evaluate_legacy_single_subject(
+        await engine.evaluate_legacy_single_subject(
             db_session,
             domain=Domain.SUPPLEMENTS.value,
             proposed_state={"key": "iron", "active": True},
@@ -681,11 +676,11 @@ async def test_scoped_raw_link_must_match_the_fact_subject(
         )
     )
     await db_session.commit()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError, match="raw"):
-        await conflict_engine.evaluate_scoped(
+    with pytest.raises(engine.ConflictRawOwnershipError, match="raw"):
+        await engine.evaluate_scoped(
             db_session,
             scope=_strict_scope(legacy_owner_roots.subject_id),
             domain=PROBE_DOMAIN,
@@ -725,11 +720,11 @@ async def test_legacy_fact_rejects_partial_linked_raw_root(
         )
     )
     await db_session.commit()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError, match="raw"):
-        await conflict_engine.evaluate_legacy_single_subject(
+    with pytest.raises(engine.ConflictRawOwnershipError, match="raw"):
+        await engine.evaluate_legacy_single_subject(
             db_session,
             domain=PROBE_DOMAIN,
             proposed_state={"probe": True},
@@ -765,10 +760,10 @@ async def test_legacy_lab_fact_accepts_exact_subject_raw_during_backfill(
         )
     )
     await db_session.commit()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
-    violations = await conflict_engine.evaluate_legacy_single_subject(
+    violations = await engine.evaluate_legacy_single_subject(
         db_session,
         domain=PROBE_DOMAIN,
         proposed_state={"probe": True},
@@ -805,14 +800,14 @@ async def test_legacy_manual_genetics_fact_rejects_raw_link_during_backfill(
         )
     )
     await db_session.commit()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
     with pytest.raises(
-        conflict_engine.ConflictRawOwnershipError,
+        engine.ConflictRawOwnershipError,
         match="manual and MCP",
     ):
-        await conflict_engine.evaluate_legacy_single_subject(
+        await engine.evaluate_legacy_single_subject(
             db_session,
             domain=PROBE_DOMAIN,
             proposed_state={"probe": True},
@@ -929,11 +924,11 @@ async def test_hrt_partial_global_compound_fails_closed(
     )
     db_session.add(_hrt_probe_rule(legacy_owner_roots.subject_id))
     await db_session.commit()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
-    with pytest.raises(conflict_engine.ConflictScopeError, match="unavailable"):
-        await conflict_engine.evaluate_scoped(
+    with pytest.raises(engine.ConflictScopeError, match="unavailable"):
+        await engine.evaluate_scoped(
             db_session,
             scope=_strict_scope(legacy_owner_roots.subject_id),
             domain=PROBE_DOMAIN,
@@ -958,11 +953,11 @@ async def test_forged_system_source_does_not_make_hrt_compound_global(
     )
     db_session.add(_hrt_probe_rule(legacy_owner_roots.subject_id))
     await db_session.commit()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
-    with pytest.raises(conflict_engine.ConflictScopeError, match="unavailable"):
-        await conflict_engine.evaluate_scoped(
+    with pytest.raises(engine.ConflictScopeError, match="unavailable"):
+        await engine.evaluate_scoped(
             db_session,
             scope=_strict_scope(legacy_owner_roots.subject_id),
             domain=PROBE_DOMAIN,
@@ -997,10 +992,10 @@ async def test_checked_in_hrt_catalog_is_global_without_bridge(
         )
     )
     await db_session.commit()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
-    violations = await conflict_engine.evaluate_scoped(
+    violations = await engine.evaluate_scoped(
         db_session,
         scope=_strict_scope(legacy_owner_roots.subject_id),
         domain=PROBE_DOMAIN,
@@ -1031,10 +1026,10 @@ async def test_hrt_catalog_metadata_comes_from_checked_in_definition(
     )
     db_session.add(_hrt_probe_rule(legacy_owner_roots.subject_id))
     await db_session.commit()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
-    assert await conflict_engine.evaluate_scoped(
+    assert await engine.evaluate_scoped(
         db_session,
         scope=_strict_scope(legacy_owner_roots.subject_id),
         domain=PROBE_DOMAIN,
@@ -1071,11 +1066,11 @@ async def test_hrt_foreign_compound_is_not_materialized_before_rejection(
     db_session.add(_hrt_probe_rule(legacy_owner_roots.subject_id))
     await db_session.commit()
     db_session.expunge_all()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
-    with pytest.raises(conflict_engine.ConflictScopeError, match="unavailable"):
-        await conflict_engine.evaluate_scoped(
+    with pytest.raises(engine.ConflictScopeError, match="unavailable"):
+        await engine.evaluate_scoped(
             db_session,
             scope=_strict_scope(legacy_owner_roots.subject_id),
             domain=PROBE_DOMAIN,
@@ -1130,11 +1125,11 @@ async def test_hrt_foreign_cycle_item_is_not_materialized_before_rejection(
         return
     foreign_item_id = foreign_item.id
     db_session.expunge_all()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
-    with pytest.raises(conflict_engine.ConflictScopeError, match="outside"):
-        await conflict_engine.evaluate_scoped(
+    with pytest.raises(engine.ConflictScopeError, match="outside"):
+        await engine.evaluate_scoped(
             db_session,
             scope=_strict_scope(legacy_owner_roots.subject_id),
             domain=PROBE_DOMAIN,
@@ -1163,17 +1158,17 @@ async def test_hrt_legacy_custom_compound_needs_exact_one_bridge(
     )
     db_session.add(_hrt_probe_rule(legacy_owner_roots.subject_id))
     await db_session.commit()
-    conflict_registrations.register_all_resolvers()
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    registrations.register_all_resolvers()
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
-    with pytest.raises(conflict_engine.ConflictScopeError, match="unavailable"):
-        await conflict_engine.evaluate_scoped(
+    with pytest.raises(engine.ConflictScopeError, match="unavailable"):
+        await engine.evaluate_scoped(
             db_session,
             scope=_strict_scope(legacy_owner_roots.subject_id),
             domain=PROBE_DOMAIN,
             proposed_state={"probe": True},
         )
-    bridged = await conflict_engine.evaluate_legacy_single_subject(
+    bridged = await engine.evaluate_legacy_single_subject(
         db_session,
         domain=PROBE_DOMAIN,
         proposed_state={"probe": True},
@@ -1236,7 +1231,7 @@ async def test_mcp_v1_conflict_read_closes_only_when_a_row_is_unowned(
     await db_session.commit()
 
     for call in calls:
-        with pytest.raises(conflict_engine.ConflictLegacyBridgeError):
+        with pytest.raises(engine.ConflictLegacyBridgeError):
             await call()
 
 
@@ -1263,7 +1258,7 @@ async def test_mcp_missing_resolver_returns_explicit_fail_closed_error(
         )
     )
     await db_session.commit()
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
 
     supplement_result = await mcp_router.check_supplement_conflicts("iron")
     generic_result = await mcp_router.check_conflicts(
@@ -1312,20 +1307,20 @@ async def test_postgres_exact_one_bridge_serializes_subject_creation(db_session)
         await release_resolver.wait()
         return [{"hit": True}]
 
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.SUPPLEMENTS.value,
         waiting_resolver,
     )
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
     async def evaluate_bridge():
         async with factory() as session:
-            result = await conflict_engine.evaluate_scoped(
+            result = await engine.evaluate_scoped(
                 session,
-                scope=conflict_engine.ConflictScope(
+                scope=engine.ConflictScope(
                     subject_id=subject_a.id,
                     evaluation_date=EVALUATION_DATE,
-                    legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+                    legacy_bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
                 ),
                 domain=PROBE_DOMAIN,
                 proposed_state={"probe": True},
@@ -1354,7 +1349,7 @@ async def test_postgres_exact_one_bridge_serializes_subject_creation(db_session)
 
     async with factory() as session:
         with pytest.raises(LegacySubjectResolutionError):
-            await conflict_engine.evaluate_legacy_single_subject(
+            await engine.evaluate_legacy_single_subject(
                 session,
                 domain=PROBE_DOMAIN,
                 proposed_state={"probe": True},
@@ -1416,11 +1411,11 @@ async def test_postgres_mcp_conflict_read_serializes_owner_suspension(
         await release_resolver.wait()
         return [{"hit": True}]
 
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.SUPPLEMENTS.value,
         waiting_resolver,
     )
-    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+    engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
     async def suspend_owner():
         async with factory() as session:

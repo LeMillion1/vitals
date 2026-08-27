@@ -20,7 +20,7 @@ from vitals.models.hrt import (
 )
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 from vitals.services.hrt import catalog
 from vitals.operations.ownership import hrt_child as backfill_service
 from vitals.operations.ownership.hrt_child import (
@@ -546,13 +546,13 @@ async def test_live_tail_requires_exact_custom_compound_and_strict_resolver_acce
     assert status.rows_above_high_watermark == 1
     resolved = await resolve_active_scoped(
         db_session,
-        scope=conflict_engine.ConflictScope(
+        scope=engine.ConflictScope(
             subject_id=subject.id,
             evaluation_date=date(2026, 8, 21),
         ),
     )
     assert any(
-        item[conflict_engine.CONFLICT_ENTITY_KEY]
+        item[engine.CONFLICT_ENTITY_KEY]
         == f"cycle_item:{appended.id}"
         and item["compound_key"] == custom.key
         for item in resolved

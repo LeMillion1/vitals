@@ -15,7 +15,8 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import FileAsset
 from vitals.models.weight import WeightLog
-from vitals.services import conflict_engine, weight_service
+from vitals.services import weight_service
+from vitals.services.conflicts import engine
 from vitals.services.modules_service import SETTINGS_KEY
 from vitals.persistence.file_storage import private_file_disk_path
 from vitals.utils.timeutils import today_local
@@ -308,7 +309,7 @@ async def test_log_weight_success(auth_client, db_session):
 
 async def test_conflict_engine_override_flow(auth_client, db_session):
     """Test conflict blocks trigger HTTP 409, and overrides save correctly."""
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         "weight",
         weight_service.resolve_active_scoped,
     )
@@ -458,9 +459,9 @@ async def test_skincare_retinoid_peel_block_and_override(auth_client, db_session
     """retinoid+peel in one evening is blocked (409) then saved on override."""
     from vitals.models.conflict_rule import ConflictRule
     from vitals.models.skincare import SkincareLog
-    from vitals.services import conflict_registrations
+    from vitals.services.conflicts import registrations
 
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
 
     db_session.add(
         ConflictRule(

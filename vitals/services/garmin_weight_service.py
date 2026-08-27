@@ -63,7 +63,8 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.scoped_settings import IntegrationConnectionSetting
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import alerts_service, conflict_engine, scoped_settings_service
+from vitals.services import alerts_service, scoped_settings_service
+from vitals.services.conflicts import engine
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.services.proactive import prefs as proactive_prefs
 from vitals.utils.timeutils import now_local
@@ -146,8 +147,8 @@ class GarminWeightExportContext:
 
     identity: WriteIdentity
     integration_connection_id: uuid.UUID
-    legacy_bridge: conflict_engine.LegacyConflictBridge = (
-        conflict_engine.LegacyConflictBridge.REJECT
+    legacy_bridge: engine.LegacyConflictBridge = (
+        engine.LegacyConflictBridge.REJECT
     )
 
     def __post_init__(self) -> None:
@@ -156,7 +157,7 @@ class GarminWeightExportContext:
         if not isinstance(self.integration_connection_id, uuid.UUID):
             raise TypeError("integration_connection_id must be a UUID")
         if not isinstance(
-            self.legacy_bridge, conflict_engine.LegacyConflictBridge
+            self.legacy_bridge, engine.LegacyConflictBridge
         ):
             raise TypeError("legacy_bridge must be a LegacyConflictBridge")
 
@@ -265,7 +266,7 @@ async def prepare_scoped_export(
     with session.no_autoflush:
         if (
             context.legacy_bridge
-            is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            is engine.LegacyConflictBridge.FULLY_UNOWNED
             and await legacy_unowned_outbox_present(session)
         ):
             subject_ids = list(
@@ -377,7 +378,7 @@ async def resolve_legacy_export_context(
         integration_connection_id=ownership.connection_id(
             IntegrationProvider.GARMIN
         ),
-        legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+        legacy_bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
     )
 
 
@@ -407,7 +408,7 @@ async def resolve_scoped_export_context(
         integration_connection_id=ownership.connection_id(
             IntegrationProvider.GARMIN
         ),
-        legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+        legacy_bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
     )
 
 
@@ -538,7 +539,7 @@ def _outbox_visible_scope(context: GarminWeightExportContext):
     exact = _outbox_exact_scope(context)
     if (
         context.legacy_bridge
-        is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+        is engine.LegacyConflictBridge.FULLY_UNOWNED
     ):
         return or_(exact, _outbox_legacy_scope())
     return exact
@@ -614,7 +615,7 @@ async def _validate_scoped_outbox_row(
         if not (
             legacy
             and context.legacy_bridge
-            is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            is engine.LegacyConflictBridge.FULLY_UNOWNED
         ):
             raise GarminWeightExportOwnershipError(
                 "outbox has partial or foreign ownership roots"
@@ -1025,7 +1026,7 @@ async def is_enabled(session: AsyncSession) -> bool:
             return scoped.value is True
         if (
             context.legacy_bridge
-            is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            is not engine.LegacyConflictBridge.FULLY_UNOWNED
         ):
             return False
         connection_status = await session.scalar(
@@ -1129,7 +1130,7 @@ async def set_enabled_scoped(
         )
         bridge_is_open = (
             context.legacy_bridge
-            is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            is engine.LegacyConflictBridge.FULLY_UNOWNED
             and connection_status != IntegrationConnectionStatus.RETIRED.value
         )
         if bridge_is_open:
@@ -1271,7 +1272,7 @@ async def _ensure_outbox_row(
                 and existing.integration_connection_id is None
                 and existing.requested_by_user_id is None
                 and context.legacy_bridge
-                is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                is engine.LegacyConflictBridge.FULLY_UNOWNED
             )
             if not exact_or_legacy:
                 raise GarminWeightExportOwnershipError(
@@ -1531,7 +1532,7 @@ async def handle_active_weight_deleted(
             and outbox.integration_connection_id is None
             and outbox.requested_by_user_id is None
             and context.legacy_bridge
-            is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            is engine.LegacyConflictBridge.FULLY_UNOWNED
         )
         if not exact_or_legacy:
             raise GarminWeightExportOwnershipError(
@@ -1793,7 +1794,7 @@ async def _raise_failure_alert(
         legacy_bridge=(
             alerts_service.LegacyAlertBridge.FULLY_UNOWNED
             if context.legacy_bridge
-            is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            is engine.LegacyConflictBridge.FULLY_UNOWNED
             else alerts_service.LegacyAlertBridge.REJECT
         ),
     )
@@ -1832,7 +1833,7 @@ async def _resolve_alert_if_clear(session: AsyncSession) -> None:
                 legacy_bridge=(
                     alerts_service.LegacyAlertBridge.FULLY_UNOWNED
                     if context.legacy_bridge
-                    is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                    is engine.LegacyConflictBridge.FULLY_UNOWNED
                     else alerts_service.LegacyAlertBridge.REJECT
                 ),
             )

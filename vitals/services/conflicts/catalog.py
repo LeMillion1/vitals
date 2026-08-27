@@ -28,9 +28,9 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.utils.identifiers import slugify
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("vitals.services.conflict_catalog")
 
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 _INGREDIENTS_PATH = _DATA_DIR / "ingredients.yaml"
 _RULES_PATH = _DATA_DIR / "conflict_rules.yaml"
 

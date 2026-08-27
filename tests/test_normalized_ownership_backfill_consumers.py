@@ -37,7 +37,7 @@ from vitals.services import (
     weight_service,
 )
 from vitals.services.hrt import cycles, records, templates
-from vitals.services.conflict_engine import ConflictScopeError
+from vitals.services.conflicts.engine import ConflictScopeError
 from vitals.operations.ownership.normalized import (
     NormalizedOwnershipBackfillStatus,
     run_normalized_ownership_backfill_batch,

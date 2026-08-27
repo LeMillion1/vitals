@@ -12,14 +12,15 @@ from datetime import timedelta
 
 from vitals.enums import CycleKind, Domain, DoseUnit, HrtInjectionSite, Source
 from vitals.i18n import current_lang
-from vitals.services import alerts_service, conflict_engine
+from vitals.services import alerts_service
+from vitals.services.conflicts import engine
 from vitals.services.hrt import (
     cycles as cycle_records,
     reminders,
     records,
     templates as template_records,
 )
-from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
@@ -34,12 +35,12 @@ async def _prepared_owner_write(
     username: str,
     evaluation_date: date_type,
 ):
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
         evaluation_date=evaluation_date,
     )
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db,
         context=context,
     )

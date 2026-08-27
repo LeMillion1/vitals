@@ -22,18 +22,12 @@ from vitals.enums import (
     Source,
 )
 from vitals.i18n import t
-from vitals.services import (
-    ai_gateway_service,
-    alerts_service,
-    conflict_engine,
-    file_asset_service,
-    garmin_weight_service,
-    weight_service,
-)
+from vitals.services import ai_gateway_service, alerts_service, file_asset_service, garmin_weight_service, weight_service
+from vitals.services.conflicts import engine
 from vitals.services.body_scan import ai as body_scan_ai
 from vitals.services.body_scan import scans
 from vitals.analytics import body_metrics
-from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
 from web.config import get_web_config
 from web.deps import get_session, require_auth, require_module
@@ -67,10 +61,10 @@ async def _prepare_weight_write(
     *,
     username: str,
     on_date: date_type,
-) -> tuple[conflict_engine.ConflictWriteContext, weight_service.PreparedWeightWrite]:
+) -> tuple[engine.ConflictWriteContext, weight_service.PreparedWeightWrite]:
     """Resolve the legacy owner and Garmin destination under one governance lock."""
 
-    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+    conflict_context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
         evaluation_date=on_date,
@@ -93,17 +87,17 @@ async def _prepare_aux_write(
     username: str,
     on_date: date_type,
 ) -> tuple[
-    conflict_engine.ConflictWriteContext,
-    conflict_engine.PreparedConflictWrite,
+    engine.ConflictWriteContext,
+    engine.PreparedConflictWrite,
 ]:
     """Prepare a subject-scoped measurement/noise write without the outbox lock."""
 
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
         evaluation_date=on_date,
     )
-    prepared = await conflict_engine.prepare_scoped_write(db, context=context)
+    prepared = await engine.prepare_scoped_write(db, context=context)
     return context, prepared
 
 

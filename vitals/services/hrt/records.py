@@ -36,7 +36,7 @@ from vitals.models.hrt import (
     HrtSideEffect,
 )
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 
 # A compound counts as part of the "current protocol" for conflict matching if
 # it was dosed within this trailing window. A coarse stand-in until cycles
@@ -67,15 +67,15 @@ def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
     identity: WriteIdentity | None,
-    prepared: conflict_engine.PreparedConflictWrite | None,
-) -> conflict_engine.ConflictWriteContext | None:
+    prepared: engine.PreparedConflictWrite | None,
+) -> engine.ConflictWriteContext | None:
     if identity is None and prepared is None:
         return None
     if identity is None or prepared is None:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "scoped HRT writes require identity and a prepared conflict write"
         )
-    return conflict_engine.require_prepared_identity(
+    return engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
@@ -83,11 +83,11 @@ def _require_scoped_prepared_write(
 
 
 def _require_evaluation_date(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     on_date: date_type,
 ) -> None:
     if context.evaluation_date != on_date:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "HRT write date does not match prepared conflict evaluation date"
         )
 
@@ -359,7 +359,7 @@ async def log_dose(
     source: str = Source.MANUAL.value,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> HrtDose:
     context = _require_scoped_prepared_write(
         session,
@@ -389,7 +389,7 @@ async def log_dose(
         "compound_key": key,
         "compound_class": compound.compound_class if compound else None,
     }
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.HRT,
@@ -458,7 +458,7 @@ async def get_dose_for_update(
     dose_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[HrtDose]:
     _require_scoped_prepared_write(
         session,
@@ -500,7 +500,7 @@ async def update_dose(
     note: Optional[str] = None,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[HrtDose]:
     context = _require_scoped_prepared_write(
         session,
@@ -537,7 +537,7 @@ async def update_dose(
         "compound_key": key,
         "compound_class": compound.compound_class if compound else None,
     }
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.HRT,
@@ -570,7 +570,7 @@ async def delete_dose(
     dose_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
@@ -600,7 +600,7 @@ async def log_side_effect(
     note: Optional[str] = None,
     source: str = Source.MANUAL.value,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> HrtSideEffect:
     context = _require_scoped_prepared_write(
         session,
@@ -657,7 +657,7 @@ async def update_side_effect(
     severity: int,
     note: Optional[str] = None,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[HrtSideEffect]:
     context = _require_scoped_prepared_write(
         session,
@@ -693,7 +693,7 @@ async def delete_side_effect(
     effect_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
@@ -716,7 +716,7 @@ async def delete_side_effect(
 # ── Conflict-engine resolver ─────────────────────────────────────────────────
 def _scoped_compound_join(
     *,
-    scope: conflict_engine.ConflictScope,
+    scope: engine.ConflictScope,
     curated_keys: tuple[str, ...],
 ):
     same_subject = HrtCompound.subject_id == scope.subject_id
@@ -791,7 +791,7 @@ async def legacy_unowned_present(session: AsyncSession) -> bool:
 async def resolve_active_scoped(
     session: AsyncSession,
     *,
-    scope: conflict_engine.ConflictScope,
+    scope: engine.ConflictScope,
 ) -> list[dict]:
     """Resolve one subject's current protocol with catalog-safe joins."""
 
@@ -808,7 +808,7 @@ async def resolve_active_scoped(
     def _add(entity_key, key, compound_class, route, aromatizes):
         if key and entity_key not in seen:
             seen[entity_key] = {
-                conflict_engine.CONFLICT_ENTITY_KEY: entity_key,
+                engine.CONFLICT_ENTITY_KEY: entity_key,
                 "compound_key": key,
                 "compound_class": compound_class,
                 "route": route,
@@ -832,7 +832,7 @@ async def resolve_active_scoped(
             # The LEFT JOIN contains the ownership predicate. A miss therefore
             # means missing, foreign, partial, or unclassified portable state;
             # no foreign compound columns have been materialized.
-            raise conflict_engine.ConflictScopeError(
+            raise engine.ConflictScopeError(
                 "HRT fact references an unavailable scoped compound"
             )
         if row_id is None:
@@ -969,7 +969,7 @@ async def resolve_active_scoped(
             .limit(1)
         )
         if invalid_item is not None:
-            raise conflict_engine.ConflictScopeError(
+            raise engine.ConflictScopeError(
                 "HRT cycle contains an item outside the subject scope"
             )
         item_rows = await session.execute(

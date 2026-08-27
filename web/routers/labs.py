@@ -21,14 +21,9 @@ from vitals.enums import (
     FileStorageBackend,
 )
 from vitals.i18n import t
-from vitals.services import (
-    ai_gateway_service,
-    alerts_service,
-    conflict_engine,
-    lab_document_ai_service,
-    labs_service,
-)
-from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services import ai_gateway_service, alerts_service, lab_document_ai_service, labs_service
+from vitals.services.conflicts import engine
+from vitals.services.conflicts.engine import ConflictBlocked
 from web.config import get_web_config
 from web.deps import get_session, require_auth
 from web.ratelimit import rate_limit
@@ -51,12 +46,12 @@ async def _prepared_owner_write(
     username: str,
     evaluation_date: date_type,
 ):
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
         evaluation_date=evaluation_date,
     )
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db,
         context=context,
     )

@@ -9,7 +9,8 @@ from vitals.enums import Domain, Source, UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.models.nutrition import MealLog
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, nutrition_service
+from vitals.services import nutrition_service
+from vitals.services.conflicts import engine
 
 
 async def _identity(session, slug: str) -> WriteIdentity:
@@ -28,11 +29,11 @@ async def _identity(session, slug: str) -> WriteIdentity:
 
 
 async def _prepared(session, identity: WriteIdentity, on_date: date):
-    context = conflict_engine.ConflictWriteContext(
+    context = engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=on_date,
     )
-    return await conflict_engine.prepare_scoped_write(session, context=context)
+    return await engine.prepare_scoped_write(session, context=context)
 
 
 async def test_owned_create_and_reads_are_subject_isolated(db_session):

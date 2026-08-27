@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import CycleKind, DoseUnit, Source
 from vitals.models.hrt import DOMAIN, HrtCompound, HrtCycle, HrtCycleItem, HrtDose
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 from vitals.services.hrt import records
 from vitals.utils.timeutils import today_local
 
@@ -60,8 +60,8 @@ def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared: conflict_engine.PreparedConflictWrite,
-) -> conflict_engine.ConflictWriteContext:
+    prepared: engine.PreparedConflictWrite,
+) -> engine.ConflictWriteContext:
     """Validate the opaque writer before any scoped target is queried.
 
     Cycles do not have one conflict-evaluation date: a mutation may describe a
@@ -70,7 +70,7 @@ def _require_scoped_prepared_write(
     not compared with a cycle boundary.
     """
 
-    context = conflict_engine.require_prepared_identity(
+    context = engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
@@ -104,7 +104,7 @@ def _validate_cycle_graph(
         cycle,
         subject_id=subject_id,
     ):
-        raise conflict_engine.ConflictScopeError(
+        raise engine.ConflictScopeError(
             "HRT cycle is outside the requested subject scope"
         )
     for item in items:
@@ -112,7 +112,7 @@ def _validate_cycle_graph(
             item,
             subject_id=subject_id,
         ):
-            raise conflict_engine.ConflictScopeError(
+            raise engine.ConflictScopeError(
                 "HRT cycle contains an item outside the requested subject scope"
             )
 
@@ -239,7 +239,7 @@ async def _resolve_scoped_compound(
         select(HrtCompound.id).where(HrtCompound.key == key).limit(1)
     )
     if collision is not None:
-        raise conflict_engine.ConflictScopeError(
+        raise engine.ConflictScopeError(
             "HRT compound belongs to another subject scope"
         )
     return None
@@ -480,7 +480,7 @@ async def care_active_cycle(
         .limit(1)
     )
     if invalid_item is not None:
-        raise conflict_engine.ConflictScopeError(
+        raise engine.ConflictScopeError(
             "HRT cycle contains an item outside the requested subject scope"
         )
     compounds = list(
@@ -514,7 +514,7 @@ async def add_cycle(
     note: Optional[str] = None,
     source: str | Source = Source.MANUAL.value,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> HrtCycle:
     """Create a cycle. An open-ended one closes every other still-open cycle so at
     most one protocol is current — the day before the new one starts, but never
@@ -590,7 +590,7 @@ async def add_cycle_item(
     start_offset_days: int = 0,
     note: Optional[str] = None,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[HrtCycleItem]:
     _require_scoped_prepared_write(
         session,
@@ -646,7 +646,7 @@ async def update_cycle_item(
     start_offset_days: Optional[int] = None,
     note: Optional[str] = None,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[HrtCycleItem]:
     """Edit an item in place — dose tweaks mid-course shouldn't require
     delete + re-add. ``None`` keeps the current value; a new ``schedule`` goes
@@ -687,7 +687,7 @@ async def close_cycle(
     *,
     end_date: date_type,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[HrtCycle]:
     _require_scoped_prepared_write(
         session,
@@ -717,7 +717,7 @@ async def delete_cycle(
     cycle_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
@@ -742,7 +742,7 @@ async def delete_cycle_item(
     item_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
@@ -837,7 +837,7 @@ async def _actual_contributions(
         if dose_row.compound_id is not None and (
             compound is None or compound.id != dose_row.compound_id
         ):
-            raise conflict_engine.ConflictScopeError(
+            raise engine.ConflictScopeError(
                 "HRT dose references a compound outside the subject scope"
             )
         active = _active_mg(dose_row.dose, dose_row.unit, compound)

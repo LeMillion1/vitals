@@ -39,7 +39,8 @@ from vitals.models.garmin import (
 )
 from vitals.models.raw_payload import RawPayload
 from vitals.models.weight import WeightLog
-from vitals.services import conflict_engine, garmin_service
+from vitals.services import garmin_service
+from vitals.services.conflicts import engine
 from vitals.services import weight_service
 from web.config import get_web_config
 from vitals.utils.timeutils import to_local_naive
@@ -972,7 +973,7 @@ async def test_sync_finishes_vendor_reads_before_weight_ingest_lock(
     async with factory() as session:
         # A capability belongs to the transaction that issued it, so the
         # concurrent writer mints its own instead of borrowing the fixture's.
-        context = await conflict_engine.resolve_legacy_conflict_write_context(
+        context = await engine.resolve_legacy_conflict_write_context(
             session,
             actor_username=get_web_config().auth_username,
             evaluation_date=DAY,

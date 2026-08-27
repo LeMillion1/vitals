@@ -30,7 +30,7 @@ async def bootstrap(
 ) -> None:
     """Create the legacy owner, resource roots, and checked-in catalogs."""
 
-    from vitals.services import conflict_catalog
+    from vitals.services.conflicts import catalog as conflict_catalog
     from vitals.services.hrt import catalog
     from vitals.services.identity_bootstrap import bootstrap_legacy_owner
     from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
@@ -46,8 +46,8 @@ async def bootstrap(
         subject_id=identity.subject_id,
         adopt_environment_credentials=True,
     )
-    await catalog.sync_catalog(session)
     await conflict_catalog.sync_catalog(session)
+    await catalog.sync_catalog(session)
     await session.flush()
 
 

@@ -28,12 +28,8 @@ from vitals.enums import Domain, InjectionSite, Severity, Source
 from vitals.i18n import t
 from vitals.models.glp1 import DOMAIN, DosePhase, Injection, SideEffect
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    alerts_service,
-    conflict_engine,
-    modules_service,
-    weight_service,
-)
+from vitals.services import alerts_service, modules_service, weight_service
+from vitals.services.conflicts import engine
 from vitals.analytics.regression import fit_trend
 from vitals.utils.timeutils import today_local
 
@@ -59,13 +55,13 @@ def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared: conflict_engine.PreparedConflictWrite,
-) -> conflict_engine.ConflictWriteContext:
+    prepared: engine.PreparedConflictWrite,
+) -> engine.ConflictWriteContext:
     if identity is None or prepared is None:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "scoped GLP-1 writes require identity and a prepared conflict write"
         )
-    return conflict_engine.require_prepared_identity(
+    return engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
@@ -73,11 +69,11 @@ def _require_scoped_prepared_write(
 
 
 def _require_evaluation_date(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     on_date: date_type,
 ) -> None:
     if context.evaluation_date != on_date:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "GLP-1 write date does not match prepared conflict evaluation date"
         )
 
@@ -137,7 +133,7 @@ async def log_injection(
     source: str = Source.MANUAL.value,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Injection:
     context = _require_scoped_prepared_write(
         session,
@@ -147,7 +143,7 @@ async def log_injection(
     _require_evaluation_date(context, on_date)
     drug, site = _validate_injection(drug=drug, dose_mg=dose_mg, site=site)
     proposed = {"drug": drug, "dose_mg": dose_mg}
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.GLP1,
@@ -213,7 +209,7 @@ async def get_injection_for_update(
     injection_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[Injection]:
     _require_scoped_prepared_write(
         session,
@@ -250,7 +246,7 @@ async def update_injection(
     note: Optional[str] = None,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[Injection]:
     context = _require_scoped_prepared_write(
         session,
@@ -270,7 +266,7 @@ async def update_injection(
     # Run the same conflict-engine gate as log_injection so editing a shot can't
     # slip past a cross-domain block that a fresh log would have caught.
     proposed = {"drug": drug, "dose_mg": dose_mg}
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.GLP1,
@@ -293,7 +289,7 @@ async def update_injection_note(
     *,
     note: str,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[Injection]:
     row = await get_injection_for_update(
         session,
@@ -315,7 +311,7 @@ async def delete_injection(
     injection_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
@@ -391,7 +387,7 @@ async def legacy_unowned_present(session: AsyncSession) -> bool:
 async def resolve_active_scoped(
     session: AsyncSession,
     *,
-    scope: conflict_engine.ConflictScope,
+    scope: engine.ConflictScope,
 ) -> list[dict]:
     """Resolve the current dose phase inside one subject boundary."""
 
@@ -422,7 +418,7 @@ async def resolve_active_scoped(
         return []
     return [
         {
-            conflict_engine.CONFLICT_ENTITY_KEY: _active_entity_key(
+            engine.CONFLICT_ENTITY_KEY: _active_entity_key(
                 scope.evaluation_date
             ),
             "drug": phase.drug,
@@ -443,7 +439,7 @@ async def add_dose_phase(
     source: str = Source.MANUAL.value,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> DosePhase:
     """Add a dose phase while keeping open-ended phases chronologically bounded.
 
@@ -476,7 +472,7 @@ async def add_dose_phase(
     )
 
     proposed = {"drug": drug, "dose_mg": dose_mg, "active": True}
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.GLP1,
@@ -530,7 +526,7 @@ async def delete_dose_phase(
     phase_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
@@ -582,7 +578,7 @@ async def log_side_effect(
     note: Optional[str] = None,
     source: str = Source.MANUAL.value,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> SideEffect:
     context = _require_scoped_prepared_write(
         session,
@@ -631,7 +627,7 @@ async def delete_side_effect(
     effect_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
@@ -657,7 +653,7 @@ async def evaluate_plateau(
     *,
     subject_id: uuid.UUID,
     on_date: Optional[date_type] = None,
-    scope: conflict_engine.ConflictScope | None = None,
+    scope: engine.ConflictScope | None = None,
 ) -> Optional[dict]:
     """Pure read: is the current dose plateaued? Returns a context dict
     (drug, dose, days_on_dose, slope_per_week) when a plateau is detected on the
@@ -669,12 +665,12 @@ async def evaluate_plateau(
     """
 
     if scope is not None and scope.subject_id != subject_id:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "plateau subject does not match the prepared conflict scope"
         )
     today = scope.evaluation_date if scope is not None else (on_date or today_local())
     if on_date is not None and on_date != today:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "plateau date does not match the prepared conflict scope"
         )
     phase = await active_dose_phase(
@@ -721,7 +717,7 @@ async def refresh_plateau_alert(
     *,
     on_date: Optional[date_type] = None,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[object]:
     """Raise a ``note`` alert while the current dose is plateaued; resolve it once
     progress resumes (or the dose changes). Idempotent — safe on every dashboard
@@ -789,12 +785,12 @@ async def plateau_job(
     refresh the dashboard does, so the alert is fresh even without a page load."""
     async with session_factory() as session:
         today = today_local()
-        context = await conflict_engine.resolve_subject_conflict_write_context(
+        context = await engine.resolve_subject_conflict_write_context(
             session,
             subject_id=subject_id,
             evaluation_date=today,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=context,
         )

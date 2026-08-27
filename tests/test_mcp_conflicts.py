@@ -8,11 +8,8 @@ from sqlalchemy import select
 
 from vitals.models.conflict_rule import ConflictRule
 from vitals.models.identity import HealthSubject
-from vitals.services import (
-    conflict_activation_service,
-    conflict_registrations,
-)
-from vitals.services.conflict_engine import LegacyConflictBridge
+from vitals.services.conflicts import activation, registrations
+from vitals.services.conflicts.engine import LegacyConflictBridge
 from vitals.services.genetics import variants
 
 mcp_router = pytest.importorskip("web.routers.mcp")
@@ -41,7 +38,7 @@ async def _seed_iron_rule(db_session):
 
 async def test_check_supplement_conflicts_normalizes_cyrillic_name(db_session, session_factory, monkeypatch, owner_write):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
     await variants.add_variant(
         db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
@@ -57,7 +54,7 @@ async def test_check_supplement_conflicts_normalizes_cyrillic_name(db_session, s
 
 async def test_check_supplement_conflicts_no_match_when_safe(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
     await db_session.commit()  # no hemochromatosis marker on file
 
@@ -66,9 +63,9 @@ async def test_check_supplement_conflicts_no_match_when_safe(db_session, session
 
 async def test_list_conflict_rules_filters_by_domain_and_category(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
-    from vitals.services import conflict_catalog
+    from vitals.services.conflicts import catalog
 
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
 
     genetics_rules = await mcp_router.list_conflict_rules(domain="genetics")
@@ -86,15 +83,15 @@ async def test_list_conflict_rules_returns_subject_activation_not_global_flag(
     monkeypatch,
 ):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
-    from vitals.services import conflict_catalog
+    from vitals.services.conflicts import catalog
 
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
     rule = await db_session.scalar(
         select(ConflictRule).where(ConflictRule.code.is_not(None)).limit(1)
     )
     subject_id = await db_session.scalar(select(HealthSubject.id))
-    await conflict_activation_service.set_rule_activation(
+    await activation.set_rule_activation(
         db_session,
         subject_id=subject_id,
         rule_id=rule.id,
@@ -112,7 +109,7 @@ async def test_list_conflict_rules_returns_subject_activation_not_global_flag(
 
 async def test_check_conflicts_generic_domain_payload(db_session, session_factory, monkeypatch, owner_write):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     from vitals.services import supplements_service
 
     db_session.add(

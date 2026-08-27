@@ -63,6 +63,12 @@ vitals/services/body_scan/
 ├── scans.py           # normalized scan facts and ownership
 └── ai.py              # document parsing and review lifecycle
 
+vitals/services/conflicts/
+├── catalog.py         # curated safety-rule definitions
+├── activation.py      # subject-specific rule activation
+├── engine.py          # scoped evaluation and override policy
+└── registrations.py   # domain-resolver wiring
+
 vitals/operations/ownership/
 ├── portability_v1.py # destructive full-v1 restore coordinator
 ├── validate.py       # cross-table ownership cutover validation

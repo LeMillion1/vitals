@@ -8,7 +8,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, Source
-from vitals.services import alerts_service, conflict_engine
+from vitals.services import alerts_service
+from vitals.services.conflicts import engine
 from vitals.services.genetics import variants as variant_records
 from vitals.services.genetics.vcf import INTERPRETATIONS, ParsedVariant, parse_vcf_line
 from vitals.utils.timeutils import today_local
@@ -24,12 +25,12 @@ async def _prepared_owner_write(
     *,
     username: str,
 ):
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
         evaluation_date=today_local(),
     )
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db,
         context=context,
     )
@@ -49,7 +50,7 @@ async def genetics_dashboard(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
         evaluation_date=today_local(),

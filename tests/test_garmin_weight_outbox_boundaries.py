@@ -28,12 +28,8 @@ from vitals.models.scoped_settings import IntegrationConnectionSetting
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    conflict_engine,
-    garmin_service,
-    garmin_weight_service,
-    weight_service,
-)
+from vitals.services import garmin_service, garmin_weight_service, weight_service
+from vitals.services.conflicts import engine
 from vitals.services.scoped_settings_service import ScopedSettingKey
 
 
@@ -76,15 +72,15 @@ def _export_context(
     return garmin_weight_service.GarminWeightExportContext(
         identity=identity,
         integration_connection_id=garmin.id,
-        legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+        legacy_bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
     )
 
 
 def _conflict_context(identity: WriteIdentity):
-    return conflict_engine.ConflictWriteContext(
+    return engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=DAY,
-        legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+        legacy_bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
     )
 
 
@@ -231,7 +227,7 @@ async def test_historical_capability_can_read_and_disable_closed_connection(
     context = garmin_weight_service.GarminWeightExportContext(
         identity=identity,
         integration_connection_id=garmin.id,
-        legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
+        legacy_bridge=engine.LegacyConflictBridge.REJECT,
     )
     prepared = await garmin_weight_service.prepare_scoped_export(
         db_session,
@@ -408,7 +404,7 @@ async def test_strict_scope_rejects_fully_null_legacy_outbox(
     context = garmin_weight_service.GarminWeightExportContext(
         identity=identity,
         integration_connection_id=garmin.id,
-        legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
+        legacy_bridge=engine.LegacyConflictBridge.REJECT,
     )
     prepared = await garmin_weight_service.prepare_scoped_export(
         db_session,
@@ -483,7 +479,7 @@ async def test_exact_outbox_rejects_linked_weight_with_untrusted_roots(
     context = garmin_weight_service.GarminWeightExportContext(
         identity=identity,
         integration_connection_id=garmin.id,
-        legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
+        legacy_bridge=engine.LegacyConflictBridge.REJECT,
     )
     prepared = await garmin_weight_service.prepare_scoped_export(
         db_session,
@@ -523,7 +519,7 @@ async def test_strict_scoped_opt_in_does_not_fall_back_to_global_setting(
     context = garmin_weight_service.GarminWeightExportContext(
         identity=identity,
         integration_connection_id=garmin.id,
-        legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
+        legacy_bridge=engine.LegacyConflictBridge.REJECT,
     )
     prepared = await garmin_weight_service.prepare_scoped_export(
         db_session,

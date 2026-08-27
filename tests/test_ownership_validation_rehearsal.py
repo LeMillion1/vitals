@@ -29,7 +29,7 @@ from sqlalchemy.pool import NullPool
 
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
-from vitals.services import conflict_catalog
+from vitals.services.conflicts import catalog as conflict_catalog
 from vitals.services.hrt import catalog
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
 from vitals.operations.ownership.validate import (

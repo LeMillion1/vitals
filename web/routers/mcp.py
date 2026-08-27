@@ -84,8 +84,9 @@ from vitals.models import (
     WeightLog,
     WeeklyDigest,
 )
-from vitals.services import conflict_engine, modules_service
-from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services import modules_service
+from vitals.services.conflicts import engine
+from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.services.data_portability_service import GENERIC_OUTPUT_SUPPRESSED_COLUMNS
 from vitals.services.genetics import variants as variant_records
 from vitals.services.legacy_ownership import (
@@ -874,25 +875,25 @@ async def _mcp_v1_legacy_alert_owner(session):
     )
 
 
-async def _mcp_v1_conflict_scope(session) -> conflict_engine.ConflictScope:
+async def _mcp_v1_conflict_scope(session) -> engine.ConflictScope:
     """Authenticate and bind an MCP conflict read under governance lock."""
 
     binding = _current_grant_binding()
     if binding is not None:
         await bind_session_subject(session, binding.subject_id)
-        return conflict_engine.ConflictScope(
+        return engine.ConflictScope(
             subject_id=binding.subject_id,
             evaluation_date=today_local(),
         )
 
-    return await conflict_engine.resolve_legacy_conflict_scope(
+    return await engine.resolve_legacy_conflict_scope(
         session,
         actor_username=await _mcp_actor_username(session),
         evaluation_date=today_local(),
     )
 
 
-async def _mcp_v1_composition_scope(session) -> conflict_engine.ConflictScope:
+async def _mcp_v1_composition_scope(session) -> engine.ConflictScope:
     """Bind a legacy whole-lake read and reject corrupt Milestone roots.
 
     The v1 connector still has no selected subject.  The governance-locked
@@ -921,7 +922,7 @@ async def _mcp_v1_conflict_write_context(
     session,
     *,
     evaluation_date: date_type | None = None,
-) -> conflict_engine.ConflictWriteContext:
+) -> engine.ConflictWriteContext:
     """Authenticate the configured owner for a scoped MCP v1 conflict write."""
 
     binding = _current_grant_binding()
@@ -929,14 +930,14 @@ async def _mcp_v1_conflict_write_context(
         from vitals.ownership import WriteIdentity
 
         await bind_session_subject(session, binding.subject_id)
-        return conflict_engine.ConflictWriteContext(
+        return engine.ConflictWriteContext(
             identity=WriteIdentity(
                 subject_id=binding.subject_id,
                 actor_user_id=binding.user_id,
             ),
             evaluation_date=evaluation_date or today_local(),
         )
-    return await conflict_engine.resolve_legacy_conflict_write_context(
+    return await engine.resolve_legacy_conflict_write_context(
         session,
         actor_username=await _mcp_actor_username(session),
         evaluation_date=evaluation_date or today_local(),
@@ -979,7 +980,7 @@ async def _mcp_v1_aux_weight_write(
         session,
         evaluation_date=evaluation_date,
     )
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         session,
         context=conflict_context,
     )
@@ -1429,7 +1430,7 @@ async def upsert_genetic_variant(
     session_factory = get_session_factory()
     async with session_factory() as session:
         context = await _mcp_v1_conflict_write_context(session)
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=context,
         )
@@ -1536,14 +1537,14 @@ async def check_supplement_conflicts(supplement_name: str) -> list[dict]:
     labs, and GLP-1 state. The name is normalized to the same stable ``key``
     the catalog matches rules on (e.g. "Железо" -> "iron"), so this works
     regardless of spelling/language. Read-only — never writes, never blocks."""
-    from vitals.services import conflict_catalog
+    from vitals.services.conflicts import catalog
 
     session_factory = get_session_factory()
-    key = conflict_catalog.normalize_ingredient(supplement_name)
+    key = catalog.normalize_ingredient(supplement_name)
     async with session_factory() as session:
         scope = await _mcp_v1_conflict_scope(session)
         try:
-            violations = await conflict_engine.evaluate_scoped(
+            violations = await engine.evaluate_scoped(
                 session,
                 scope=scope,
                 domain=Domain.SUPPLEMENTS,
@@ -1553,7 +1554,7 @@ async def check_supplement_conflicts(supplement_name: str) -> list[dict]:
                     "active": True,
                 },
             )
-        except conflict_engine.ConflictResolverUnavailable as exc:
+        except engine.ConflictResolverUnavailable as exc:
             return [{"error": str(exc)}]
         return [v.to_dict() for v in violations]
 
@@ -1570,23 +1571,23 @@ async def list_conflict_rules(
     ``category`` (absorption, pharmacogenomics, dermatology, lab_safety, glp1,
     contraindication). Only ``active`` rules are meaningful for evaluation, but
     inactive ones are included too so a caller can see the full catalog."""
-    from vitals.services import conflict_activation_service
+    from vitals.services.conflicts import activation
 
     session_factory = get_session_factory()
     async with session_factory() as session:
         scope = await _mcp_v1_conflict_scope(session)
-        rows = await conflict_engine.load_scoped_rules(
+        rows = await engine.load_scoped_rules(
             session,
             scope=scope,
             domain=domain,
             active_only=False,
         )
-        activation_state = await conflict_activation_service.read_activation_state(
+        activation_state = await activation.read_activation_state(
             session,
             subject_id=scope.subject_id,
             legacy_bridge=scope.legacy_bridge,
         )
-        activation = conflict_activation_service.effective_rule_activation(
+        rule_activation = activation.effective_rule_activation(
             rows,
             activation_state,
         )
@@ -1595,7 +1596,7 @@ async def list_conflict_rules(
         payloads = []
         for row in rows:
             payload = serialize_row(row)
-            payload["active"] = activation[row.id]
+            payload["active"] = rule_activation[row.id]
             payloads.append(payload)
         return payloads
 
@@ -1616,13 +1617,13 @@ async def check_conflicts(domain: str, payload: dict) -> list[dict]:
     async with session_factory() as session:
         scope = await _mcp_v1_conflict_scope(session)
         try:
-            violations = await conflict_engine.evaluate_scoped(
+            violations = await engine.evaluate_scoped(
                 session,
                 scope=scope,
                 domain=domain,
                 proposed_state=payload,
             )
-        except conflict_engine.ConflictResolverUnavailable as exc:
+        except engine.ConflictResolverUnavailable as exc:
             return [{"error": str(exc)}]
         return [v.to_dict() for v in violations]
 
@@ -1661,7 +1662,7 @@ async def log_meal(
             session,
             evaluation_date=parsed_date,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -1757,7 +1758,7 @@ async def update_meal(
             session,
             evaluation_date=parsed_date or today_local(),
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -1771,12 +1772,12 @@ async def update_meal(
             return {"error": f"Meal {meal_id} not found"}
         final_date = current.date if parsed_date is None else parsed_date
         if conflict_context.evaluation_date != final_date:
-            conflict_context = conflict_engine.ConflictWriteContext(
+            conflict_context = engine.ConflictWriteContext(
                 identity=conflict_context.identity,
                 evaluation_date=final_date,
                 legacy_bridge=conflict_context.legacy_bridge,
             )
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -1907,7 +1908,7 @@ async def log_glp1(
             session,
             evaluation_date=parsed_date,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -2008,7 +2009,7 @@ async def log_hrt_dose(
             session,
             evaluation_date=parsed_date,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -2055,7 +2056,7 @@ async def add_hrt_cycle(
             session,
             evaluation_date=start,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -2108,7 +2109,7 @@ async def add_hrt_cycle_item(
             session,
             evaluation_date=today_local(),
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -2160,7 +2161,7 @@ async def update_hrt_dose(
             session,
             evaluation_date=parsed_date or today_local(),
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -2174,12 +2175,12 @@ async def update_hrt_dose(
             return {"error": f"HRT dose {dose_id} not found"}
         final_date = current.date if parsed_date is None else parsed_date
         if conflict_context.evaluation_date != final_date:
-            conflict_context = conflict_engine.ConflictWriteContext(
+            conflict_context = engine.ConflictWriteContext(
                 identity=conflict_context.identity,
                 evaluation_date=final_date,
                 legacy_bridge=conflict_context.legacy_bridge,
             )
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -2248,7 +2249,7 @@ async def log_hrt_side_effect(
             session,
             evaluation_date=parsed_date,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -2282,7 +2283,7 @@ async def close_hrt_cycle(cycle_id: int, end_date: Optional[str] = None) -> dict
             session,
             evaluation_date=end,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -2355,7 +2356,7 @@ async def log_skincare(
             session,
             evaluation_date=parsed_date,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -2528,7 +2529,7 @@ async def log_note(
             from vitals.services import nutrition_service
 
             conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -2549,7 +2550,7 @@ async def log_note(
             from vitals.services import skincare_service
 
             conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -2570,7 +2571,7 @@ async def log_note(
             from vitals.services import glp1_service
 
             conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -2589,7 +2590,7 @@ async def log_note(
             from vitals.services import labs_service
 
             conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -2886,7 +2887,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
             }
         elif domain == "milestones":
             conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -2904,7 +2905,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
             }
         elif domain == "nutrition":
             conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -2914,7 +2915,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
             }
         elif domain == "labs":
             conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -2925,7 +2926,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
             }
         elif domain == "genetics":
             conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -2935,7 +2936,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
             }
         elif domain == "skincare_observation":
             conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -2945,7 +2946,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
             }
         elif domain in {"glp1", "glp1_side_effect", "glp1_dose_phase"}:
             conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -2960,7 +2961,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
             "hrt_cycle_item",
         }:
             conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -3199,7 +3200,7 @@ async def log_lab_result(
             session,
             evaluation_date=parsed_date,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -3287,7 +3288,7 @@ async def update_lab_result(
             session,
             evaluation_date=parsed_date or today_local(),
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -3305,7 +3306,7 @@ async def update_lab_result(
                 session,
                 evaluation_date=final_date,
             )
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -3371,7 +3372,7 @@ async def log_lab_results(
             session,
             evaluation_date=parsed_date,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -3734,7 +3735,7 @@ async def create_milestone(
     parsed_deadline = _parse_date(deadline, field="deadline")
     async with session_factory() as session:
         conflict_context = await _mcp_v1_conflict_write_context(session)
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -3792,7 +3793,7 @@ async def update_milestone(
     session_factory = get_session_factory()
     async with session_factory() as session:
         conflict_context = await _mcp_v1_conflict_write_context(session)
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -3851,7 +3852,7 @@ async def update_glp1(
             session,
             evaluation_date=parsed_date or today_local(),
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -3865,12 +3866,12 @@ async def update_glp1(
             return {"error": f"Injection {injection_id} not found"}
         final_date = current.date if parsed_date is None else parsed_date
         if conflict_context.evaluation_date != final_date:
-            conflict_context = conflict_engine.ConflictWriteContext(
+            conflict_context = engine.ConflictWriteContext(
                 identity=conflict_context.identity,
                 evaluation_date=final_date,
                 legacy_bridge=conflict_context.legacy_bridge,
             )
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=conflict_context,
             )
@@ -3919,7 +3920,7 @@ async def log_side_effect(
             session,
             evaluation_date=parsed_date,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -3956,7 +3957,7 @@ async def add_dose_phase(
             session,
             evaluation_date=parsed_start,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -4005,7 +4006,7 @@ async def log_skincare_observation(
             session,
             evaluation_date=parsed_date,
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -4042,7 +4043,7 @@ async def add_supplement(
     session_factory = get_session_factory()
     async with session_factory() as session:
         conflict_context = await _mcp_v1_conflict_write_context(session)
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -4085,7 +4086,7 @@ async def update_supplement(
     session_factory = get_session_factory()
     async with session_factory() as session:
         conflict_context = await _mcp_v1_conflict_write_context(session)
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )
@@ -4135,7 +4136,7 @@ async def set_supplement_active(
     session_factory = get_session_factory()
     async with session_factory() as session:
         conflict_context = await _mcp_v1_conflict_write_context(session)
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             session,
             context=conflict_context,
         )

@@ -67,12 +67,8 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.identity import HealthSubject
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    alerts_service,
-    conflict_engine,
-    raw_payload_service,
-    weight_service,
-)
+from vitals.services import alerts_service, raw_payload_service, weight_service
+from vitals.services.conflicts import engine
 from vitals.services.credentials import providers
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.utils.timeutils import now_local, to_local_naive
@@ -127,11 +123,11 @@ def _owned_weight_write_context(
     *,
     identity: WriteIdentity,
     on_date: date_type,
-) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=on_date,
-        legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+        legacy_bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
     )
 
 
@@ -1162,7 +1158,7 @@ async def ingest_owned_daily(
                     identity=identity,
                     integration_connection_id=integration_connection_id,
                     legacy_bridge=(
-                        conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                        engine.LegacyConflictBridge.FULLY_UNOWNED
                     ),
                 )
             ),
@@ -1179,7 +1175,7 @@ async def ingest_owned_daily(
             )
         if (
             prepared_context.legacy_bridge
-            is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            is not engine.LegacyConflictBridge.FULLY_UNOWNED
         ):
             raise GarminOwnershipValidationError(
                 "owned Garmin ingest requires a fully-unowned Weight bridge"
@@ -2129,7 +2125,7 @@ async def pulse_owned(
                 identity=identity,
                 integration_connection_id=integration_connection_id,
                 legacy_bridge=(
-                    conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                    engine.LegacyConflictBridge.FULLY_UNOWNED
                 ),
             )
         ),

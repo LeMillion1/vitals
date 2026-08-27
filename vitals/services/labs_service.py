@@ -58,12 +58,8 @@ from vitals.models.labs import DOMAIN, LabMarker, LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    alerts_service,
-    conflict_engine,
-    file_asset_service,
-    raw_payload_service,
-)
+from vitals.services import alerts_service, file_asset_service, raw_payload_service
+from vitals.services.conflicts import engine
 from vitals.services.upload_ownership_service import resolve_owned_upload_reference
 from vitals.utils.timeutils import now_local, today_local
 
@@ -91,15 +87,15 @@ def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared: conflict_engine.PreparedConflictWrite,
-) -> conflict_engine.ConflictWriteContext:
+    prepared: engine.PreparedConflictWrite,
+) -> engine.ConflictWriteContext:
     """Prove the write names a subject and the decision that authorized it."""
 
     if identity is None or prepared is None:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "scoped lab writes require identity and a prepared conflict write"
         )
-    return conflict_engine.require_prepared_identity(
+    return engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
@@ -107,11 +103,11 @@ def _require_scoped_prepared_write(
 
 
 def _require_evaluation_date(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     on_date: date_type,
 ) -> None:
     if context.evaluation_date != on_date:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "lab result date does not match prepared conflict evaluation date"
         )
 
@@ -121,15 +117,15 @@ def _subject_scope(model, subject_id: uuid.UUID):
 
 
 def _alert_bridge(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ) -> alerts_service.LegacyAlertBridge:
-    if context.legacy_bridge is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED:
+    if context.legacy_bridge is engine.LegacyConflictBridge.FULLY_UNOWNED:
         return alerts_service.LegacyAlertBridge.FULLY_UNOWNED
     return alerts_service.LegacyAlertBridge.REJECT
 
 
 def _system_alert_context(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ) -> alerts_service.HealthAlertContext:
     return alerts_service.HealthAlertContext(
         WriteIdentity(context.identity.subject_id, None)
@@ -145,7 +141,7 @@ def _proposed_result(
 ) -> dict[str, Any]:
     proposed: dict[str, Any] = {"marker": marker, "value": value, "flag": flag}
     if result_id is not None:
-        proposed[conflict_engine.CONFLICT_ENTITY_KEY] = _result_entity_key(result_id)
+        proposed[engine.CONFLICT_ENTITY_KEY] = _result_entity_key(result_id)
     return proposed
 
 
@@ -443,7 +439,7 @@ async def ensure_marker_catalog_entry(
     category: str | None = None,
     retest_interval_days: int | None = None,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> tuple[LabMarker, bool, bool]:
     """Create or backfill one scoped catalog row for startup/domain seeds.
 
@@ -501,7 +497,7 @@ async def defer_retest(
     note: Optional[str] = None,
     subject_id: uuid.UUID,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[LabMarker]:
     """Pause the overdue-retest alert for a marker until ``until``."""
     context = _require_scoped_prepared_write(
@@ -510,11 +506,11 @@ async def defer_retest(
         prepared=prepared_conflict_write,
     )
     if identity is None or identity.actor_user_id is None:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "lab retest deferral requires an active human actor"
         )
     if subject_id is not None and subject_id != identity.subject_id:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "subject_id does not match prepared lab write identity"
         )
     subject_id = identity.subject_id
@@ -571,7 +567,7 @@ async def _lock_result_provenance_before_row(
     session: AsyncSession,
     result_id: int,
     *,
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ) -> tuple[int | None, str] | None:
     """Read the scoped FK, then lock raw/file roots before the result row."""
 
@@ -608,7 +604,7 @@ async def get_result_for_update(
     result_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> LabResult | None:
     """Lock one visible result for a boundary-side partial-update merge."""
 
@@ -628,7 +624,7 @@ async def get_result_for_update(
         subject_id=identity.subject_id,
     )
     if row is not None and provenance != (row.raw_payload_id, row.source):
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "lab result provenance changed while acquiring write locks"
         )
     return row
@@ -638,7 +634,7 @@ async def _lock_historical_parser_connection_before_raw(
     session: AsyncSession,
     *,
     raw_payload_id: int,
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     source: str,
     allow_historical_parser_raw: bool,
 ) -> uuid.UUID | None:
@@ -687,7 +683,7 @@ async def _lock_historical_parser_connection_before_raw(
         )
     )
     if subject_ids != [context.identity.subject_id]:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "historical lab parser raw requires exactly one subject"
         )
     historical_statuses = tuple(
@@ -709,7 +705,7 @@ async def _lock_historical_parser_connection_before_raw(
         .execution_options(populate_existing=True)
     )
     if connection is None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "historical lab parser AI gateway provenance is invalid"
         )
     return connection.id
@@ -719,7 +715,7 @@ async def _lock_result_raw(
     session: AsyncSession,
     *,
     raw_payload_id: int,
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     source: str,
     require_mcp_roots: bool = False,
     allow_historical_parser_raw: bool = False,
@@ -735,7 +731,7 @@ async def _lock_result_raw(
             allow_historical_parser_raw=allow_historical_parser_raw,
         )
     )
-    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
+    exact_raw, fully_unowned_raw = engine.raw_payload_scope_conditions(
         context.scope
     )
     allowed_raw = exact_raw
@@ -748,11 +744,11 @@ async def _lock_result_raw(
         .execution_options(populate_existing=True)
     )
     if raw is None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "lab result raw provenance is outside the prepared subject scope"
         )
     if raw.domain != DOMAIN or raw.source != source:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "lab result raw provenance has a mismatched domain or source"
         )
     if historical_connection_id is not None:
@@ -763,7 +759,7 @@ async def _lock_result_raw(
             or raw.file_asset_id is not None
             or raw.source != Source.LAB_PARSER.value
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "historical lab parser provenance changed while acquiring locks"
             )
         invocation_id = await session.scalar(
@@ -774,14 +770,14 @@ async def _lock_result_raw(
             .with_for_update()
         )
         if invocation_id is not None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "historical lab parser raw mixes subject and platform AI provenance"
             )
         return raw
     if require_mcp_roots and (
         raw.integration_connection_id is not None or raw.file_asset_id is not None
     ):
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "structured MCP lab provenance cannot carry connection or file roots"
         )
     asset: FileAsset | None = None
@@ -796,13 +792,13 @@ async def _lock_result_raw(
             .execution_options(populate_existing=True)
         )
         if asset is None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "lab result file provenance is outside the prepared subject scope"
             )
     if source == Source.LAB_PARSER.value:
         if asset is None:
             if raw.subject_id is not None:
-                raise conflict_engine.ConflictRawOwnershipError(
+                raise engine.ConflictRawOwnershipError(
                     "owned lab parser provenance has no file root"
                 )
         else:
@@ -832,23 +828,23 @@ async def _validate_parser_upload_chain(
         )
     )
     if owner_user_id is None or raw.actor_user_id != owner_user_id:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "lab parser actor is not the subject owner"
         )
     if raw.actor_user_id != asset.uploaded_by_user_id:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "lab parser raw actor does not match the file uploader"
         )
     if require_boundary_actor:
         if identity.actor_user_id is None:
-            raise conflict_engine.ConflictPreparedWriteError(
+            raise engine.ConflictPreparedWriteError(
                 "lab upload confirmation requires an active human actor"
             )
         if (
             raw.actor_user_id != identity.actor_user_id
             or asset.uploaded_by_user_id != identity.actor_user_id
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "lab upload actor does not match the prepared writer"
             )
     if (
@@ -857,7 +853,7 @@ async def _validate_parser_upload_chain(
         or not file_asset_service.local_asset_is_live(asset)
         or raw.external_id != asset.storage_ref
     ):
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "lab parser file provenance is inconsistent"
         )
     platform_rows = list(
@@ -880,7 +876,7 @@ async def _validate_parser_upload_chain(
             if row.status == AIInvocationStatus.SUCCEEDED.value
         ]
         if len(succeeded) != 1:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "lab parser raw lacks one successful platform AI invocation"
             )
         invocation = succeeded[0]
@@ -890,7 +886,7 @@ async def _validate_parser_upload_chain(
             or invocation.source != AIInvocationSource.WEB.value
             or invocation.raw_payload_id != raw.id
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "lab parser platform AI provenance is inconsistent"
             )
         if (
@@ -899,12 +895,12 @@ async def _validate_parser_upload_chain(
             or "_unparsed" in raw.payload
             or not isinstance(raw.payload.get("results"), list)
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "successful platform lab raw has no validated extraction"
             )
         return
     if platform_rows:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "lab parser raw mixes subject and platform AI provenance"
         )
     historical_statuses = tuple(
@@ -926,7 +922,7 @@ async def _validate_parser_upload_chain(
         .execution_options(populate_existing=True)
     )
     if connection is None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "lab parser AI gateway provenance is invalid"
         )
 
@@ -998,7 +994,7 @@ async def add_result(
     raw_payload_id: Optional[int] = None,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
     allow_historical_parser_raw: bool = False,
 ) -> LabResult:
     """Record a marker value, computing its flag and ensuring its catalog row.
@@ -1052,7 +1048,7 @@ async def add_result(
     # doing what they did — an alert, never a block.
     proposed = _proposed_result(marker=marker, value=value, flag=flag)
     assert prepared_conflict_write is not None
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.LABS,
@@ -1115,7 +1111,7 @@ async def update_result(
     note: Optional[str] = None,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[LabResult]:
     """Correct an existing result — a mistyped value or a range read off the wrong
     column. Only the fields passed are changed; ``flag`` is recomputed from the
@@ -1186,7 +1182,7 @@ async def update_result(
         result_id=row.id,
     )
     assert prepared_conflict_write is not None
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.LABS,
@@ -1244,7 +1240,7 @@ async def update_result_note(
     *,
     note: str,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[LabResult]:
     """Update only a result note without changing its source/raw provenance."""
 
@@ -1292,11 +1288,11 @@ async def list_results(
         filters.extend((LabResult.note.is_not(None), LabResult.note != ""))
 
     stmt = select(LabResult).where(*filters)
-    scope = conflict_engine.ConflictScope(
+    scope = engine.ConflictScope(
         subject_id=subject_id,
         evaluation_date=end or today_local(),
     )
-    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
+    exact_raw, fully_unowned_raw = engine.raw_payload_scope_conditions(
         scope
     )
     # The nightly replay deliberately owns the normalized facts while leaving a
@@ -1320,7 +1316,7 @@ async def list_results(
         .limit(1)
     )
     if invalid is not None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "lab result links to foreign or partial raw provenance"
         )
     stmt = stmt.outerjoin(
@@ -1357,11 +1353,11 @@ async def bounded_latest_results_by_marker(
         _subject_scope(LabResult, subject_id),
         LabResult.date <= end,
     )
-    scope = conflict_engine.ConflictScope(
+    scope = engine.ConflictScope(
         subject_id=subject_id,
         evaluation_date=end,
     )
-    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
+    exact_raw, fully_unowned_raw = engine.raw_payload_scope_conditions(
         scope
     )
     allowed_linked_raw = or_(
@@ -1380,7 +1376,7 @@ async def bounded_latest_results_by_marker(
         .limit(1)
     )
     if invalid is not None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "lab result links to foreign or partial raw provenance"
         )
 
@@ -1478,17 +1474,17 @@ async def legacy_unowned_present(session: AsyncSession) -> bool:
     )
     if found is not None:
         return True
-    return await conflict_engine.legacy_unowned_raw_present(session)
+    return await engine.legacy_unowned_raw_present(session)
 
 
 async def resolve_latest_scoped(
     session: AsyncSession,
     *,
-    scope: conflict_engine.ConflictScope,
+    scope: engine.ConflictScope,
 ) -> list[dict]:
     """Conflict resolver restricted to one explicit subject boundary."""
 
-    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
+    exact_raw, fully_unowned_raw = engine.raw_payload_scope_conditions(
         scope
     )
     fact_scope = LabResult.subject_id == scope.subject_id
@@ -1521,7 +1517,7 @@ async def resolve_latest_scoped(
         .limit(1)
     )
     if invalid_raw_id is not None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "lab result links to foreign or partial raw provenance"
         )
     rows = list(
@@ -1563,7 +1559,7 @@ async def delete_result(
     *,
     subject_id: uuid.UUID,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     context = _require_scoped_prepared_write(
         session,
@@ -1571,7 +1567,7 @@ async def delete_result(
         prepared=prepared_conflict_write,
     )
     if subject_id is not None and subject_id != identity.subject_id:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "subject_id does not match prepared lab write identity"
         )
     subject_id = identity.subject_id
@@ -1602,7 +1598,7 @@ async def refresh_alerts(
     on_date: Optional[date_type] = None,
     subject_id: uuid.UUID,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> None:
     """Raise/clear out-of-range + overdue-retest alerts from the latest values.
     Idempotent — safe on every dashboard load / scheduler tick. Each alert is
@@ -1617,7 +1613,7 @@ async def refresh_alerts(
     if on_date is not None:
         _require_evaluation_date(context, on_date)
     if subject_id is not None and subject_id != identity.subject_id:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "subject_id does not match prepared lab write identity"
         )
     subject_id = identity.subject_id
@@ -1941,14 +1937,14 @@ async def _preflight_scoped_panel(
     session: AsyncSession,
     *,
     markers: Sequence[dict],
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     override: bool,
 ) -> None:
     """Prove a batch has no hard blocker before its first normalized mutation."""
 
     if override:
         if context.identity.actor_user_id is None:
-            raise conflict_engine.ConflictOverrideActorRequired(
+            raise engine.ConflictOverrideActorRequired(
                 "conflict override requires an active human actor"
             )
         return
@@ -1980,7 +1976,7 @@ async def _preflight_scoped_panel(
                 flag=compute_flag(value, low, high),
             )
         )
-    violations = await conflict_engine.evaluate_scoped(
+    violations = await engine.evaluate_scoped(
         session,
         scope=context.scope,
         domain=Domain.LABS,
@@ -1988,7 +1984,7 @@ async def _preflight_scoped_panel(
     )
     blocking = [violation for violation in violations if violation.is_blocking]
     if blocking:
-        raise conflict_engine.ConflictBlocked(
+        raise engine.ConflictBlocked(
             sorted(
                 violations,
                 key=lambda violation: (
@@ -2009,7 +2005,7 @@ async def confirm_extracted(
     file_key: Optional[str] = None,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> list[LabResult]:
     """Persist the owner-edited marker rows from the upload preview (step 2 of
     upload -> preview -> confirm). Marks the raw payload processed. Does not
@@ -2087,7 +2083,7 @@ async def ingest_structured_results(
     *,
     raw_payload: RawPayload,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
     override: bool = False,
 ) -> dict:
     """Persist an MCP-authored structured panel with exact MCP provenance.
@@ -2105,7 +2101,7 @@ async def ingest_structured_results(
     on_date = _parse_date(extracted.get("date")) or context.evaluation_date
     _require_evaluation_date(context, on_date)
     if not isinstance(raw_payload, RawPayload) or raw_payload.id is None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "structured MCP labs require a persisted raw payload"
         )
     raw_row = await _lock_result_raw(
@@ -2116,7 +2112,7 @@ async def ingest_structured_results(
         require_mcp_roots=True,
     )
     if raw_row.actor_user_id != identity.actor_user_id:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "structured MCP raw actor does not match the prepared writer"
         )
 
@@ -2175,7 +2171,7 @@ async def ingest_extracted(
     override: bool = False,
     identity: WriteIdentity,
     existing_raw_payload: RawPayload,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> dict:
     """Persist an extracted document: keep it raw, then create a result row per
     marker (deduping identical (date, marker, value)). Does not commit.
@@ -2264,7 +2260,7 @@ async def reparse_owned_pending(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
     limit: int = raw_payload_service.REPARSE_BATCH,
     since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
 ) -> int:
@@ -2319,7 +2315,7 @@ async def reparse_owned_pending(
         .limit(1)
     )
     if invalid_link is not None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "pending lab raw links to foreign or partial normalized provenance"
         )
     # One parser raw represents one atomic panel. Any permitted linked result
@@ -2428,18 +2424,18 @@ async def reparse_owned_pending(
                         _parse_date(probe_payload.get("date"))
                         or boundary.evaluation_date
                     )
-                    row_context = conflict_engine.ConflictWriteContext(
+                    row_context = engine.ConflictWriteContext(
                         identity=origin_identity,
                         evaluation_date=prepared_date,
                         # The replay decides adoption per raw, from the raw's
                         # own roots, rather than from a caller's flag.
                         legacy_bridge=(
-                            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                            engine.LegacyConflictBridge.FULLY_UNOWNED
                             if probe_is_legacy or probe_is_historical_parser
-                            else conflict_engine.LegacyConflictBridge.REJECT
+                            else engine.LegacyConflictBridge.REJECT
                         ),
                     )
-                    prepared = await conflict_engine.prepare_scoped_write(
+                    prepared = await engine.prepare_scoped_write(
                         session,
                         context=row_context,
                     )
@@ -2467,7 +2463,7 @@ async def reparse_owned_pending(
                         or boundary.evaluation_date
                     )
                     if on_date != prepared_date:
-                        raise conflict_engine.ConflictPreparedWriteError(
+                        raise engine.ConflictPreparedWriteError(
                             "lab parser date changed while acquiring provenance locks"
                         )
                     is_legacy = raw.subject_id is None
@@ -2488,7 +2484,7 @@ async def reparse_owned_pending(
                         ),
                     )
                     if locked_origin_identity != origin_identity:
-                        raise conflict_engine.ConflictRawOwnershipError(
+                        raise engine.ConflictRawOwnershipError(
                             "lab parser ownership changed while acquiring locks"
                         )
                     if is_legacy or is_historical_parser:

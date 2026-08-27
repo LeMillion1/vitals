@@ -7,13 +7,9 @@ from datetime import timedelta
 import pytest
 
 from vitals.enums import Domain
-from vitals.services import (
-    alerts_service,
-    conflict_catalog,
-    conflict_engine,
-    conflict_registrations,
-    labs_service,
-)
+from vitals.services import alerts_service, labs_service
+from vitals.services.conflicts import catalog as conflict_catalog
+from vitals.services.conflicts import engine, registrations
 from vitals.services.hrt import catalog, cycles, reminders, records
 from vitals.utils.timeutils import today_local
 
@@ -21,7 +17,7 @@ from vitals.utils.timeutils import today_local
 @pytest.fixture(autouse=True)
 def _scoped_resolvers():
     """A scoped write consults every registered domain, so register them all."""
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
 
 
 
@@ -190,7 +186,7 @@ async def test_injection_due_cleared_after_logging(db_session, owner_write):
 # ── Conflict rules (hrt ↔ labs) ───────────────────────────────────────────────
 async def _register_hrt_labs_resolvers():
     """Both domains are closed, so both facts are read inside the subject."""
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
 
 
 async def test_oral_17aa_high_alt_fires_soft_warn(db_session, owner_write):
@@ -210,9 +206,9 @@ async def test_oral_17aa_high_alt_fires_soft_warn(db_session, owner_write):
     )
     await db_session.commit()
     # Logging an oral 17aa while ALT is high fires the soft_warn.
-    violations = await conflict_engine.evaluate_scoped(
+    violations = await engine.evaluate_scoped(
         db_session,
-        scope=conflict_engine.ConflictScope(
+        scope=engine.ConflictScope(
             subject_id=owner_write.subject_id,
             evaluation_date=today_local(),
         ),
@@ -237,9 +233,9 @@ async def test_testosterone_high_hematocrit_fires(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    violations = await conflict_engine.evaluate_scoped(
+    violations = await engine.evaluate_scoped(
         db_session,
-        scope=conflict_engine.ConflictScope(
+        scope=engine.ConflictScope(
             subject_id=owner_write.subject_id,
             evaluation_date=today_local(),
         ),
@@ -264,9 +260,9 @@ async def test_no_conflict_when_labs_normal(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    violations = await conflict_engine.evaluate_scoped(
+    violations = await engine.evaluate_scoped(
         db_session,
-        scope=conflict_engine.ConflictScope(
+        scope=engine.ConflictScope(
             subject_id=owner_write.subject_id,
             evaluation_date=today_local(),
         ),

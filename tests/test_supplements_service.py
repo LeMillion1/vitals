@@ -5,13 +5,9 @@ from __future__ import annotations
 import pytest
 
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import (
-    alerts_service,
-    conflict_engine,
-    conflict_registrations,
-    supplements_service,
-)
-from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services import alerts_service, supplements_service
+from vitals.services.conflicts import engine, registrations
+from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.services.genetics import variants
 from vitals.utils.identifiers import slugify
 from vitals.utils.timeutils import today_local
@@ -112,13 +108,13 @@ async def test_resolver_shape(db_session, owner_write):
     await db_session.commit()
     items = await supplements_service.resolve_active_scoped(
         db_session,
-        scope=conflict_engine.ConflictScope(
+        scope=engine.ConflictScope(
             subject_id=owner_write.subject_id,
             evaluation_date=today_local(),
         ),
     )
     assert [
-        {k: v for k, v in item.items() if k != conflict_engine.CONFLICT_ENTITY_KEY}
+        {k: v for k, v in item.items() if k != engine.CONFLICT_ENTITY_KEY}
         for item in items
     ] == [{"key": "iron", "active": True, "name": "Iron", "timing_slot": None}]
 
@@ -140,7 +136,7 @@ async def _seed_iron_rule(db_session):
 
 
 async def test_iron_blocked_for_hemochromatosis_carrier(db_session, owner_write):
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
     await variants.add_variant(
         db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
@@ -162,7 +158,7 @@ async def test_cyrillic_name_no_explicit_key_still_blocked(db_session, owner_wri
     """The bug this plan set out to fix: adding "Железо" (no explicit key) used
     to slugify to the useless "supplement" fallback, silently never matching
     the iron rule. It must now resolve to "iron" via the dictionary and block."""
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
     await variants.add_variant(
         db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
@@ -177,7 +173,7 @@ async def test_cyrillic_name_no_explicit_key_still_blocked(db_session, owner_wri
 
 
 async def test_iron_override_saves_and_stamps_alert(db_session, owner_write):
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
     await variants.add_variant(
         db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
@@ -201,7 +197,7 @@ async def test_iron_override_saves_and_stamps_alert(db_session, owner_write):
 
 async def test_inactive_iron_not_blocked(db_session, owner_write):
     """An archived (inactive) iron row must not trip the active-only condition."""
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
     await variants.add_variant(
         db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",

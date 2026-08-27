@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Domain, Source
 from vitals.models.nutrition import DOMAIN, MealLog
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, health_profile_service
+from vitals.services import health_profile_service
+from vitals.services.conflicts import engine
 from vitals.utils.timeutils import now_local, today_local
 
 
@@ -30,15 +31,15 @@ def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared: conflict_engine.PreparedConflictWrite,
-) -> conflict_engine.ConflictWriteContext:
+    prepared: engine.PreparedConflictWrite,
+) -> engine.ConflictWriteContext:
     """Prove the write names a subject and the decision that authorized it."""
 
     if identity is None or prepared is None:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "scoped nutrition writes require identity and a prepared conflict write"
         )
-    return conflict_engine.require_prepared_identity(
+    return engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
@@ -46,11 +47,11 @@ def _require_scoped_prepared_write(
 
 
 def _require_evaluation_date(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     on_date: date_type,
 ) -> None:
     if context.evaluation_date != on_date:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "nutrition write date does not match prepared conflict evaluation date"
         )
 
@@ -84,7 +85,7 @@ async def get_meal_for_update(
     meal_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[MealLog]:
     """Lock and refresh a scoped meal for a caller-side partial merge."""
 
@@ -165,7 +166,7 @@ async def log_meal(
     source: str = Source.MANUAL.value,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> MealLog:
     scoped_context = _require_scoped_prepared_write(
         session,
@@ -193,7 +194,7 @@ async def log_meal(
         replaced=None,
         proposed=proposed_macros,
     )
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.NUTRITION,
@@ -237,7 +238,7 @@ async def update_meal(
     note: Optional[str] = None,
     override: bool = False,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[MealLog]:
     scoped_context = _require_scoped_prepared_write(
         session,
@@ -272,7 +273,7 @@ async def update_meal(
         replaced=row if row.date == on_date else None,
         proposed=proposed_macros,
     )
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.NUTRITION,
@@ -298,7 +299,7 @@ async def delete_meal(
     meal_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
@@ -323,7 +324,7 @@ async def update_meal_note(
     *,
     note: str,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[MealLog]:
     """Update only a meal note under the same subject lock as meal CRUD."""
 
@@ -452,7 +453,7 @@ async def legacy_unowned_present(session: AsyncSession) -> bool:
 async def resolve_today_scoped(
     session: AsyncSession,
     *,
-    scope: conflict_engine.ConflictScope,
+    scope: engine.ConflictScope,
 ) -> list[dict]:
     """Conflict resolver for one subject and one subject-local calendar day.
 
@@ -480,7 +481,7 @@ async def resolve_today_scoped(
     )
     return [
         {
-            conflict_engine.CONFLICT_ENTITY_KEY: _day_entity_key(
+            engine.CONFLICT_ENTITY_KEY: _day_entity_key(
                 scope.evaluation_date
             ),
             **_sum_macros(meals),
@@ -505,12 +506,12 @@ async def day_end_job(
     automatically — not just raised."""
     async with session_factory() as session:
         on_date = today_local()
-        context = await conflict_engine.resolve_subject_conflict_write_context(
+        context = await engine.resolve_subject_conflict_write_context(
             session,
             subject_id=subject_id,
             evaluation_date=on_date,
         )
-        await conflict_engine.reconcile_day_end_scoped(
+        await engine.reconcile_day_end_scoped(
             session,
             context=context,
             domain=Domain.NUTRITION,

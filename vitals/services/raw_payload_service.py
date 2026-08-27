@@ -573,12 +573,8 @@ async def sweep_pending_job(
     lose or block another's completed work.
     """
     from vitals.enums import IntegrationProvider
-    from vitals.services import (
-        conflict_engine,
-        garmin_service,
-        hevy_service,
-        labs_service,
-    )
+    from vitals.services import garmin_service, hevy_service, labs_service
+    from vitals.services.conflicts import engine
     from vitals.services.body_scan import scans
     from vitals.services.genetics import variants
     from vitals.services.legacy_ownership import resolve_subject_ownership_context
@@ -614,12 +610,12 @@ async def sweep_pending_job(
             )
 
         async def _sweep_owned_labs() -> int:
-            context = await conflict_engine.resolve_subject_conflict_write_context(
+            context = await engine.resolve_subject_conflict_write_context(
                 session,
                 subject_id=subject_id,
                 evaluation_date=today_local(),
             )
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=context,
             )
@@ -630,7 +626,7 @@ async def sweep_pending_job(
             )
 
         async def _sweep_owned_body_comp() -> int:
-            context = await conflict_engine.resolve_subject_conflict_write_context(
+            context = await engine.resolve_subject_conflict_write_context(
                 session,
                 subject_id=subject_id,
                 evaluation_date=today_local(),
@@ -641,12 +637,12 @@ async def sweep_pending_job(
             )
 
         async def _sweep_owned_genetics() -> int:
-            context = await conflict_engine.resolve_subject_conflict_write_context(
+            context = await engine.resolve_subject_conflict_write_context(
                 session,
                 subject_id=subject_id,
                 evaluation_date=today_local(),
             )
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=context,
             )

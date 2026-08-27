@@ -14,11 +14,8 @@ from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import (
-    alerts_service,
-    conflict_activation_service,
-    conflict_engine,
-)
+from vitals.services import alerts_service
+from vitals.services.conflicts import activation, engine
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
@@ -68,24 +65,24 @@ async def interactions_dashboard(
         actor_username=username,
     )
     alert_context = alerts_service.HealthAlertContext(ownership.owner_action())
-    conflict_scope = await conflict_engine.resolve_legacy_conflict_scope(
+    conflict_scope = await engine.resolve_legacy_conflict_scope(
         db,
         actor_username=username,
         evaluation_date=today_local(),
     )
     catalog_rules = list(
-        await conflict_engine.load_scoped_rules(
+        await engine.load_scoped_rules(
             db,
             scope=conflict_scope,
             active_only=False,
         )
     )
-    activation_state = await conflict_activation_service.read_activation_state(
+    activation_state = await activation.read_activation_state(
         db,
         subject_id=conflict_scope.subject_id,
         legacy_bridge=conflict_scope.legacy_bridge,
     )
-    rule_activation = conflict_activation_service.effective_rule_activation(
+    rule_activation = activation.effective_rule_activation(
         catalog_rules,
         activation_state,
     )
@@ -142,13 +139,13 @@ async def toggle_rule(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    conflict_scope = await conflict_engine.resolve_legacy_conflict_scope(
+    conflict_scope = await engine.resolve_legacy_conflict_scope(
         db,
         actor_username=username,
         evaluation_date=today_local(),
     )
     try:
-        await conflict_activation_service.set_rule_activation(
+        await activation.set_rule_activation(
             db,
             subject_id=conflict_scope.subject_id,
             rule_id=rule_id,
@@ -156,8 +153,8 @@ async def toggle_rule(
             legacy_bridge=conflict_scope.legacy_bridge,
         )
     except (
-        conflict_activation_service.ConflictActivationRuleNotFoundError,
-        conflict_activation_service.ConflictActivationOwnershipError,
+        activation.ConflictActivationRuleNotFoundError,
+        activation.ConflictActivationOwnershipError,
     ):
         return Response(status_code=status.HTTP_404_NOT_FOUND)
 

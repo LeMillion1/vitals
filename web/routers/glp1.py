@@ -9,8 +9,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, Drug, InjectionSite, Source
-from vitals.services import alerts_service, conflict_engine, glp1_service
-from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services import alerts_service, glp1_service
+from vitals.services.conflicts import engine
+from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -31,12 +32,12 @@ async def _prepared_owner_write(
     username: str,
     evaluation_date: date_type,
 ):
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
         evaluation_date=evaluation_date,
     )
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db,
         context=context,
     )

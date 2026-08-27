@@ -14,7 +14,8 @@ from vitals.enums import Source, UserStatus
 from vitals.models.hrt import HrtCycle, HrtCycleItem, HrtDose, HrtSideEffect
 from vitals.models.identity import HealthSubject, User
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, modules_service
+from vitals.services import modules_service
+from vitals.services.conflicts import engine
 from vitals.services.hrt import catalog, cycles
 
 
@@ -214,7 +215,7 @@ async def test_an_unowned_rule_still_closes_the_hrt_mutation(
     await db_session.commit()
 
     with pytest.raises(
-        conflict_engine.ConflictLegacyBridgeError, match="exactly one matching"
+        engine.ConflictLegacyBridgeError, match="exactly one matching"
     ):
         await mcp_router.log_hrt_dose(
             compound_key="testosterone_enanthate",
@@ -246,11 +247,11 @@ async def test_postgres_concurrent_open_cycles_leave_one_active(
 
     async def create(name: str) -> None:
         async with factory() as session:
-            context = conflict_engine.ConflictWriteContext(
+            context = engine.ConflictWriteContext(
                 identity=identity,
                 evaluation_date=date(2026, 8, 20),
             )
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=context,
             )

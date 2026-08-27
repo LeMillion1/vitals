@@ -8,8 +8,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, Evidence
-from vitals.services import alerts_service, conflict_engine, supplements_service
-from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services import alerts_service, supplements_service
+from vitals.services.conflicts import engine
+from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -73,12 +74,12 @@ async def save_supplement(
 ):
     try:
         conflict_context = (
-            await conflict_engine.resolve_legacy_conflict_write_context(
+            await engine.resolve_legacy_conflict_write_context(
                 db,
                 actor_username=username,
             )
         )
-        prepared = await conflict_engine.prepare_scoped_write(
+        prepared = await engine.prepare_scoped_write(
             db,
             context=conflict_context,
         )
@@ -129,11 +130,11 @@ async def toggle_supplement(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+    conflict_context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
     )
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db,
         context=conflict_context,
     )

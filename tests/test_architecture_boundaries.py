@@ -246,7 +246,7 @@ def test_no_new_flat_service_modules() -> None:
         for path in _tracked_python_paths(SERVICES)
         if path.parent == Path("vitals/services") and path.name != "__init__.py"
     }
-    baseline = 43
+    baseline = 39
 
     assert len(legacy) <= baseline, (
         f"Flat service module count grew from the guarded ceiling {baseline} to {len(legacy)}. "
@@ -312,7 +312,9 @@ def test_architecture_reference_counters_match_the_source_tree() -> None:
         and node.func.id in {"for_each_subject", "for_each_connection"}
         for node in ast.walk(jobs_tree)
     )
-    conflict_tree = ast.parse((SERVICES / "conflict_registrations.py").read_text(encoding="utf-8"))
+    conflict_tree = ast.parse(
+        (SERVICES / "conflicts" / "registrations.py").read_text(encoding="utf-8")
+    )
     conflict_domains = sum(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)

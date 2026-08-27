@@ -44,7 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, MilestoneStatus
 from vitals.models.identity import HealthSubject
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 from vitals.utils.timeutils import today_local
 from web.config import get_web_config
 from web.deps import get_session
@@ -132,7 +132,7 @@ async def _any_token_exists(session: AsyncSession) -> bool:
 
 async def _weight_block(
     session: AsyncSession,
-    scope: conflict_engine.ConflictScope,
+    scope: engine.ConflictScope,
 ) -> dict[str, Any]:
     """Latest weight, a noise-excluded MA7 sparkline, the trend slope, and — if an
     active weight goal exists — the projected date to reach it (all from
@@ -206,7 +206,7 @@ async def _recovery_block(session: AsyncSession, scope) -> Optional[dict[str, An
 
 async def _activity_block(
     session: AsyncSession,
-    scope: conflict_engine.ConflictScope,
+    scope: engine.ConflictScope,
 ) -> dict[str, list[str]]:
     """Recent per-domain log dates (last ``_ACTIVITY_WINDOW_DAYS`` days), newest
     first. The caller derives "current streak" from these — a presentation
@@ -259,10 +259,10 @@ async def external_summary(
     """
     from vitals.services import nutrition_service
 
-    scope = conflict_engine.ConflictScope(
+    scope = engine.ConflictScope(
         subject_id=subject_id,
         evaluation_date=today_local(),
-        legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+        legacy_bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
     )
     nutrition_today = await nutrition_service.daily_summary(
         session,

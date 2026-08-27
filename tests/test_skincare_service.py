@@ -7,12 +7,9 @@ from datetime import date
 import pytest
 
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import (
-    conflict_registrations,
-    skincare_service,
-    supplements_service,
-)
-from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services import skincare_service, supplements_service
+from vitals.services.conflicts import registrations
+from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
 
 
@@ -37,7 +34,7 @@ async def test_checklist_upsert_is_one_per_day(db_session, owner_write):
 
 async def _seed_retinoid_peel_rule(db_session):
     # A scoped write consults the registered resolvers for its domain.
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
             rule_type="hard_block",
@@ -76,7 +73,7 @@ async def test_retinoid_plus_peel_override_saves(db_session, owner_write):
 
 
 async def test_isotretinoin_blocks_peel_cross_domain(db_session, owner_write):
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
             rule_type="hard_block",
@@ -129,7 +126,7 @@ async def test_observation_crud(db_session, owner_write):
 
 
 async def test_resolve_today(db_session, owner_write):
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     await skincare_service.upsert_log(db_session, on_date=today_local(), peel=True,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(today_local()),

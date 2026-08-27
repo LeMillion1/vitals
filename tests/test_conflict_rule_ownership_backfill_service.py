@@ -16,9 +16,9 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.scoped_settings import SubjectSetting
 from vitals.models.system_alert import SystemAlert
-from vitals.services import conflict_catalog
+from vitals.services.conflicts import catalog
 from vitals.operations.ownership import conflict_rule as service
-from vitals.services.conflict_activation_service import SETTING_KEY
+from vitals.services.conflicts.activation import SETTING_KEY
 from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
@@ -155,7 +155,7 @@ def test_public_contract_is_fixed():
 @pytest.mark.asyncio
 async def test_historical_custom_is_adopted_and_curated_catalog_stays_global(db_session):
     _owner, subject, _checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     custom = _custom()
     db_session.add(custom)
     await db_session.flush()
@@ -178,7 +178,7 @@ async def test_historical_custom_is_adopted_and_curated_catalog_stays_global(db_
 @pytest.mark.asyncio
 async def test_curated_tamper_missing_catalog_and_unknown_global_fail_closed(db_session):
     _owner, _subject, _checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     curated = await db_session.scalar(
         select(ConflictRule).where(ConflictRule.code.is_not(None)).limit(1)
     )
@@ -190,7 +190,7 @@ async def test_curated_tamper_missing_catalog_and_unknown_global_fail_closed(db_
     db_session.expunge_all()
 
     await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     curated = await db_session.scalar(
         select(ConflictRule).where(ConflictRule.code.is_not(None)).limit(1)
     )
@@ -202,7 +202,7 @@ async def test_curated_tamper_missing_catalog_and_unknown_global_fail_closed(db_
     db_session.expunge_all()
 
     await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     db_session.add(_custom(code="unknown-global"))
     await db_session.flush()
     with pytest.raises(service.ConflictRuleOwnershipBackfillProvenanceError):
@@ -212,7 +212,7 @@ async def test_curated_tamper_missing_catalog_and_unknown_global_fail_closed(db_
 @pytest.mark.asyncio
 async def test_subject_custom_code_and_activation_pseudo_fk_are_strict(db_session):
     _owner, subject, _checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     db_session.add(_custom(subject_id=subject.id, code=" custom "))
     await db_session.flush()
     with pytest.raises(service.ConflictRuleOwnershipBackfillProvenanceError, match="malformed code"):
@@ -233,7 +233,7 @@ async def test_subject_custom_code_and_activation_pseudo_fk_are_strict(db_sessio
 )
 async def test_custom_engine_shape_is_strict(db_session, field, value):
     _owner, _subject, _checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     custom = _custom()
     setattr(custom, field, value)
     db_session.add(custom)
@@ -247,7 +247,7 @@ async def test_conflict_alert_pseudo_fk_requires_rule_scope_and_compatible_domai
     db_session,
 ):
     _owner, subject, _checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     custom = _custom(subject_id=subject.id)
     db_session.add(custom)
     await db_session.flush()
@@ -287,7 +287,7 @@ async def test_conflict_alert_pseudo_fk_requires_rule_scope_and_compatible_domai
 @pytest.mark.asyncio
 async def test_fully_unowned_historical_custom_rule_and_alert_bridge_passes(db_session):
     _owner, _subject, _checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     custom = _custom()
     db_session.add(custom)
     await db_session.flush()
@@ -308,7 +308,7 @@ async def test_fully_unowned_historical_custom_rule_and_alert_bridge_passes(db_s
     await db_session.rollback()
 
     await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     db_session.add(
         SubjectSetting(
             subject_id=(await db_session.scalar(select(HealthSubject.id))),
@@ -324,7 +324,7 @@ async def test_fully_unowned_historical_custom_rule_and_alert_bridge_passes(db_s
 @pytest.mark.asyncio
 async def test_live_tail_unowned_custom_rejected_without_progress(db_session):
     _owner, _subject, _checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     db_session.add(_custom())
     await db_session.flush()
     first = await service.run_conflict_rule_ownership_backfill_batch(
@@ -349,7 +349,7 @@ async def test_live_tail_unowned_custom_rejected_without_progress(db_session):
 @pytest.mark.asyncio
 async def test_completed_custom_business_edit_allowed_but_ownership_drift_rejected(db_session):
     _owner, subject, _checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     custom = _custom()
     db_session.add(custom)
     await db_session.flush()
@@ -370,7 +370,7 @@ async def test_completed_custom_business_edit_allowed_but_ownership_drift_reject
 @pytest.mark.asyncio
 async def test_completed_evidence_allows_curated_delete_and_catalog_resync(db_session):
     _owner, _subject, _checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     custom = _custom()
     db_session.add(custom)
     await db_session.flush()
@@ -385,7 +385,7 @@ async def test_completed_evidence_allows_curated_delete_and_catalog_resync(db_se
     old_id = curated.id
     await db_session.delete(curated)
     await db_session.flush()
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     replacement = await db_session.scalar(
         select(ConflictRule).where(ConflictRule.code == curated.code)
     )
@@ -396,7 +396,7 @@ async def test_completed_evidence_allows_curated_delete_and_catalog_resync(db_se
 @pytest.mark.asyncio
 async def test_dependency_modes_and_restore_pair_algebra(db_session):
     _owner, _subject, checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     raw = checkpoints[RAW_OWNERSHIP_BACKFILL_PHASE]
     _make_restore_blocked(raw)
     await db_session.flush()
@@ -424,7 +424,7 @@ async def test_dependency_modes_and_restore_pair_algebra(db_session):
 
     await db_session.rollback()
     _owner, _subject, checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     _make_restore_blocked(checkpoints[RAW_OWNERSHIP_BACKFILL_PHASE])
     provider = checkpoints[next(iter(PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values()))]
     provider.scan_high_watermark_id = 1
@@ -462,7 +462,7 @@ async def test_empty_completed_raw_allows_restore_algebra_only_after_trusted_res
     db_session,
 ):
     _owner, _subject, checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     normalized = checkpoints[next(iter(NORMALIZED_MANUAL_CHECKPOINT_PHASES.values()))]
     normalized.status = "running"
     normalized.scan_high_watermark_id = 1
@@ -518,7 +518,7 @@ async def test_restore_reset_rejects_nonempty_completed_raw_even_when_all_prior_
 @pytest.mark.asyncio
 async def test_scans_are_keyset_paged(db_session):
     _owner, subject, _checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     db_session.add_all([_custom(subject_id=subject.id) for _ in range(1002)])
     await db_session.flush()
     statements: list[str] = []
@@ -552,7 +552,7 @@ async def test_postgres_projection_races_fail_without_ownership_or_progress(
     race,
 ):
     _owner, _subject, _checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     custom = _custom()
     db_session.add(custom)
     await db_session.commit()
@@ -630,7 +630,7 @@ async def test_postgres_alert_domain_switch_is_rechecked_after_rule_lock(
     monkeypatch,
 ):
     _owner, subject, _checkpoints = await _scope(db_session)
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     custom = _custom(subject_id=subject.id)
     db_session.add(custom)
     await db_session.flush()

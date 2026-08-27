@@ -55,12 +55,8 @@ from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.tenancy import FileAsset
 from vitals.ownership import WriteIdentity
 from vitals.ownership_transition import bridges as ownership_bridges
-from vitals.services import (
-    alerts_service,
-    conflict_engine,
-    file_asset_service,
-    health_profile_service,
-)
+from vitals.services import alerts_service, file_asset_service, health_profile_service
+from vitals.services.conflicts import engine
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.analytics import exclude_ranges
 from vitals.analytics.navy import lean_body_mass_kg, navy_body_fat_pct
@@ -118,7 +114,7 @@ class PreparedWeightWrite:
 
     def __new__(cls, *args, **kwargs):
         del args, kwargs
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "prepared weight writes are issued only by prepare_weight_write"
         )
 
@@ -127,7 +123,7 @@ class PreparedWeightWrite:
         cls,
         *,
         session: AsyncSession,
-        prepared: conflict_engine.PreparedConflictWrite,
+        prepared: engine.PreparedConflictWrite,
         garmin_export: "PreparedGarminWeightExport | None",
     ) -> PreparedWeightWrite:
         token = object.__new__(cls)
@@ -142,11 +138,11 @@ class PreparedWeightWrite:
         raise AttributeError("PreparedWeightWrite is immutable")
 
     @property
-    def context(self) -> conflict_engine.ConflictWriteContext:
+    def context(self) -> engine.ConflictWriteContext:
         return self._prepared.context
 
     @property
-    def conflict_write(self) -> conflict_engine.PreparedConflictWrite:
+    def conflict_write(self) -> engine.PreparedConflictWrite:
         return self._prepared
 
     @property
@@ -159,7 +155,7 @@ class PreparedWeightWrite:
 async def prepare_weight_write(
     session: AsyncSession,
     *,
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     garmin_weight_export_context: "GarminWeightExportContext | None" = None,
 ) -> PreparedWeightWrite:
     """Prepare a scoped Weight mutation in the canonical lock order.
@@ -172,18 +168,18 @@ async def prepare_weight_write(
 
     await acquire_identity_governance_lock(session)
     await garmin_weight_service.lock_active_weight_change(session)
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         session,
         context=context,
     )
     prepared_export = None
     if garmin_weight_export_context is not None:
         if garmin_weight_export_context.identity != context.identity:
-            raise conflict_engine.ConflictPreparedWriteError(
+            raise engine.ConflictPreparedWriteError(
                 "Garmin Weight export identity does not match Weight identity"
             )
         if garmin_weight_export_context.legacy_bridge is not context.legacy_bridge:
-            raise conflict_engine.ConflictPreparedWriteError(
+            raise engine.ConflictPreparedWriteError(
                 "Garmin Weight export bridge does not match Weight bridge"
             )
         try:
@@ -207,9 +203,9 @@ def _require_scoped_prepared_write(
     *,
     identity: WriteIdentity | None,
     prepared: PreparedWeightWrite | None,
-) -> conflict_engine.ConflictWriteContext | None:
+) -> engine.ConflictWriteContext | None:
     if identity is None or prepared is None:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "scoped weight writes require identity and a prepared weight write"
         )
     if (
@@ -217,10 +213,10 @@ def _require_scoped_prepared_write(
         or prepared._seal is not _PREPARED_WEIGHT_WRITE_SEAL
         or prepared._session is not session
     ):
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "prepared weight write was not issued for this session"
         )
-    return conflict_engine.require_prepared_identity(
+    return engine.require_prepared_identity(
         session,
         prepared=prepared.conflict_write,
         identity=identity,
@@ -232,7 +228,7 @@ def require_prepared_weight_identity(
     *,
     prepared: PreparedWeightWrite,
     identity: WriteIdentity,
-) -> conflict_engine.ConflictWriteContext:
+) -> engine.ConflictWriteContext:
     """Validate an issued Weight capability before another service locks roots."""
 
     context = _require_scoped_prepared_write(
@@ -247,8 +243,8 @@ def _require_aux_prepared_write(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared: conflict_engine.PreparedConflictWrite,
-) -> conflict_engine.ConflictWriteContext:
+    prepared: engine.PreparedConflictWrite,
+) -> engine.ConflictWriteContext:
     """Prove an auxiliary write names a subject and its conflict decision.
 
     Body measurements, noise markers, and progress-photo metadata do not mutate
@@ -258,11 +254,11 @@ def _require_aux_prepared_write(
     """
 
     if identity is None or prepared is None:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "scoped auxiliary weight writes require identity and a prepared "
             "conflict write"
         )
-    return conflict_engine.require_prepared_identity(
+    return engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
@@ -270,11 +266,11 @@ def _require_aux_prepared_write(
 
 
 def _require_evaluation_date(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     on_date: date_type,
 ) -> None:
     if context.evaluation_date != on_date:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "weight write date does not match prepared conflict evaluation date"
         )
 
@@ -429,11 +425,11 @@ def _weight_scope_condition(
         for status in IntegrationConnectionStatus
         if status is not IntegrationConnectionStatus.PENDING
     )
-    raw_scope = conflict_engine.ConflictScope(
+    raw_scope = engine.ConflictScope(
         subject_id=subject_id,
         evaluation_date=evaluation_date,
     )
-    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
+    exact_raw, fully_unowned_raw = engine.raw_payload_scope_conditions(
         raw_scope
     )
     # A weigh-in that names its subject may still cite a raw the backfill left
@@ -479,12 +475,12 @@ async def _assert_weight_scope_integrity(
 ) -> None:
     """Reject partial roots instead of silently treating them as absent."""
 
-    raw_scope = conflict_engine.ConflictScope(
+    raw_scope = engine.ConflictScope(
         subject_id=subject_id,
         evaluation_date=evaluation_date,
-        legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+        legacy_bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
     )
-    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
+    exact_raw, fully_unowned_raw = engine.raw_payload_scope_conditions(
         raw_scope
     )
     historical_provider_raw = _historical_provider_raw_scope(subject_id)
@@ -522,7 +518,7 @@ async def _assert_weight_scope_integrity(
         .limit(1)
     )
     if invalid_raw is not None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "weight fact links to raw provenance outside its subject scope"
         )
 
@@ -607,7 +603,7 @@ async def _validate_body_scan_ai_origin(
     ):
         return
     if raw.file_asset_id is None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan Weight raw has no document provenance"
         )
     asset_stmt = select(FileAsset).where(FileAsset.id == raw.file_asset_id)
@@ -628,7 +624,7 @@ async def _validate_body_scan_ai_origin(
         or (not live_file and (require_live_file or not retired_file))
         or raw.external_id != asset.storage_ref
     ):
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan Weight document provenance is invalid"
         )
     stmt = select(AIInvocation).where(
@@ -642,12 +638,12 @@ async def _validate_body_scan_ai_origin(
     )
     if raw.integration_connection_id is not None:
         if invocations:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "body-scan Weight mixes subject and platform parser provenance"
             )
         return
     if len(invocations) != 1:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "platform body-scan Weight requires one parser invocation"
         )
     invocation = invocations[0]
@@ -658,7 +654,7 @@ async def _validate_body_scan_ai_origin(
         or invocation.source != AIInvocationSource.WEB.value
         or invocation.status != AIInvocationStatus.SUCCEEDED.value
     ):
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "platform body-scan Weight parser provenance is invalid"
         )
 
@@ -715,12 +711,12 @@ async def _validate_historical_provider_raw(
         )
     )
     if subject_ids != [subject_id]:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "historical Weight raw requires exactly one subject"
         )
     if expected_provider is None:
         if raw.integration_connection_id is not None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "historical Weight connectionless raw claims a provider"
             )
     else:
@@ -744,7 +740,7 @@ async def _validate_historical_provider_raw(
             connection_stmt.execution_options(populate_existing=True)
         )
         if connection is None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "historical Weight provider connection is invalid"
             )
     if fact_source == Source.BODY_SCAN.value:
@@ -757,7 +753,7 @@ async def _validate_historical_provider_raw(
         if for_update:
             invocation_stmt = invocation_stmt.with_for_update()
         if await session.scalar(invocation_stmt) is not None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "historical body-scan Weight mixes subject and platform AI provenance"
             )
     return True
@@ -780,7 +776,7 @@ async def _reject_body_scan_ai_invocation(
     if for_update:
         stmt = stmt.with_for_update()
     if await session.scalar(stmt) is not None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "MCP body-composition raw cannot claim an AI parser invocation"
         )
 
@@ -788,7 +784,7 @@ async def _reject_body_scan_ai_invocation(
 async def _validate_new_weight_provenance(
     session: AsyncSession,
     *,
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     source: str,
     integration_connection_id: uuid.UUID | None,
     raw_payload_id: int | None,
@@ -798,7 +794,7 @@ async def _validate_new_weight_provenance(
     from vitals.models.tenancy import IntegrationConnection
 
     scope = context.scope
-    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(scope)
+    exact_raw, fully_unowned_raw = engine.raw_payload_scope_conditions(scope)
     connection = None
     if integration_connection_id is not None:
         statuses = tuple(
@@ -836,7 +832,7 @@ async def _validate_new_weight_provenance(
                 "Garmin weight facts require a Garmin account connection"
             )
         if raw_payload_id is None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "Garmin weight facts require durable raw provenance"
             )
     elif source == Source.BODY_SCAN.value and connection is not None:
@@ -849,7 +845,7 @@ async def _validate_new_weight_provenance(
                 "body-scan weight provenance requires an OpenRouter AI connection"
             )
         if raw_payload_id is None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "provider-backed body-scan weight requires durable raw provenance"
             )
     elif source not in {Source.BODY_SCAN.value}:
@@ -867,7 +863,7 @@ async def _validate_new_weight_provenance(
             )
         return
     raw_allowed = exact_raw
-    if context.legacy_bridge is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED:
+    if context.legacy_bridge is engine.LegacyConflictBridge.FULLY_UNOWNED:
         raw_allowed = or_(raw_allowed, fully_unowned_raw)
     raw = await session.scalar(
         select(RawPayload)
@@ -879,15 +875,15 @@ async def _validate_new_weight_provenance(
         .execution_options(populate_existing=True)
     )
     if raw is None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "weight raw payload is outside the prepared subject"
         )
     if raw.integration_connection_id != integration_connection_id:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "weight raw payload belongs to a different origin connection"
         )
     if raw.actor_user_id != requested_actor:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "weight actor does not match durable raw provenance"
         )
     allowed_raw_sources = {source}
@@ -897,7 +893,7 @@ async def _validate_new_weight_provenance(
         # semantics describe the measurement rather than the transport.
         allowed_raw_sources.add(Source.MCP.value)
     if raw.source not in allowed_raw_sources:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "weight source does not match durable raw provenance"
         )
     if source == Source.BODY_SCAN.value and raw.source == Source.MCP.value and (
@@ -905,7 +901,7 @@ async def _validate_new_weight_provenance(
         or integration_connection_id is not None
         or raw.file_asset_id is not None
     ):
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "MCP body-composition lineage must have null connection and file roots"
         )
     if source == Source.BODY_SCAN.value and raw.source == Source.MCP.value:
@@ -920,7 +916,7 @@ async def _validate_new_weight_provenance(
         else Domain.BODY_COMPOSITION.value
     )
     if raw.domain != expected_raw_domain:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "weight raw payload belongs to a different domain"
         )
     if (
@@ -1008,7 +1004,7 @@ async def _validate_persisted_weight_provenance(
             .execution_options(populate_existing=True)
         )
         if raw is None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "weight fact references a missing raw payload"
             )
         historical_provider_raw = await _validate_historical_provider_raw(
@@ -1024,7 +1020,7 @@ async def _validate_persisted_weight_provenance(
                 or row.integration_connection_id
                 not in {None, raw.integration_connection_id}
             ):
-                raise conflict_engine.ConflictRawOwnershipError(
+                raise engine.ConflictRawOwnershipError(
                     "historical Weight fact has conflicting normalized roots"
                 )
             return
@@ -1040,15 +1036,15 @@ async def _validate_persisted_weight_provenance(
         if raw.subject_id != subject_id and not raw_is_fully_unowned:
             # A weigh-in may still cite a raw the backfill left legacy; one
             # belonging to somebody else is a different matter.
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "weight fact links to raw provenance outside its subject scope"
             )
         if raw.actor_user_id != row.actor_user_id:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "weight actor does not match durable raw provenance"
             )
         if raw.integration_connection_id != row.integration_connection_id:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "weight connection does not match durable raw provenance"
             )
 
@@ -1062,7 +1058,7 @@ async def _validate_persisted_weight_provenance(
             or raw.source != row.source
             or raw.file_asset_id is not None
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "manual or MCP weight raw provenance is incompatible"
             )
         return
@@ -1083,7 +1079,7 @@ async def _validate_persisted_weight_provenance(
                 "Garmin weight fact has invalid connection provenance"
             )
         if raw is None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "Garmin weight fact has no durable raw provenance"
             )
         if (
@@ -1091,7 +1087,7 @@ async def _validate_persisted_weight_provenance(
             or raw.source != Source.GARMIN_API.value
             or raw.file_asset_id is not None
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "Garmin weight raw provenance is incompatible"
             )
         return
@@ -1106,7 +1102,7 @@ async def _validate_persisted_weight_provenance(
                 "body-scan weight has invalid connection provenance"
             )
         if connection is not None and raw is None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "provider-backed body-scan weight has no durable raw provenance"
             )
         if raw is not None and (
@@ -1122,7 +1118,7 @@ async def _validate_persisted_weight_provenance(
                 )
             )
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "body-scan weight raw provenance is incompatible"
             )
         if raw is not None and raw.source == Source.BODY_SCAN.value:
@@ -1261,7 +1257,7 @@ async def _prepared_weight_write_for_date(
     # binds conflict evaluation to the date that may become active.
     return await prepare_weight_write(
         session,
-        context=conflict_engine.ConflictWriteContext(
+        context=engine.ConflictWriteContext(
             identity=identity,
             evaluation_date=on_date,
             legacy_bridge=context.legacy_bridge,
@@ -1423,7 +1419,7 @@ async def log_weight(
     if insert_as_active:
         proposed = {"weight_kg": weight_kg, "source": source}
         assert prepared_weight_write is not None
-        await conflict_engine.enforce_prepared(
+        await engine.enforce_prepared(
             session,
             prepared=prepared_weight_write.conflict_write,
             domain=Domain.WEIGHT,
@@ -1518,7 +1514,7 @@ async def _adopt_weight_provenance(
     if row.integration_connection_id not in {None, integration_connection_id}:
         raise WeightOwnershipError("weight fact belongs to another origin connection")
     if row.raw_payload_id not in {None, raw_payload_id}:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "weight fact references a different raw payload"
         )
     if row.subject_id is None and row.source == Source.GARMIN_API.value:
@@ -1533,7 +1529,7 @@ async def _adopt_weight_provenance(
             .execution_options(populate_existing=True)
         )
         if raw is None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "legacy weight fact references a missing raw payload"
             )
         if raw.subject_id is None:
@@ -1545,12 +1541,12 @@ async def _adopt_weight_provenance(
                     raw.file_asset_id,
                 )
             ):
-                raise conflict_engine.ConflictRawOwnershipError(
+                raise engine.ConflictRawOwnershipError(
                     "partial legacy weight raw roots cannot be adopted"
                 )
             raw.subject_id = identity.subject_id
         elif raw.subject_id != identity.subject_id:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "weight raw payload belongs to another subject"
             )
     if row.subject_id is None:
@@ -1773,7 +1769,7 @@ async def resolve_active(session: AsyncSession) -> list[dict]:
 async def resolve_active_scoped(
     session: AsyncSession,
     *,
-    scope: conflict_engine.ConflictScope,
+    scope: engine.ConflictScope,
 ) -> list[dict]:
     """Return the selected subject's active weight on the evaluation date."""
 
@@ -1786,7 +1782,7 @@ async def resolve_active_scoped(
         return []
     return [
         {
-            conflict_engine.CONFLICT_ENTITY_KEY: _weight_entity_key(row),
+            engine.CONFLICT_ENTITY_KEY: _weight_entity_key(row),
             "weight_kg": row.weight_kg,
             "source": row.source,
         }
@@ -2026,14 +2022,14 @@ async def _apply_body_measurement_values(
 async def _enforce_body_measurement_write(
     session: AsyncSession,
     *,
-    context: conflict_engine.ConflictWriteContext | None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None,
+    context: engine.ConflictWriteContext | None,
+    prepared_conflict_write: engine.PreparedConflictWrite | None,
     on_date: date_type,
     override: bool,
 ) -> None:
     proposed = {"measurement": True}
     assert prepared_conflict_write is not None
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_conflict_write,
         domain=Domain.WEIGHT,
@@ -2055,7 +2051,7 @@ async def upsert_body_measurement(
     override: bool = False,
     partial: bool = True,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> BodyMeasurement:
     """Create/update the day's measurement and (re)derive body-fat % + LBM.
 
@@ -2206,7 +2202,7 @@ async def add_noise_marker(
     direction: Optional[str] = None,
     source: str | Source = Source.MANUAL.value,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> NoiseMarker:
     context = _require_aux_prepared_write(
         session,
@@ -2526,7 +2522,7 @@ async def add_progress_photo(
     note: Optional[str] = None,
     identity: WriteIdentity,
     file_asset_id: uuid.UUID | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> ProgressPhoto:
     context = _require_aux_prepared_write(
         session,
@@ -2660,7 +2656,7 @@ async def refresh_noise_alert(
     *,
     on_date: Optional[date_type] = None,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[object]:
     """Raise an ``info`` alert while today sits inside a noise range; resolve it
     once it doesn't. Idempotent (safe to call on every dashboard load / tick)."""
@@ -2676,7 +2672,7 @@ async def refresh_noise_alert(
     alert_bridge = (
         alerts_service.LegacyAlertBridge.FULLY_UNOWNED
         if context.legacy_bridge
-        is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+        is engine.LegacyConflictBridge.FULLY_UNOWNED
         else alerts_service.LegacyAlertBridge.REJECT
     )
     active_reason = None
@@ -2998,7 +2994,7 @@ async def delete_weight_log(
         )
         if next_row is not None:
             try:
-                await conflict_engine.enforce_prepared(
+                await engine.enforce_prepared(
                     session,
                     prepared=effective_prepared.conflict_write,
                     domain=Domain.WEIGHT,
@@ -3010,7 +3006,7 @@ async def delete_weight_log(
                     entity_ref=f"weight:{target_date.isoformat()}",
                     replace_entity_key=_weight_entity_key(row),
                 )
-            except conflict_engine.ConflictBlocked:
+            except engine.ConflictBlocked:
                 # Deletion itself removes data from the active state. If the
                 # historical fallback is unsafe, leave it superseded rather
                 # than requiring an override merely to remove the current row.
@@ -3122,7 +3118,7 @@ async def delete_body_measurement(
     measurement_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     """Delete a body measurement record by ID."""
     _require_aux_prepared_write(
@@ -3147,7 +3143,7 @@ async def delete_progress_photo(
     photo_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> ProgressPhotoDeletion | None:
     """Delete a photo fact and retire its file metadata in one transaction."""
 
@@ -3238,7 +3234,7 @@ async def delete_noise_marker(
     marker_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     """Delete a noise marker record by ID."""
     context = _require_aux_prepared_write(
@@ -3329,7 +3325,7 @@ async def update_weight_log(
     if not row.superseded:
         proposed = {"weight_kg": weight_kg, "source": row.source}
         assert prepared_weight_write is not None
-        await conflict_engine.enforce_prepared(
+        await engine.enforce_prepared(
             session,
             prepared=prepared_weight_write.conflict_write,
             domain=Domain.WEIGHT,
@@ -3370,7 +3366,7 @@ async def update_body_measurement(
     override: bool = False,
     partial: bool = True,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[BodyMeasurement]:
     """Edit an existing body measurement. If the date has changed, delete the old row
     and upsert the new one.
@@ -3446,7 +3442,7 @@ async def update_body_measurement_note(
     *,
     note: str,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> BodyMeasurement | None:
     """Update only a measurement note inside one prepared subject scope."""
 

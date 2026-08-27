@@ -32,15 +32,8 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import ProgressPhoto, WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.persistence.file_storage import private_file_disk_path
-from vitals.services import (
-    ai_gateway_service,
-    conflict_engine,
-    file_asset_service,
-    lab_document_ai_service,
-    labs_service,
-    raw_payload_service,
-    weight_service,
-)
+from vitals.services import ai_gateway_service, file_asset_service, lab_document_ai_service, labs_service, raw_payload_service, weight_service
+from vitals.services.conflicts import engine
 from vitals.services.body_scan import scans
 from vitals.services.upload_ownership_service import UploadOwnershipError
 from web.templating import STATIC_DIR
@@ -135,12 +128,12 @@ async def _prepared(
     *,
     on_date: date = date(2026, 8, 19),
 ):
-    context = conflict_engine.ConflictWriteContext(
+    context = engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=on_date,
-        legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
+        legacy_bridge=engine.LegacyConflictBridge.REJECT,
     )
-    return await conflict_engine.prepare_scoped_write(session, context=context)
+    return await engine.prepare_scoped_write(session, context=context)
 
 
 async def _prepared_weight(
@@ -149,10 +142,10 @@ async def _prepared_weight(
     *,
     on_date: date = date(2026, 8, 19),
 ):
-    context = conflict_engine.ConflictWriteContext(
+    context = engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=on_date,
-        legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
+        legacy_bridge=engine.LegacyConflictBridge.REJECT,
     )
     return await weight_service.prepare_weight_write(session, context=context)
 
@@ -286,7 +279,7 @@ async def test_foreign_raw_id_cannot_authorize_upload_confirmation(
     prepared = await _prepared(db_session, owner_identity)
 
     expected_error = (
-        conflict_engine.ConflictRawOwnershipError
+        engine.ConflictRawOwnershipError
         if is_body
         else UploadOwnershipError
     )
@@ -939,7 +932,7 @@ async def test_an_upload_can_only_be_confirmed_as_what_it_was_uploaded_for(
 
     # ...confirmed through the other one.
     expected_error = (
-        conflict_engine.ConflictRawOwnershipError if is_body else UploadOwnershipError
+        engine.ConflictRawOwnershipError if is_body else UploadOwnershipError
     )
     with pytest.raises(expected_error):
         if is_body:

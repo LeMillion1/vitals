@@ -264,7 +264,7 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
     from vitals.models.hrt import HrtCompound, HrtCompoundComponent
     from vitals.models.system_alert import SystemAlert
     from vitals.models.weight import WeightLog
-    from vitals.services import conflict_catalog
+    from vitals.services.conflicts import catalog
     from vitals.services.identity_bootstrap import bootstrap_legacy_owner
 
     owner = await bootstrap_legacy_owner(
@@ -283,8 +283,8 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
         subject_id=owner.subject_id,
         actor_user_id=owner.user_id,
     )
-    await conflict_catalog.sync_catalog(db_session)
-    global_rule_code = conflict_catalog.load_rule_catalog()[0]["code"]
+    await catalog.sync_catalog(db_session)
+    global_rule_code = catalog.load_rule_catalog()[0]["code"]
     bound_rule = ConflictRule(
         code="portable-bound-rule",
         rule_type="soft_warn",
@@ -370,7 +370,7 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
     assert rule_markers["portable-bound-rule"] is True
     assert all(
         rule_markers[entry["code"]] is False
-        for entry in conflict_catalog.load_rule_catalog()
+        for entry in catalog.load_rule_catalog()
     )
     assert {
         row["key"]: row["_vitals_subject_bound"]

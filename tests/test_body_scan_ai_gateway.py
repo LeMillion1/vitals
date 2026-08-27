@@ -46,11 +46,8 @@ from vitals.models.tenancy import (
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.services import ai_gateway_service as gateway
-from vitals.services import (
-    conflict_engine,
-    file_asset_service,
-    weight_service,
-)
+from vitals.services import file_asset_service, weight_service
+from vitals.services.conflicts import engine
 from vitals.services.body_scan import ai as body_ai
 from vitals.services.body_scan import scans
 from vitals.services.legacy_ownership import LegacySubjectResolutionError
@@ -319,7 +316,7 @@ async def _persist_and_replay_platform_scan(
     completion, _ = await _render(session, prepared, lease, content)
     await body_ai.persist_body_scan_parse(session, prepared, completion)
     await session.commit()
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         session,
         actor_username=None,
         evaluation_date=DAY,
@@ -1052,7 +1049,7 @@ async def test_replay_normalizes_only_successful_platform_extraction(
         AIInvocationSource.WEB.value,
     )
 
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         db_session,
         actor_username=None,
         evaluation_date=DAY,
@@ -1135,7 +1132,7 @@ async def test_derived_weight_rejects_broken_platform_parser_graph(
         weight.integration_connection_id = connection.id
     await db_session.commit()
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+    with pytest.raises(engine.ConflictRawOwnershipError):
         await weight_service.get_active_weight(
             db_session,
             DAY,
@@ -1228,13 +1225,13 @@ async def test_mcp_scan_and_derived_weight_reject_mixed_parser_invocation(
     )
     await db_session.commit()
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+    with pytest.raises(engine.ConflictRawOwnershipError):
         await scans.list_scans(
             db_session,
             subject_id=identity.subject_id,
         )
     await db_session.rollback()
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+    with pytest.raises(engine.ConflictRawOwnershipError):
         await weight_service.get_active_weight(
             db_session,
             DAY,

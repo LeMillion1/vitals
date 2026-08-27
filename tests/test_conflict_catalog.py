@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from vitals.enums import UserStatus
 from vitals.models.conflict_rule import ConflictRule
 from vitals.models.identity import HealthSubject, User
-from vitals.services import conflict_catalog
+from vitals.services.conflicts import catalog
 from vitals.services.supplements_service import slugify
 from vitals.utils.identifiers import slugify as shared_slugify
 
@@ -24,40 +24,40 @@ from vitals.utils.identifiers import slugify as shared_slugify
 # ── Dictionary hits (RU/EN aliases -> canonical key) ────────────────────────
 
 def test_cyrillic_dictionary_hit():
-    assert conflict_catalog.normalize_ingredient("Железо") == "iron"
+    assert catalog.normalize_ingredient("Железо") == "iron"
 
 
 def test_english_canonical_key_itself():
-    assert conflict_catalog.normalize_ingredient("Iron") == "iron"
+    assert catalog.normalize_ingredient("Iron") == "iron"
 
 
 def test_multiword_alias():
-    assert conflict_catalog.normalize_ingredient("Iron Bisglycinate") == "iron"
+    assert catalog.normalize_ingredient("Iron Bisglycinate") == "iron"
 
 
 def test_vitamin_d_variants():
-    assert conflict_catalog.normalize_ingredient("Витамин Д3") == "vitamin_d"
-    assert conflict_catalog.normalize_ingredient("vitamin d3") == "vitamin_d"
-    assert conflict_catalog.normalize_ingredient("Холекальциферол") == "vitamin_d"
+    assert catalog.normalize_ingredient("Витамин Д3") == "vitamin_d"
+    assert catalog.normalize_ingredient("vitamin d3") == "vitamin_d"
+    assert catalog.normalize_ingredient("Холекальциферол") == "vitamin_d"
 
 
 def test_ascorbic_acid_is_vitamin_c():
-    assert conflict_catalog.normalize_ingredient("Аскорбиновая кислота") == "vitamin_c"
+    assert catalog.normalize_ingredient("Аскорбиновая кислота") == "vitamin_c"
 
 
 def test_short_word_boundary_alias():
     # "Fe" is a real shorthand for iron, but must not match as a substring of
     # an unrelated word (e.g. inside "coffee").
-    assert conflict_catalog.normalize_ingredient("Fe complex 30mg") == "iron"
-    assert conflict_catalog.normalize_ingredient("Coffee break") != "iron"
+    assert catalog.normalize_ingredient("Fe complex 30mg") == "iron"
+    assert catalog.normalize_ingredient("Coffee break") != "iron"
 
 
 def test_apostrophe_handling():
-    assert conflict_catalog.normalize_ingredient("St. John's Wort") == "st_johns_wort"
+    assert catalog.normalize_ingredient("St. John's Wort") == "st_johns_wort"
 
 
 def test_case_and_whitespace_insensitive():
-    assert conflict_catalog.normalize_ingredient("  ЦИНК  ") == "zinc"
+    assert catalog.normalize_ingredient("  ЦИНК  ") == "zinc"
 
 
 # ── Fallback: unknown ingredient -> transliterating slug (never crashes,
@@ -65,19 +65,19 @@ def test_case_and_whitespace_insensitive():
 
 def test_unknown_cyrillic_name_falls_back_to_transliteration():
     name = "Мнимая Добавка Экспериментальная"
-    key = conflict_catalog.normalize_ingredient(name)
+    key = catalog.normalize_ingredient(name)
     assert key == slugify(name)
     assert key not in ("supplement", "")
 
 
 def test_unknown_name_is_stable_and_deterministic():
-    a = conflict_catalog.normalize_ingredient("Совершенно новая добавка")
-    b = conflict_catalog.normalize_ingredient("Совершенно новая добавка")
+    a = catalog.normalize_ingredient("Совершенно новая добавка")
+    b = catalog.normalize_ingredient("Совершенно новая добавка")
     assert a == b
 
 
 def test_empty_name_does_not_crash():
-    assert conflict_catalog.normalize_ingredient("") == "supplement"
+    assert catalog.normalize_ingredient("") == "supplement"
 
 
 # ── slugify transliteration (the underlying fallback primitive) ────────────
@@ -93,16 +93,16 @@ def test_slugify_ascii_unchanged():
 
 
 def test_catalog_and_service_share_dependency_neutral_slugify():
-    assert conflict_catalog.slugify is shared_slugify
+    assert catalog.slugify is shared_slugify
     assert slugify is shared_slugify
 
 
 # ── Curated rule catalog: load/validate + idempotent sync (Phase 3.3) ───────
 
 def test_catalog_loads_and_validates():
-    catalog = conflict_catalog.load_rule_catalog()
-    assert len(catalog) >= 40
-    codes = [entry["code"] for entry in catalog]
+    definitions = catalog.load_rule_catalog()
+    assert len(definitions) >= 40
+    codes = [entry["code"] for entry in definitions]
     assert len(codes) == len(set(codes))  # no duplicates slipped through
 
 
@@ -111,7 +111,7 @@ def test_glp1_low_intake_rules_are_day_end_only():
     threshold (calories < 800, protein < 60) — trivially true early in the
     day. If this flag is ever dropped, they'll false-positive mid-day again
     (see conflict_engine.evaluate's include_day_end)."""
-    by_code = {e["code"]: e for e in conflict_catalog.load_rule_catalog()}
+    by_code = {e["code"]: e for e in catalog.load_rule_catalog()}
     for code in ("glp1_low_protein_lbm_risk", "glp1_very_low_calorie_extreme"):
         assert (by_code[code].get("params") or {}).get("day_end_only") is True, code
 
@@ -120,9 +120,9 @@ async def test_sync_catalog_inserts_everything_once(db_session):
     from vitals.models.conflict_rule import ConflictRule
     from sqlalchemy import select
 
-    stats = await conflict_catalog.sync_catalog(db_session)
+    stats = await catalog.sync_catalog(db_session)
     await db_session.commit()
-    expected = len(conflict_catalog.load_rule_catalog())
+    expected = len(catalog.load_rule_catalog())
     assert stats == {"inserted": expected, "updated": 0, "total": expected}
 
     rows = (await db_session.execute(select(ConflictRule))).scalars().all()
@@ -133,11 +133,11 @@ async def test_sync_catalog_is_idempotent(db_session):
     from vitals.models.conflict_rule import ConflictRule
     from sqlalchemy import select
 
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
-    expected = len(conflict_catalog.load_rule_catalog())
+    expected = len(catalog.load_rule_catalog())
 
-    stats = await conflict_catalog.sync_catalog(db_session)
+    stats = await catalog.sync_catalog(db_session)
     await db_session.commit()
     assert stats == {"inserted": 0, "updated": expected, "total": expected}
 
@@ -149,16 +149,16 @@ async def test_sync_catalog_preserves_user_active_toggle(db_session):
     from vitals.models.conflict_rule import ConflictRule
     from sqlalchemy import select
 
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
 
-    one_code = conflict_catalog.load_rule_catalog()[0]["code"]
+    one_code = catalog.load_rule_catalog()[0]["code"]
     result = await db_session.execute(select(ConflictRule).where(ConflictRule.code == one_code))
     row = result.scalar_one()
     row.active = False
     await db_session.commit()
 
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
 
     result = await db_session.execute(select(ConflictRule).where(ConflictRule.code == one_code))
@@ -170,7 +170,7 @@ async def test_sync_catalog_refreshes_changed_fields(db_session):
     refreshed on the next sync — only `active` is left alone."""
     from vitals.models.conflict_rule import ConflictRule
 
-    real_entry = conflict_catalog.load_rule_catalog()[0]
+    real_entry = catalog.load_rule_catalog()[0]
     stale = ConflictRule(
         code=real_entry["code"],
         rule_type=real_entry["rule_type"],
@@ -183,7 +183,7 @@ async def test_sync_catalog_refreshes_changed_fields(db_session):
     db_session.add(stale)
     await db_session.commit()
 
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
     await db_session.refresh(stale)
 
@@ -192,7 +192,7 @@ async def test_sync_catalog_refreshes_changed_fields(db_session):
 
 
 async def test_sync_catalog_cannot_see_a_subject_owned_catalog_code(db_session):
-    entry = conflict_catalog.load_rule_catalog()[0]
+    entry = catalog.load_rule_catalog()[0]
     owner = User(
         username="catalog-collision-owner",
         normalized_username="catalog-collision-owner",
@@ -221,7 +221,7 @@ async def test_sync_catalog_cannot_see_a_subject_owned_catalog_code(db_session):
 
     # The curated catalog owns only the platform half of the code, so it seeds
     # its own definition beside the subject's rule instead of overwriting it.
-    result = await conflict_catalog.sync_catalog(db_session)
+    result = await catalog.sync_catalog(db_session)
     assert result["inserted"] > 0
     assert protected.message == "synthetic protected custom rule"
     assert protected.subject_id == subject.id
@@ -253,10 +253,10 @@ async def test_postgres_catalog_sync_serializes_subject_recategorization(
     db_session.add(subject)
     await db_session.flush()
     subject_id = subject.id
-    await conflict_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
 
-    code = conflict_catalog.load_rule_catalog()[0]["code"]
+    code = catalog.load_rule_catalog()[0]["code"]
     rows_locked = asyncio.Event()
     release_sync = asyncio.Event()
     writer_started = asyncio.Event()
@@ -267,14 +267,14 @@ async def test_postgres_catalog_sync_serializes_subject_recategorization(
         await release_sync.wait()
 
     monkeypatch.setattr(
-        conflict_catalog,
+        catalog,
         "_after_catalog_rows_locked_for_test",
         pause_after_locks,
     )
 
     async def synchronize():
         async with factory() as session:
-            await conflict_catalog.sync_catalog(session)
+            await catalog.sync_catalog(session)
             await session.commit()
 
     async def recategorize():

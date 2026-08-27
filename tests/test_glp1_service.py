@@ -355,10 +355,10 @@ async def test_update_injection_runs_conflict_engine(db_session, owner_write, ow
     path that previously skipped enforce())."""
     from vitals.enums import Domain, RuleType
     from vitals.models.conflict_rule import ConflictRule
-    from vitals.services import conflict_registrations
-    from vitals.services.conflict_engine import ConflictBlocked
+    from vitals.services.conflicts import registrations
+    from vitals.services.conflicts.engine import ConflictBlocked
 
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     inj = await glp1_service.log_injection(
         db_session,
         on_date=date(2026, 6, 1),

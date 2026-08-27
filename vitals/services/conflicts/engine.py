@@ -49,7 +49,7 @@ from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service
 from vitals.utils.timeutils import today_local
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("vitals.services.conflict_engine")
 
 # Domain resolvers may attach this internal key to an item so a scoped update
 # can replace exactly one current entity rather than evaluating old+new state.
@@ -576,7 +576,7 @@ async def _bridge_can_adopt_anything(session: AsyncSession) -> bool:
     ``scripts/backfill_*_subject_ownership.py`` is for.
     """
 
-    from vitals.services.conflict_activation_service import (
+    from vitals.services.conflicts.activation import (
         unclassified_global_rule_exists,
     )
 
@@ -911,7 +911,7 @@ _CURATED_RULE_FIELDS = (
 
 
 def _curated_rule_definitions() -> dict[str, dict[str, Any]]:
-    from vitals.services.conflict_catalog import load_rule_catalog
+    from vitals.services.conflicts.catalog import load_rule_catalog
 
     return {entry["code"]: entry for entry in load_rule_catalog()}
 
@@ -995,19 +995,19 @@ async def _load_scoped_rules_unchecked(
     # Curated definitions are global, but their activation belongs to the
     # selected health subject.  Import lazily because the activation service
     # reuses ``LegacyConflictBridge`` as part of its public typed contract.
-    from vitals.services import conflict_activation_service
+    from vitals.services.conflicts import activation
 
-    activation_state = await conflict_activation_service.read_activation_state(
+    activation_state = await activation.read_activation_state(
         session,
         subject_id=scope.subject_id,
         legacy_bridge=scope.legacy_bridge,
     )
-    activation = conflict_activation_service.effective_rule_activation(
+    rule_activation = activation.effective_rule_activation(
         rows,
         activation_state,
     )
     if active_only:
-        rows = [row for row in rows if activation[row.id]]
+        rows = [row for row in rows if rule_activation[row.id]]
     if domain is not None:
         domain_value = _domain_value(domain)
         rows = [

@@ -22,7 +22,8 @@ from vitals.models.scoped_settings import IntegrationConnectionSetting
 from vitals.models.tenancy import IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, garmin_weight_service
+from vitals.services import garmin_weight_service
+from vitals.services.conflicts import engine
 from vitals.services.scoped_settings_service import ScopedSettingKey
 
 
@@ -67,9 +68,9 @@ async def _context(
         ),
         integration_connection_id=connection.id,
         legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            engine.LegacyConflictBridge.FULLY_UNOWNED
             if bridge
-            else conflict_engine.LegacyConflictBridge.REJECT
+            else engine.LegacyConflictBridge.REJECT
         ),
     )
 
@@ -380,5 +381,5 @@ async def test_legacy_context_resolves_owner_and_explicit_garmin_connection(
     assert context.integration_connection_id == connection.id
     assert (
         context.legacy_bridge
-        is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+        is engine.LegacyConflictBridge.FULLY_UNOWNED
     )

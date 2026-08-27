@@ -17,12 +17,8 @@ from vitals.enums import (
     DigestKind,
     Domain,
 )
-from vitals.services import (
-    ai_gateway_service,
-    conflict_engine,
-    digest_service,
-    milestones_service,
-)
+from vitals.services import ai_gateway_service, digest_service, milestones_service
+from vitals.services.conflicts import engine
 from vitals.services.legacy_ownership import (
     LegacyOwnershipError,
 )
@@ -50,7 +46,7 @@ async def reports_dashboard(
     username: str = Depends(require_auth),
 ):
     """Goal cards, the latest weekly digest and its history, and today's brief."""
-    milestone_scope = await conflict_engine.resolve_legacy_conflict_scope(
+    milestone_scope = await engine.resolve_legacy_conflict_scope(
         db,
         actor_username=username,
         evaluation_date=today_local(),
@@ -118,12 +114,12 @@ async def create_milestone(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+    conflict_context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
         evaluation_date=today_local(),
     )
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db,
         context=conflict_context,
     )
@@ -150,12 +146,12 @@ async def set_milestone_status(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+    conflict_context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
         evaluation_date=today_local(),
     )
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db,
         context=conflict_context,
     )
@@ -177,12 +173,12 @@ async def delete_milestone(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+    conflict_context = await engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
         evaluation_date=today_local(),
     )
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db,
         context=conflict_context,
     )

@@ -98,7 +98,7 @@ class WorkerLifecycle:
             raise RuntimeError("worker lifecycle is already prepared")
         from vitals.scheduler.jobs import register_all_jobs
         from vitals.scheduler.scheduler import heartbeat_job_ids
-        from vitals.services.conflict_registrations import register_all_resolvers
+        from vitals.services.conflicts.registrations import register_all_resolvers
 
         # Conflict resolvers are process-local just like scheduled jobs. A
         # standalone worker cannot inherit the web process's registry, and

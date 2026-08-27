@@ -49,13 +49,8 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.ownership_transition import bridges as ownership_bridges
-from vitals.services import (
-    alerts_service,
-    conflict_engine,
-    file_asset_service,
-    raw_payload_service,
-    weight_service,
-)
+from vitals.services import alerts_service, file_asset_service, raw_payload_service, weight_service
+from vitals.services.conflicts import engine
 from vitals.analytics.body_metrics import (
     CAT_OTHER,
     METRIC_REGISTRY,
@@ -88,11 +83,11 @@ def _require_scoped_prepared_write(
     *,
     identity: WriteIdentity | None,
     prepared: weight_service.PreparedWeightWrite | None,
-) -> conflict_engine.ConflictWriteContext | None:
+) -> engine.ConflictWriteContext | None:
     if identity is None and prepared is None:
         return None
     if identity is None or prepared is None:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "scoped body-scan writes require identity and a prepared Weight write"
         )
     return weight_service.require_prepared_weight_identity(
@@ -103,11 +98,11 @@ def _require_scoped_prepared_write(
 
 
 def _require_evaluation_date(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     on_date: date_type,
 ) -> None:
     if context.evaluation_date != on_date:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "body-scan date does not match prepared Weight capability"
         )
 
@@ -119,15 +114,15 @@ def _subject_scope(model, subject_id: uuid.UUID):
 
 
 def _alert_bridge(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ) -> alerts_service.LegacyAlertBridge:
-    if context.legacy_bridge is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED:
+    if context.legacy_bridge is engine.LegacyConflictBridge.FULLY_UNOWNED:
         return alerts_service.LegacyAlertBridge.FULLY_UNOWNED
     return alerts_service.LegacyAlertBridge.REJECT
 
 
 def _system_alert_context(
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ) -> alerts_service.HealthAlertContext:
     return alerts_service.HealthAlertContext(
         WriteIdentity(context.identity.subject_id, None)
@@ -315,7 +310,7 @@ async def _validate_upload_chain(
 ) -> None:
     owner_user_id = await _subject_owner_user_id(session, identity.subject_id)
     if raw.subject_id != identity.subject_id or asset.subject_id != identity.subject_id:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan upload is outside the prepared subject"
         )
     if (
@@ -323,16 +318,16 @@ async def _validate_upload_chain(
         or raw.actor_user_id != owner_user_id
         or asset.uploaded_by_user_id != owner_user_id
     ):
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan upload actor does not match the subject owner"
         )
     if require_boundary_actor:
         if identity.actor_user_id is None:
-            raise conflict_engine.ConflictPreparedWriteError(
+            raise engine.ConflictPreparedWriteError(
                 "body-scan upload confirmation requires an active human actor"
             )
         if raw.actor_user_id != identity.actor_user_id:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "body-scan upload actor does not match the prepared writer"
             )
     if (
@@ -343,7 +338,7 @@ async def _validate_upload_chain(
         or not file_asset_service.local_asset_is_live(asset)
         or raw.external_id != asset.storage_ref
     ):
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan upload provenance is inconsistent"
         )
     invocations = await _body_scan_parse_invocations(
@@ -353,7 +348,7 @@ async def _validate_upload_chain(
     )
     if raw.integration_connection_id is None:
         if len(invocations) != 1:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "platform body-scan raw requires one parser invocation"
             )
         invocation = invocations[0]
@@ -364,12 +359,12 @@ async def _validate_upload_chain(
             or invocation.source != AIInvocationSource.WEB.value
             or invocation.status != AIInvocationStatus.SUCCEEDED.value
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "platform body-scan parser provenance is invalid"
             )
         return
     if invocations:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan raw mixes subject and platform parser provenance"
         )
     historical_statuses = tuple(
@@ -391,7 +386,7 @@ async def _validate_upload_chain(
         connection_stmt.execution_options(populate_existing=True)
     )
     if connection is None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan parser AI gateway provenance is invalid"
         )
 
@@ -461,7 +456,7 @@ async def _lock_historical_parser_connection_before_raw(
         )
     )
     if subject_ids != [subject_id]:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "historical body-scan parser raw requires exactly one subject"
         )
     historical_statuses = tuple(
@@ -483,7 +478,7 @@ async def _lock_historical_parser_connection_before_raw(
         stmt.execution_options(populate_existing=True)
     )
     if connection is None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "historical body-scan parser AI gateway provenance is invalid"
         )
     return connection.id
@@ -504,7 +499,7 @@ async def _reject_historical_parser_invocation(
     if for_update:
         stmt = stmt.with_for_update()
     if await session.scalar(stmt) is not None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "historical body-scan raw mixes subject and platform AI provenance"
         )
 
@@ -547,7 +542,7 @@ async def _historical_mcp_raw_before_lock(
         )
     )
     if subject_ids != [subject_id]:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "historical MCP body-scan raw requires exactly one subject"
         )
     return True
@@ -557,7 +552,7 @@ async def _lock_owned_raw(
     session: AsyncSession,
     *,
     raw_payload_id: int,
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
     expected_source: str,
     require_boundary_actor: bool,
     file_key: str | None = None,
@@ -578,7 +573,7 @@ async def _lock_owned_raw(
             for_update=True,
         )
     )
-    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
+    exact_raw, fully_unowned_raw = engine.raw_payload_scope_conditions(
         context.scope
     )
     allowed_raw = exact_raw
@@ -591,11 +586,11 @@ async def _lock_owned_raw(
         .execution_options(populate_existing=True)
     )
     if raw is None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan raw provenance is outside the prepared subject"
         )
     if raw.domain != DOMAIN or raw.source != expected_source:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan raw provenance has a mismatched domain or source"
         )
     if historical_connection_id is not None:
@@ -606,11 +601,11 @@ async def _lock_owned_raw(
             or raw.file_asset_id is not None
             or raw.source != Source.BODY_SCAN.value
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "historical body-scan provenance changed while acquiring locks"
             )
         if file_key is not None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "historical body-scan raw cannot authorize a file key"
             )
         await _reject_historical_parser_invocation(
@@ -629,7 +624,7 @@ async def _lock_owned_raw(
                 raw.file_asset_id,
             )
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "legacy body-scan raw provenance must be fully unowned"
             )
         return raw, None
@@ -645,7 +640,7 @@ async def _lock_owned_raw(
             or raw.integration_connection_id is not None
             or raw.file_asset_id is not None
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "structured MCP body-scan raw must have exact S/A and null C/F"
             )
         if await _body_scan_parse_invocations(
@@ -653,13 +648,13 @@ async def _lock_owned_raw(
             raw_payload_id=raw.id,
             for_update=True,
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "structured MCP body-scan raw cannot claim an AI parser invocation"
             )
         return raw, None
 
     if raw.file_asset_id is None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "owned body-scan parser provenance has no file root"
         )
     asset = await session.scalar(
@@ -672,15 +667,15 @@ async def _lock_owned_raw(
         .execution_options(populate_existing=True)
     )
     if asset is None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan file provenance is outside the prepared subject"
         )
     if asset.status in {FileAssetStatus.DELETED.value, FileAssetStatus.PURGED.value}:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan file provenance is no longer available"
         )
     if file_key is not None and file_key != asset.storage_ref:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan file key does not match durable provenance"
         )
     await _validate_upload_chain(
@@ -736,7 +731,7 @@ async def save_scan(
             value is not None
             for value in (file_key, raw_payload_id, file_asset_id)
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "manual body scans cannot claim raw, file, or provider provenance"
             )
         if source == Source.MANUAL.value:
@@ -745,17 +740,17 @@ async def save_scan(
                 identity.subject_id,
             )
             if identity.actor_user_id != owner_user_id:
-                raise conflict_engine.ConflictPreparedWriteError(
+                raise engine.ConflictPreparedWriteError(
                     "manual body scans require the subject owner actor"
                 )
         if source == Source.MCP.value and any(
             value is not None for value in (file_key, file_asset_id)
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "structured MCP body scans require null file provenance"
             )
         if source in {Source.MCP.value, Source.BODY_SCAN.value} and raw_payload_id is None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 f"scoped {source} body scans require durable raw provenance"
             )
 
@@ -804,7 +799,7 @@ async def save_scan(
     conflict_entity_ref = _create_conflict_entity_ref(
         owned_raw.id if owned_raw is not None else raw_payload_id
     )
-    await conflict_engine.enforce_prepared(
+    await engine.enforce_prepared(
         session,
         prepared=prepared_weight_write.conflict_write,
         domain=Domain.BODY_COMPOSITION,
@@ -906,7 +901,7 @@ async def ingest_structured_scan(
     on_date = _parse_date(extracted.get("date")) or context.evaluation_date
     _require_evaluation_date(context, on_date)
     if not isinstance(raw_payload, RawPayload) or raw_payload.id is None:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "structured MCP body scans require a persisted raw payload"
         )
     raw, _ = await _lock_owned_raw(
@@ -943,7 +938,7 @@ async def reparse_owned_pending(
     """Replay pending upload raws in isolated per-raw savepoints."""
 
     if not isinstance(identity, WriteIdentity):
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "owned body-scan replay requires a WriteIdentity"
         )
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
@@ -990,9 +985,9 @@ async def reparse_owned_pending(
             )
         except (
             BodyScanOwnershipError,
-            conflict_engine.ConflictRawOwnershipError,
+            engine.ConflictRawOwnershipError,
         ) as exc:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "pending body-scan raw links to foreign or partial normalized "
                 "provenance"
             ) from exc
@@ -1092,13 +1087,13 @@ async def reparse_owned_pending(
                     # subject's history is the whole point of the sweep. Every
                     # other raw is judged by its own roots.
                     bridge = (
-                        conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                        engine.LegacyConflictBridge.FULLY_UNOWNED
                         if is_legacy or is_historical_parser
-                        else conflict_engine.LegacyConflictBridge.REJECT
+                        else engine.LegacyConflictBridge.REJECT
                     )
                     prepared = await weight_service.prepare_weight_write(
                         session,
-                        context=conflict_engine.ConflictWriteContext(
+                        context=engine.ConflictWriteContext(
                             identity=origin_identity,
                             evaluation_date=on_date,
                             legacy_bridge=bridge,
@@ -1155,7 +1150,7 @@ async def reparse_owned_pending(
                         ),
                     )
                     if locked_origin_identity != origin_identity:
-                        raise conflict_engine.ConflictRawOwnershipError(
+                        raise engine.ConflictRawOwnershipError(
                             "body-scan ownership changed while acquiring locks"
                         )
                     await save_scan(
@@ -1207,7 +1202,7 @@ async def _validate_migrated_sheet_root(
 
     if scan.file_key is None:
         if scan.file_asset_id is not None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "a sheet-less historical body scan cannot claim a file root"
             )
         return
@@ -1228,7 +1223,7 @@ async def _validate_migrated_sheet_root(
         or asset.storage_ref != scan.file_key
         or not file_asset_service.local_asset_is_live(asset)
     ):
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "historical body-scan sheet root is not the reviewed placeholder"
         )
 
@@ -1268,7 +1263,7 @@ async def _validate_persisted_scan(
             or scan.file_asset_id is not None
             or scan.file_key is not None
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "manual body scan carries raw or file provenance"
             )
         return
@@ -1292,7 +1287,7 @@ async def _validate_persisted_scan(
                 for_update=for_update,
             )
             return
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             f"{scan.source} body scan has no durable raw provenance"
         )
 
@@ -1316,7 +1311,7 @@ async def _validate_persisted_scan(
         stmt = stmt.with_for_update().execution_options(populate_existing=True)
     raw = await session.scalar(stmt)
     if raw is None or raw.domain != DOMAIN:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body scan references missing or incompatible raw provenance"
         )
     raw_is_exact = raw.subject_id == subject_id
@@ -1330,15 +1325,15 @@ async def _validate_persisted_scan(
         )
     )
     if not raw_is_exact and not raw_is_legacy:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body scan links to foreign or partial raw provenance"
         )
     if raw_is_exact and raw.actor_user_id != scan.actor_user_id:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body scan actor does not match durable raw provenance"
         )
     if raw.source != scan.source:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body scan source does not match durable raw provenance"
         )
     if historical_mcp_raw:
@@ -1352,7 +1347,7 @@ async def _validate_persisted_scan(
             or raw.file_asset_id is not None
             or raw.source != Source.MCP.value
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "historical MCP body-scan normalized provenance is inconsistent"
             )
         await _reject_historical_parser_invocation(
@@ -1370,7 +1365,7 @@ async def _validate_persisted_scan(
             or raw.file_asset_id is not None
             or raw.source != Source.BODY_SCAN.value
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "historical body-scan normalized provenance is inconsistent"
             )
         await _validate_migrated_sheet_root(
@@ -1394,7 +1389,7 @@ async def _validate_persisted_scan(
             or scan.file_asset_id is not None
             or scan.file_key is not None
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "structured MCP body-scan provenance must have null C/F"
             )
         if await _body_scan_parse_invocations(
@@ -1402,19 +1397,19 @@ async def _validate_persisted_scan(
             raw_payload_id=raw.id,
             for_update=for_update,
         ):
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "structured MCP body-scan cannot claim an AI parser invocation"
             )
         return
     if raw.source != Source.BODY_SCAN.value:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body scan has unsupported raw provenance"
         )
     if raw_is_legacy:
         # Registration-disabled compatibility for pre-ownership parser rows.
         # New scoped BODY_SCAN writes can never create this graph.
         if scan.actor_user_id is not None:
-            raise conflict_engine.ConflictRawOwnershipError(
+            raise engine.ConflictRawOwnershipError(
                 "legacy body-scan raw cannot authorize an actor"
             )
         await _validate_migrated_sheet_root(
@@ -1425,7 +1420,7 @@ async def _validate_persisted_scan(
         )
         return
     if raw.file_asset_id is None or scan.file_asset_id != raw.file_asset_id:
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body scan file root does not match durable raw provenance"
         )
     asset_stmt = select(FileAsset).where(FileAsset.id == raw.file_asset_id)
@@ -1446,7 +1441,7 @@ async def _validate_persisted_scan(
         or asset.storage_ref != raw.external_id
         or scan.file_key != asset.storage_ref
     ):
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body scan raw/file graph is inconsistent"
         )
     await _validate_upload_chain(
@@ -1576,7 +1571,7 @@ async def latest_scan(
 async def resolve_active_scoped(
     session: AsyncSession,
     *,
-    scope: conflict_engine.ConflictScope,
+    scope: engine.ConflictScope,
 ) -> list[dict]:
     """Return every latest-date BodyScan visible in one conflict scope.
 
@@ -1595,7 +1590,7 @@ async def resolve_active_scoped(
     latest_date = rows[0].date
     return [
         {
-            conflict_engine.CONFLICT_ENTITY_KEY: _scan_entity_key(row),
+            engine.CONFLICT_ENTITY_KEY: _scan_entity_key(row),
             "scan": True,
             "source": row.source,
         }
@@ -1741,7 +1736,7 @@ async def _lock_scan_for_update(
     session: AsyncSession,
     scan_id: int,
     *,
-    context: conflict_engine.ConflictWriteContext,
+    context: engine.ConflictWriteContext,
 ) -> BodyScan | None:
     candidate = await get_scan(
         session,
@@ -1793,7 +1788,7 @@ async def _lock_scan_for_update(
         or refreshed.source != candidate.source
         or refreshed.file_asset_id != candidate.file_asset_id
     ):
-        raise conflict_engine.ConflictRawOwnershipError(
+        raise engine.ConflictRawOwnershipError(
             "body-scan provenance changed while acquiring write locks"
         )
     return refreshed
@@ -1844,7 +1839,7 @@ async def delete_scan(
     )
     if context is not None:
         if subject_id is not None and subject_id != identity.subject_id:
-            raise conflict_engine.ConflictPreparedWriteError(
+            raise engine.ConflictPreparedWriteError(
                 "subject_id does not match prepared body-scan identity"
             )
         scan = await _lock_scan_for_update(
@@ -1887,7 +1882,7 @@ async def refresh_alerts(
         if on_date is not None:
             _require_evaluation_date(context, on_date)
         if subject_id is not None and subject_id != identity.subject_id:
-            raise conflict_engine.ConflictPreparedWriteError(
+            raise engine.ConflictPreparedWriteError(
                 "subject_id does not match prepared body-scan identity"
             )
         subject_id = identity.subject_id

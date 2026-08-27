@@ -30,16 +30,8 @@ from vitals.models.labs import LabMarker, LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    conflict_engine,
-    conflict_registrations,
-    file_asset_service,
-    garmin_service,
-    hevy_service,
-    labs_service,
-    raw_payload_service,
-    supplements_service,
-)
+from vitals.services import file_asset_service, garmin_service, hevy_service, labs_service, raw_payload_service, supplements_service
+from vitals.services.conflicts import engine, registrations
 from vitals.services.body_scan import scans
 
 
@@ -59,20 +51,20 @@ def _context(
     *,
     on_date: date = RESULT_DATE,
     legacy: bool = False,
-) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=on_date,
         legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            engine.LegacyConflictBridge.FULLY_UNOWNED
             if legacy
-            else conflict_engine.LegacyConflictBridge.REJECT
+            else engine.LegacyConflictBridge.REJECT
         ),
     )
 
 
 async def _prepared(session: AsyncSession, context):
-    return await conflict_engine.prepare_scoped_write(session, context=context)
+    return await engine.prepare_scoped_write(session, context=context)
 
 
 async def _openrouter_connection(
@@ -162,7 +154,7 @@ async def test_mcp_update_preserves_omitted_date_and_provenance_and_structures_b
 ):
     mcp_router = pytest.importorskip("web.routers.mcp")
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
-    conflict_registrations.register_all_resolvers()
+    registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
             rule_type=RuleType.HARD_BLOCK.value,
@@ -365,7 +357,7 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
     from vitals.process_mode import ProcessMode
     from vitals.scheduler import jobs as jobs_module
     from vitals.scheduler import scheduler as scheduler_module
-    from vitals.services import conflict_catalog
+    from vitals.services.conflicts import catalog as conflict_catalog
     from vitals.services.hrt import catalog, reminders
     from vitals.services.proactive import prefs
     from web import main as web_main
@@ -381,7 +373,7 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
         identity,
         prepared_conflict_write,
     ):
-        context = conflict_engine.require_prepared_identity(
+        context = engine.require_prepared_identity(
             session,
             prepared=prepared_conflict_write,
             identity=identity,
@@ -438,7 +430,7 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
         (
             WriteIdentity(legacy_owner_roots.subject_id, None),
             legacy_owner_roots.subject_id,
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            engine.LegacyConflictBridge.FULLY_UNOWNED,
         )
     ]
 
@@ -461,7 +453,7 @@ async def test_nightly_labs_sweep_receives_system_identity_and_live_capability(
         identity,
         prepared_conflict_write,
     ):
-        context = conflict_engine.require_prepared_identity(
+        context = engine.require_prepared_identity(
             session,
             prepared=prepared_conflict_write,
             identity=identity,
@@ -480,7 +472,7 @@ async def test_nightly_labs_sweep_receives_system_identity_and_live_capability(
         (
             WriteIdentity(legacy_owner_roots.subject_id, None),
             legacy_owner_roots.subject_id,
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            engine.LegacyConflictBridge.FULLY_UNOWNED,
         )
     ]
 
@@ -729,7 +721,7 @@ async def test_stage3a_parser_history_replays_without_becoming_live_upload(
         _context(system, legacy=True),
     )
     with pytest.raises(
-        conflict_engine.ConflictRawOwnershipError,
+        engine.ConflictRawOwnershipError,
         match="no file root",
     ):
         await labs_service.add_result(

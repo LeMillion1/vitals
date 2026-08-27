@@ -29,7 +29,7 @@ from vitals.services.genetics.vcf import (  # noqa: F401
 async def _import(path: str, only_interpreted: bool, actor_username: str) -> int:
     from vitals.config import load_config
     from vitals.database import create_session_factory
-    from vitals.services import conflict_engine
+    from vitals.services.conflicts import engine
     from vitals.services.genetics import variants as variant_records
 
     raw_variants: list[ParsedVariant] = []
@@ -52,11 +52,11 @@ async def _import(path: str, only_interpreted: bool, actor_username: str) -> int
 
     async with factory() as session:
         try:
-            context = await conflict_engine.resolve_legacy_conflict_write_context(
+            context = await engine.resolve_legacy_conflict_write_context(
                 session,
                 actor_username=actor_username,
             )
-            prepared = await conflict_engine.prepare_scoped_write(
+            prepared = await engine.prepare_scoped_write(
                 session,
                 context=context,
             )

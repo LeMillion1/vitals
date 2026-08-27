@@ -26,7 +26,8 @@ import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.ownership_deploy import OWNERSHIP_BACKFILL_SEQUENCE
 from vitals.operations.ownership import portability_v1
-from vitals.services import conflict_catalog, data_portability_service
+from vitals.services import data_portability_service
+from vitals.services.conflicts import catalog as conflict_catalog
 from vitals.services.hrt import catalog
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
 from vitals.operations.ownership.normalized import (

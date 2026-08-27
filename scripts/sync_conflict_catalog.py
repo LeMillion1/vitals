@@ -15,13 +15,13 @@ import asyncio
 async def _sync() -> dict[str, int]:
     from vitals.config import load_config
     from vitals.database import create_session_factory
-    from vitals.services import conflict_catalog
+    from vitals.services.conflicts import catalog
 
     config = load_config()
     factory = create_session_factory(config)
 
     async with factory() as session:
-        stats = await conflict_catalog.sync_catalog(session)
+        stats = await catalog.sync_catalog(session)
         await session.commit()
     return stats
 

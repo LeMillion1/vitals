@@ -29,8 +29,8 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.scoped_settings import SubjectSetting
 from vitals.models.system_alert import SystemAlert
-from vitals.services.conflict_activation_service import SETTING_KEY, SETTING_VERSION
-from vitals.services.conflict_catalog import load_rule_catalog
+from vitals.services.conflicts.activation import SETTING_KEY, SETTING_VERSION
+from vitals.services.conflicts.catalog import load_rule_catalog
 from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )

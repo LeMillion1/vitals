@@ -15,7 +15,7 @@ from vitals.models.hrt import HrtCycle, HrtDose
 from vitals.models.identity import HealthSubject, User
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 from vitals.services.hrt import catalog, reminders, records
 
 
@@ -33,20 +33,20 @@ def _context(
     identity: WriteIdentity,
     *,
     legacy_bridge: bool = False,
-) -> conflict_engine.ConflictWriteContext:
-    return conflict_engine.ConflictWriteContext(
+) -> engine.ConflictWriteContext:
+    return engine.ConflictWriteContext(
         identity=identity,
         evaluation_date=TODAY,
         legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            engine.LegacyConflictBridge.FULLY_UNOWNED
             if legacy_bridge
-            else conflict_engine.LegacyConflictBridge.REJECT
+            else engine.LegacyConflictBridge.REJECT
         ),
     )
 
 
 async def _prepared(session, identity, *, legacy_bridge: bool = False):
-    return await conflict_engine.prepare_scoped_write(
+    return await engine.prepare_scoped_write(
         session,
         context=_context(identity, legacy_bridge=legacy_bridge),
     )
@@ -89,11 +89,11 @@ def _register_resolvers() -> None:
         del session, scope
         return [{"marker": "synthetic-risk"}]
 
-    conflict_engine.register_domain_resolver(
+    engine.register_domain_resolver(
         Domain.HRT.value,
         records.resolve_active_scoped,
     )
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
+    engine.register_domain_resolver(Domain.LABS.value, labs)
 
 
 async def _dose(session, identity: WriteIdentity, compound) -> HrtDose:
@@ -298,7 +298,7 @@ async def test_update_keeps_another_matching_dose_in_conflict_snapshot(
     await _add_a_rule(db_session, identity)
     _register_resolvers()
 
-    with pytest.raises(conflict_engine.ConflictBlocked):
+    with pytest.raises(engine.ConflictBlocked):
         await records.update_dose(
             db_session,
             first.id,
@@ -427,9 +427,9 @@ async def test_invalid_prepared_date_fails_before_target_query(
         legacy_owner_roots.subject_id,
         legacy_owner_roots.user_id,
     )
-    prepared = await conflict_engine.prepare_scoped_write(
+    prepared = await engine.prepare_scoped_write(
         db_session,
-        context=conflict_engine.ConflictWriteContext(
+        context=engine.ConflictWriteContext(
             identity=identity,
             evaluation_date=date(2026, 8, 19),
         ),
@@ -442,7 +442,7 @@ async def test_invalid_prepared_date_fails_before_target_query(
         raise AssertionError("target must not be queried")
 
     monkeypatch.setattr(records, "_owned_row_for_update", probe)
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError, match="date"):
+    with pytest.raises(engine.ConflictPreparedWriteError, match="date"):
         await records.update_dose(
             db_session,
             1,

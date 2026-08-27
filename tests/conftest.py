@@ -144,13 +144,13 @@ def pytest_collection_modifyitems(config, items):
 def _reset_engine_registries():
     """Keep module-level registries (conflict resolvers, scheduler jobs) isolated
     between tests."""
-    from vitals.services import conflict_engine
+    from vitals.services.conflicts import engine
     from vitals.scheduler import scheduler as scheduler_mod
 
-    conflict_engine.clear_domain_resolvers()
+    engine.clear_domain_resolvers()
     scheduler_mod.clear_jobs()
     yield
-    conflict_engine.clear_domain_resolvers()
+    engine.clear_domain_resolvers()
     scheduler_mod.clear_jobs()
 
 
@@ -879,12 +879,12 @@ async def owner_write(db_session, legacy_owner_roots):
 
     from types import SimpleNamespace
 
-    from vitals.services import conflict_engine
+    from vitals.services.conflicts import engine
 
     from web.config import get_web_config
 
     # A human actor: an override is a decision somebody has to be answerable for.
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
+    context = await engine.resolve_legacy_conflict_write_context(
         db_session,
         actor_username=get_web_config().auth_username,
     )
@@ -912,12 +912,12 @@ async def owner_write(db_session, legacy_owner_roots):
         scoped = context
         if on_date is not None:
             on_date = _clock_date(on_date)
-            scoped = await conflict_engine.resolve_legacy_conflict_write_context(
+            scoped = await engine.resolve_legacy_conflict_write_context(
                 db_session,
                 actor_username=get_web_config().auth_username,
                 evaluation_date=on_date,
             )
-        return await conflict_engine.prepare_scoped_write(
+        return await engine.prepare_scoped_write(
             db_session,
             context=scoped,
         )
@@ -937,7 +937,7 @@ async def owner_write(db_session, legacy_owner_roots):
         scoped = context
         if on_date is not None:
             on_date = _clock_date(on_date)
-            scoped = await conflict_engine.resolve_legacy_conflict_write_context(
+            scoped = await engine.resolve_legacy_conflict_write_context(
                 db_session,
                 actor_username=get_web_config().auth_username,
                 evaluation_date=on_date,

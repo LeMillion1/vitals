@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Domain, MilestoneStatus
 from vitals.models.milestones import Milestone
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine
+from vitals.services.conflicts import engine
 from vitals.utils.timeutils import today_local
 
 
@@ -51,17 +51,17 @@ def _require_prepared_write(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    prepared: conflict_engine.PreparedConflictWrite,
-) -> conflict_engine.ConflictWriteContext:
+    prepared: engine.PreparedConflictWrite,
+) -> engine.ConflictWriteContext:
     """Bind one goal write to its subject and its conflict decision."""
 
-    context = conflict_engine.require_prepared_identity(
+    context = engine.require_prepared_identity(
         session,
         identity=identity,
         prepared=prepared,
     )
     if identity.actor_user_id is None:
-        raise conflict_engine.ConflictPreparedWriteError(
+        raise engine.ConflictPreparedWriteError(
             "milestone writes require a human actor"
         )
     return context
@@ -72,7 +72,7 @@ async def _lock_milestone_for_write(
     milestone_id: int,
     *,
     identity: WriteIdentity,
-    prepared: conflict_engine.PreparedConflictWrite,
+    prepared: engine.PreparedConflictWrite,
 ) -> Milestone | None:
     _require_prepared_write(session, identity=identity, prepared=prepared)
     roots = (
@@ -113,7 +113,7 @@ async def create_milestone(
     deadline: Optional[date_type] = None,
     note: Optional[str] = None,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Milestone:
     _require_prepared_write(
         session,
@@ -159,7 +159,7 @@ async def set_status(
     status: str,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[Milestone]:
     row = await _lock_milestone_for_write(
         session,
@@ -192,7 +192,7 @@ async def update_milestone(
     status: object = _UNSET,
     note: object = _UNSET,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> Optional[Milestone]:
     """Partial-update a goal card. Only fields explicitly passed are changed;
     the rest keep their current value (pass ``None`` to clear an optional field)."""
@@ -224,7 +224,7 @@ async def delete_milestone(
     milestone_id: int,
     *,
     identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+    prepared_conflict_write: engine.PreparedConflictWrite,
 ) -> bool:
     row = await _lock_milestone_for_write(
         session,
