@@ -10,7 +10,8 @@ from vitals.models.garmin import GarminDaily
 from vitals.models.glp1 import Injection, SideEffect
 from vitals.models.nutrition import MealLog
 from vitals.models.weight import WeightLog
-from vitals.services import body_scan_service, chart_data_service, hevy_service, labs_service
+from vitals.services import chart_data_service, hevy_service, labs_service
+from vitals.services.body_scan import scans
 from vitals.services.modules_service import MODULE_REGISTRY
 
 
@@ -156,7 +157,7 @@ async def test_series_for_hevy_exercise_matches_working_weight_series(db_session
 async def test_series_for_body_scan_metric_whole_body(
     db_session, owned_by_legacy_subject, owner_write
 ):
-    await body_scan_service.save_scan(
+    await scans.save_scan(
         db_session, on_date=DAY1, device="InBody",
         metrics=[{"label": "Процент жира", "value": 18.5, "unit": "%"}],
         source="manual",
@@ -172,7 +173,7 @@ async def test_series_for_body_scan_metric_whole_body(
 async def test_series_for_body_scan_metric_segmental(
     db_session, owned_by_legacy_subject, owner_write
 ):
-    await body_scan_service.save_scan(
+    await scans.save_scan(
         db_session, on_date=DAY1, device="InBody",
         metrics=[{"label": "Мышцы", "value": 3.2, "unit": "кг", "segment": "trunk"}],
         source="manual",

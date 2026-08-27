@@ -279,7 +279,8 @@ async def test_progress_propagates_subject_to_weight_measurement_scan_and_settin
     legacy_owner_roots,
     monkeypatch,
 ):
-    from vitals.services import body_scan_service, modules_service, weight_service
+    from vitals.services import modules_service, weight_service
+    from vitals.services.body_scan import scans
     from vitals.analytics import body_metrics
 
     identity = _identity(legacy_owner_roots)
@@ -295,7 +296,7 @@ async def test_progress_propagates_subject_to_weight_measurement_scan_and_settin
         seen.append(("measurement", kwargs["subject_id"]))
         return [SimpleNamespace(body_fat_pct=14.0)]
 
-    async def scans(session, **kwargs):
+    async def list_scans(session, **kwargs):
         del session
         seen.append(("scan", kwargs["subject_id"]))
         return [SimpleNamespace(metrics=[])]
@@ -307,7 +308,7 @@ async def test_progress_propagates_subject_to_weight_measurement_scan_and_settin
 
     monkeypatch.setattr(weight_service, "list_active_weights", weights)
     monkeypatch.setattr(weight_service, "list_body_measurements", measurements)
-    monkeypatch.setattr(body_scan_service, "list_scans", scans)
+    monkeypatch.setattr(scans, "list_scans", list_scans)
     monkeypatch.setattr(modules_service, "get_enabled_modules", modules)
     monkeypatch.setattr(body_metrics, "body_fat_pct_from_scan", lambda metrics: 15.0)
 

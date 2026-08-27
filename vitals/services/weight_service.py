@@ -2827,9 +2827,9 @@ async def chart_series(
     # depends on body_comp; only assembled when the module is enabled.
     bia = None
     if include_bia:
-        from vitals.services import body_scan_service
+        from vitals.services.body_scan import scans
 
-        bia = await body_scan_service.bia_chart_points(
+        bia = await scans.bia_chart_points(
             session,
             subject_id=subject_id,
         )

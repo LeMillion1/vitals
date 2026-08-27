@@ -25,13 +25,13 @@ from vitals.i18n import t
 from vitals.services import (
     ai_gateway_service,
     alerts_service,
-    body_scan_ai_service,
-    body_scan_service,
     conflict_engine,
     file_asset_service,
     garmin_weight_service,
     weight_service,
 )
+from vitals.services.body_scan import ai as body_scan_ai
+from vitals.services.body_scan import scans
 from vitals.analytics import body_metrics
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
@@ -152,7 +152,7 @@ async def _section_context(
         )
         prepared = prepared_weight_write.conflict_write
         body_ai_availability = (
-            await body_scan_ai_service.project_body_scan_ai_availability(
+            await body_scan_ai.project_body_scan_ai_availability(
                 db,
                 actor_username=username,
             )
@@ -175,7 +175,7 @@ async def _section_context(
     )
     if body_comp_enabled:
         assert prepared_weight_write is not None
-        await body_scan_service.refresh_alerts(
+        await scans.refresh_alerts(
             db,
             subject_id=identity.subject_id,
             on_date=today,
@@ -225,7 +225,7 @@ async def _section_context(
 
     # Body-composition scans + the compact summary chips for the latest one.
     bc_scans = (
-        await body_scan_service.list_scans(
+        await scans.list_scans(
             db,
             subject_id=identity.subject_id,
         )
@@ -748,7 +748,7 @@ async def body_scan_upload(
             contents,
         )
         file_written = True
-        prepared = await body_scan_ai_service.prepare_body_scan_parse(
+        prepared = await body_scan_ai.prepare_body_scan_parse(
             db,
             actor_username=username,
             storage_ref=file_key,
@@ -811,13 +811,13 @@ async def body_scan_upload(
         )
     else:
         try:
-            prepared_content = body_scan_ai_service.prepare_body_scan_content(
+            prepared_content = body_scan_ai.prepare_body_scan_content(
                 prepared,
                 file_bytes=contents,
             )
-        except body_scan_ai_service.BodyScanAIValidationError:
+        except body_scan_ai.BodyScanAIValidationError:
             try:
-                await body_scan_ai_service.cancel_prepared_body_scan_parse(
+                await body_scan_ai.cancel_prepared_body_scan_parse(
                     db,
                     prepared,
                 )
@@ -831,7 +831,7 @@ async def body_scan_upload(
                 {"ok": False, "reason": "error", "message": t("body.upload.error")}
             )
         try:
-            lease = await body_scan_ai_service.start_body_scan_dispatch(
+            lease = await body_scan_ai.start_body_scan_dispatch(
                 db,
                 prepared,
                 content=prepared_content,
@@ -843,7 +843,7 @@ async def body_scan_upload(
         ) as exc:
             await db.rollback()
             try:
-                await body_scan_ai_service.cancel_prepared_body_scan_parse(
+                await body_scan_ai.cancel_prepared_body_scan_parse(
                     db,
                     prepared,
                 )
@@ -869,7 +869,7 @@ async def body_scan_upload(
                     ),
                 }
             )
-        completion = await body_scan_ai_service.render_body_scan(
+        completion = await body_scan_ai.render_body_scan(
             prepared,
             lease,
             file_bytes=contents,
@@ -878,7 +878,7 @@ async def body_scan_upload(
         result = None
         for attempt in range(2):
             try:
-                result = await body_scan_ai_service.persist_body_scan_parse(
+                result = await body_scan_ai.persist_body_scan_parse(
                     db,
                     prepared,
                     completion,
@@ -920,7 +920,7 @@ async def body_scan_upload(
         return JSONResponse(
             {"ok": False, "reason": "error", "message": t("body.upload.error")}
         )
-    rows = body_scan_service.normalize_extracted(extracted)
+    rows = scans.normalize_extracted(extracted)
     raw_date = date or extracted.get("date")
     try:
         scan_date = date_type.fromisoformat(str(raw_date)[:10]).isoformat()
@@ -959,7 +959,7 @@ async def body_scan_confirm(
     )
     identity = conflict_context.identity
     try:
-        await body_scan_service.save_scan(
+        await scans.save_scan(
             db,
             on_date=on_date,
             device=payload.device,
@@ -971,7 +971,7 @@ async def body_scan_confirm(
             identity=identity,
             prepared_weight_write=prepared_weight_write,
         )
-        await body_scan_service.refresh_alerts(
+        await scans.refresh_alerts(
             db,
             subject_id=identity.subject_id,
             on_date=on_date,
@@ -1009,7 +1009,7 @@ async def delete_body_scan_entry(
         on_date=operation_date,
     )
     identity = conflict_context.identity
-    scan = await body_scan_service.get_scan(
+    scan = await scans.get_scan(
         db,
         scan_id,
         subject_id=identity.subject_id,
@@ -1018,7 +1018,7 @@ async def delete_body_scan_entry(
         return _back(request)
 
     file_asset_id = scan.file_asset_id if scan is not None else None
-    deleted = await body_scan_service.delete_scan(
+    deleted = await scans.delete_scan(
         db,
         scan_id,
         subject_id=identity.subject_id,
@@ -1026,7 +1026,7 @@ async def delete_body_scan_entry(
         prepared_weight_write=prepared_weight_write,
     )
     if deleted:
-        await body_scan_service.refresh_alerts(
+        await scans.refresh_alerts(
             db,
             subject_id=identity.subject_id,
             on_date=operation_date,

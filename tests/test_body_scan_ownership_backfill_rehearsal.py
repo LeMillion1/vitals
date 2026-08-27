@@ -26,10 +26,10 @@ import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.operations.ownership import portability_v1
 from vitals.services import (
-    body_scan_service,
     conflict_catalog,
     data_portability_service,
 )
+from vitals.services.body_scan import scans
 from vitals.services.hrt import catalog
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,
@@ -625,7 +625,7 @@ async def test_real_postgres_0034_body_scan_stop_resume_and_restore(
             # The backfill is halfway: body_comp is closed, so the reader
             # shows exactly the rows that already carry the subject and none of
             # the ones still waiting for the next batch.
-            visible = await body_scan_service.list_scans(
+            visible = await scans.list_scans(
                 session,
                 subject_id=identity.subject_id,
             )

@@ -55,7 +55,8 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import ai_gateway_service, body_scan_service, file_asset_service
+from vitals.services import ai_gateway_service, file_asset_service
+from vitals.services.body_scan import scans
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import now_utc
@@ -914,7 +915,7 @@ def prepare_body_scan_content(
         ".pdf"
     )
     try:
-        image_urls = body_scan_service.prepare_file_for_extraction(
+        image_urls = scans.prepare_file_for_extraction(
             file_bytes,
             content_type=snapshot._media_type,
             filename=snapshot._storage_ref,
@@ -1009,7 +1010,7 @@ async def render_body_scan(
             )
         config = replace(load_config(), openrouter_api_key=request.credential)
         client = factory(config)
-        return await body_scan_service.extract_prepared_file_with_usage(
+        return await scans.extract_prepared_file_with_usage(
             prepared_content._image_urls,
             llm=client,
             model=request.model,

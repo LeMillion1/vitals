@@ -744,15 +744,15 @@ async def _body_comp_block(
     session, ctx, stats, start, end, flagged_only, *, subject_id
 ) -> dict:
     from vitals.i18n import current_lang
-    from vitals.services import body_scan_service
     from vitals.analytics.body_metrics import METRIC_REGISTRY, display_name
+    from vitals.services.body_scan import scans
 
     lang = current_lang.get()
-    scans = await body_scan_service.list_scans(
+    scan_rows = await scans.list_scans(
         session, start=start, end=end, subject_id=subject_id
     )
     rows = []
-    for scan in scans:
+    for scan in scan_rows:
         metrics = []
         for m in scan.metrics:
             spec = METRIC_REGISTRY.get(m.metric_key)

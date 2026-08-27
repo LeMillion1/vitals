@@ -65,7 +65,7 @@ verdict:
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
 | Web routers | 34 tracked non-`__init__` modules under `web/routers` | Verified |
 | Application services | 103 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
-| Flat service debt | 45 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 29 |
+| Flat service debt | 43 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 31 |
 | Scheduled jobs | 16 registered jobs; 11 fan out per subject or provider connection | Verified |
 | Platform-scope callers | the AST contract in `tests/test_row_level_security.py` enumerates 9 exact permitted functions; invitation acceptance is no longer one of them | Verified and shrinking |
 | Browser scenarios | `pytest tests/ui -m ui -q` → 43 passed in 138.35s | Verified on the current runtime tree |

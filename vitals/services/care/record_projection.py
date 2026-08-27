@@ -229,9 +229,9 @@ async def _load_labs(
 async def _load_body_comp(
     session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
 ) -> _LoadedSection:
-    from vitals.services import body_scan_service
+    from vitals.services.body_scan import scans
 
-    row = await body_scan_service.latest_scan(
+    row = await scans.latest_scan(
         session,
         subject_id=subject_id,
         before_or_on=window.period_end,

@@ -35,13 +35,13 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.services import (
-    body_scan_service,
     conflict_engine,
     file_asset_service,
     raw_payload_service,
     weight_service,
 )
 from vitals.services import modules_service
+from vitals.services.body_scan import scans
 from vitals.utils.timeutils import now_local
 
 
@@ -206,7 +206,7 @@ async def _rawless_scan(
     note: str | None = None,
     metrics: list[dict] | None = None,
 ) -> BodyScan:
-    return await body_scan_service.save_scan(
+    return await scans.save_scan(
         session,
         on_date=on_date,
         metrics=metrics or _metrics(),
@@ -240,7 +240,7 @@ async def test_upload_confirm_keeps_exact_s_a_c_f_raw_and_metric_inheritance(
         },
     )
 
-    scan = await body_scan_service.save_scan(
+    scan = await scans.save_scan(
         db_session,
         on_date=SCAN_DATE,
         device="Synthetic BIA",
@@ -325,8 +325,8 @@ async def test_mcp_structured_write_is_raw_first_and_splits_scan_from_weight_sou
         legacy_owner_roots,
     )
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
-    original_ingest = body_scan_service.ingest_structured_scan
-    original_refresh = body_scan_service.refresh_alerts
+    original_ingest = scans.ingest_structured_scan
+    original_refresh = scans.refresh_alerts
     captured = []
 
     async def ingest_probe(*args, **kwargs):
@@ -365,8 +365,8 @@ async def test_mcp_structured_write_is_raw_first_and_splits_scan_from_weight_sou
         )
         return await original_refresh(*args, **kwargs)
 
-    monkeypatch.setattr(body_scan_service, "ingest_structured_scan", ingest_probe)
-    monkeypatch.setattr(body_scan_service, "refresh_alerts", refresh_probe)
+    monkeypatch.setattr(scans, "ingest_structured_scan", ingest_probe)
+    monkeypatch.setattr(scans, "refresh_alerts", refresh_probe)
 
     result = await mcp_router.log_body_scan(
         metrics=_metrics(weight=79.4),
@@ -470,8 +470,8 @@ async def test_web_upload_and_confirm_keep_owned_boundary_kwargs_and_chain(
             cost_microunits=1,
         )
 
-    original_save = body_scan_service.save_scan
-    original_refresh = body_scan_service.refresh_alerts
+    original_save = scans.save_scan
+    original_refresh = scans.refresh_alerts
     captured: list[tuple] = []
 
     async def save_probe(*args, **kwargs):
@@ -509,12 +509,12 @@ async def test_web_upload_and_confirm_keep_owned_boundary_kwargs_and_chain(
 
     monkeypatch.setattr(weight_router, "STATIC_DIR", tmp_path)
     monkeypatch.setattr(
-        body_scan_service,
+        scans,
         "extract_prepared_file_with_usage",
         extracted,
     )
-    monkeypatch.setattr(body_scan_service, "save_scan", save_probe)
-    monkeypatch.setattr(body_scan_service, "refresh_alerts", refresh_probe)
+    monkeypatch.setattr(scans, "save_scan", save_probe)
+    monkeypatch.setattr(scans, "refresh_alerts", refresh_probe)
     upload = UploadFile(
         BytesIO(b"\x89PNG\r\n\x1a\nsynthetic-body-scan"),
         filename="scan.png",
@@ -618,7 +618,7 @@ async def test_web_upload_ignores_disabled_historical_subject_openrouter(
 
     monkeypatch.setattr(weight_router, "STATIC_DIR", tmp_path)
     monkeypatch.setattr(
-        body_scan_service,
+        scans,
         "extract_prepared_file_with_usage",
         extracted,
     )
@@ -677,20 +677,20 @@ async def test_subject_a_reads_notes_delete_history_catalog_and_bia_exclude_b(
     )
     await db_session.commit()
 
-    assert [row.id for row in await body_scan_service.list_scans(
+    assert [row.id for row in await scans.list_scans(
         db_session, subject_id=owner_a.subject_id
     )] == [scan_a.id]
-    assert (await body_scan_service.latest_scan(
+    assert (await scans.latest_scan(
         db_session, subject_id=owner_a.subject_id
     )).id == scan_a.id
-    assert (await body_scan_service.get_scan(
+    assert (await scans.get_scan(
         db_session, scan_a.id, subject_id=owner_a.subject_id
     )).note == "A only"
-    assert await body_scan_service.get_scan(
+    assert await scans.get_scan(
         db_session, scan_b.id, subject_id=owner_a.subject_id
     ) is None
     provenance = (scan_a.subject_id, scan_a.actor_user_id, scan_a.source)
-    assert await body_scan_service.update_scan_note(
+    assert await scans.update_scan_note(
         db_session,
         scan_b.id,
         note="must not cross subjects",
@@ -701,7 +701,7 @@ async def test_subject_a_reads_notes_delete_history_catalog_and_bia_exclude_b(
             on_date=NEXT_DATE,
         ),
     ) is None
-    noted = await body_scan_service.update_scan_note(
+    noted = await scans.update_scan_note(
         db_session,
         scan_a.id,
         note="A updated",
@@ -710,7 +710,7 @@ async def test_subject_a_reads_notes_delete_history_catalog_and_bia_exclude_b(
     )
     assert noted is not None and noted.note == "A updated"
     assert (noted.subject_id, noted.actor_user_id, noted.source) == provenance
-    history = await body_scan_service.metric_history(
+    history = await scans.metric_history(
         db_session,
         "phase_angle",
         subject_id=owner_a.subject_id,
@@ -725,12 +725,12 @@ async def test_subject_a_reads_notes_delete_history_catalog_and_bia_exclude_b(
             "ref_high": None,
         }
     ]
-    catalog = await body_scan_service.available_metrics(
+    catalog = await scans.available_metrics(
         db_session,
         subject_id=owner_a.subject_id,
     )
     assert "b_only" not in {item["value"] for item in catalog}
-    bia = await body_scan_service.bia_chart_points(
+    bia = await scans.bia_chart_points(
         db_session,
         subject_id=owner_a.subject_id,
     )
@@ -738,7 +738,7 @@ async def test_subject_a_reads_notes_delete_history_catalog_and_bia_exclude_b(
         "bf": [{"date": SCAN_DATE.isoformat(), "value": 20.0}],
         "lbm": [{"date": SCAN_DATE.isoformat(), "value": 64.0}],
     }
-    assert not await body_scan_service.delete_scan(
+    assert not await scans.delete_scan(
         db_session,
         scan_b.id,
         subject_id=owner_a.subject_id,
@@ -783,8 +783,8 @@ async def test_mcp_note_delete_and_web_delete_prepare_before_target_reads(
     await db_session.commit()
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
-    original_get = body_scan_service.get_scan
-    original_refresh = body_scan_service.refresh_alerts
+    original_get = scans.get_scan
+    original_refresh = scans.refresh_alerts
     original_mcp_prepare = mcp_router._mcp_v1_weight_write
     original_web_prepare = weight_router._prepare_weight_write
     events: list[str] = []
@@ -805,8 +805,8 @@ async def test_mcp_note_delete_and_web_delete_prepare_before_target_reads(
         events.append("refresh_alerts")
         return await original_refresh(*args, **kwargs)
 
-    monkeypatch.setattr(body_scan_service, "get_scan", get_probe)
-    monkeypatch.setattr(body_scan_service, "refresh_alerts", refresh_probe)
+    monkeypatch.setattr(scans, "get_scan", get_probe)
+    monkeypatch.setattr(scans, "refresh_alerts", refresh_probe)
     monkeypatch.setattr(mcp_router, "_mcp_v1_weight_write", mcp_prepare_probe)
     monkeypatch.setattr(weight_router, "_prepare_weight_write", web_prepare_probe)
 
@@ -877,12 +877,12 @@ async def test_fully_null_legacy_graph_is_invisible_to_the_closed_domain(
     db_session.add(legacy)
     await db_session.commit()
 
-    visible = await body_scan_service.list_scans(
+    visible = await scans.list_scans(
         db_session,
         subject_id=identity.subject_id,
     )
     assert visible == []
-    assert not await body_scan_service.delete_scan(
+    assert not await scans.delete_scan(
         db_session,
         legacy.id,
         subject_id=identity.subject_id,
@@ -913,7 +913,7 @@ async def test_legacy_raw_replay_weight_bridge_remains_scoped_readable(
     db_session.add(raw)
     await db_session.commit()
 
-    assert await body_scan_service.reparse_owned_pending(
+    assert await scans.reparse_owned_pending(
         db_session,
         identity=system,
     ) == 1
@@ -965,7 +965,7 @@ async def test_stage3a_parser_history_replays_scan_and_weight_without_file_adopt
         conflict_engine.ConflictRawOwnershipError,
         match="no file root",
     ):
-        await body_scan_service.save_scan(
+        await scans.save_scan(
             db_session,
             on_date=SCAN_DATE,
             raw_payload_id=raw.id,
@@ -979,7 +979,7 @@ async def test_stage3a_parser_history_replays_scan_and_weight_without_file_adopt
         )
     await db_session.rollback()
 
-    assert await body_scan_service.reparse_owned_pending(
+    assert await scans.reparse_owned_pending(
         db_session,
         identity=system,
     ) == 1
@@ -1047,13 +1047,13 @@ async def test_stage3a_mcp_history_without_a_subject_is_unreadable_and_unlinkabl
     scan.raw_payload_id = raw.id
     await db_session.commit()
 
-    assert await body_scan_service.list_scans(
+    assert await scans.list_scans(
         db_session,
         subject_id=identity.subject_id,
     ) == []
 
     with pytest.raises(conflict_engine.ConflictRawOwnershipError):
-        await body_scan_service.save_scan(
+        await scans.save_scan(
             db_session,
             on_date=NEXT_DATE,
             raw_payload_id=raw.id,
@@ -1106,15 +1106,15 @@ async def test_exact_manual_scan_actor_must_be_subject_owner(
     await db_session.commit()
 
     if actor_mode == "null":
-        visible = await body_scan_service.list_scans(
+        visible = await scans.list_scans(
             db_session,
             subject_id=identity.subject_id,
         )
         assert [row.id for row in visible] == [scan.id]
         return
 
-    with pytest.raises(body_scan_service.BodyScanOwnershipError):
-        await body_scan_service.list_scans(
+    with pytest.raises(scans.BodyScanOwnershipError):
+        await scans.list_scans(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -1157,7 +1157,7 @@ async def test_exact_upload_chain_cannot_share_one_foreign_actor(
     await db_session.commit()
 
     with pytest.raises(conflict_engine.ConflictRawOwnershipError):
-        await body_scan_service.list_scans(
+        await scans.list_scans(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -1191,7 +1191,7 @@ async def test_exact_mcp_chain_cannot_share_one_foreign_actor(
     await db_session.commit()
 
     with pytest.raises(conflict_engine.ConflictRawOwnershipError):
-        await body_scan_service.list_scans(
+        await scans.list_scans(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -1244,7 +1244,7 @@ async def test_fully_null_scan_never_reaches_a_scope_through_its_owned_raw(
     db_session.add(legacy_scan)
     await db_session.commit()
 
-    assert await body_scan_service.list_scans(
+    assert await scans.list_scans(
         db_session,
         subject_id=identity.subject_id,
     ) == []
@@ -1347,7 +1347,7 @@ async def test_owned_replay_rejects_foreign_or_partial_link_suppression(
         conflict_engine.ConflictRawOwnershipError,
         match="foreign or partial normalized provenance",
     ):
-        await body_scan_service.reparse_owned_pending(
+        await scans.reparse_owned_pending(
             db_session,
             identity=system,
         )
@@ -1387,8 +1387,8 @@ async def test_latest_scan_rejects_newer_partial_legacy_instead_of_using_stale(
     db_session.add(partial)
     await db_session.commit()
 
-    with pytest.raises(body_scan_service.BodyScanOwnershipError):
-        await body_scan_service.latest_scan(
+    with pytest.raises(scans.BodyScanOwnershipError):
+        await scans.latest_scan(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -1471,11 +1471,11 @@ async def test_every_partial_scan_metric_and_raw_chain_fails_closed(
 
     with pytest.raises(
         (
-            body_scan_service.BodyScanOwnershipError,
+            scans.BodyScanOwnershipError,
             conflict_engine.ConflictRawOwnershipError,
         )
     ):
-        await body_scan_service.list_scans(
+        await scans.list_scans(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -1534,7 +1534,7 @@ async def test_upload_chain_validates_uploader_asset_raw_and_openrouter(
     await db_session.commit()
 
     with pytest.raises(conflict_engine.ConflictRawOwnershipError):
-        await body_scan_service.save_scan(
+        await scans.save_scan(
             db_session,
             on_date=SCAN_DATE,
             file_key=raw.external_id,
@@ -1556,7 +1556,7 @@ async def test_capability_is_rejected_before_raw_or_scan_target_resolution(
     wrong_capability = await _prepared_weight(db_session, foreign)
 
     with pytest.raises(conflict_engine.ConflictPreparedWriteError):
-        await body_scan_service.save_scan(
+        await scans.save_scan(
             db_session,
             on_date=SCAN_DATE,
             file_key="body/nonexistent.png",
@@ -1566,7 +1566,7 @@ async def test_capability_is_rejected_before_raw_or_scan_target_resolution(
             prepared_weight_write=wrong_capability,
         )
     with pytest.raises(conflict_engine.ConflictPreparedWriteError):
-        await body_scan_service.delete_scan(
+        await scans.delete_scan(
             db_session,
             999_999,
             subject_id=owner.subject_id,
@@ -1589,7 +1589,7 @@ async def test_scoped_source_matrix_and_persisted_source_tamper_fail_closed(
     )
 
     with pytest.raises(conflict_engine.ConflictRawOwnershipError):
-        await body_scan_service.save_scan(
+        await scans.save_scan(
             db_session,
             on_date=SCAN_DATE,
             metrics=[{"label": "Phase Angle", "value": 6.0}],
@@ -1598,7 +1598,7 @@ async def test_scoped_source_matrix_and_persisted_source_tamper_fail_closed(
             prepared_weight_write=await _prepared_weight(db_session, identity),
         )
     with pytest.raises(conflict_engine.ConflictRawOwnershipError):
-        await body_scan_service.save_scan(
+        await scans.save_scan(
             db_session,
             on_date=SCAN_DATE,
             raw_payload_id=raw.id,
@@ -1609,7 +1609,7 @@ async def test_scoped_source_matrix_and_persisted_source_tamper_fail_closed(
         )
     assert await db_session.scalar(select(func.count()).select_from(BodyScan)) == 0
 
-    manual = await body_scan_service.save_scan(
+    manual = await scans.save_scan(
         db_session,
         on_date=SCAN_DATE,
         metrics=[{"label": "Phase Angle", "value": 6.0}],
@@ -1637,7 +1637,7 @@ async def test_scoped_source_matrix_and_persisted_source_tamper_fail_closed(
     manual.source = Source.BODY_SCAN.value
     await db_session.commit()
     with pytest.raises(conflict_engine.ConflictRawOwnershipError):
-        await body_scan_service.get_scan(
+        await scans.get_scan(
             db_session,
             manual.id,
             subject_id=identity.subject_id,
@@ -1663,7 +1663,7 @@ async def test_direct_retry_of_normalized_raw_is_typed_and_write_free(
         "metrics": _metrics(weight=77.7),
         "identity": identity,
     }
-    first = await body_scan_service.save_scan(
+    first = await scans.save_scan(
         db_session,
         **kwargs,
         prepared_weight_write=await _prepared_weight(db_session, identity),
@@ -1678,8 +1678,8 @@ async def test_direct_retry_of_normalized_raw_is_typed_and_write_free(
         select(WeightLog.id).where(WeightLog.raw_payload_id == raw.id)
     )
 
-    with pytest.raises(body_scan_service.BodyScanRawAlreadyNormalizedError):
-        await body_scan_service.save_scan(
+    with pytest.raises(scans.BodyScanRawAlreadyNormalizedError):
+        await scans.save_scan(
             db_session,
             **kwargs,
             prepared_weight_write=await _prepared_weight(db_session, identity),
@@ -1718,12 +1718,12 @@ async def test_conflict_block_is_write_free_and_override_is_attributed(
 
     conflict_engine.register_domain_resolver(
         Domain.BODY_COMPOSITION.value,
-        body_scan_service.resolve_active_scoped,
+        scans.resolve_active_scoped,
     )
     conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
     prepared = await _prepared_weight(db_session, identity)
     with pytest.raises(conflict_engine.ConflictBlocked):
-        await body_scan_service.save_scan(
+        await scans.save_scan(
             db_session,
             on_date=SCAN_DATE,
             metrics=_metrics(),
@@ -1736,7 +1736,7 @@ async def test_conflict_block_is_write_free_and_override_is_attributed(
     assert await db_session.scalar(select(func.count()).select_from(WeightLog)) == 0
     assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == 0
 
-    saved = await body_scan_service.save_scan(
+    saved = await scans.save_scan(
         db_session,
         on_date=SCAN_DATE,
         metrics=_metrics(),
@@ -1790,7 +1790,7 @@ async def test_visceral_and_phase_alerts_are_typed_scoped_and_actorless(
     )
     await db_session.commit()
 
-    await body_scan_service.refresh_alerts(
+    await scans.refresh_alerts(
         db_session,
         subject_id=system.subject_id,
         on_date=SCAN_DATE,
@@ -1801,14 +1801,14 @@ async def test_visceral_and_phase_alerts_are_typed_scoped_and_actorless(
         await db_session.scalars(
             select(SystemAlert).where(
                 SystemAlert.alert_key.in_(
-                    [body_scan_service.VISCERAL_ALERT_KEY, body_scan_service.PHASE_ALERT_KEY]
+                    [scans.VISCERAL_ALERT_KEY, scans.PHASE_ALERT_KEY]
                 )
             )
         )
     )
     assert {row.alert_key for row in alerts} == {
-        body_scan_service.VISCERAL_ALERT_KEY,
-        body_scan_service.PHASE_ALERT_KEY,
+        scans.VISCERAL_ALERT_KEY,
+        scans.PHASE_ALERT_KEY,
     }
     assert {
         (
@@ -1829,7 +1829,7 @@ async def test_same_day_scans_keep_independent_conflicts_and_resolver_entities(
     legacy_owner_roots,
 ):
     identity = _identity(legacy_owner_roots)
-    historical = await body_scan_service.save_scan(
+    historical = await scans.save_scan(
         db_session,
         on_date=SCAN_DATE - timedelta(days=1),
         metrics=[{"label": "Phase Angle", "value": 5.9}],
@@ -1861,10 +1861,10 @@ async def test_same_day_scans_keep_independent_conflicts_and_resolver_entities(
 
     conflict_engine.register_domain_resolver(
         Domain.BODY_COMPOSITION.value,
-        body_scan_service.resolve_active_scoped,
+        scans.resolve_active_scoped,
     )
     conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
-    first = await body_scan_service.save_scan(
+    first = await scans.save_scan(
         db_session,
         on_date=SCAN_DATE,
         metrics=[{"label": "Phase Angle", "value": 6.0}],
@@ -1873,7 +1873,7 @@ async def test_same_day_scans_keep_independent_conflicts_and_resolver_entities(
         identity=identity,
         prepared_weight_write=await _prepared_weight(db_session, identity),
     )
-    second = await body_scan_service.save_scan(
+    second = await scans.save_scan(
         db_session,
         on_date=SCAN_DATE,
         metrics=[{"label": "Phase Angle", "value": 6.1}],
@@ -1900,7 +1900,7 @@ async def test_same_day_scans_keep_independent_conflicts_and_resolver_entities(
         for row in alerts
     } == {(identity.subject_id, identity.actor_user_id, True)}
 
-    resolved = await body_scan_service.resolve_active_scoped(
+    resolved = await scans.resolve_active_scoped(
         db_session,
         scope=conflict_engine.ConflictScope(
             subject_id=identity.subject_id,
@@ -1948,7 +1948,7 @@ async def test_owned_replay_isolates_savepoints_and_is_idempotent(
     failed_id, successful_id = failed.id, successful.id
     await db_session.commit()
 
-    original_save = body_scan_service.save_scan
+    original_save = scans.save_scan
 
     async def flaky_save(session, **kwargs):
         if kwargs.get("raw_payload_id") == failed_id:
@@ -1966,8 +1966,8 @@ async def test_owned_replay_isolates_savepoints_and_is_idempotent(
             raise RuntimeError("synthetic failure after partial BodyScan write")
         return await original_save(session, **kwargs)
 
-    monkeypatch.setattr(body_scan_service, "save_scan", flaky_save)
-    assert await body_scan_service.reparse_owned_pending(
+    monkeypatch.setattr(scans, "save_scan", flaky_save)
+    assert await scans.reparse_owned_pending(
         db_session,
         identity=system,
     ) == 1
@@ -1985,7 +1985,7 @@ async def test_owned_replay_isolates_savepoints_and_is_idempotent(
     await db_session.refresh(successful)
     assert failed.processed_at is None
     assert successful.processed_at is not None
-    assert await body_scan_service.reparse_owned_pending(
+    assert await scans.reparse_owned_pending(
         db_session,
         identity=system,
     ) == 0
@@ -2007,7 +2007,7 @@ async def test_postgres_governance_precedes_targets_and_concurrent_writers_seria
 
     session_a = factory()
     prepared_a = await _prepared_weight(session_a, identity)
-    await body_scan_service.save_scan(
+    await scans.save_scan(
         session_a,
         on_date=SCAN_DATE,
         metrics=[{"label": "Phase Angle", "value": 6.0}],
@@ -2023,7 +2023,7 @@ async def test_postgres_governance_precedes_targets_and_concurrent_writers_seria
                 identity,
                 on_date=SCAN_DATE,
             )
-            await body_scan_service.save_scan(
+            await scans.save_scan(
                 session_b,
                 on_date=SCAN_DATE,
                 metrics=[{"label": "Phase Angle", "value": 6.1}],
@@ -2041,13 +2041,13 @@ async def test_postgres_governance_precedes_targets_and_concurrent_writers_seria
     await asyncio.wait_for(task_b, timeout=5)
 
     async with factory() as verify:
-        scans = list(
+        scan_rows = list(
             await verify.scalars(
                 select(BodyScan).where(BodyScan.subject_id == identity.subject_id)
             )
         )
-    assert len(scans) == 2
-    assert {(row.date, row.source) for row in scans} == {
+    assert len(scan_rows) == 2
+    assert {(row.date, row.source) for row in scan_rows} == {
         (SCAN_DATE, Source.MANUAL.value)
     }
 
@@ -2104,7 +2104,7 @@ async def test_postgres_concurrent_owned_replay_claims_one_raw_exactly_once(
 
     async def worker() -> int:
         async with factory() as session:
-            done = await body_scan_service.reparse_owned_pending(
+            done = await scans.reparse_owned_pending(
                 session,
                 identity=system,
             )
@@ -2119,7 +2119,7 @@ async def test_postgres_concurrent_owned_replay_claims_one_raw_exactly_once(
     assert arrivals == 2
 
     async with factory() as verify:
-        scans = list(
+        scan_rows = list(
             await verify.scalars(
                 select(BodyScan).where(BodyScan.raw_payload_id == raw_id)
             )
@@ -2127,12 +2127,12 @@ async def test_postgres_concurrent_owned_replay_claims_one_raw_exactly_once(
         metrics = list(
             await verify.scalars(
                 select(BodyScanMetric).where(
-                    BodyScanMetric.scan_id.in_([row.id for row in scans])
+                    BodyScanMetric.scan_id.in_([row.id for row in scan_rows])
                 )
             )
         )
         persisted_raw = await verify.get(RawPayload, raw_id)
-    assert len(scans) == 1
+    assert len(scan_rows) == 1
     assert len(metrics) == 2
     assert {row.subject_id for row in metrics} == {human.subject_id}
     assert persisted_raw is not None and persisted_raw.processed_at is not None

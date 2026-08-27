@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — body-scan services form one bounded context
+
+Body-composition scan persistence and the platform-funded document parser now
+live under `vitals.services.body_scan`. Analytics, care projections, MCP, web,
+conflict checks, and tests import the semantic package directly; the guarded
+flat-service ceiling falls from 45 modules to 43 without behavior or schema
+changes.
+
 ### Changed — integration credentials form one bounded context
 
 Encrypted credential storage and subject-scoped provider resolution now live

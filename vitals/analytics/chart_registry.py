@@ -11,7 +11,7 @@ flat ``REGISTRY`` keyed by a globally unique ``key``. Two shapes of entry:
     sub-parameter chosen at chart-build time (a lab marker, a Hevy exercise, a
     BIA metric+segment). These carry no ``model``/``column`` — they're
     resolved through the existing domain services (``labs_service``,
-    ``hevy_service``, ``body_scan_service``) so their own business rules
+    ``hevy_service``, ``body_scan.scans``) so their own business rules
     (marker aliasing, segment canonicalization, working-set filtering) aren't
     duplicated here.
 

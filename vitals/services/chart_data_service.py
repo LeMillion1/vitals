@@ -15,7 +15,8 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services import body_scan_service, hevy_service, labs_service
+from vitals.services import hevy_service, labs_service
+from vitals.services.body_scan import scans
 from vitals.analytics import body_metrics, chart_registry
 from vitals.analytics.chart_registry import MetricField
 
@@ -65,7 +66,7 @@ async def build_catalog(
                     for e in exercises
                 ]
             elif field.param_kind == "body_scan_metric":
-                entry["params"] = await body_scan_service.available_metrics(
+                entry["params"] = await scans.available_metrics(
                     session, subject_id=subject_id
                 )
             metrics.append(entry)
@@ -139,7 +140,7 @@ async def series_for(
 
     if field.param_kind == "body_scan_metric":
         metric_key_part, _, segment = param.partition(":")
-        rows = await body_scan_service.metric_history(
+        rows = await scans.metric_history(
             session,
             metric_key_part,
             segment=(segment or None),
@@ -199,7 +200,7 @@ async def _auto_label(
         metric_key_part, _, segment = (param or "").partition(":")
         label = body_metrics.display_name(metric_key_part) or metric_key_part or field.label_ru
         if segment:
-            label = f"{label} — {body_scan_service.SEGMENT_LABELS_RU.get(segment, segment)}"
+            label = f"{label} — {scans.SEGMENT_LABELS_RU.get(segment, segment)}"
         return label
     return field.label_ru if lang == "ru" else field.label_en
 

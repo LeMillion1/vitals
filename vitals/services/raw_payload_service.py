@@ -574,12 +574,12 @@ async def sweep_pending_job(
     """
     from vitals.enums import IntegrationProvider
     from vitals.services import (
-        body_scan_service,
         conflict_engine,
         garmin_service,
         hevy_service,
         labs_service,
     )
+    from vitals.services.body_scan import scans
     from vitals.services.genetics import variants
     from vitals.services.legacy_ownership import resolve_subject_ownership_context
     from vitals.utils.timeutils import today_local
@@ -635,7 +635,7 @@ async def sweep_pending_job(
                 subject_id=subject_id,
                 evaluation_date=today_local(),
             )
-            return await body_scan_service.reparse_owned_pending(
+            return await scans.reparse_owned_pending(
                 session,
                 identity=context.identity,
             )

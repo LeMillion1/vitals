@@ -14,7 +14,8 @@ from vitals.integrations.llm_client import LLMNotConfigured
 from vitals.models.body_scan import BodyScan, BodyScanMetric
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.weight import WeightLog
-from vitals.services import alerts_service, body_scan_service, weight_service
+from vitals.services import alerts_service, weight_service
+from vitals.services.body_scan import scans
 
 DAY = date(2026, 6, 10)
 DAY2 = DAY + timedelta(days=7)
@@ -55,7 +56,7 @@ async def _save(db_session, owner_write, *, on_date=DAY, **kw):
     """
     kw.setdefault("source", Source.MANUAL.value)
     on_date = _clock_date(on_date)
-    return await body_scan_service.save_scan(
+    return await scans.save_scan(
         db_session,
         on_date=on_date,
         identity=owner_write.identity,
@@ -110,7 +111,7 @@ async def test_historical_rawless_parser_scan_uses_reviewed_checkpoint(
     )
     await db_session.commit()
 
-    rows = await body_scan_service.list_scans(
+    rows = await scans.list_scans(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
     )
@@ -175,7 +176,7 @@ async def _owned_garmin_weight(db_session, owner_write, *, on_date, weight_kg):
 # ── Extraction ────────────────────────────────────────────────────────────────
 async def test_extract_from_image():
     llm = FakeLLM({"device": "InBody 770", "metrics": []})
-    extracted = await body_scan_service.extract_from_file(
+    extracted = await scans.extract_from_file(
         b"\x89PNG\r\n\x1a\n-fake", llm=llm, content_type="image/png"
     )
     assert extracted["device"] == "InBody 770"
@@ -192,7 +193,7 @@ async def test_extract_from_multipage_pdf():
     pdf_bytes = doc.write()
 
     llm = FakeLLM({"metrics": []})
-    await body_scan_service.extract_from_file(pdf_bytes, llm=llm, content_type="application/pdf")
+    await scans.extract_from_file(pdf_bytes, llm=llm, content_type="application/pdf")
     assert len(llm.image_urls) == 2
     assert all(u.startswith("data:image/png;base64,") for u in llm.image_urls)
 
@@ -203,12 +204,12 @@ async def test_extract_propagates_not_configured():
             raise LLMNotConfigured("no key")
 
     with pytest.raises(LLMNotConfigured):
-        await body_scan_service.extract_from_file(b"x", llm=RaisingLLM(), content_type="image/png")
+        await scans.extract_from_file(b"x", llm=RaisingLLM(), content_type="image/png")
 
 
 # ── Normalization (pure-ish, the editable preview rows) ───────────────────────
 def test_normalize_extracted_maps_and_drops_invalid():
-    rows = body_scan_service.normalize_extracted({"metrics": [
+    rows = scans.normalize_extracted({"metrics": [
         {"label": "Процент жира", "value": 18.5, "unit": "%"},
         {"label": "", "value": 5},          # no label / key → dropped
         {"label": "Белок", "value": None},  # no value → dropped
@@ -222,7 +223,7 @@ def test_normalize_extracted_maps_and_drops_invalid():
 
 
 def test_normalize_extracted_empty():
-    assert body_scan_service.normalize_extracted({}) == []
+    assert scans.normalize_extracted({}) == []
 
 
 # ── save_scan: rows, categories, raw stamp ────────────────────────────────────
@@ -240,7 +241,7 @@ async def test_save_scan_creates_metrics_with_categories(db_session, owner_write
     )
     await db_session.commit()
 
-    full = await body_scan_service.get_scan(
+    full = await scans.get_scan(
         db_session, scan.id, subject_id=owner_write.subject_id
     )
     by_key = {m.metric_key: m for m in full.metrics}
@@ -299,7 +300,7 @@ async def test_bia_chart_points(db_session, owner_write):
     ])
     await db_session.commit()
 
-    pts = await body_scan_service.bia_chart_points(
+    pts = await scans.bia_chart_points(
         db_session, subject_id=owner_write.subject_id
     )
     assert pts["bf"] == [{"date": DAY.isoformat(), "value": 18.5}]
@@ -318,7 +319,7 @@ async def test_metric_history_series(db_session, owner_write):
     )
     await db_session.commit()
 
-    hist = await body_scan_service.metric_history(
+    hist = await scans.metric_history(
         db_session, "phase_angle", subject_id=owner_write.subject_id
     )
     assert [h["value"] for h in hist] == [6.1, 6.4]
@@ -333,7 +334,7 @@ async def test_delete_scan_cascades_metrics(db_session, owner_write):
     await db_session.commit()
     sid = scan.id
 
-    assert await body_scan_service.delete_scan(
+    assert await scans.delete_scan(
         db_session,
         sid,
         subject_id=owner_write.subject_id,
@@ -345,7 +346,7 @@ async def test_delete_scan_cascades_metrics(db_session, owner_write):
     assert await db_session.get(BodyScan, sid) is None
     remaining = (await db_session.execute(select(BodyScanMetric).where(BodyScanMetric.scan_id == sid))).scalars().all()
     assert remaining == []
-    assert await body_scan_service.delete_scan(
+    assert await scans.delete_scan(
         db_session,
         sid,
         subject_id=owner_write.subject_id,
@@ -383,7 +384,7 @@ async def test_scan_delete_cascades_in_the_database_not_just_the_orm(
 
 async def _refresh(db_session, owner_write, *, on_date=DAY):
     on_date = _clock_date(on_date)
-    await body_scan_service.refresh_alerts(
+    await scans.refresh_alerts(
         db_session,
         subject_id=owner_write.subject_id,
         on_date=on_date,
@@ -433,7 +434,7 @@ async def test_dismissed_visceral_alert_stays_hidden_until_new_scan(
         await _refresh(db_session, owner_write, on_date=DAY)
         await db_session.commit()
         active = await alerts_service.list_active(db_session, domain="body_comp", subject_id=owner_write.subject_id)
-        alert = next((a for a in active if a.alert_key == body_scan_service.VISCERAL_ALERT_KEY), None)
+        alert = next((a for a in active if a.alert_key == scans.VISCERAL_ALERT_KEY), None)
         assert alert is not None
 
         await alerts_service.resolve_alert(db_session, alert.id, subject_id=owner_write.subject_id)
@@ -442,7 +443,7 @@ async def test_dismissed_visceral_alert_stays_hidden_until_new_scan(
         await _refresh(db_session, owner_write, on_date=DAY)
         await db_session.commit()
         active = await alerts_service.list_active(db_session, domain="body_comp", subject_id=owner_write.subject_id)
-        assert not any(a.alert_key == body_scan_service.VISCERAL_ALERT_KEY for a in active)
+        assert not any(a.alert_key == scans.VISCERAL_ALERT_KEY for a in active)
 
     # Next calendar day, same scan: still hidden — under the old daily-nag
     # design this would have reappeared.
@@ -451,7 +452,7 @@ async def test_dismissed_visceral_alert_stays_hidden_until_new_scan(
         await db_session.commit()
         active = await alerts_service.list_active(db_session, domain="body_comp", subject_id=owner_write.subject_id)
         assert not any(
-            a.alert_key == body_scan_service.VISCERAL_ALERT_KEY for a in active
+            a.alert_key == scans.VISCERAL_ALERT_KEY for a in active
         ), "Alert should stay hidden indefinitely for the same scan"
 
         # A new scan, still out of range, raises a fresh alert.
@@ -462,7 +463,7 @@ async def test_dismissed_visceral_alert_stays_hidden_until_new_scan(
         await _refresh(db_session, owner_write, on_date=DAY)
         await db_session.commit()
         active = await alerts_service.list_active(db_session, domain="body_comp", subject_id=owner_write.subject_id)
-        assert any(a.alert_key == body_scan_service.VISCERAL_ALERT_KEY for a in active)
+        assert any(a.alert_key == scans.VISCERAL_ALERT_KEY for a in active)
 
 
 async def _latest_scan_id(db_session) -> int:

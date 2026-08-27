@@ -27,7 +27,6 @@ from __future__ import annotations
 from vitals.enums import Domain
 from vitals.services import conflict_engine
 from vitals.services import (
-    body_scan_service,
     glp1_service,
     labs_service,
     nutrition_service,
@@ -35,6 +34,7 @@ from vitals.services import (
     supplements_service,
     weight_service,
 )
+from vitals.services.body_scan import scans
 from vitals.services.hrt import records
 from vitals.services.genetics import variants
 
@@ -84,6 +84,6 @@ def register_all_resolvers() -> None:
     )
     conflict_engine.register_domain_resolver(
         Domain.BODY_COMPOSITION.value,
-        body_scan_service.resolve_active_scoped,
+        scans.resolve_active_scoped,
         legacy_probe=conflict_engine.legacy_unowned_raw_present,
     )

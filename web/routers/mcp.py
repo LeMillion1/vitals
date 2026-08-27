@@ -2508,10 +2508,10 @@ async def log_note(
         if domain == "body_comp":
             if not await _module_enabled(session, "body_comp"):
                 return {"error": "module 'body_comp' is disabled"}
-            from vitals.services import body_scan_service
+            from vitals.services.body_scan import scans
 
             conflict_context, prepared = await _mcp_v1_weight_write(session)
-            row = await body_scan_service.update_scan_note(
+            row = await scans.update_scan_note(
                 session,
                 record_id,
                 note=note,
@@ -2781,9 +2781,9 @@ async def get_notes(
                 continue
             if d_name == "body_comp":
                 assert body_comp_scope is not None
-                from vitals.services import body_scan_service
+                from vitals.services.body_scan import scans
 
-                rows = await body_scan_service.list_scans(
+                rows = await scans.list_scans(
                     session,
                     subject_id=body_comp_scope.subject_id,
                     start=start,
@@ -2832,7 +2832,7 @@ _DELETE_TARGETS: dict[str, tuple[Optional[str], str, str]] = {
     "hrt_side_effect": ("hrt", "hrt.records", "delete_side_effect"),
     "hrt_cycle": ("hrt", "hrt.cycles", "delete_cycle"),
     "hrt_cycle_item": ("hrt", "hrt.cycles", "delete_cycle_item"),
-    "body_comp": ("body_comp", "body_scan_service", "delete_scan"),
+    "body_comp": ("body_comp", "body_scan.scans", "delete_scan"),
     "timeline": ("timeline", "timeline_service", "delete_annotation"),
     "skincare_observation": ("skincare", "skincare_service", "delete_observation"),
     "supplements": ("supplements", "supplements_service", "delete_supplement"),
@@ -3000,31 +3000,31 @@ async def get_body_scans(
     end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
-        from vitals.services import body_scan_service
+        from vitals.services.body_scan import scans
 
         if not await _module_enabled(session, "body_comp"):
             return [{"error": "module 'body_comp' is disabled"}]
         scope = await _mcp_v1_conflict_scope(session)
-        scans = await body_scan_service.list_scans(
+        scan_rows = await scans.list_scans(
             session,
             start=start,
             end=end,
             subject_id=scope.subject_id,
         )
-        return [_serialize_scan(s) for s in scans[:limit]]
+        return [_serialize_scan(s) for s in scan_rows[:limit]]
 
 
 @mcp.tool()
 async def get_body_scan(scan_id: int) -> dict:
     """Retrieves a single body-composition scan with its full metric sheet."""
-    from vitals.services import body_scan_service
+    from vitals.services.body_scan import scans
 
     session_factory = get_session_factory()
     async with session_factory() as session:
         if not await _module_enabled(session, "body_comp"):
             return {"error": "module 'body_comp' is disabled"}
         scope = await _mcp_v1_conflict_scope(session)
-        scan = await body_scan_service.get_scan(
+        scan = await scans.get_scan(
             session,
             scan_id,
             subject_id=scope.subject_id,
@@ -3043,7 +3043,7 @@ async def get_body_metric_history(
 ) -> list[dict]:
     """Time series for one body-composition metric (e.g. ``skeletal_muscle_mass``,
     ``phase_angle``, ``visceral_fat_area``), optionally for a single body segment."""
-    from vitals.services import body_scan_service
+    from vitals.services.body_scan import scans
 
     session_factory = get_session_factory()
     start = _parse_date(start_date, field="start_date")
@@ -3052,7 +3052,7 @@ async def get_body_metric_history(
         if not await _module_enabled(session, "body_comp"):
             return [{"error": "module 'body_comp' is disabled"}]
         scope = await _mcp_v1_conflict_scope(session)
-        return await body_scan_service.metric_history(
+        return await scans.metric_history(
             session,
             metric_key,
             segment=segment,
@@ -3079,7 +3079,7 @@ async def log_body_scan(
     immediately. No-op with an error if the body_comp module is disabled. If a hard
     conflict rule blocks the save, returns ``{"blocked": true, ...}``; call again
     with ``override=True``."""
-    from vitals.services import body_scan_service
+    from vitals.services.body_scan import scans
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
@@ -3110,7 +3110,7 @@ async def log_body_scan(
                 external_id=f"mcp:{uuid.uuid4().hex}",
                 payload=extracted,
             )
-            scan = await body_scan_service.ingest_structured_scan(
+            scan = await scans.ingest_structured_scan(
                 session,
                 extracted,
                 raw_payload=raw,
@@ -3118,7 +3118,7 @@ async def log_body_scan(
                 prepared_weight_write=prepared_weight_write,
                 override=override,
             )
-            await body_scan_service.refresh_alerts(
+            await scans.refresh_alerts(
                 session,
                 subject_id=conflict_context.identity.subject_id,
                 on_date=parsed_date,
@@ -3132,7 +3132,7 @@ async def log_body_scan(
             await session.rollback()
             return {"error": str(e)}
         await session.commit()
-        full = await body_scan_service.get_scan(
+        full = await scans.get_scan(
             session,
             scan.id,
             subject_id=conflict_context.identity.subject_id,

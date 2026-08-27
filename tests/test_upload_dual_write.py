@@ -34,7 +34,6 @@ from vitals.ownership import WriteIdentity
 from vitals.persistence.file_storage import private_file_disk_path
 from vitals.services import (
     ai_gateway_service,
-    body_scan_service,
     conflict_engine,
     file_asset_service,
     lab_document_ai_service,
@@ -42,6 +41,7 @@ from vitals.services import (
     raw_payload_service,
     weight_service,
 )
+from vitals.services.body_scan import scans
 from vitals.services.upload_ownership_service import UploadOwnershipError
 from web.templating import STATIC_DIR
 from web.routers.labs import LabConfirm
@@ -174,7 +174,7 @@ async def test_body_upload_confirm_copies_subject_actor_and_file_to_all_facts(
     )
     prepared_weight = await _prepared_weight(db_session, identity)
 
-    scan = await body_scan_service.save_scan(
+    scan = await scans.save_scan(
         db_session,
         on_date=date(2026, 8, 19),
         file_key=raw.external_id,
@@ -292,7 +292,7 @@ async def test_foreign_raw_id_cannot_authorize_upload_confirmation(
     )
     with pytest.raises(expected_error):
         if is_body:
-            await body_scan_service.save_scan(
+            await scans.save_scan(
                 db_session,
                 on_date=date(2026, 8, 19),
                 file_key=storage_ref,
@@ -408,7 +408,7 @@ async def test_body_and_lab_bare_ids_are_rejected_outside_subject_scope(db_sessi
     await db_session.flush()
 
     assert (
-        await body_scan_service.get_scan(
+        await scans.get_scan(
             db_session, scan.id, subject_id=owner_subject.id
         )
         is None
@@ -475,7 +475,7 @@ async def test_owned_pending_upload_reparse_preserves_ownership(
     )
 
     if is_body:
-        replayed = await body_scan_service.reparse_owned_pending(
+        replayed = await scans.reparse_owned_pending(
             db_session,
             identity=WriteIdentity(subject.id, None),
         )
@@ -514,7 +514,7 @@ async def test_no_upload_domain_writes_without_naming_a_subject(db_session):
     for service, name in (
         (weight_service, "add_progress_photo"),
         (labs_service, "add_result"),
-        (body_scan_service, "save_scan"),
+        (scans, "save_scan"),
     ):
         signature = inspect.signature(getattr(service, name))
         identity = signature.parameters["identity"]
@@ -776,7 +776,7 @@ async def test_progress_precommit_failure_rolls_back_metadata_and_removes_bytes(
         (
             "/weight/body-scan/upload",
             "body",
-            body_scan_service,
+            scans,
             _fake_body_extract,
             "scan.png",
         ),
@@ -943,7 +943,7 @@ async def test_an_upload_can_only_be_confirmed_as_what_it_was_uploaded_for(
     )
     with pytest.raises(expected_error):
         if is_body:
-            await body_scan_service.save_scan(
+            await scans.save_scan(
                 db_session,
                 on_date=date(2026, 8, 19),
                 file_key="labs/crossdoor.png",

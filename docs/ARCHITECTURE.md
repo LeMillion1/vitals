@@ -59,6 +59,10 @@ vitals/services/credentials/
 ├── vault.py           # encrypted credential persistence
 └── providers.py       # subject-scoped provider resolution
 
+vitals/services/body_scan/
+├── scans.py           # normalized scan facts and ownership
+└── ai.py              # document parsing and review lifecycle
+
 vitals/operations/ownership/
 ├── portability_v1.py # destructive full-v1 restore coordinator
 ├── validate.py       # cross-table ownership cutover validation

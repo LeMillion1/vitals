@@ -21,12 +21,12 @@ from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import (
-    body_scan_service,
     garmin_service,
     hevy_service,
     labs_service,
     raw_payload_service,
 )
+from vitals.services.body_scan import scans
 
 
 async def _legacy_roots(session):
@@ -75,7 +75,7 @@ async def test_nightly_raw_sweep_passes_exact_system_owned_roots(
     monkeypatch.setattr(hevy_service, "reparse_owned_pending", _hevy)
     monkeypatch.setattr(labs_service, "reparse_owned_pending", _labs)
     monkeypatch.setattr(
-        body_scan_service,
+        scans,
         "reparse_owned_pending",
         _body_comp,
     )

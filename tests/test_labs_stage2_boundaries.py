@@ -31,7 +31,6 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import (
-    body_scan_service,
     conflict_engine,
     conflict_registrations,
     file_asset_service,
@@ -41,6 +40,7 @@ from vitals.services import (
     raw_payload_service,
     supplements_service,
 )
+from vitals.services.body_scan import scans
 
 
 RESULT_DATE = date(2026, 8, 19)
@@ -471,7 +471,7 @@ async def test_nightly_labs_sweep_receives_system_identity_and_live_capability(
 
     monkeypatch.setattr(garmin_service, "reparse_owned_pending", no_op)
     monkeypatch.setattr(hevy_service, "reparse_owned_pending", no_op)
-    monkeypatch.setattr(body_scan_service, "reparse_owned_pending", no_op)
+    monkeypatch.setattr(scans, "reparse_owned_pending", no_op)
     monkeypatch.setattr(labs_service, "reparse_owned_pending", labs_probe)
 
     await run_job_for_every_subject(raw_payload_service.sweep_pending_job, session_factory)

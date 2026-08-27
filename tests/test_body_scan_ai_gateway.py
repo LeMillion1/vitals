@@ -47,12 +47,12 @@ from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.services import ai_gateway_service as gateway
 from vitals.services import (
-    body_scan_service,
     conflict_engine,
     file_asset_service,
     weight_service,
 )
-from vitals.services import body_scan_ai_service as body_ai
+from vitals.services.body_scan import ai as body_ai
+from vitals.services.body_scan import scans
 from vitals.services.legacy_ownership import LegacySubjectResolutionError
 from web.config import get_web_config
 
@@ -324,7 +324,7 @@ async def _persist_and_replay_platform_scan(
         actor_username=None,
         evaluation_date=DAY,
     )
-    assert await body_scan_service.reparse_owned_pending(
+    assert await scans.reparse_owned_pending(
         session,
         identity=context.identity,
     ) == 1
@@ -470,7 +470,7 @@ async def test_image_preprocessing_finishes_once_before_charge(
         conversions.append((file_bytes, content_type, filename))
         return ("data:image/png;base64,c3ludGhldGlj",)
 
-    monkeypatch.setattr(body_scan_service, "prepare_file_for_extraction", convert)
+    monkeypatch.setattr(scans, "prepare_file_for_extraction", convert)
     content = body_ai.prepare_body_scan_content(
         prepared,
         file_bytes=FILE_BYTES,
@@ -582,7 +582,7 @@ async def test_web_local_pdf_failure_cancels_without_provider_call(
 
     monkeypatch.setattr(weight_router, "STATIC_DIR", tmp_path)
     monkeypatch.setattr(
-        body_scan_service,
+        scans,
         "prepare_file_for_extraction",
         fail_conversion,
     )
@@ -642,7 +642,7 @@ async def test_web_t3_transient_failure_reuses_one_paid_completion(
 
     monkeypatch.setattr(weight_router, "STATIC_DIR", tmp_path)
     monkeypatch.setattr(
-        body_scan_service,
+        scans,
         "extract_prepared_file_with_usage",
         extraction_probe,
     )
@@ -1057,7 +1057,7 @@ async def test_replay_normalizes_only_successful_platform_extraction(
         actor_username=None,
         evaluation_date=DAY,
     )
-    done = await body_scan_service.reparse_owned_pending(
+    done = await scans.reparse_owned_pending(
         db_session,
         identity=context.identity,
     )
@@ -1229,7 +1229,7 @@ async def test_mcp_scan_and_derived_weight_reject_mixed_parser_invocation(
     await db_session.commit()
 
     with pytest.raises(conflict_engine.ConflictRawOwnershipError):
-        await body_scan_service.list_scans(
+        await scans.list_scans(
             db_session,
             subject_id=identity.subject_id,
         )

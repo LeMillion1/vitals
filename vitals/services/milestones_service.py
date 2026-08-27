@@ -289,14 +289,14 @@ async def _current_body_fat(
     # 2. Fetch BIA scans if body_comp is enabled and not pinned to navy
     bia_val = None
     if body_comp_enabled and source_pref in ("latest", "bia"):
-        from vitals.services import body_scan_service
         from vitals.analytics import body_metrics
+        from vitals.services.body_scan import scans
 
-        scans = await body_scan_service.list_scans(
+        scan_rows = await scans.list_scans(
             session,
             subject_id=subject_id,
         )
-        for s in scans:
+        for s in scan_rows:
             bf_val = body_metrics.body_fat_pct_from_scan(s.metrics)
             if bf_val is not None:
                 bia_val = bf_val

@@ -1,4 +1,4 @@
-"""Body-composition scan service — InBody / МедАсс (BIA) (optional module).
+"""Body-composition scans — InBody / МедАсс (BIA) (optional module).
 
 Owns the ``body_comp`` domain. A scan is an upload (or agent/manual entry) of a
 bicompedance analyzer sheet; we capture **every** printed metric generically.

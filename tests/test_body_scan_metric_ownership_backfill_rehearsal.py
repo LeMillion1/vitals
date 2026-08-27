@@ -28,8 +28,8 @@ from vitals.operations.ownership import portability_v1
 from vitals.services import (
     conflict_catalog,
     data_portability_service,
-    body_scan_service,
 )
+from vitals.services.body_scan import scans
 from vitals.services.hrt import catalog
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,
@@ -571,7 +571,7 @@ async def test_real_postgres_0034_body_scan_metric_stop_resume_volatility_and_re
         async with factory() as session:
             # Migrated scans keep their unknown actor null, and the closed
             # body-scan reader accepts that: the subject is what it scopes on.
-            listed = await body_scan_service.list_scans(
+            listed = await scans.list_scans(
                 session,
                 subject_id=identity.subject_id,
             )
