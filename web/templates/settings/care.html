@@ -170,7 +170,9 @@
                 <form action="/settings/care/{{ p.relationship_id }}/pause" method="POST">
                     <button type="submit" class="v-btn-ghost text-xs">{{ t("consents.pause") }}</button>
                 </form>
-                <form action="/settings/care/{{ p.relationship_id }}/revoke" method="POST">
+                <form action="/settings/care/{{ p.relationship_id }}/revoke" method="POST"
+                      data-confirm="{{ t('consents.revoke_confirm') }}"
+                      data-confirm-label="{{ t('consents.revoke') }}">
                     <button type="submit" class="v-btn-ghost text-xs">{{ t("consents.revoke") }}</button>
                 </form>
                 {% elif p.consent_status == 'paused' %}
@@ -178,11 +180,15 @@
                     <input type="hidden" name="resume" value="1">
                     <button type="submit" class="v-btn text-xs">{{ t("consents.resume") }}</button>
                 </form>
-                <form action="/settings/care/{{ p.relationship_id }}/revoke" method="POST">
+                <form action="/settings/care/{{ p.relationship_id }}/revoke" method="POST"
+                      data-confirm="{{ t('consents.revoke_confirm') }}"
+                      data-confirm-label="{{ t('consents.revoke') }}">
                     <button type="submit" class="v-btn-ghost text-xs">{{ t("consents.revoke") }}</button>
                 </form>
                 {% endif %}
-                <form action="/settings/care/{{ p.relationship_id }}/end" method="POST">
+                <form action="/settings/care/{{ p.relationship_id }}/end" method="POST"
+                      data-confirm="{{ t('consents.end_confirm') }}"
+                      data-confirm-label="{{ t('consents.end') }}">
                     <button type="submit" class="v-btn-ghost text-xs">{{ t("consents.end") }}</button>
                 </form>
             </div>

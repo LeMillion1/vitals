@@ -62,6 +62,29 @@ def test_a_max_length_attachment_filename_fits_the_phone_conversation(sign_in):
     ), "the 255-character attachment filename makes the 390px page scroll sideways"
 
 
+def test_cancelling_end_relationship_keeps_the_professional_in_care(sign_in):
+    """The confirm dialog must stop the boosted form, not merely decorate it."""
+
+    patient = sign_in("timur")
+    team = patient.visit("/settings/care")
+    end = team.page.locator(
+        'div.v-card-inset:has-text("Dr Ivanov") form[action$="/end"] button'
+    )
+    assert end.count() == 1
+    assert end.inner_text() == "End care relationship"
+
+    end.click()
+    modal = team.page.locator("#vitals-confirm-modal")
+    assert modal.is_visible()
+    assert "new invitation" in modal.inner_text()
+    modal.locator("#vitals-confirm-cancel").click()
+    assert not modal.is_visible()
+
+    # If htmx issued the POST before the asynchronous confirmation settled,
+    # the professional's next request would be refused immediately.
+    assert sign_in("dr-ivanov").record_of("timur").status == 200
+
+
 def test_a_trainer_cannot_open_a_doctors_patient(sign_in):
     sign_in("coach-orlov").is_refused_from("the record of patient01", status=404)
 

@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — ending care access requires an explicit confirmation
+
+Withdrawing consent and ending a care relationship now explain their different
+consequences in Russian and English and require confirmation before the POST.
+The former keeps the relationship; the latter clearly states that reconnecting
+will require a new invitation.
+
 ### Fixed — long care attachment names fit phone screens
 
 Conversation downloads now contain maximum-length attachment filenames within

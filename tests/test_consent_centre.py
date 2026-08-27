@@ -445,6 +445,15 @@ async def test_the_patient_opens_and_closes_their_own_record(in_care, db_session
     )
     assert opened.status_code == 200
 
+    consent_page = await owner_client.get(
+        "/settings/care", headers={"Accept": "text/html"}
+    )
+    revoke_action = f'action="/settings/care/{relationship_id}/revoke"'
+    revoke_at = consent_page.text.index(revoke_action)
+    revoke_form = consent_page.text[revoke_at : consent_page.text.index("</form>", revoke_at)]
+    assert 'data-confirm="' in revoke_form
+    assert 'data-confirm-label="' in revoke_form
+
     await owner_client.post(f"/settings/care/{relationship_id}/revoke")
     closed = await doctor_client.get(
         f"/care/{subject_id}", headers={"Accept": "text/html"}
@@ -478,6 +487,16 @@ async def test_a_pause_comes_back_and_a_revocation_does_not(in_care, db_session)
 
 async def test_ending_the_care_stops_the_writing_too(in_care, db_session):
     owner_client, doctor_client, subject_id, relationship_id = in_care
+
+    consent_page = await owner_client.get(
+        "/settings/care", headers={"Accept": "text/html"}
+    )
+    end_action = f'action="/settings/care/{relationship_id}/end"'
+    end_at = consent_page.text.index(end_action)
+    end_form = consent_page.text[end_at : consent_page.text.index("</form>", end_at)]
+    assert 'data-confirm="' in end_form
+    assert 'data-confirm-label="' in end_form
+    assert "End care relationship" in end_form or "Завершить отношения" in end_form
 
     await owner_client.post(f"/settings/care/{relationship_id}/end")
     response = await doctor_client.post(
