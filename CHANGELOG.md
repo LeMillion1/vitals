@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — shared care screens use role-neutral language
+
+The common doctor/trainer workspace, conversation composer, consent status,
+record-withholding notices, OAuth consent, and recordless-account actions now
+refer to people in care without mislabelling a trainer's client as a patient.
+
 ### Fixed — Login V2 accepts the canonical production domain
 
 The self-hosted Login V2 client no longer duplicates ZITADEL's derived

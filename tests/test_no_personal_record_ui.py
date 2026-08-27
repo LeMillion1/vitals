@@ -132,6 +132,6 @@ async def test_other_recordless_account_keeps_the_existing_generic_refusal(
 
     assert response.status_code == 409
     assert "This account keeps no record of its own" in response.text
-    assert _primary_action(response.text) == ("/care", "Go to patients")
+    assert _primary_action(response.text) == ("/care", "Go to care")
     assert "This operator account has no health record" not in response.text
     del legacy_owner_roots

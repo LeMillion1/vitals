@@ -57,6 +57,27 @@ def test_live_settings_saved_copy_does_not_request_a_restart():
             assert "перезап" not in message
 
 
+def test_shared_professional_copy_does_not_assume_a_clinical_relationship():
+    from vitals.i18n import STRINGS
+
+    english = STRINGS["en"]
+    for key in (
+        "care.back_to_roster",
+        "care.messages_description",
+        "care.message_placeholder",
+        "care.plan_body_placeholder",
+        "care.accepted_waiting",
+        "care.record_withheld",
+        "oauth.subject.care",
+        "oauth.perm.revocable",
+        "refusal.access_denied.primary_patients",
+    ):
+        assert "patient" not in english[key].lower()
+
+    assert english["care.back_to_roster"] == "People in your care"
+    assert STRINGS["ru"]["care.back_to_roster"] == "К подопечным"
+
+
 def test_plurals():
     # English plurals: 2 forms (1 vs other)
     current_lang.set("en")

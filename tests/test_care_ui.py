@@ -61,7 +61,15 @@ async def _patient(session, slug: str) -> tuple[User, HealthSubject]:
     return owner, subject
 
 
-async def _take_into_care(session, *, owner, subject, professional, consent=True):
+async def _take_into_care(
+    session,
+    *,
+    owner,
+    subject,
+    professional,
+    consent=True,
+    kind=ProfessionalKind.DOCTOR,
+):
     profile = await session.scalar(
         select(ProfessionalProfile).where(
             ProfessionalProfile.user_id == professional.id
@@ -76,8 +84,12 @@ async def _take_into_care(session, *, owner, subject, professional, consent=True
         profile = await professionals.submit_profile(
             session,
             user_id=professional.id,
-            kind=ProfessionalKind.DOCTOR,
-            display_name=f"Dr {professional.username}",
+            kind=kind,
+            display_name=(
+                f"Coach {professional.username}"
+                if kind is ProfessionalKind.TRAINER
+                else f"Dr {professional.username}"
+            ),
         )
         await professionals.decide(
             session,
@@ -91,7 +103,7 @@ async def _take_into_care(session, *, owner, subject, professional, consent=True
         session,
         subject_id=subject.id,
         actor_user_id=owner.id,
-        kind=ProfessionalKind.DOCTOR,
+        kind=kind,
         email=email,
     )
     await invitations.accept(
@@ -268,6 +280,62 @@ async def test_each_professional_role_keeps_the_roster_route(
 
     assert response.status_code == 200
     assert 'href="/care"' in response.text
+
+
+async def test_trainer_workspace_uses_neutral_care_language(client, db_session):
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    trainer = await _user(
+        db_session,
+        "care-language-trainer",
+        roles=(UserRoleName.TRAINER,),
+    )
+    owner, subject = await _patient(db_session, "care-language-trainee")
+    await _take_into_care(
+        db_session,
+        owner=owner,
+        subject=subject,
+        professional=trainer,
+        kind=ProfessionalKind.TRAINER,
+    )
+    await db_session.commit()
+    client.cookies.set(SESSION_COOKIE, create_session(trainer.username))
+
+    record = await client.get(
+        f"/care/{subject.id}", headers={"Accept": "text/html"}
+    )
+    assert record.status_code == 200
+    assert "People in your care" in record.text or "К подопечным" in record.text
+    assert (
+        "Your private conversation with this person." in record.text
+        or "Ваш личный разговор с этим подопечным." in record.text
+    )
+    assert (
+        "Clear steps they can follow." in record.text
+        or "Понятные и выполнимые шаги." in record.text
+    )
+    assert "All patients" not in record.text
+    assert "Все пациенты" not in record.text
+    assert "this patient" not in record.text
+
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject, professional=trainer
+    )
+    conversation = await client.get(
+        opened.headers["location"], headers={"Accept": "text/html"}
+    )
+    assert conversation.status_code == 200
+    assert (
+        "Your private conversation with this person." in conversation.text
+        or "Ваш личный разговор с этим подопечным." in conversation.text
+    )
+    assert (
+        "Write a message" in conversation.text
+        or "Напишите сообщение" in conversation.text
+    )
+    assert "Write to the patient" not in conversation.text
+    assert "Напишите пациенту" not in conversation.text
 
 
 async def test_the_account_role_not_the_form_chooses_profile_kind(
