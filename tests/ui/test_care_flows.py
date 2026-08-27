@@ -41,6 +41,27 @@ def test_the_patient_reaches_their_own_conversations_without_an_id(sign_in):
     assert landed.status == 200
 
 
+def test_a_max_length_attachment_filename_fits_the_phone_conversation(sign_in):
+    filename = f"{'a' * 251}.pdf"
+    assert len(filename) == 255
+
+    conversation = (
+        sign_in("dr-ivanov", phone=True)
+        .conversations_about("timur")
+        .open_stable_conversation()
+        .attach(
+            "The attachment name is deliberately the longest valid value.",
+            filename=filename,
+            contents=b"%PDF-1.7\nsynthetic overflow fixture\n%%EOF\n",
+        )
+    )
+
+    assert filename in conversation.text
+    assert conversation.page.evaluate(
+        "() => document.documentElement.scrollWidth <= window.innerWidth"
+    ), "the 255-character attachment filename makes the 390px page scroll sideways"
+
+
 def test_a_trainer_cannot_open_a_doctors_patient(sign_in):
     sign_in("coach-orlov").is_refused_from("the record of patient01", status=404)
 

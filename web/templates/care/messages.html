@@ -127,7 +127,7 @@
                 <p class="v-text-body" style="white-space: pre-wrap">{{ message.body }}</p>
                 {% if message.attachment %}
                 <a href="/care/{{ care.subject_id }}/messages/{{ open_thread.id }}/attachments/{{ message.attachment.id }}"
-                   class="v-btn-ghost text-xs inline-flex mt-2" download>
+                   class="v-btn-ghost text-xs inline-flex max-w-full break-all mt-2" download>
                     {{ t("care.attachment_download", filename=message.attachment.original_filename) }}
                 </a>
                 {% endif %}

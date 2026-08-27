@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — long care attachment names fit phone screens
+
+Conversation downloads now contain maximum-length attachment filenames within
+the message card, so valid 255-character names cannot force horizontal scrolling
+on a 390-pixel phone.
+
 ### Fixed — live care conversations target the composer
 
 The browser journey now addresses the visible message composer by its stable

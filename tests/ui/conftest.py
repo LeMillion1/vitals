@@ -291,9 +291,11 @@ class Installation:
 #: parent it points at. Everything a test creates lives in one of these; the
 #: seeded installation itself is never touched.
 _SCENARIO_TABLES = (
+    "care_message_attachments",
     "care_messages",
     "care_thread_participants",
     "care_threads",
+    "file_assets",
     "support_access_request_scopes",
     "support_access_requests",
     "support_access_scopes",

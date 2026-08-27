@@ -75,9 +75,28 @@ class ConversationPage(Page):
 
     BODY = "#message-body"
     SEND = 'button:has-text("Send")'
+    ATTACHMENT = 'input[name="attachment"]'
 
     def say(self, message: str) -> "ConversationPage":
         self.page.fill(self.BODY, message)
+        self._act(self.SEND)
+        return self
+
+    def attach(
+        self, message: str, *, filename: str, contents: bytes
+    ) -> "ConversationPage":
+        self.page.fill(self.BODY, message)
+        self.page.set_input_files(
+            self.ATTACHMENT,
+            files={
+                "name": filename,
+                "mimeType": "application/pdf",
+                "buffer": contents,
+            },
+        )
+        self.complaints.check_overflow(
+            self.page, self.who, "conversation attachment picker"
+        )
         self._act(self.SEND)
         return self
 
