@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — care invitations can be copied directly
+
+The one-time care invitation now has a clear copy action with confirmation and
+a manual-selection fallback, matching the safer account-invitation flow on
+desktop and phone screens.
+
 ### Fixed — ending care access requires an explicit confirmation
 
 Withdrawing consent and ending a care relationship now explain their different

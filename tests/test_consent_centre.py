@@ -151,6 +151,12 @@ async def test_the_link_is_shown_once_and_never_lands_in_a_url(
 
     body = response.text
     assert "/care/accept/" in body
+    assert 'id="care-invitation-link"' in body
+    assert 'data-copy-care-invitation' in body
+    assert 'data-copy-care-status aria-live="polite"' in body
+    assert "navigator.clipboard.writeText(field.value)" in body
+    assert "document.execCommand('copy')" in body
+    assert "Скопировать ссылку" in body
 
     token = body.split("/care/accept/")[1].split("<")[0].strip()
     assert token

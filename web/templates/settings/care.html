@@ -50,12 +50,46 @@
     {% if issued_link %}
     {# Shown once. The token is not stored — only its hash is — so there is no
        page that can show it again, and no operator who can read it back. #}
-    <div class="v-alert warn space-y-2">
+    <div class="v-alert warn space-y-3">
         <p class="v-text-body">{{ t("consents.link_once") }}</p>
-        <code class="v-text-micro" style="word-break: break-all; user-select: all">
-            {{ request.base_url }}care/accept/{{ issued_link }}
-        </code>
+        <div>
+            <label for="care-invitation-link" class="v-label">{{ t("consents.invitation_link") }}</label>
+            <textarea id="care-invitation-link" class="v-input mt-2" rows="3" readonly>{{ request.base_url }}care/accept/{{ issued_link }}</textarea>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+            <button type="button" class="v-btn-ghost text-xs" data-copy-care-invitation>
+                {{ t("consents.copy_link") }}
+            </button>
+            <p class="v-text-micro" data-copy-care-status aria-live="polite" style="color: var(--muted)"></p>
+        </div>
     </div>
+    <script>
+        (function () {
+            var button = document.querySelector('[data-copy-care-invitation]');
+            var field = document.getElementById('care-invitation-link');
+            var status = document.querySelector('[data-copy-care-status]');
+            var copied = {{ t("consents.copied")|tojson }};
+            var manual = {{ t("consents.copy_manually")|tojson }};
+            button.addEventListener('click', function () {
+                var fallback = function () {
+                    field.focus();
+                    field.select();
+                    try {
+                        status.textContent = document.execCommand('copy') ? copied : manual;
+                    } catch (error) {
+                        status.textContent = manual;
+                    }
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(field.value).then(function () {
+                        status.textContent = copied;
+                    }).catch(fallback);
+                } else {
+                    fallback();
+                }
+            });
+        })();
+    </script>
     {% endif %}
 
     <!-- ─── WHAT MY TEAM HAS ASKED ME TO DO ──────────────────────────────── -->
