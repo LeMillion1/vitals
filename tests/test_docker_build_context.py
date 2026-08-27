@@ -27,4 +27,9 @@ def test_dockerignore_excludes_every_local_health_and_credential_store():
         "*.db",
         "*.sqlite",
         "*.sqlite3",
+        ".cutover-stamp",
+        ".vitals-oidc-cutover-state*",
+        ".vitals-deploy*",
+        "docker-compose.production.yml",
+        "docker-compose.production.yml.before-*",
     } <= ignored

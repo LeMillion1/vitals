@@ -111,6 +111,18 @@ runtime_image() {
 ensure_clean_checkout() {
   git diff --quiet --ignore-submodules -- || die "tracked checkout changes must be reviewed before deploy"
   git diff --cached --quiet --ignore-submodules -- || die "staged checkout changes must be reviewed before deploy"
+  unexpected_untracked="$({
+    git ls-files --others --exclude-standard |
+      while IFS= read -r path; do
+        case "$path" in
+          .cutover-stamp | .vitals-oidc-cutover-state | .vitals-oidc-cutover-state.lock | \
+            docker-compose.production.yml | docker-compose.production.yml.before-*) ;;
+          *) printf '%s\n' "$path" ;;
+        esac
+      done
+  })"
+  [[ -z "$unexpected_untracked" ]] || die \
+    "unexpected untracked files must be reviewed before deploy: $unexpected_untracked"
 }
 
 state_value() {

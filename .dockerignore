@@ -37,5 +37,10 @@ htmlcov/
 .git/
 .gitignore
 .idea/
+.cutover-stamp
+.vitals-oidc-cutover-state*
+.vitals-deploy*
+docker-compose.production.yml
+docker-compose.production.yml.before-*
 test_*.txt
 _boot_check.py

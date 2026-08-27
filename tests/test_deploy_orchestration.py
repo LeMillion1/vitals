@@ -79,6 +79,21 @@ def test_deploy_fast_forwards_and_builds_one_immutable_shared_image():
     assert "vitals.worker_health import check_configured_worker_health" in source
 
 
+def test_deploy_rejects_untracked_build_inputs_but_allows_operator_state():
+    clean = _function(_script(), "ensure_clean_checkout")
+
+    assert "git ls-files --others --exclude-standard" in clean
+    assert "unexpected untracked files must be reviewed before deploy" in clean
+    for allowed in (
+        ".cutover-stamp",
+        ".vitals-oidc-cutover-state",
+        ".vitals-oidc-cutover-state.lock",
+        "docker-compose.production.yml",
+        "docker-compose.production.yml.before-*",
+    ):
+        assert allowed in clean
+
+
 def test_deploy_attests_existing_project_before_fetch_or_start():
     source = _script()
     attestation = _function(source, "attest_existing_service")
