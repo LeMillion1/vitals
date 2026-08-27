@@ -182,6 +182,16 @@ def test_read_env_key_matches_dotenv_quote_semantics(tmp_path):
     assert read_env_key(runtime, "VITALS_PUBLIC_URL") == "https://vitals.example.test"
 
 
+def test_read_env_key_rejects_malformed_quoted_value(tmp_path):
+    from vitals.runtime_env import RuntimeEnvIsolationError, read_env_key
+
+    runtime = tmp_path / "vitals.env"
+    runtime.write_text("VITALS_PUBLIC_URL='unterminated\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeEnvIsolationError, match="invalid value"):
+        read_env_key(runtime, "VITALS_PUBLIC_URL")
+
+
 def test_all_direct_dotenv_loaders_honor_vitals_env_file():
     for relative_path in (
         "vitals/config.py",

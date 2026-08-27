@@ -9,6 +9,7 @@ explicit security review instead of an implicit copy of every operator secret.
 
 from __future__ import annotations
 
+import ast
 import errno
 import os
 import re
@@ -16,10 +17,7 @@ import secrets
 import stat
 import threading
 from collections.abc import Mapping
-from io import StringIO
 from pathlib import Path
-
-from dotenv import dotenv_values
 
 
 RUNTIME_ENV_KEYS = frozenset(
@@ -301,12 +299,19 @@ def read_env_key(
             continue
         match = _ASSIGNMENT.match(stripped)
         if match is not None and match.group("key") == key:
-            parsed = dotenv_values(stream=StringIO(stripped), interpolate=False)
-            value = parsed.get(key)
-            if value is None:
-                raise RuntimeEnvIsolationError(
-                    f"application runtime environment has an invalid value for {key}"
-                )
+            value = stripped[match.end() :].strip()
+            if value[:1] in {"'", '"'}:
+                try:
+                    decoded = ast.literal_eval(value)
+                except (SyntaxError, ValueError) as exc:
+                    raise RuntimeEnvIsolationError(
+                        f"application runtime environment has an invalid value for {key}"
+                    ) from exc
+                if not isinstance(decoded, str):
+                    raise RuntimeEnvIsolationError(
+                        f"application runtime environment has an invalid value for {key}"
+                    )
+                return decoded
             return value
     return ""
 

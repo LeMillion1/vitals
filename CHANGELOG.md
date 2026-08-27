@@ -11,8 +11,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed — operator tooling reads quoted runtime values correctly
 
 Owner-only migration tools now interpret valid single- and double-quoted
-dotenv assignments exactly like the running application. This keeps copied
-legacy bcrypt hashes and other runtime values usable during OIDC cutover.
+dotenv assignments without adding a host-side package dependency. This keeps
+copied legacy bcrypt hashes and other runtime values usable during OIDC cutover.
 
 ### Fixed — OIDC cutover checks the browser login path
 
