@@ -172,7 +172,10 @@ def _default_http_probe(url: str) -> ProbeResponse:
     request = Request(
         url,
         method="GET",
-        headers={"User-Agent": "vitals-oidc-cutover/1"},
+        headers={
+            "Accept": "text/html",
+            "User-Agent": "vitals-oidc-cutover/1",
+        },
     )
     try:
         with opener.open(request, timeout=10) as response:

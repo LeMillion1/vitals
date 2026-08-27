@@ -26,6 +26,7 @@ from scripts.oidc_cutover_host import (
     ProbeResponse,
     ProcessResult,
     ProviderArguments,
+    _default_http_probe,
 )
 
 
@@ -34,6 +35,34 @@ IMAGE = "vitals_prod_runtime:test"
 IMAGE_ID = "sha256:synthetic-image"
 NETWORK = "vitals_prod_default"
 NETWORK_ID = "synthetic-network-id"
+
+
+def test_default_http_probe_requests_browser_html(monkeypatch):
+    captured = {}
+
+    class Response:
+        status = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class Opener:
+        def open(self, request, *, timeout):
+            captured["accept"] = request.get_header("Accept")
+            captured["timeout"] = timeout
+            return Response()
+
+    monkeypatch.setattr(
+        "scripts.oidc_cutover_host.build_opener",
+        lambda *_handlers: Opener(),
+    )
+
+    assert _default_http_probe("http://127.0.0.1:8000/today").status == 200
+    assert captured == {"accept": "text/html", "timeout": 10}
 
 
 class FakeProduction:

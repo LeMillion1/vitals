@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — OIDC cutover checks the browser login path
+
+The production cutover probe now requests browser HTML when it validates a
+protected page, so it follows the intended login redirect contract instead of
+receiving the API-oriented `401` response.
+
 ### Fixed — shared care screens use role-neutral language
 
 The common doctor/trainer workspace, conversation composer, consent status,
