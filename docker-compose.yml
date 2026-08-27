@@ -436,7 +436,10 @@ services:
       ZITADEL_API_URL: http://vitals_idp:8080
       NEXT_PUBLIC_BASE_PATH: /ui/v2/login
       ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
-      CUSTOM_REQUEST_HEADERS: Host:${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080},X-Forwarded-Host:${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080},X-Zitadel-Public-Host:${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080},X-Forwarded-Proto:${VITALS_IDP_PUBLIC_SCHEME:-http}
+      # Login V2 derives and sends the ZITADEL instance/public-host headers
+      # itself. Repeating either one here produces a comma-joined hostname and
+      # makes ZITADEL reject an otherwise valid instance domain.
+      CUSTOM_REQUEST_HEADERS: Host:${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080},X-Forwarded-Proto:${VITALS_IDP_PUBLIC_SCHEME:-http}
     volumes:
       - vitals_idp_bootstrap:/zitadel/bootstrap:ro
     networks: [vitals_idp_proxy]

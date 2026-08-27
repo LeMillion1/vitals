@@ -152,6 +152,10 @@ value is the hostname without `:443`. Vitals compares the issuer verbatim, so
 discovery value rather than adding or removing a port themselves.
 The public and loopback gateways share a proxy-only network with Login/API;
 neither can reach the identity database network.
+Login V2 receives only the canonical `Host` and `X-Forwarded-Proto` overrides in
+`CUSTOM_REQUEST_HEADERS`. It derives its ZITADEL instance/public-host headers
+itself; adding those headers to the override list duplicates their values and
+causes a valid domain to be rejected as `Instance.NotFound`.
 The public gateway trusts forwarded client addresses only from the reviewed
 Cloudflare network ranges. Recheck those ranges against
 `https://www.cloudflare.com/ips/` during every gateway-image review. If the

@@ -256,15 +256,12 @@ def test_identity_surfaces_share_the_canonical_public_authority():
             "ZITADEL_SAML_DEFAULTLOGINURLV2",
         )
     )
-    assert login["CUSTOM_REQUEST_HEADERS"].startswith(
+    assert login["CUSTOM_REQUEST_HEADERS"] == (
         "Host:${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080},"
+        "X-Forwarded-Proto:${VITALS_IDP_PUBLIC_SCHEME:-http}"
     )
-    assert "X-Forwarded-Host:${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}" in (
-        login["CUSTOM_REQUEST_HEADERS"]
-    )
-    assert "X-Zitadel-Public-Host:${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}" in (
-        login["CUSTOM_REQUEST_HEADERS"]
-    )
+    assert "X-Zitadel-" not in login["CUSTOM_REQUEST_HEADERS"]
+    assert "X-Forwarded-Host" not in login["CUSTOM_REQUEST_HEADERS"]
     assert gateway["VITALS_IDP_PUBLIC_AUTHORITY"] == (
         "${VITALS_IDP_PUBLIC_AUTHORITY:-localhost:8080}"
     )

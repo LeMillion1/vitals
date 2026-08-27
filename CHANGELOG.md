@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — Login V2 accepts the canonical production domain
+
+The self-hosted Login V2 client no longer duplicates ZITADEL's derived
+instance/public-host headers. Public authentication now resolves the configured
+instance instead of rejecting its valid domain as `Instance.NotFound`.
+
 ### Fixed — care invitations can be copied directly
 
 The one-time care invitation now has a clear copy action with confirmation and
