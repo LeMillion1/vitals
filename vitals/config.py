@@ -70,7 +70,7 @@ class Config:
     # These eight (height, sex, age, programme, goals, and the three nutrition
     # targets) describe a person, and this object describes the installation.
     # They are read exactly once now, by
-    # ``health_profile_service.adopt_installation_profile`` at startup, which
+    # ``profile.health.adopt_installation_profile`` at startup, which
     # copies them onto the legacy owner's health subject while that owner is
     # still the only one — the single state in which an unattributed profile is
     # unambiguously somebody's. Every runtime reader takes a subject.

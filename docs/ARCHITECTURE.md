@@ -177,23 +177,15 @@ vitals/services/settings/
 vitals/services/alerts/ / ai_gateway/
 └── typed lifecycle and paid-provider workflow boundaries
 
-vitals/services/{identity,authorization,tenancy,platform}/
-├── identity/              # normalization, credentials, roles and governance
-├── authorization/         # installation and subject-access decisions
-├── tenancy/              # bootstrap and the explicit legacy ownership bridge
-└── platform/             # platform-admin and installation AI control
+vitals/services/identity/       # bootstrap, normalization, credentials, roles,
+                                # queries and governance
+vitals/services/authorization/  # installation and subject-access decisions
+vitals/services/tenancy/        # bootstrap and the explicit legacy ownership bridge
+vitals/services/platform/       # platform-admin and installation AI control
 
-vitals/services/{files,data_lake,external_api}/
-├── files/                 # private asset lifecycle, queries and upload references
-├── data_lake/             # raw-first contracts, persistence and reparse sweep
-└── external_api/          # hashed capability-token lifecycle
-
-vitals/services/{charts,dashboard,profile,preferences,modules,settings}/
-├── charts/                # chart configuration and subject-scoped series data
-├── dashboard/             # Today projection and navigation status
-├── profile/ / preferences/# health profile and locale preferences
-├── modules/               # registry, navigation and per-subject visibility
-└── settings/              # scoped storage primitive
+vitals/services/files/          # private asset lifecycle, queries and upload references
+vitals/services/data_lake/      # raw-first contracts, persistence and reparse sweep
+vitals/services/external_api/   # hashed capability-token lifecycle
 
 vitals/services/share/ / support_access/
 └── ownership, policy, projections, lifecycle and boundary-owned jobs

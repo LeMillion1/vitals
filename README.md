@@ -784,7 +784,7 @@ digest, совместимой конфигурацией и полной restor
 <summary><strong>Профиль пользователя</strong></summary>
 
 Читаются **один раз, при первом старте** после обновления: значения переносятся в
-запись владельца (`health_profile_service.adopt_installation_profile`), и дальше
+запись владельца (`profile.health.adopt_installation_profile`), и дальше
 профиль живёт в базе и правится на странице настроек без перезапуска. Переменные
 описывают инсталляцию, а не человека — при двух пациентах они не могут сказать,
 о ком речь, поэтому ни один рантайм-читатель их больше не открывает.
@@ -1652,7 +1652,7 @@ Two-factor sign-in has no variable: it is off by default and switched on in the 
 <summary><strong>User Profile</strong></summary>
 
 Read **once, on the first start** after the upgrade: the values are copied onto
-the owner's own record (`health_profile_service.adopt_installation_profile`), and
+the owner's own record (`profile.health.adopt_installation_profile`), and
 from then on the profile lives in the database and is edited on the settings page
 without a restart. These variables describe the installation rather than a
 person — with two patients they cannot say which one they are about — so no
