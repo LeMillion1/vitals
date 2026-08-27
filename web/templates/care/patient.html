@@ -60,6 +60,7 @@
     {% endif %}
 
     <!-- ─── NOTES ──────────────────────────────────────────────────────────── -->
+    {% if may_read_notes %}
     <div class="v-card p-6 space-y-4">
         {{ card_header(t("care.notes_title")) }}
 
@@ -91,8 +92,10 @@
         <p class="v-text-body" style="color: var(--muted)">{{ t("care.notes_empty") }}</p>
         {% endif %}
     </div>
+    {% endif %}
 
     <!-- ─── PLANS ──────────────────────────────────────────────────────────── -->
+    {% if may_read_plans %}
     <div id="care-plans" class="v-card p-6 space-y-4">
         {{ card_header(t("care.plans_title")) }}
 
@@ -153,5 +156,6 @@
         <p class="v-text-body" style="color: var(--muted)">{{ t("care.plans_empty") }}</p>
         {% endif %}
     </div>
+    {% endif %}
 </div>
 {% endblock %}

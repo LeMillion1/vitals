@@ -1135,6 +1135,67 @@ async def test_owner_record_does_not_offer_professional_write_forms(
     assert 'href="/messages"' in response.text
 
 
+async def test_narrow_consent_does_not_present_hidden_artifacts_as_empty(
+    doctor_client, db_session
+):
+    """Unreadable notes and plans are withheld, not reported as nonexistent."""
+
+    from vitals.models.professional import CarePlan
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client, doctor, (owner, subject), _b = doctor_client
+    relationship_id = await _relationship_id(
+        db_session, subject=subject, professional=doctor
+    )
+
+    note_body = "A note that narrower consent must not describe as absent."
+    plan_title = "A plan outside the narrower consent"
+    assert (
+        await client.post(
+            f"/care/{subject.id}/note",
+            data={"body": note_body},
+            follow_redirects=False,
+        )
+    ).status_code == 303
+    assert (
+        await client.post(
+            f"/care/{subject.id}/plan",
+            data={
+                "title": plan_title,
+                "body": "Existing guidance remains in history.",
+                "effective_from": "2026-08-27",
+            },
+            follow_redirects=False,
+        )
+    ).status_code == 303
+    assert await db_session.scalar(
+        select(func.count()).select_from(ProfessionalNote)
+    )
+    assert await db_session.scalar(select(func.count()).select_from(CarePlan))
+
+    client.cookies.set(SESSION_COOKIE, create_session(owner.username))
+    narrowed = await client.post(
+        f"/settings/care/{relationship_id}/grant",
+        data={"custom": "1", "domains": "weight", "allow_messages": "1"},
+        follow_redirects=False,
+    )
+    assert narrowed.status_code == 303
+
+    client.cookies.set(SESSION_COOKIE, create_session(doctor.username))
+    page = await client.get(
+        f"/care/{subject.id}", headers={"Accept": "text/html"}
+    )
+
+    assert page.status_code == 200
+    assert note_body not in page.text
+    assert plan_title not in page.text
+    assert "Nothing written yet." not in page.text
+    assert "Пока ничего не записано." not in page.text
+    assert "No plan yet." not in page.text
+    assert "Плана пока нет." not in page.text
+
+
 async def test_shared_care_pages_keep_role_relative_links_and_navigation(
     doctor_client, db_session
 ):

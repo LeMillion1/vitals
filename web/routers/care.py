@@ -447,6 +447,12 @@ async def patient(
             "period": visible.period,
             "withheld_domains": visible.withheld_domains,
             "record_restricted": visible.restricted,
+            # An empty collection is not enough presentation state: it can mean
+            # either "none exist" or "this grant cannot read them". Keep that
+            # distinction explicit so restricted care and support projections
+            # never make a false claim about the patient's record.
+            "may_read_notes": may_read_notes,
+            "may_read_plans": may_read_plans,
             "may_read_messages": may_read_messages,
             # A shared URL does not determine which account surface the reader
             # is using. The same dual-role account can open its own record or a

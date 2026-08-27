@@ -14,6 +14,12 @@ The browser journey now addresses the visible message composer by its stable
 ID, so the hidden correction editor cannot intercept doctor/patient messages
 and stall the end-to-end care flow.
 
+### Fixed — restricted care views no longer report hidden guidance as absent
+
+When a patient's consent excludes professional notes or care plans, the shared
+record screen now omits those unreadable sections instead of claiming that no
+notes or plans exist. Restricted support projections remain non-disclosing.
+
 ### Changed — safety conflicts form one bounded context
 
 Curated conflict catalogs, subject activation, scoped evaluation, and resolver
