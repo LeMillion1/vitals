@@ -174,16 +174,13 @@ app.include_router(
     dependencies=[Depends(require_module("timeline"))],
 )
 
-try:
-    from web.routers.mcp import get_mcp_app  # noqa: E402
-    from web.routers.oauth import router as oauth_router  # noqa: E402
+from web.routers.mcp import get_mcp_app  # noqa: E402
+from web.routers.oauth import router as oauth_router  # noqa: E402
 
-    app.include_router(oauth_router)
-    mcp_app, mcp_lifespan = get_mcp_app()
-    app.mount("/mcp", mcp_app)
-    app.state.mcp_lifespan = mcp_lifespan
-except ImportError:
-    logger.warning("MCP/OAuth disabled (fastmcp not available)")
+app.include_router(oauth_router)
+mcp_app, mcp_lifespan = get_mcp_app()
+app.mount("/mcp", mcp_app)
+app.state.mcp_lifespan = mcp_lifespan
 
 
 __all__ = [

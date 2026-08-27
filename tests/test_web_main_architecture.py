@@ -112,3 +112,28 @@ def test_delivery_leaves_register_through_explicit_installers() -> None:
     main_source = MODULES["main"].read_text(encoding="utf-8")
     assert "register_system_routes(app)" in main_source
     assert "register_error_handlers(app)" in main_source
+
+
+def test_required_mcp_and_oauth_surfaces_fail_startup_when_imports_break() -> None:
+    """A healthy process must never silently omit required protocol surfaces."""
+
+    tree = _tree(MODULES["main"])
+    guarded_imports: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        imported_modules = {
+            child.module
+            for child in ast.walk(node)
+            if isinstance(child, ast.ImportFrom) and child.module
+        }
+        catches_import_error = any(
+            isinstance(handler.type, ast.Name) and handler.type.id == "ImportError"
+            for handler in node.handlers
+        )
+        if catches_import_error and imported_modules.intersection(
+            {"web.routers.mcp", "web.routers.oauth"}
+        ):
+            guarded_imports.append(node.lineno)
+
+    assert guarded_imports == []
