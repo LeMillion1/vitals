@@ -30,15 +30,18 @@ from alembic.config import Config as AlembicConfig
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from vitals.models.base import Base
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 async def _empty_the_database(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.drop_all)
-        await connection.execute(sa.text("DROP TABLE IF EXISTS alembic_version"))
+        # A migration chain contains historical tables the current ORM no
+        # longer declares. ``metadata.drop_all()`` cannot see those objects and
+        # can therefore fail on their foreign keys while trying to clean up a
+        # migration failure. This database is explicitly disposable; clearing
+        # the schema is both complete and unable to mask the original error.
+        await connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+        await connection.exec_driver_sql("CREATE SCHEMA public")
 
 
 @pytest.mark.integration
