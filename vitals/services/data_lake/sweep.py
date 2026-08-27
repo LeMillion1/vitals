@@ -41,18 +41,11 @@ async def sweep_domain(
     domain's own models. ``reparse`` does the actual re-derivation, reusing
     that domain's existing ingest logic.
 
-    A raising ``reparse`` call is logged and skipped so one bad row can't abort
-    the batch; ``processed_at`` is stamped only after a row's ``reparse`` call
-    returns without raising. Flushes once at the end of the batch, not per row.
-    Does not commit — the caller owns the transaction.
-
-    ponytail: a reparse that raises *after* partially writing (e.g. midway
-    through a multi-step ingest) leaves ``processed_at IS NULL`` but may
-    already have a partial child row, which would make ``has_normalized`` skip
-    it on every later sweep too — stuck rather than retried. Narrow edge case
-    (most failures here are validation, which happens before any write); add a
-    per-row SAVEPOINT (``session.begin_nested()``) around the ``reparse`` call
-    if this shows up for real.
+    Each row runs in a SAVEPOINT. A raising ``reparse`` call is rolled back,
+    logged, and skipped so neither a failed PostgreSQL transaction nor a
+    partially written child can abort or poison the rest of the batch.
+    ``processed_at`` is stamped and flushed inside that SAVEPOINT only after
+    ``reparse`` returns. The caller still owns the outer transaction and commit.
     """
     cutoff = now_local() - timedelta(days=since_days)
     stmt = (
@@ -69,14 +62,14 @@ async def sweep_domain(
     done = 0
     for raw in (await session.execute(stmt)).scalars().all():
         try:
-            await reparse(session, raw)
+            async with session.begin_nested():
+                await reparse(session, raw)
+                raw.processed_at = now_local()
+                await session.flush()
         except Exception:
             logger.warning("re-parse failed for %s raw payload %s", domain, raw.id, exc_info=True)
             continue
-        raw.processed_at = now_local()
         done += 1
-    if done:
-        await session.flush()
     return done
 
 

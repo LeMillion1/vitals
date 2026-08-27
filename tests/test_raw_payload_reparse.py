@@ -121,6 +121,39 @@ async def test_sweep_domain_one_failure_does_not_abort_the_batch(db_session):
     assert good.processed_at is not None
 
 
+async def test_sweep_domain_rolls_back_a_database_failure_and_continues(db_session):
+    bad = await _seed_raw(
+        db_session, domain=DOMAIN, source=Source.HEVY_API.value,
+        external_id="w-db-bad", payload={"ok": True},
+    )
+    good = await _seed_raw(
+        db_session, domain=DOMAIN, source=Source.HEVY_API.value,
+        external_id="w-db-good", payload={"ok": True},
+    )
+
+    async def _reparse(session, raw_row):
+        if raw_row.external_id != "w-db-bad":
+            return
+        session.add(
+            RawPayload(
+                domain=None,
+                source=Source.HEVY_API.value,
+                external_id="missing-required-domain",
+                payload={},
+            )
+        )
+        await session.flush()
+
+    done = await raw_sweep.sweep_domain(
+        db_session, domain=DOMAIN, reparse=_reparse, has_normalized=_has_hevy_child(),
+    )
+
+    assert done == 1
+    assert bad.processed_at is None
+    assert good.processed_at is not None
+    assert await db_session.scalar(select(RawPayload).where(RawPayload.id == good.id))
+
+
 # ── Per-domain wiring smoke tests ─────────────────────────────────────────────
 async def test_garmin_reparse_pending_recovers_daily_and_activity(db_session, *, garmin_owned_scope):
     """Garmin is the one domain with two models under an ``or_`` — exercise both
