@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — live care conversations target the composer
+
+The browser journey now addresses the visible message composer by its stable
+ID, so the hidden correction editor cannot intercept doctor/patient messages
+and stall the end-to-end care flow.
+
 ### Changed — safety conflicts form one bounded context
 
 Curated conflict catalogs, subject activation, scoped evaluation, and resolver

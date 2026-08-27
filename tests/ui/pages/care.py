@@ -73,7 +73,7 @@ class ConversationPage(Page):
     PATH = "/care/{}/messages/{}"
     NAME = "conversation"
 
-    BODY = 'textarea[name="body"]'
+    BODY = "#message-body"
     SEND = 'button:has-text("Send")'
 
     def say(self, message: str) -> "ConversationPage":
