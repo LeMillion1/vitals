@@ -248,7 +248,7 @@ async def test_a_new_subject_never_claims_the_environments_provider_accounts(
     ``.env``", and the one in there is the operator's.
     """
 
-    from vitals.services import provider_credentials_service
+    from vitals.services.credentials import providers
 
     monkeypatch.setenv("VITALS_GARMIN_EMAIL", "owner@example.test")
     monkeypatch.setenv("VITALS_GARMIN_PASSWORD", "owner-secret")
@@ -258,7 +258,7 @@ async def test_a_new_subject_never_claims_the_environments_provider_accounts(
     )
     await db_session.commit()
 
-    account = await provider_credentials_service.resolve_garmin_account(
+    account = await providers.resolve_garmin_account(
         db_session, subject_id=provisioned.subject_id
     )
     assert account is not None

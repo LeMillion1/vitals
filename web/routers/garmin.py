@@ -22,8 +22,8 @@ from vitals.models.garmin import (
 from vitals.services import (
     garmin_service,
     legacy_subject_alerts,
-    provider_credentials_service,
 )
+from vitals.services.credentials import providers
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
@@ -75,7 +75,7 @@ async def garmin_dashboard(
     # This subject's account, not the process's. A page built from
     # ``load_config()`` told every patient the installation owner's Garmin was
     # theirs — "connected", with a last-sync time, for data that never arrives.
-    account = await provider_credentials_service.resolve_garmin_account(
+    account = await providers.resolve_garmin_account(
         db, subject_id=ownership.subject_id
     )
     is_configured = bool(account and account.configured)
@@ -83,7 +83,7 @@ async def garmin_dashboard(
 
     last_sync = None
     last_sync_raw = await redis.get(
-        provider_credentials_service.sync_marker_key(
+        providers.sync_marker_key(
             IntegrationProvider.GARMIN, namespace
         )
     )
@@ -213,7 +213,7 @@ async def sync_now(
         actor_username=username,
         required_connections=(IntegrationProvider.GARMIN,),
     )
-    account = await provider_credentials_service.resolve_garmin_account(
+    account = await providers.resolve_garmin_account(
         db, subject_id=ownership.subject_id
     )
     if account is None or not account.configured:
@@ -238,7 +238,7 @@ async def sync_now(
 
     import time
     await redis.set(
-        provider_credentials_service.sync_marker_key(
+        providers.sync_marker_key(
             IntegrationProvider.GARMIN, account.namespace
         ),
         str(int(time.time())),

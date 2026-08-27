@@ -34,7 +34,7 @@ from vitals.integrations.web_push import (
 )
 from vitals.models.identity import User
 from vitals.models.web_push import WebPushSubscription
-from vitals.services import credential_vault_service
+from vitals.services.credentials import vault
 from vitals.utils.timeutils import now_utc
 
 MAX_ACTIVE_SUBSCRIPTIONS_PER_USER = 10
@@ -115,7 +115,7 @@ def endpoint_hash(endpoint: str) -> str:
 
 
 def _encrypt(secret: SubscriptionSecret) -> bytes:
-    return credential_vault_service.encrypt_mapping(
+    return vault.encrypt_mapping(
         {
             "endpoint": secret.endpoint,
             "p256dh": secret.p256dh,
@@ -126,8 +126,8 @@ def _encrypt(secret: SubscriptionSecret) -> bytes:
 
 def _decrypt(ciphertext: bytes) -> SubscriptionSecret:
     try:
-        decoded = credential_vault_service.decrypt_mapping(ciphertext)
-    except credential_vault_service.CredentialVaultCorrupt as exc:
+        decoded = vault.decrypt_mapping(ciphertext)
+    except vault.CredentialVaultCorrupt as exc:
         raise CorruptWebPushSubscription(
             "stored web push subscription failed authenticated decryption"
         ) from exc
@@ -196,12 +196,12 @@ async def register(
         row = WebPushSubscription(
             user_id=user_id,
             endpoint_hash=digest,
-            key_version=credential_vault_service.CURRENT_KEY_VERSION,
+            key_version=vault.CURRENT_KEY_VERSION,
             ciphertext=ciphertext,
         )
         session.add(row)
     else:
-        row.key_version = credential_vault_service.CURRENT_KEY_VERSION
+        row.key_version = vault.CURRENT_KEY_VERSION
         row.ciphertext = ciphertext
         row.revoked_at = None
     await session.flush()
@@ -232,7 +232,7 @@ async def load_secret(
         return None
     try:
         return _decrypt(bytes(row.ciphertext))
-    except credential_vault_service.CredentialVaultUnavailable:
+    except vault.CredentialVaultUnavailable:
         return None
 
 

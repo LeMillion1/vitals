@@ -362,7 +362,7 @@ async def test_settings_save_hevy(
     """
 
     from vitals.enums import IntegrationProvider
-    from vitals.services import provider_credentials_service
+    from vitals.services.credentials import providers
 
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_HEVY_API_KEY=\n", encoding="utf-8")
@@ -373,7 +373,7 @@ async def test_settings_save_hevy(
     assert "saved=hevy" in r.headers["location"]
 
     db_session.expire_all()
-    account = await provider_credentials_service.resolve_account(
+    account = await providers.resolve_account(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         provider=IntegrationProvider.HEVY,
@@ -394,7 +394,7 @@ async def test_settings_save_garmin(
     every construction, so it is live for the person who typed it and for nobody
     else.
     """
-    from vitals.services import provider_credentials_service
+    from vitals.services.credentials import providers
 
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_GARMIN_EMAIL=\nVITALS_GARMIN_PASSWORD=\n", encoding="utf-8")
@@ -415,7 +415,7 @@ async def test_settings_save_garmin(
     from vitals.services import garmin_weight_service
 
     db_session.expire_all()
-    account = await provider_credentials_service.resolve_garmin_account(
+    account = await providers.resolve_garmin_account(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
     assert account.config.garmin_email == "user@example.com"

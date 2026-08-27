@@ -737,9 +737,9 @@ async def test_sync_job_resolves_system_or_owner_actor(
     # The job resolves this subject's own Garmin account before it builds a
     # client, so a fake claiming ``is_configured`` no longer decides whether it
     # runs — somebody has to have connected an account.
-    from vitals.services import provider_credentials_service
+    from vitals.services.credentials import providers
 
-    await provider_credentials_service.set_garmin_credentials(
+    await providers.set_garmin_credentials(
         db_session,
         subject_id=subject.id,
         email="owner@example.test",

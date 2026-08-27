@@ -19,7 +19,7 @@ from vitals.enums import (
 from vitals.models.identity import User, UserRole
 from vitals.models.professional import ProfessionalProfile
 from vitals.models.web_push import WebPushSubscription
-from vitals.services import credential_vault_service
+from vitals.services.credentials import vault
 from vitals.services.notifications import web_push_config
 from vitals.services.notifications import web_push_subscriptions
 
@@ -177,7 +177,7 @@ async def test_registration_fails_closed_without_complete_server_secrets(
     assert response.json()["detail"] == "notifications_unavailable"
 
     _configure(monkeypatch)
-    monkeypatch.setattr(credential_vault_service, "is_available", lambda: False)
+    monkeypatch.setattr(vault, "is_available", lambda: False)
     response = await auth_client.post(
         "/account/notifications/subscription", json=_subscription()
     )

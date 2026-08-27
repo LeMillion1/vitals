@@ -16,12 +16,12 @@ async def test_patient_seed_can_omit_every_provider_credential(db_session, monke
         raise AssertionError("provider credentials must not be seeded")
 
     monkeypatch.setattr(
-        seed_care_demo.provider_credentials_service,
+        seed_care_demo.providers,
         "set_garmin_credentials",
         forbidden,
     )
     monkeypatch.setattr(
-        seed_care_demo.provider_credentials_service,
+        seed_care_demo.providers,
         "set_hevy_credentials",
         forbidden,
     )
@@ -71,4 +71,3 @@ def test_compose_seeder_requires_both_guards_and_postgres(
     )
     assert result.returncode != 0
     assert message in result.stderr + result.stdout
-

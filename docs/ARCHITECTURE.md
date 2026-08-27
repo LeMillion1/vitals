@@ -55,6 +55,10 @@ vitals/services/hrt/
 ├── templates.py       # portable cycle templates
 └── reminders.py       # subject-scoped HRT reminder scheduling
 
+vitals/services/credentials/
+├── vault.py           # encrypted credential persistence
+└── providers.py       # subject-scoped provider resolution
+
 vitals/operations/ownership/
 ├── portability_v1.py # destructive full-v1 restore coordinator
 ├── validate.py       # cross-table ownership cutover validation

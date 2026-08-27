@@ -11,7 +11,7 @@ from sqlalchemy import select
 from vitals.enums import UserStatus
 from vitals.models.identity import User
 from vitals.models.web_push import WebPushSubscription
-from vitals.services import credential_vault_service
+from vitals.services.credentials import vault
 from vitals.services.identity_service import change_user_status
 from vitals.services.notifications import web_push_subscriptions as service
 
@@ -181,8 +181,8 @@ async def test_malformed_or_ssrf_capable_subscriptions_are_refused(
 async def test_no_credential_key_fails_closed_without_plaintext(
     db_session, legacy_owner_roots, monkeypatch
 ):
-    monkeypatch.delenv(credential_vault_service.CREDENTIAL_KEY_ENV, raising=False)
-    with pytest.raises(credential_vault_service.CredentialVaultUnavailable):
+    monkeypatch.delenv(vault.CREDENTIAL_KEY_ENV, raising=False)
+    with pytest.raises(vault.CredentialVaultUnavailable):
         await service.register(
             db_session,
             user_id=legacy_owner_roots.user_id,

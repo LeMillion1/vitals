@@ -189,7 +189,7 @@ async def _list_provider_accounts(
     """
 
     from vitals.persistence.rls import enter_platform_scope
-    from vitals.services import provider_credentials_service
+    from vitals.services.credentials import providers
 
     async with session_factory() as session:
         # ``integration_connections`` is FORCE-RLS protected. A scheduler tick
@@ -198,7 +198,7 @@ async def _list_provider_accounts(
         # installation scope only for this short enumeration transaction; each
         # account is processed later by a fresh subject-bound job session.
         await enter_platform_scope(session)
-        return await provider_credentials_service.list_live_account_refs(
+        return await providers.list_live_account_refs(
             session, provider=provider
         )
 
@@ -226,7 +226,7 @@ def for_each_connection(
     reason was never the scheduler: their credentials were one Garmin login and
     one Hevy key for the whole process, so running them per subject would have
     filed the operator's own watch data as everybody else's. That is fixed —
-    ``provider_credentials_service`` resolves a connection into the account it
+    ``providers`` resolves a connection into the account it
     belongs to — and this is the other half.
 
     **Per account rather than per subject**, unlike :func:`for_each_subject`.

@@ -2446,16 +2446,13 @@ async def test_provider_fanout_discovers_every_account_under_forced_rls(
     from vitals.enums import IntegrationProvider
     from vitals.persistence.rls import bind_session_subject
     from vitals.scheduler import fanout
-    from vitals.services import (
-        credential_vault_service,
-        provider_credentials_service,
-    )
+    from vitals.services.credentials import providers, vault
 
     database_url = os.environ["VITALS_TEST_DATABASE_URL"]
     assert database_url.startswith("postgresql")
     monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
     monkeypatch.setenv(
-        credential_vault_service.CREDENTIAL_KEY_ENV,
+        vault.CREDENTIAL_KEY_ENV,
         Fernet.generate_key().decode("ascii"),
     )
     await db_session.close()
@@ -2469,7 +2466,7 @@ async def test_provider_fanout_discovers_every_account_under_forced_rls(
         first, second = await _seed_two_subjects(admin)
         capability_role = await _grant_probe_platform_capability(admin)
         corrupt_subject, valid_subject = sorted((first, second))
-        valid_ciphertext = credential_vault_service.encrypt_mapping(
+        valid_ciphertext = vault.encrypt_mapping(
             {"email": "synthetic@example.test", "password": "synthetic-password"}
         )
         async with admin.begin() as connection:
@@ -2526,7 +2523,7 @@ async def test_provider_fanout_discovers_every_account_under_forced_rls(
             seen.append(subject_id)
             async with _factory() as session:
                 await bind_session_subject(session, subject_id)
-                account = await provider_credentials_service.resolve_garmin_account(
+                account = await providers.resolve_garmin_account(
                     session,
                     subject_id=subject_id,
                 )
@@ -2539,7 +2536,7 @@ async def test_provider_fanout_discovers_every_account_under_forced_rls(
             return None
 
         monkeypatch.setattr(fanout, "_record_outcome_for", ignore_outcome)
-        with pytest.raises(credential_vault_service.CredentialVaultCorrupt):
+        with pytest.raises(vault.CredentialVaultCorrupt):
             await fanout.for_each_connection(
                 job,
                 job_id="garmin_sync",

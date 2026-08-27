@@ -766,9 +766,9 @@ async def test_sync_job_resolves_system_and_named_owner_actor(
     # The job resolves this subject's own Hevy account before building a client,
     # so somebody has to have connected one — a fake claiming ``is_configured``
     # is no longer what decides.
-    from vitals.services import provider_credentials_service
+    from vitals.services.credentials import providers
 
-    await provider_credentials_service.set_hevy_credentials(
+    await providers.set_hevy_credentials(
         db_session, subject_id=subject.id, api_key="test-key"
     )
     await db_session.commit()

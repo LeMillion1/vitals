@@ -29,7 +29,7 @@ from vitals.enums import (
 from vitals.models.credentials import IntegrationCredential
 from vitals.models.identity import HealthSubject, User
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services import credential_vault_service, provider_credentials_service
+from vitals.services.credentials import providers, vault
 
 
 @pytest.fixture
@@ -84,7 +84,7 @@ async def test_the_stored_row_holds_no_readable_credential(
     ``external_account_discriminator`` is opaque.
     """
 
-    await credential_vault_service.store(
+    await vault.store(
         db_session,
         integration_connection_id=garmin_connection_id,
         subject_id=legacy_owner_roots.subject_id,
@@ -108,7 +108,7 @@ async def test_a_tampered_credential_fails_rather_than_decrypting(
     wrote is worth failing on.
     """
 
-    await credential_vault_service.store(
+    await vault.store(
         db_session,
         integration_connection_id=garmin_connection_id,
         subject_id=legacy_owner_roots.subject_id,
@@ -123,8 +123,8 @@ async def test_a_tampered_credential_fails_rather_than_decrypting(
     await db_session.commit()
     db_session.expire_all()
 
-    with pytest.raises(credential_vault_service.CredentialVaultCorrupt):
-        await credential_vault_service.load(
+    with pytest.raises(vault.CredentialVaultCorrupt):
+        await vault.load(
             db_session, integration_connection_id=garmin_connection_id
         )
 
@@ -134,10 +134,10 @@ async def test_no_key_means_no_vault_rather_than_plaintext(
 ):
     """Refusing is the only safe answer; storing it in the clear is not one."""
 
-    monkeypatch.delenv(credential_vault_service.CREDENTIAL_KEY_ENV, raising=False)
-    assert credential_vault_service.is_available() is False
-    with pytest.raises(credential_vault_service.CredentialVaultUnavailable):
-        await credential_vault_service.store(
+    monkeypatch.delenv(vault.CREDENTIAL_KEY_ENV, raising=False)
+    assert vault.is_available() is False
+    with pytest.raises(vault.CredentialVaultUnavailable):
+        await vault.store(
             db_session,
             integration_connection_id=garmin_connection_id,
             subject_id=legacy_owner_roots.subject_id,
@@ -163,13 +163,13 @@ async def test_the_environment_is_only_the_installation_owners(
     monkeypatch.setenv("VITALS_GARMIN_EMAIL", "owner@example.test")
     monkeypatch.setenv("VITALS_GARMIN_PASSWORD", "owner-secret")
 
-    owner_account = await provider_credentials_service.resolve_garmin_account(
+    owner_account = await providers.resolve_garmin_account(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
     assert owner_account is not None and owner_account.configured
     assert owner_account.config.garmin_email == "owner@example.test"
 
-    other_account = await provider_credentials_service.resolve_garmin_account(
+    other_account = await providers.resolve_garmin_account(
         db_session, subject_id=second_patient
     )
     assert other_account is not None
@@ -203,10 +203,10 @@ async def test_two_accounts_share_no_session_no_breaker_and_no_token_store(
         namespaced,
     )
 
-    owner = await provider_credentials_service.resolve_garmin_account(
+    owner = await providers.resolve_garmin_account(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
-    other = await provider_credentials_service.resolve_garmin_account(
+    other = await providers.resolve_garmin_account(
         db_session, subject_id=second_patient
     )
     assert owner.namespace and other.namespace
@@ -215,9 +215,9 @@ async def test_two_accounts_share_no_session_no_breaker_and_no_token_store(
 
     for key in (REDIS_SESSION_KEY, LOGIN_ATTEMPTS_KEY, LOGIN_PAUSE_KEY):
         assert namespaced(key, owner.namespace) != namespaced(key, other.namespace)
-    assert provider_credentials_service.sync_marker_key(
+    assert providers.sync_marker_key(
         IntegrationProvider.GARMIN, owner.namespace
-    ) != provider_credentials_service.sync_marker_key(
+    ) != providers.sync_marker_key(
         IntegrationProvider.GARMIN, other.namespace
     )
 
@@ -228,7 +228,7 @@ async def test_a_second_patient_signs_in_as_themselves(
     monkeypatch.setenv("VITALS_GARMIN_EMAIL", "owner@example.test")
     monkeypatch.setenv("VITALS_GARMIN_PASSWORD", "owner-secret")
 
-    await provider_credentials_service.set_garmin_credentials(
+    await providers.set_garmin_credentials(
         db_session,
         subject_id=second_patient,
         email="second@example.test",
@@ -236,14 +236,14 @@ async def test_a_second_patient_signs_in_as_themselves(
     )
     await db_session.commit()
 
-    other = await provider_credentials_service.resolve_garmin_account(
+    other = await providers.resolve_garmin_account(
         db_session, subject_id=second_patient
     )
     assert other.configured
     assert other.config.garmin_email == "second@example.test"
 
     # And the owner is untouched by it.
-    owner = await provider_credentials_service.resolve_garmin_account(
+    owner = await providers.resolve_garmin_account(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
     assert owner.config.garmin_email == "owner@example.test"
@@ -262,7 +262,7 @@ async def test_saving_supersedes_the_environment_for_the_owner_too(
     monkeypatch.setenv("VITALS_GARMIN_EMAIL", "owner@example.test")
     monkeypatch.setenv("VITALS_GARMIN_PASSWORD", "owner-secret")
 
-    await provider_credentials_service.set_garmin_credentials(
+    await providers.set_garmin_credentials(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         email="new@example.test",
@@ -270,14 +270,14 @@ async def test_saving_supersedes_the_environment_for_the_owner_too(
     )
     await db_session.commit()
 
-    account = await provider_credentials_service.resolve_garmin_account(
+    account = await providers.resolve_garmin_account(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
     assert account.config.garmin_email == "new@example.test"
     # And on the same paths as before the save: the namespace comes off the
     # connection, which a credential change does not move — otherwise typing a
     # new password would silently discard the token session that goes with it.
-    before = await provider_credentials_service.resolve_garmin_account(
+    before = await providers.resolve_garmin_account(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
     assert account.namespace == before.namespace
@@ -292,7 +292,7 @@ async def test_forgetting_an_account_keeps_the_history_it_produced(
     the workouts happened.
     """
 
-    await provider_credentials_service.set_garmin_credentials(
+    await providers.set_garmin_credentials(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         email="a@example.test",
@@ -303,7 +303,7 @@ async def test_forgetting_an_account_keeps_the_history_it_produced(
     connection_id = await _garmin_connection_id(
         db_session, legacy_owner_roots.subject_id
     )
-    assert await provider_credentials_service.forget_credentials(
+    assert await providers.forget_credentials(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         provider=IntegrationProvider.GARMIN,
@@ -329,18 +329,18 @@ async def test_the_fanout_list_holds_only_metadata_for_claimed_credentials(
     monkeypatch.setenv("VITALS_GARMIN_EMAIL", "")
     monkeypatch.setenv("VITALS_GARMIN_PASSWORD", "")
 
-    refs = await provider_credentials_service.list_live_account_refs(
+    refs = await providers.list_live_account_refs(
         db_session, provider=IntegrationProvider.GARMIN
     )
     assert [ref.subject_id for ref in refs] == [legacy_owner_roots.subject_id]
     assert all(not hasattr(ref, "config") for ref in refs)
 
-    await provider_credentials_service.set_garmin_credentials(
+    await providers.set_garmin_credentials(
         db_session, subject_id=second_patient, email="s@example.test", password="x"
     )
     await db_session.commit()
 
-    refs = await provider_credentials_service.list_live_account_refs(
+    refs = await providers.list_live_account_refs(
         db_session, provider=IntegrationProvider.GARMIN
     )
     assert {ref.subject_id for ref in refs} == {
@@ -367,7 +367,7 @@ async def test_a_retired_connection_is_provenance_and_not_a_login(
     await db_session.commit()
 
     assert (
-        await provider_credentials_service.resolve_garmin_account(
+        await providers.resolve_garmin_account(
             db_session, subject_id=legacy_owner_roots.subject_id
         )
         is None
@@ -397,7 +397,7 @@ async def test_saving_the_card_stores_against_the_signed_in_record(
     assert "saved=garmin" in response.headers["location"]
 
     db_session.expire_all()
-    account = await provider_credentials_service.resolve_garmin_account(
+    account = await providers.resolve_garmin_account(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
     assert account.config.garmin_email == "typed@example.test"

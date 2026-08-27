@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — integration credentials form one bounded context
+
+Encrypted credential storage and subject-scoped provider resolution now live
+under `vitals.services.credentials`. Integrations, web settings, scheduler
+fan-out, notifications, and tests import the semantic package directly; the
+guarded flat-service ceiling falls from 47 modules to 45 without behavior or
+schema changes.
+
 ### Changed — HRT services form one bounded context
 
 The HRT catalog, records, cycles, templates, and reminder scheduling now live

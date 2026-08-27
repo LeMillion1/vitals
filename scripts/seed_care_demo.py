@@ -68,7 +68,7 @@ from vitals.models.nutrition import MealLog  # noqa: E402
 from vitals.models.supplements import Supplement  # noqa: E402
 from vitals.services import labs_service  # noqa: E402
 from vitals.models.weight import WeightLog  # noqa: E402
-from vitals.services import provider_credentials_service  # noqa: E402
+from vitals.services.credentials import providers  # noqa: E402
 from vitals.services.authentication import (  # noqa: E402
     provisioning as account_provisioning_service,
 )
@@ -167,13 +167,13 @@ async def _patient(
         # The local visual demo renders connected provider cards. Compose role
         # smoke deliberately disables this: a long browser run must have no
         # credential for a background job to try against a real provider.
-        await provider_credentials_service.set_garmin_credentials(
+        await providers.set_garmin_credentials(
             session,
             subject_id=subject.id,
             email=f"{username}@demo.invalid",
             password="demo-not-a-real-password",
         )
-        await provider_credentials_service.set_hevy_credentials(
+        await providers.set_hevy_credentials(
             session,
             subject_id=subject.id,
             api_key=f"demo-not-a-real-key-{seed}",

@@ -2849,9 +2849,9 @@ async def send_now_scoped(
     if not enabled:
         return {"status": "disabled", "sent": False}
     from vitals.integrations.garmin_client import GarminClient
-    from vitals.services import provider_credentials_service
+    from vitals.services.credentials import providers
 
-    account = await provider_credentials_service.resolve_garmin_account(
+    account = await providers.resolve_garmin_account(
         session, subject_id=context.identity.subject_id
     )
     if account is None or not account.configured:
@@ -3004,9 +3004,9 @@ async def export_job(
         current_lang.set(
             await get_language(session, redis, user_id=owner_user_id)
         )
-        from vitals.services import provider_credentials_service
+        from vitals.services.credentials import providers
 
-        account = await provider_credentials_service.resolve_garmin_account(
+        account = await providers.resolve_garmin_account(
             session, subject_id=context.identity.subject_id
         )
         if account is None or not account.configured:

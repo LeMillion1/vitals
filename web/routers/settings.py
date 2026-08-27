@@ -46,7 +46,6 @@ from vitals.operations.ownership import portability_v1
 from vitals.process_mode import ProcessMode, load_process_mode
 from vitals.services import (
     ai_gateway_service,
-    credential_vault_service,
     data_portability_service,
     garmin_weight_service,
     health_profile_service,
@@ -54,8 +53,8 @@ from vitals.services import (
     modules_service,
     platform_admin_service,
     platform_ai_control_service,
-    provider_credentials_service,
 )
+from vitals.services.credentials import providers, vault
 from vitals.services.access_resolution import AccessDeniedError, require_access
 from vitals.services.authentication import legacy_two_factor as twofa_service
 from vitals.services.installation_operator import (
@@ -305,7 +304,7 @@ async def _subject_garmin_account(db: AsyncSession, username: str):
     """
 
     identity = await resolve_legacy_ownership_context(db, actor_username=username)
-    return await provider_credentials_service.resolve_garmin_account(
+    return await providers.resolve_garmin_account(
         db, subject_id=identity.subject_id
     )
 
@@ -392,10 +391,10 @@ async def _page(
     # installation's single watch and single workout account. Two plain selects,
     # deliberately ahead of the Redis read below: the breaker's key is per
     # account, so it cannot be read until the account is known.
-    garmin_account = await provider_credentials_service.resolve_garmin_account(
+    garmin_account = await providers.resolve_garmin_account(
         db, subject_id=preference_scope.subject_id
     )
-    hevy_account = await provider_credentials_service.resolve_hevy_account(
+    hevy_account = await providers.resolve_hevy_account(
         db, subject_id=preference_scope.subject_id
     )
     # Read-only credentials for another app's glance cards. Listed with the
@@ -477,7 +476,7 @@ async def _page(
         ),
         # A deployment with no ``VITALS_CREDENTIAL_KEY`` cannot store one, and
         # the card says so rather than accepting a password and failing on save.
-        "credential_vault_available": credential_vault_service.is_available(),
+        "credential_vault_available": vault.is_available(),
         "garmin_credentials_configured": bool(
             garmin_account and garmin_account.configured
         ),
@@ -1043,14 +1042,14 @@ async def save_hevy(
         return _redirect("?saved=hevy")
     identity = await resolve_legacy_ownership_context(db, actor_username=username)
     try:
-        await provider_credentials_service.set_hevy_credentials(
+        await providers.set_hevy_credentials(
             db, subject_id=identity.subject_id, api_key=submitted
         )
-    except credential_vault_service.CredentialVaultUnavailable:
+    except vault.CredentialVaultUnavailable:
         await db.rollback()
         logger.warning("Hevy credential not stored: no installation vault key")
         return _redirect("?error=no_credential_key")
-    except provider_credentials_service.ProviderCredentialsError:
+    except providers.ProviderCredentialsError:
         await db.rollback()
         logger.warning("Hevy credential not stored", exc_info=True)
         return _redirect("?error=hevy")
@@ -1095,17 +1094,17 @@ async def save_garmin(
 
     identity = await resolve_legacy_ownership_context(db, actor_username=username)
     try:
-        await provider_credentials_service.set_garmin_credentials(
+        await providers.set_garmin_credentials(
             db,
             subject_id=identity.subject_id,
             email=effective_email,
             password=effective_password,
         )
-    except credential_vault_service.CredentialVaultUnavailable:
+    except vault.CredentialVaultUnavailable:
         await db.rollback()
         logger.warning("Garmin credential not stored: no installation vault key")
         return _redirect("?error=no_credential_key")
-    except provider_credentials_service.ProviderCredentialsError:
+    except providers.ProviderCredentialsError:
         await db.rollback()
         logger.warning("Garmin credential not stored", exc_info=True)
         return _redirect("?error=garmin")

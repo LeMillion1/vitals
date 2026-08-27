@@ -130,7 +130,7 @@ class Config:
     # owner's — the unsuffixed Redis keys and token directory an existing
     # deployment already has, so upgrading costs no Garmin login. Every other
     # subject gets their connection id here, and
-    # ``provider_credentials_service`` is the only thing that sets it: a client
+    # ``providers`` is the only thing that sets it: a client
     # built from ``load_config()`` is the owner's, which is what every
     # pre-commercial call site meant.
     #

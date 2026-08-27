@@ -1339,7 +1339,7 @@ async def sync_job(
     del integration_connection_id  # named by the fan-out; resolved below
 
     async with session_factory() as session:
-        from vitals.services import provider_credentials_service
+        from vitals.services.credentials import providers
         from vitals.services.legacy_ownership import (
             resolve_subject_ownership_context,
         )
@@ -1352,7 +1352,7 @@ async def sync_job(
             subject_id=subject_id,
             required_connections=(IntegrationProvider.HEVY,),
         )
-        account = await provider_credentials_service.resolve_hevy_account(
+        account = await providers.resolve_hevy_account(
             session, subject_id=ownership.subject_id
         )
         if account is None or not account.configured:
@@ -1382,7 +1382,7 @@ async def sync_job(
         if redis is not None:
             import time
             await redis.set(
-                provider_credentials_service.sync_marker_key(
+                providers.sync_marker_key(
                     IntegrationProvider.HEVY, account.namespace
                 ),
                 str(int(time.time())),

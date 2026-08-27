@@ -15,8 +15,8 @@ from vitals.services import (
     alerts_service,
     hevy_service,
     legacy_subject_alerts,
-    provider_credentials_service,
 )
+from vitals.services.credentials import providers
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from web.deps import get_redis, get_session, require_auth
 from web.templating import templates
@@ -78,7 +78,7 @@ async def hevy_dashboard(
 
     # This subject's Hevy account, not the process's — see the same change in
     # the Garmin dashboard.
-    account = await provider_credentials_service.resolve_hevy_account(
+    account = await providers.resolve_hevy_account(
         db, subject_id=ownership.subject_id
     )
     is_configured = bool(account and account.configured)
@@ -86,7 +86,7 @@ async def hevy_dashboard(
 
     last_sync = None
     last_sync_raw = await redis.get(
-        provider_credentials_service.sync_marker_key(
+        providers.sync_marker_key(
             IntegrationProvider.HEVY, namespace
         )
     )
@@ -138,7 +138,7 @@ async def sync_now(
         actor_username=username,
         required_connections=(IntegrationProvider.HEVY,),
     )
-    account = await provider_credentials_service.resolve_hevy_account(
+    account = await providers.resolve_hevy_account(
         db, subject_id=ownership.subject_id
     )
     if account is None or not account.configured:
@@ -170,7 +170,7 @@ async def sync_now(
 
         import time
         await redis.set(
-            provider_credentials_service.sync_marker_key(
+            providers.sync_marker_key(
                 IntegrationProvider.HEVY, account.namespace
             ),
             str(int(time.time())),

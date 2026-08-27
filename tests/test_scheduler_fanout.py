@@ -255,7 +255,7 @@ async def test_provider_discovery_explicitly_enters_platform_scope(
     from vitals.enums import IntegrationProvider
     from vitals.persistence.rls import in_platform_scope
     from vitals.scheduler import fanout
-    from vitals.services import provider_credentials_service
+    from vitals.services.credentials import providers
 
     observed = False
 
@@ -265,7 +265,7 @@ async def test_provider_discovery_explicitly_enters_platform_scope(
         observed = in_platform_scope(session)
         return []
 
-    monkeypatch.setattr(provider_credentials_service, "list_live_account_refs", _list)
+    monkeypatch.setattr(providers, "list_live_account_refs", _list)
 
     async def job(_factory, _redis, *, subject_id, integration_connection_id):
         raise AssertionError((subject_id, integration_connection_id))
@@ -281,16 +281,16 @@ async def test_provider_discovery_explicitly_enters_platform_scope(
 
 async def _connected(session, subject_id, *, provider):
     from vitals.enums import IntegrationProvider
-    from vitals.services import provider_credentials_service
+    from vitals.services.credentials import providers
     from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
 
     await bootstrap_legacy_resource_roots(session, subject_id=subject_id)
     if provider is IntegrationProvider.GARMIN:
-        await provider_credentials_service.set_garmin_credentials(
+        await providers.set_garmin_credentials(
             session, subject_id=subject_id, email="a@example.test", password="x"
         )
     else:
-        await provider_credentials_service.set_hevy_credentials(
+        await providers.set_hevy_credentials(
             session, subject_id=subject_id, api_key="k"
         )
 

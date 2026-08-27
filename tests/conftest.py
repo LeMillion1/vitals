@@ -749,9 +749,9 @@ async def garmin_connected(db_session, legacy_owner_roots, garmin_connection_id)
     what a real installation does, on the settings card.
     """
 
-    from vitals.services import provider_credentials_service
+    from vitals.services.credentials import providers
 
-    await provider_credentials_service.set_garmin_credentials(
+    await providers.set_garmin_credentials(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         email="owner@example.test",
@@ -765,9 +765,9 @@ async def garmin_connected(db_session, legacy_owner_roots, garmin_connection_id)
 async def hevy_connected(db_session, legacy_owner_roots, hevy_connection_id):
     """The owner has actually connected a Hevy account — see ``garmin_connected``."""
 
-    from vitals.services import provider_credentials_service
+    from vitals.services.credentials import providers
 
-    await provider_credentials_service.set_hevy_credentials(
+    await providers.set_hevy_credentials(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         api_key="test-hevy-api-key",

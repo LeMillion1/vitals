@@ -41,7 +41,7 @@ from vitals.models.professional import (
 )
 from vitals.models.web_push import CarePushDelivery
 from vitals.persistence.rls import enter_platform_scope
-from vitals.services import credential_vault_service
+from vitals.services.credentials import vault
 from vitals.services.care import professionals
 from vitals.services.notifications import care_push_dispatcher as dispatcher
 from vitals.services.notifications import web_push_subscriptions
@@ -532,10 +532,10 @@ async def test_unavailable_vault_rolls_back_and_keeps_pending_credential(
         db_session, legacy_owner_roots, token="vault-unavailable"
     )
     original_ciphertext = bytes(subscription.ciphertext)
-    monkeypatch.delenv(credential_vault_service.CREDENTIAL_KEY_ENV, raising=False)
+    monkeypatch.delenv(vault.CREDENTIAL_KEY_ENV, raising=False)
 
     await enter_platform_scope(db_session)
-    with pytest.raises(credential_vault_service.CredentialVaultUnavailable):
+    with pytest.raises(vault.CredentialVaultUnavailable):
         await dispatcher.claim_batch(db_session)
     await db_session.rollback()
 

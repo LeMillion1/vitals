@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services import credential_vault_service
+from vitals.services.credentials import vault
 from vitals.services.notifications import web_push_config
 from vitals.services.notifications import web_push_subscriptions as subscriptions
 from web.care_context import principal_user_id
@@ -66,7 +66,7 @@ def _browser_configuration() -> web_push_config.WebPushConfig | None:
     except web_push_config.WebPushConfigurationError:
         logger.error("Web Push is enabled but its VAPID configuration is invalid")
         return None
-    if config is None or not credential_vault_service.is_available():
+    if config is None or not vault.is_available():
         return None
     return config
 
@@ -148,10 +148,10 @@ async def register_current_device(
         ) from None
     except (
         subscriptions.InvalidWebPushSubscription,
-        credential_vault_service.CredentialVaultValidationError,
+        vault.CredentialVaultValidationError,
     ):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST) from None
-    except credential_vault_service.CredentialVaultUnavailable:
+    except vault.CredentialVaultUnavailable:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="notifications_unavailable",

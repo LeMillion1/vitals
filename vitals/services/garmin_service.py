@@ -70,10 +70,10 @@ from vitals.ownership import WriteIdentity
 from vitals.services import (
     alerts_service,
     conflict_engine,
-    provider_credentials_service,
     raw_payload_service,
     weight_service,
 )
+from vitals.services.credentials import providers
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.utils.timeutils import now_local, to_local_naive
 
@@ -2229,7 +2229,7 @@ async def pulse_job(
         # from ``load_config()``, which is the installation's single Garmin —
         # polling it under somebody else's ownership would file the operator's
         # step count as that patient's.
-        account = await provider_credentials_service.resolve_garmin_account(
+        account = await providers.resolve_garmin_account(
             session, subject_id=ownership.subject_id
         )
         if account is None or not account.configured:
@@ -2641,7 +2641,7 @@ async def sync_job(
             subject_id=subject_id,
             required_connections=(IntegrationProvider.GARMIN,),
         )
-        account = await provider_credentials_service.resolve_garmin_account(
+        account = await providers.resolve_garmin_account(
             session, subject_id=ownership.subject_id
         )
         if account is None or not account.configured:
@@ -2679,7 +2679,7 @@ async def sync_job(
         if redis is not None and summary.get("error") is None:
             import time
             await redis.set(
-                provider_credentials_service.sync_marker_key(
+                providers.sync_marker_key(
                     IntegrationProvider.GARMIN, account.namespace
                 ),
                 str(int(time.time())),

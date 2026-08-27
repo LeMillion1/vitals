@@ -47,7 +47,7 @@ from vitals.enums import (
     IntegrationProvider,
 )
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services import credential_vault_service
+from vitals.services.credentials import vault
 
 #: The prefix the tenancy bootstrap writes on a root it has no secret for.
 LEGACY_ENV_REF_PREFIX = "legacy_env:"
@@ -204,8 +204,8 @@ async def resolve_account(
 
     secret: dict[str, str] | None = None
     ref = (connection.credential_ref or "").strip()
-    if ref == credential_vault_service.VAULT_CREDENTIAL_REF:
-        secret = await credential_vault_service.load(
+    if ref == vault.VAULT_CREDENTIAL_REF:
+        secret = await vault.load(
             session, integration_connection_id=connection.id
         )
     elif ref.startswith(LEGACY_ENV_REF_PREFIX):
@@ -299,7 +299,7 @@ async def _store(
             f"this record has no {provider.value} connection to attach a "
             "credential to"
         )
-    await credential_vault_service.store(
+    await vault.store(
         session,
         integration_connection_id=connection.id,
         subject_id=subject_id,
@@ -308,7 +308,7 @@ async def _store(
     # The ref moves off ``legacy_env:`` in the same transaction as the secret
     # lands. Leaving it behind would mean the legacy owner's resolver preferring
     # the environment over the password they just typed.
-    connection.credential_ref = credential_vault_service.VAULT_CREDENTIAL_REF
+    connection.credential_ref = vault.VAULT_CREDENTIAL_REF
     if connection.status == IntegrationConnectionStatus.LEGACY.value:
         connection.status = IntegrationConnectionStatus.ACTIVE.value
     await session.flush()
@@ -376,7 +376,7 @@ async def forget_credentials(
     )
     if connection is None:
         return False
-    had = await credential_vault_service.clear(
+    had = await vault.clear(
         session, integration_connection_id=connection.id
     )
     connection.credential_ref = None
