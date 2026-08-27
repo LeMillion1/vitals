@@ -97,6 +97,41 @@ Initialize and verify the empty repository with restic `0.19.1` from the trusted
 machine. Production uses the official image pinned by an OCI digest in
 `docker-compose.yml`; do not silently replace it with `latest`.
 
+### Cloudflare R2 profile
+
+R2 must be activated on the Cloudflare account before buckets or S3 credentials
+can be created. Activation is a usage-billed subscription even when current
+usage fits the included monthly allowance, so treat it as an explicit operator
+approval rather than an automatic deployment step.
+
+Use two dedicated **Standard** storage buckets, one for the health repository
+and one for the identity repository. Do not put both restic repositories below
+different prefixes of one bucket: bucket-scoped credentials are the durable
+failure boundary R2 can enforce. Create a separate account API token for each
+bucket with **Object Read & Write** and restrict it to that exact bucket. The S3
+endpoint is `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`; each repository file
+therefore contains a value shaped like:
+
+```text
+s3:https://<ACCOUNT_ID>.r2.cloudflarestorage.com/<BUCKET_NAME>
+```
+
+R2 object credentials cannot deny individual delete operations within an
+otherwise writable bucket. Compensate with provider-enforced bucket-lock rules:
+
+- retain `data/`, `index/`, and `snapshots/` for at least 30 days;
+- retain `keys/` and `config` indefinitely;
+- deliberately leave `locks/` unlocked, because every successful restic run
+  must remove its temporary repository lock.
+
+The production token cannot change bucket-lock configuration. Keep the
+Cloudflare administrator session/API token off the VPS, and use it for lock
+changes, lifecycle/retention, `restic check`, and recovery. A compromised
+production token can still append encrypted objects and temporary locks, but it
+cannot erase or overwrite a protected recovery window. See Cloudflare's
+[R2 token permissions](https://developers.cloudflare.com/r2/api/tokens/) and
+[bucket-lock rules](https://developers.cloudflare.com/r2/buckets/bucket-locks/).
+
 ## Enable replication without reconciling the app stack
 
 Confirm that the ordinary local backup sidecar is healthy and that the newest
