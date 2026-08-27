@@ -29,7 +29,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import CycleKind, DoseUnit, Source
 from vitals.models.hrt import DOMAIN, HrtCompound, HrtCycle, HrtCycleItem, HrtDose
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, hrt_service
+from vitals.services import conflict_engine
+from vitals.services.hrt import records
 from vitals.utils.timeutils import today_local
 
 # Guard against a pathological schedule (tiny interval, huge window) looping
@@ -210,9 +211,9 @@ async def _resolve_scoped_compound(
     subject_id: uuid.UUID,
 ) -> Optional[HrtCompound]:
     if subject_id is None:
-        return await hrt_service.get_compound(session, key)
+        return await records.get_compound(session, key)
 
-    from vitals.services.hrt_catalog import load_compound_catalog
+    from vitals.services.hrt.catalog import load_compound_catalog
 
     curated_keys = tuple(dict(load_compound_catalog()))
     same_subject = HrtCompound.subject_id == subject_id
@@ -232,7 +233,7 @@ async def _resolve_scoped_compound(
     )
     if compound is not None:
         if compound.subject_id is None and compound.key in curated_keys:
-            hrt_service._require_curated_compound_integrity(compound)
+            records._require_curated_compound_integrity(compound)
         return compound
     collision = await session.scalar(
         select(HrtCompound.id).where(HrtCompound.key == key).limit(1)

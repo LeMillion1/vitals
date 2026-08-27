@@ -1062,11 +1062,8 @@ async def test_delete_controls_render_for_labs_skincare_and_hrt(auth_client, db_
     result, a diary entry, an observation and a whole cycle could only be removed
     through the API. Also covers the diary/observation lists themselves, which the
     skincare page never rendered."""
-    from vitals.services import (
-        hrt_cycle_service,
-        labs_service,
-        skincare_service,
-    )
+    from vitals.services import labs_service, skincare_service
+    from vitals.services.hrt import cycles
     from vitals.utils.timeutils import today_local
 
     day = today_local()
@@ -1089,7 +1086,7 @@ async def test_delete_controls_render_for_labs_skincare_and_hrt(auth_client, db_
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(day),
     )
-    cycle = await hrt_cycle_service.add_cycle(db_session, kind="course", start_date=day,
+    cycle = await cycles.add_cycle(db_session, kind="course", start_date=day,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )

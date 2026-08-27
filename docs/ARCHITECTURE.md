@@ -48,6 +48,13 @@ vitals/services/genetics/
 ├── variants.py        # scoped variant facts and raw-first ingestion
 └── vcf.py             # pure VCF parsing and curated interpretation
 
+vitals/services/hrt/
+├── catalog.py         # curated compound catalog
+├── records.py         # compounds, doses, and side effects
+├── cycles.py          # cycle plans and release projection
+├── templates.py       # portable cycle templates
+└── reminders.py       # subject-scoped HRT reminder scheduling
+
 vitals/operations/ownership/
 ├── portability_v1.py # destructive full-v1 restore coordinator
 ├── validate.py       # cross-table ownership cutover validation

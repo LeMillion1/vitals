@@ -20,7 +20,7 @@ from vitals.models.hrt import (
 )
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
-from vitals.services import hrt_catalog
+from vitals.services.hrt import catalog
 from vitals.operations.ownership import hrt_compound as service
 from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
@@ -163,7 +163,7 @@ async def test_historical_custom_graph_is_adopted_and_curated_graph_stays_global
     db_session,
 ):
     _owner, subject = await _scope(db_session)
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     custom = _custom()
     custom.components.append(HrtCompoundComponent(ester="synthetic", mg=25.0))
     db_session.add(custom)
@@ -187,7 +187,7 @@ async def test_historical_custom_graph_is_adopted_and_curated_graph_stays_global
 @pytest.mark.asyncio
 async def test_scalar_and_component_catalog_tamper_fail_before_mutation(db_session):
     _owner, _subject = await _scope(db_session)
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     curated = await db_session.scalar(
         select(HrtCompound).where(HrtCompound.key == "sustanon_250")
     )
@@ -198,7 +198,7 @@ async def test_scalar_and_component_catalog_tamper_fail_before_mutation(db_sessi
     await db_session.rollback()
 
     await _scope(db_session)
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     curated = await db_session.scalar(
         select(HrtCompound).where(HrtCompound.key == "sustanon_250")
     )
@@ -211,7 +211,7 @@ async def test_scalar_and_component_catalog_tamper_fail_before_mutation(db_sessi
 @pytest.mark.asyncio
 async def test_custom_curated_key_collision_and_unknown_source_fail(db_session):
     _owner, _subject = await _scope(db_session)
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     curated = await db_session.scalar(
         select(HrtCompound).where(HrtCompound.key == "testosterone_enanthate")
     )
@@ -599,7 +599,7 @@ async def test_large_graph_queries_use_fixed_keyset_pages(db_session, monkeypatc
     monkeypatch.setattr(service, "_PAGE_SIZE", 2)
     # Exercise both the fixed YAML/system graph (including its four-component
     # blend) and a larger custom/consumer graph under the tiny test page.
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     roots = [
         _custom(key=f"bounded_{index}")
         for index in range(5)

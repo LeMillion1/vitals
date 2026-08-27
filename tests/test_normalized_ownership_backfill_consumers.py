@@ -28,9 +28,6 @@ from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, NoiseMarker
 from vitals.services import (
     glp1_service,
-    hrt_cycle_service,
-    hrt_service,
-    hrt_template_service,
     labs_service,
     milestones_service,
     nutrition_service,
@@ -39,6 +36,7 @@ from vitals.services import (
     timeline_service,
     weight_service,
 )
+from vitals.services.hrt import cycles, records, templates
 from vitals.services.conflict_engine import ConflictScopeError
 from vitals.operations.ownership.normalized import (
     NormalizedOwnershipBackfillStatus,
@@ -263,14 +261,14 @@ async def test_backfilled_actorless_history_is_visible_to_scoped_consumers(
     # is a graph the scoped reader refuses rather than half-reads; the strict
     # child phase is what makes it readable again.
     with pytest.raises(ConflictScopeError):
-        await hrt_cycle_service.list_cycles(db_session, subject_id=subject_id)
+        await cycles.list_cycles(db_session, subject_id=subject_id)
     with pytest.raises(ConflictScopeError):
-        await hrt_template_service.list_templates(
+        await templates.list_templates(
             db_session, subject_id=subject_id
         )
-    assert list(await hrt_service.list_doses(
+    assert list(await records.list_doses(
         db_session, subject_id=subject_id
     )) == [rows[15]]
-    assert list(await hrt_service.list_side_effects(
+    assert list(await records.list_side_effects(
         db_session, subject_id=subject_id
     )) == [rows[16]]

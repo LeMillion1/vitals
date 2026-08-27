@@ -23,7 +23,7 @@ from sqlalchemy.pool import NullPool
 
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
-from vitals.services import hrt_cycle_service, hrt_template_service
+from vitals.services.hrt import cycles, templates
 from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_PHASE,
 )
@@ -332,17 +332,19 @@ async def _ownership_state(engine: AsyncEngine) -> dict[str, list[Any]]:
 async def _strict_consumers(engine: AsyncEngine, subject_id: Any) -> None:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
-        cycles = await hrt_cycle_service.list_cycles(
+        cycle_rows = await cycles.list_cycles(
             session,
             subject_id=subject_id,
         )
-        templates = await hrt_template_service.list_templates(
+        template_rows = await templates.list_templates(
             session,
             subject_id=subject_id,
         )
-        cycle = next(row for row in cycles if row.id == ROW_IDS["hrt_cycles"][0])
+        cycle = next(row for row in cycle_rows if row.id == ROW_IDS["hrt_cycles"][0])
         template = next(
-            row for row in templates if row.id == ROW_IDS["hrt_cycle_templates"][0]
+            row
+            for row in template_rows
+            if row.id == ROW_IDS["hrt_cycle_templates"][0]
         )
         assert [row.id for row in cycle.items] == list(ROW_IDS["hrt_cycle_items"])
         assert [row.id for row in template.items] == list(

@@ -275,7 +275,8 @@ async def lifespan(app: FastAPI):
     # process-local background execution.
     from vitals.config import load_config
     from vitals.scheduler.lifecycle import WorkerLifecycle
-    from vitals.services import conflict_catalog, conflict_engine, hrt_catalog
+    from vitals.services import conflict_catalog, conflict_engine
+    from vitals.services.hrt import catalog
 
     config = load_config()
     worker_lifecycle = WorkerLifecycle(
@@ -319,14 +320,14 @@ async def lifespan(app: FastAPI):
         )
         await conflict_catalog.sync_catalog(session)
         # Upsert the curated HRT compound catalog (vitals/data/hrt_compounds.yaml).
-        await hrt_catalog.sync_catalog(session)
+        await catalog.sync_catalog(session)
         await session.commit()
     drill_stage("catalogs_completed")
 
     # The panel seed adopts the pre-tenancy catalog only under the shared
     # governance lock. Keep it in a fresh transaction so catalog row locks are
     # never acquired before governance/subject locks.
-    from vitals.services import hrt_reminders
+    from vitals.services.hrt import reminders
     from vitals.utils.timeutils import today_local
 
     drill_stage("seed_started")
@@ -343,7 +344,7 @@ async def lifespan(app: FastAPI):
                 session,
                 context=conflict_context,
             )
-            await hrt_reminders.seed_hormone_panel(
+            await reminders.seed_hormone_panel(
                 session,
                 identity=conflict_context.identity,
                 prepared_conflict_write=prepared,

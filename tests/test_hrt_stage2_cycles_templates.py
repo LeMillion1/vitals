@@ -17,12 +17,8 @@ from vitals.models.hrt import (
 from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    conflict_engine,
-    hrt_catalog,
-    hrt_cycle_service,
-    hrt_template_service,
-)
+from vitals.services import conflict_engine
+from vitals.services.hrt import catalog, cycles, templates
 
 
 ON_DATE = date(2026, 8, 20)
@@ -61,7 +57,7 @@ async def _prepared(session, identity: WriteIdentity, *, legacy: bool = False):
 
 async def _owned_cycle(session, identity: WriteIdentity, *, source=Source.MANUAL):
     prepared = await _prepared(session, identity)
-    cycle = await hrt_cycle_service.add_cycle(
+    cycle = await cycles.add_cycle(
         session,
         kind="course",
         start_date=ON_DATE,
@@ -69,7 +65,7 @@ async def _owned_cycle(session, identity: WriteIdentity, *, source=Source.MANUAL
         identity=identity,
         prepared_conflict_write=prepared,
     )
-    item = await hrt_cycle_service.add_cycle_item(
+    item = await cycles.add_cycle_item(
         session,
         cycle.id,
         compound_key="synthetic-free-text",
@@ -97,20 +93,20 @@ async def test_cycle_roots_children_reads_and_auto_close_are_exact_subject(db_se
     ) == (first.subject_id, first.actor_user_id, Source.MCP.value, first.subject_id)
     assert first_cycle.end_date is None
     assert second_cycle.end_date is None
-    assert [row.id for row in await hrt_cycle_service.list_cycles(
+    assert [row.id for row in await cycles.list_cycles(
         db_session, subject_id=first.subject_id
     )] == [first_cycle.id]
-    assert [row.id for row in await hrt_cycle_service.list_cycles(
+    assert [row.id for row in await cycles.list_cycles(
         db_session, subject_id=second.subject_id
     )] == [second_cycle.id]
-    assert await hrt_cycle_service.update_cycle_item(
+    assert await cycles.update_cycle_item(
         db_session,
         first_item.id,
         note="foreign write",
         identity=second,
         prepared_conflict_write=second_prepared,
     ) is None
-    assert await hrt_cycle_service.delete_cycle(
+    assert await cycles.delete_cycle(
         db_session,
         second_cycle.id,
         identity=first,
@@ -126,7 +122,7 @@ async def test_invalid_prepared_capability_is_rejected_before_cycle_target_use(d
     cycle, item, first_prepared = await _owned_cycle(db_session, first)
 
     with pytest.raises(conflict_engine.ConflictPreparedWriteError):
-        await hrt_cycle_service.update_cycle_item(
+        await cycles.update_cycle_item(
             db_session,
             item.id,
             note="forged",
@@ -142,7 +138,7 @@ async def test_cycle_item_units_are_validated_on_create_and_update(db_session):
     cycle, item, prepared = await _owned_cycle(db_session, identity)
 
     with pytest.raises(ValueError, match="unknown dose unit"):
-        await hrt_cycle_service.add_cycle_item(
+        await cycles.add_cycle_item(
             db_session,
             cycle.id,
             compound_key="synthetic-free-text",
@@ -152,7 +148,7 @@ async def test_cycle_item_units_are_validated_on_create_and_update(db_session):
             prepared_conflict_write=prepared,
         )
     with pytest.raises(ValueError, match="unknown dose unit"):
-        await hrt_cycle_service.update_cycle_item(
+        await cycles.update_cycle_item(
             db_session,
             item.id,
             unit="teaspoon",
@@ -168,7 +164,7 @@ async def test_cycle_create_rejects_inverted_date_range_before_persistence(db_se
     prepared = await _prepared(db_session, identity)
 
     with pytest.raises(ValueError, match="end_date cannot be before"):
-        await hrt_cycle_service.add_cycle(
+        await cycles.add_cycle(
             db_session,
             kind="course",
             start_date=ON_DATE,
@@ -188,7 +184,7 @@ async def test_template_snapshot_export_and_materialization_keep_scope_and_prove
     old_cycle, _, first_prepared = await _owned_cycle(
         db_session, first, source=Source.MCP
     )
-    template = await hrt_template_service.save_cycle_as_template(
+    template = await templates.save_cycle_as_template(
         db_session,
         old_cycle.id,
         name="Scoped template",
@@ -203,13 +199,13 @@ async def test_template_snapshot_export_and_materialization_keep_scope_and_prove
         template.source,
         template.items[0].subject_id,
     ) == (first.subject_id, first.actor_user_id, Source.MCP.value, first.subject_id)
-    assert hrt_template_service.export_template(
+    assert templates.export_template(
         template, subject_id=first.subject_id
     )["name"] == "Scoped template"
     with pytest.raises(conflict_engine.ConflictScopeError):
-        hrt_template_service.export_template(template, subject_id=second.subject_id)
+        templates.export_template(template, subject_id=second.subject_id)
 
-    materialized = await hrt_template_service.create_cycle_from_template(
+    materialized = await templates.create_cycle_from_template(
         db_session,
         template.id,
         start_date=ON_DATE + timedelta(days=1),
@@ -237,13 +233,13 @@ async def test_template_snapshot_export_and_materialization_keep_scope_and_prove
 
 
 async def test_scoped_template_import_is_parse_only_and_subject_isolated(db_session):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     identity = await _identity(db_session, "hrt-template-import")
     prepared = await _prepared(db_session, identity)
-    imported = await hrt_template_service.import_template(
+    imported = await templates.import_template(
         db_session,
         {
-            "format": hrt_template_service.EXPORT_FORMAT,
+            "format": templates.EXPORT_FORMAT,
             "version": 1,
             "name": "Imported",
             "kind": "course",
@@ -307,10 +303,10 @@ async def test_template_graph_rejects_foreign_child_and_partial_legacy_parent(
         )
 
     with pytest.raises(conflict_engine.ConflictScopeError):
-        await hrt_template_service.get_template(
+        await templates.get_template(
             db_session, template.id, subject_id=first.subject_id
         )
-    assert await hrt_template_service.get_template(
+    assert await templates.get_template(
         db_session,
         partial.id,
         subject_id=first.subject_id,

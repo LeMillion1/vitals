@@ -15,7 +15,8 @@ from vitals.models.hrt import HrtCycle, HrtDose
 from vitals.models.identity import HealthSubject, User
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, hrt_catalog, hrt_reminders, hrt_service
+from vitals.services import conflict_engine
+from vitals.services.hrt import catalog, reminders, records
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped
@@ -90,7 +91,7 @@ def _register_resolvers() -> None:
 
     conflict_engine.register_domain_resolver(
         Domain.HRT.value,
-        hrt_service.resolve_active_scoped,
+        records.resolve_active_scoped,
     )
     conflict_engine.register_domain_resolver(Domain.LABS.value, labs)
 
@@ -122,8 +123,8 @@ async def test_scoped_dose_and_side_effect_crud_preserves_origin_and_scope(
         legacy_owner_roots.user_id,
     )
     foreign_identity = await _identity(db_session, "foreign-hrt-core")
-    await hrt_catalog.sync_catalog(db_session)
-    compound = await hrt_service.get_compound(
+    await catalog.sync_catalog(db_session)
+    compound = await records.get_compound(
         db_session,
         "oxandrolone",
         subject_id=identity.subject_id,
@@ -143,18 +144,18 @@ async def test_scoped_dose_and_side_effect_crud_preserves_origin_and_scope(
     db_session.add(partial)
     await db_session.commit()
 
-    assert [row.id for row in await hrt_service.list_doses(
+    assert [row.id for row in await records.list_doses(
         db_session,
         subject_id=identity.subject_id,
     )] == [owned.id]
-    assert await hrt_service.get_dose_for_update(
+    assert await records.get_dose_for_update(
         db_session,
         foreign.id,
         identity=identity,
         prepared_conflict_write=await _prepared(db_session, identity),
     ) is None
 
-    updated = await hrt_service.update_dose(
+    updated = await records.update_dose(
         db_session,
         owned.id,
         compound_key=compound.key,
@@ -171,14 +172,14 @@ async def test_scoped_dose_and_side_effect_crud_preserves_origin_and_scope(
         Source.MCP.value,
         "merged",
     )
-    assert await hrt_service.delete_dose(
+    assert await records.delete_dose(
         db_session,
         partial.id,
         identity=identity,
         prepared_conflict_write=await _prepared(db_session, identity),
     ) is False
 
-    effect = await hrt_service.log_side_effect(
+    effect = await records.log_side_effect(
         db_session,
         on_date=TODAY,
         effect_type="acne",
@@ -187,7 +188,7 @@ async def test_scoped_dose_and_side_effect_crud_preserves_origin_and_scope(
         identity=identity,
         prepared_conflict_write=await _prepared(db_session, identity),
     )
-    changed = await hrt_service.update_side_effect(
+    changed = await records.update_side_effect(
         db_session,
         effect.id,
         on_date=TODAY,
@@ -215,8 +216,8 @@ async def test_scoped_write_rejects_tampered_catalog_dose_metadata(
         legacy_owner_roots.subject_id,
         legacy_owner_roots.user_id,
     )
-    await hrt_catalog.sync_catalog(db_session)
-    compound = await hrt_service.get_compound(
+    await catalog.sync_catalog(db_session)
+    compound = await records.get_compound(
         db_session,
         "testosterone_enanthate",
         subject_id=owner_write.subject_id,
@@ -225,8 +226,8 @@ async def test_scoped_write_rejects_tampered_catalog_dose_metadata(
     compound.conc_mg_ml = 999
     await db_session.commit()
 
-    with pytest.raises(hrt_service.HrtCatalogIntegrityError, match="conc_mg_ml"):
-        await hrt_service.log_dose(
+    with pytest.raises(records.HrtCatalogIntegrityError, match="conc_mg_ml"):
+        await records.log_dose(
             db_session,
             compound_key=compound.key,
             on_date=TODAY,
@@ -246,8 +247,8 @@ async def test_update_replaces_only_the_exact_dose_in_conflict_snapshot(
         legacy_owner_roots.subject_id,
         legacy_owner_roots.user_id,
     )
-    await hrt_catalog.sync_catalog(db_session)
-    oxandrolone = await hrt_service.get_compound(
+    await catalog.sync_catalog(db_session)
+    oxandrolone = await records.get_compound(
         db_session,
         "oxandrolone",
         subject_id=identity.subject_id,
@@ -258,7 +259,7 @@ async def test_update_replaces_only_the_exact_dose_in_conflict_snapshot(
     await _add_a_rule(db_session, identity)
     _register_resolvers()
 
-    changed = await hrt_service.update_dose(
+    changed = await records.update_dose(
         db_session,
         sole.id,
         compound_key="testosterone_enanthate",
@@ -284,8 +285,8 @@ async def test_update_keeps_another_matching_dose_in_conflict_snapshot(
         legacy_owner_roots.subject_id,
         legacy_owner_roots.user_id,
     )
-    await hrt_catalog.sync_catalog(db_session)
-    oxandrolone = await hrt_service.get_compound(
+    await catalog.sync_catalog(db_session)
+    oxandrolone = await records.get_compound(
         db_session,
         "oxandrolone",
         subject_id=identity.subject_id,
@@ -298,7 +299,7 @@ async def test_update_keeps_another_matching_dose_in_conflict_snapshot(
     _register_resolvers()
 
     with pytest.raises(conflict_engine.ConflictBlocked):
-        await hrt_service.update_dose(
+        await records.update_dose(
             db_session,
             first.id,
             compound_key="testosterone_enanthate",
@@ -342,13 +343,13 @@ async def test_scoped_reminder_writes_actorless_subject_alert(
     )
     await db_session.commit()
 
-    await hrt_reminders.refresh_labs_due(
+    await reminders.refresh_labs_due(
         db_session,
         identity=identity,
         prepared_conflict_write=await _prepared(db_session, identity),
     )
     alert = await db_session.scalar(
-        select(SystemAlert).where(SystemAlert.alert_key == hrt_reminders.LABS_DUE_KEY)
+        select(SystemAlert).where(SystemAlert.alert_key == reminders.LABS_DUE_KEY)
     )
     assert alert is not None
     assert (
@@ -373,9 +374,9 @@ async def test_scoped_catalog_rejects_unknown_compound_and_freezes_activation(
         legacy_owner_roots.subject_id,
         legacy_owner_roots.user_id,
     )
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     with pytest.raises(ValueError, match="checked-in"):
-        await hrt_service.log_dose(
+        await records.log_dose(
             db_session,
             compound_key="custom-compound",
             on_date=TODAY,
@@ -383,13 +384,13 @@ async def test_scoped_catalog_rejects_unknown_compound_and_freezes_activation(
             identity=identity,
             prepared_conflict_write=await _prepared(db_session, identity),
         )
-    compound = await hrt_service.get_compound(
+    compound = await records.get_compound(
         db_session,
         "oxandrolone",
         subject_id=identity.subject_id,
     )
-    with pytest.raises(hrt_service.HrtCompoundActivationCutoverRequiredError):
-        await hrt_service.set_compound_active(
+    with pytest.raises(records.HrtCompoundActivationCutoverRequiredError):
+        await records.set_compound_active(
             db_session,
             compound.id,
             active=False,
@@ -412,9 +413,9 @@ async def test_reminders_job_noops_when_hrt_module_is_disabled(
         del args, kwargs
         raise AssertionError("disabled HRT job must not read domain state")
 
-    monkeypatch.setattr(hrt_reminders.modules_service, "get_enabled_modules", disabled)
-    monkeypatch.setattr(hrt_reminders, "refresh_all", must_not_refresh)
-    await run_job_for_every_subject(hrt_reminders.reminders_job, session_factory)
+    monkeypatch.setattr(reminders.modules_service, "get_enabled_modules", disabled)
+    monkeypatch.setattr(reminders, "refresh_all", must_not_refresh)
+    await run_job_for_every_subject(reminders.reminders_job, session_factory)
 
 
 async def test_invalid_prepared_date_fails_before_target_query(
@@ -440,9 +441,9 @@ async def test_invalid_prepared_date_fails_before_target_query(
         reads += 1
         raise AssertionError("target must not be queried")
 
-    monkeypatch.setattr(hrt_service, "_owned_row_for_update", probe)
+    monkeypatch.setattr(records, "_owned_row_for_update", probe)
     with pytest.raises(conflict_engine.ConflictPreparedWriteError, match="date"):
-        await hrt_service.update_dose(
+        await records.update_dose(
             db_session,
             1,
             compound_key="oxandrolone",

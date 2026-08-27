@@ -62,7 +62,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     )
     from vitals.services.digest_service import digest_job
     from vitals.services.nutrition_service import day_end_job as nutrition_day_end_job
-    from vitals.services.hrt_reminders import reminders_job as hrt_reminders_job
+    from vitals.services.hrt.reminders import reminders_job as hrt_reminders_job
     from vitals.services.garmin_service import pulse_job as garmin_pulse_job
     from vitals.services.proactive.brief import brief_job, last_attempt_hour
     from vitals.services.proactive.nudges import nudges_job

@@ -1446,7 +1446,7 @@ The rest were real, in two shapes. `alerts_service.override_alert` had no caller
 anywhere — both live surfaces use the scoped `legacy_subject_alerts.override` —
 and went; `resolve_alert` took a mandatory subject, because resolving somebody
 else's alert is a write across the boundary rather than a read past it.
-`hrt_service.set_compound_active` sets the installation-wide catalog flag, and a
+`hrt.records.set_compound_active` sets the installation-wide catalog flag, and a
 bare key could have reached a subject's own custom compound and flipped a global
 flag on a row that is not global; it now sees only curated rows. The six
 `RawPayload` reads across labs, body composition and the Telegram inbound path

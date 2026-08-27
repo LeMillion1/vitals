@@ -36,11 +36,10 @@ from vitals.ownership import WriteIdentity
 from vitals.services import (
     alerts_service,
     conflict_engine,
-    hrt_cycle_service,
-    hrt_service,
     labs_service,
     modules_service,
 )
+from vitals.services.hrt import cycles, records
 from vitals.utils.timeutils import today_local
 
 logger = logging.getLogger(__name__)
@@ -347,7 +346,7 @@ async def _compound_display_name(
 ) -> str:
     """Localized catalog name for a compound key (falls back to the key for a
     free-text/custom compound not in the catalog)."""
-    compound = await hrt_service.get_compound(
+    compound = await records.get_compound(
         session,
         key,
         subject_id=(context.identity.subject_id if context is not None else None),
@@ -366,7 +365,7 @@ async def _last_actual_dose_date(
     on_date: date_type,
     context: conflict_engine.ConflictWriteContext | None,
 ) -> Optional[date_type]:
-    rows = await hrt_service.list_doses(
+    rows = await records.list_doses(
         session,
         subject_id=context.identity.subject_id,
         end=on_date,
@@ -398,7 +397,7 @@ async def refresh_injection_due(
         for item in cycle.items:
             entity = item.compound_key
             planned_keys.add(entity)
-            planned = hrt_cycle_service.expand_item_schedule(
+            planned = cycles.expand_item_schedule(
                 item, cycle.start_date, cycle.start_date, today
             )
             if not planned:

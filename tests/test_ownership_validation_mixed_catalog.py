@@ -9,14 +9,14 @@ from sqlalchemy import select
 from vitals.enums import Domain, Source
 from vitals.models.hrt import HrtCompound, HrtDose
 from vitals.operations.ownership import validate as service
-from vitals.services import hrt_catalog
+from vitals.services.hrt import catalog
 
 
 @pytest.mark.asyncio
 async def test_subject_dose_may_reference_a_global_hrt_compound(
     db_session, legacy_owner_roots
 ):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     compound = await db_session.scalar(
         select(HrtCompound)
         .where(HrtCompound.subject_id.is_(None))

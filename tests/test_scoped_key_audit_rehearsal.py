@@ -30,7 +30,8 @@ from sqlalchemy.pool import NullPool
 
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
-from vitals.services import conflict_catalog, hrt_catalog
+from vitals.services import conflict_catalog
+from vitals.services.hrt import catalog
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
 from vitals.scoped_keys import SCOPED_KEYS
 from vitals.operations.ownership.audit import SCOPED_KEY_AUDIT_PHASE
@@ -254,7 +255,7 @@ async def _bootstrap_roots(engine: AsyncEngine):
             timezone="Asia/Almaty",
         )
         await bootstrap_legacy_resource_roots(session, subject_id=identity.subject_id)
-        await hrt_catalog.sync_catalog(session)
+        await catalog.sync_catalog(session)
         await conflict_catalog.sync_catalog(session)
         await session.commit()
         return identity

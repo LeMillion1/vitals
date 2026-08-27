@@ -1896,7 +1896,7 @@ async def assemble_context(
     # HRT — the strongest intervention in the lake and, until now, invisible to the
     # digest: a compound change and the sleep/labs/skin shift that follows it could
     # never be connected. Active protocol + doses inside the period + side effects.
-    from vitals.services import hrt_cycle_service, hrt_service
+    from vitals.services.hrt import cycles, records
     from vitals.models.hrt import HrtDose, HrtSideEffect
 
     hrt_enabled = module_on("hrt")
@@ -1910,7 +1910,7 @@ async def assemble_context(
     planned_truncated = False
     compound_names: dict[str, dict[str, Any]] = {}
     if hrt_enabled:
-        cycle = await hrt_cycle_service.active_cycle(
+        cycle = await cycles.active_cycle(
             session, on_date=period_end, subject_id=subject_id
         )
         hrt_all_doses, doses_truncated = await _bounded_scalars(
@@ -1935,7 +1935,7 @@ async def assemble_context(
             .order_by(HrtSideEffect.date, HrtSideEffect.id),
             _TREATMENT_EVENT_LIMIT,
         )
-        compounds = await hrt_service.list_compounds(
+        compounds = await records.list_compounds(
             session, subject_id=subject_id, active_only=False
         )
         compound_names = {
@@ -1949,7 +1949,7 @@ async def assemble_context(
             for row in compounds
         }
         if cycle is not None:
-            all_planned = await hrt_cycle_service.planned_administrations(
+            all_planned = await cycles.planned_administrations(
                 session,
                 start=prev_start,
                 end=period_end,

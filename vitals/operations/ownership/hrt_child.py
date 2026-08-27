@@ -731,7 +731,7 @@ async def _validate_compound(
             raise HrtChildOwnershipBackfillStateError(
                 "a system HRT compound must remain globally owned"
             )
-        from vitals.services.hrt_service import (
+        from vitals.services.hrt.records import (
             HrtCatalogIntegrityError,
             _require_curated_compound_integrity,
         )

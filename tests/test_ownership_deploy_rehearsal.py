@@ -43,7 +43,8 @@ from vitals.ownership import (
     required_ownership_columns,
 )
 from vitals.ownership_deploy import OWNERSHIP_BACKFILL_SEQUENCE
-from vitals.services import conflict_catalog, hrt_catalog
+from vitals.services import conflict_catalog
+from vitals.services.hrt import catalog
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
 from vitals.persistence.rls import SUBJECT_SETTING
 from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
@@ -360,7 +361,7 @@ async def test_real_postgres_0034_lake_reaches_head_through_every_phase(
             )
             # The HRT and conflict phases classify rows against the checked-in
             # catalogs, which startup materializes before any job runs.
-            await hrt_catalog.sync_catalog(session)
+            await catalog.sync_catalog(session)
             await conflict_catalog.sync_catalog(session)
             await session.commit()
 

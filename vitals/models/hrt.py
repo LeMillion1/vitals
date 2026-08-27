@@ -4,7 +4,7 @@ Four tables, all ``domain = 'hrt'``:
 
   * ``hrt_compounds`` — the curated **molecule catalog** (reference, like
     ``supplements``/``conflict_rules``: no per-day ``InsightsMixin.date``). Seeded
-    from ``vitals/data/hrt_compounds.yaml`` via ``hrt_catalog.sync_catalog``,
+    from ``vitals/data/hrt_compounds.yaml`` via ``hrt.catalog.sync_catalog``,
     keyed on a stable ``key`` slug. The user may add custom rows too.
   * ``hrt_compound_components`` — per-ester breakdown of a multi-ester blend
     (Sustanon/Omnadren) so the active-release curve can sum each ester's decay.
@@ -286,7 +286,7 @@ class HrtCycleItem(Base, SubjectOwnershipMixin, TimestampMixin):
     segments — each ``{"dose", "interval_days", "duration_days"}`` (flat) or a
     linear ramp ``{"dose_start", "dose_end", "step", "step_every_days",
     "interval_days", "duration_days"}``. The schedule engine
-    (``hrt_cycle_service.expand_item_schedule``) turns it into planned
+    (``hrt.cycles.expand_item_schedule``) turns it into planned
     administrations off a fixed grid anchored at the cycle start."""
 
     __tablename__ = "hrt_cycle_items"

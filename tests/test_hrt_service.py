@@ -13,33 +13,34 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from vitals.models.hrt import DOMAIN, HrtCompound, HrtCompoundComponent
-from vitals.services import conflict_engine, hrt_catalog, hrt_cycle_service, hrt_service
+from vitals.services import conflict_engine
+from vitals.services.hrt import catalog, cycles, records
 from vitals.utils.timeutils import today_local
 
 
 
 # ── Catalog sync ──────────────────────────────────────────────────────────────
 async def test_sync_catalog_is_idempotent(db_session, owner_write):
-    r1 = await hrt_catalog.sync_catalog(db_session)
+    r1 = await catalog.sync_catalog(db_session)
     await db_session.commit()
     assert r1["inserted"] == r1["total"] > 0
     assert r1["updated"] == 0
 
-    r2 = await hrt_catalog.sync_catalog(db_session)
+    r2 = await catalog.sync_catalog(db_session)
     await db_session.commit()
     assert r2["inserted"] == 0
     assert r2["updated"] == r2["total"] == r1["total"]
 
-    compounds = await hrt_service.list_compounds(db_session,
+    compounds = await records.list_compounds(db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(compounds) == r1["total"]
 
 
 async def test_sync_catalog_loads_blend_components(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
-    sust = await hrt_service.get_compound(db_session, "sustanon_250",
+    sust = await records.get_compound(db_session, "sustanon_250",
         subject_id=owner_write.subject_id,
     )
     assert sust is not None
@@ -51,9 +52,9 @@ async def test_sync_catalog_loads_blend_components(db_session, owner_write):
         "decanoate": 100.0,
     }
     # Re-sync must not duplicate the blend's components.
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
-    sust2 = await hrt_service.get_compound(db_session, "sustanon_250",
+    sust2 = await records.get_compound(db_session, "sustanon_250",
         subject_id=owner_write.subject_id,
     )
     assert len(sust2.components) == 4
@@ -76,10 +77,10 @@ async def test_sync_catalog_rejects_custom_key_collision_without_mutation(db_ses
     await db_session.flush()
 
     with pytest.raises(
-        hrt_catalog.HrtCatalogCollisionError,
+        catalog.HrtCatalogCollisionError,
         match="protected custom-key collision",
     ):
-        await hrt_catalog.sync_catalog(db_session)
+        await catalog.sync_catalog(db_session)
 
     assert row.name == "Protected custom definition"
     assert [(component.ester, component.mg) for component in row.components] == [
@@ -89,19 +90,19 @@ async def test_sync_catalog_rejects_custom_key_collision_without_mutation(db_ses
 
 
 async def test_scoped_curated_reads_require_exact_domain_and_source(db_session):
-    definition = dict(hrt_catalog.load_compound_catalog())["oxandrolone"]
+    definition = dict(catalog.load_compound_catalog())["oxandrolone"]
     row = HrtCompound(
         key="oxandrolone",
         domain="labs",
         source="system",
-        **hrt_catalog._normalize_values(definition),
+        **catalog._normalize_values(definition),
     )
     db_session.add(row)
     await db_session.flush()
     subject_id = uuid.uuid4()
 
     assert (
-        await hrt_service.get_compound(
+        await records.get_compound(
             db_session,
             "oxandrolone",
             subject_id=subject_id,
@@ -112,7 +113,7 @@ async def test_scoped_curated_reads_require_exact_domain_and_source(db_session):
         conflict_engine.ConflictScopeError,
         match="another subject scope",
     ):
-        await hrt_cycle_service._resolve_scoped_compound(
+        await cycles._resolve_scoped_compound(
             db_session,
             "oxandrolone",
             subject_id=subject_id,
@@ -126,7 +127,7 @@ async def test_postgres_catalog_sync_serializes_custom_recategorization(
 ):
     if db_session.bind.dialect.name != "postgresql":
         pytest.skip("PostgreSQL row-lock semantics")
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
 
     rows_locked = asyncio.Event()
@@ -139,14 +140,14 @@ async def test_postgres_catalog_sync_serializes_custom_recategorization(
         await release_sync.wait()
 
     monkeypatch.setattr(
-        hrt_catalog,
+        catalog,
         "_after_catalog_rows_locked_for_test",
         pause_after_locks,
     )
 
     async def synchronize():
         async with factory() as session:
-            await hrt_catalog.sync_catalog(session)
+            await catalog.sync_catalog(session)
             await session.commit()
 
     async def recategorize():
@@ -187,7 +188,7 @@ async def test_postgres_catalog_sync_serializes_custom_recategorization(
 
 # ── Dose logging ──────────────────────────────────────────────────────────────
 async def test_log_dose_direct_amount(db_session, owner_write):
-    row = await hrt_service.log_dose(
+    row = await records.log_dose(
         db_session, compound_key="testosterone_enanthate",
         on_date=date(2026, 6, 1), dose=250, unit="mg",
         identity=owner_write.identity,
@@ -200,10 +201,10 @@ async def test_log_dose_direct_amount(db_session, owner_write):
 
 
 async def test_log_dose_computes_mg_from_volume_and_catalog_conc(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
     # test enanthate catalog concentration is 250 mg/ml → 1 ml == 250 mg.
-    row = await hrt_service.log_dose(
+    row = await records.log_dose(
         db_session, compound_key="testosterone_enanthate",
         on_date=date(2026, 6, 1), volume_ml=1.0,
         identity=owner_write.identity,
@@ -216,10 +217,10 @@ async def test_log_dose_computes_mg_from_volume_and_catalog_conc(db_session, own
 
 
 async def test_measured_concentration_overrides_catalog(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
     # Grey-market vial underdosed at 200 mg/ml → 1 ml == 200 mg, not 250.
-    row = await hrt_service.log_dose(
+    row = await records.log_dose(
         db_session, compound_key="testosterone_enanthate",
         on_date=date(2026, 6, 1), volume_ml=1.0, concentration_mg_ml=200,
         brand="Pharmacom", lab="UGL", batch="A123",
@@ -233,7 +234,7 @@ async def test_measured_concentration_overrides_catalog(db_session, owner_write)
 
 async def test_log_dose_without_amount_or_volume_raises(db_session, owner_write):
     with pytest.raises(ValueError):
-        await hrt_service.log_dose(
+        await records.log_dose(
             db_session, compound_key="testosterone_enanthate",
             on_date=date(2026, 6, 1),
         identity=owner_write.identity,
@@ -243,7 +244,7 @@ async def test_log_dose_without_amount_or_volume_raises(db_session, owner_write)
 
 async def test_log_dose_rejects_unknown_site(db_session, owner_write):
     with pytest.raises(ValueError):
-        await hrt_service.log_dose(
+        await records.log_dose(
             db_session, compound_key="testosterone_enanthate",
             on_date=date(2026, 6, 1), dose=250, site="left_earlobe",
         identity=owner_write.identity,
@@ -253,7 +254,7 @@ async def test_log_dose_rejects_unknown_site(db_session, owner_write):
 
 async def test_log_dose_rejects_non_positive(db_session, owner_write):
     with pytest.raises(ValueError):
-        await hrt_service.log_dose(
+        await records.log_dose(
             db_session, compound_key="oxandrolone",
             on_date=date(2026, 6, 1), dose=0,
         identity=owner_write.identity,
@@ -268,28 +269,28 @@ def test_site_frequency_counts_by_site():
         SimpleNamespace(site="delt_right"),
         SimpleNamespace(site=None),
     ]
-    assert hrt_service.site_frequency(rows) == {"glute_left": 2, "delt_right": 1}
+    assert records.site_frequency(rows) == {"glute_left": 2, "delt_right": 1}
 
 
 async def test_update_and_delete_dose(db_session, owner_write):
-    row = await hrt_service.log_dose(
+    row = await records.log_dose(
         db_session, compound_key="oxandrolone", on_date=date(2026, 6, 1), dose=20, unit="mg",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
     )
     await db_session.commit()
-    updated = await hrt_service.update_dose(
+    updated = await records.update_dose(
         db_session, row.id, compound_key="oxandrolone",
         on_date=date(2026, 6, 2), dose=30, unit="mg",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 2)),
     )
     assert updated.dose == 30 and updated.date == date(2026, 6, 2)
-    assert await hrt_service.delete_dose(db_session, row.id,
+    assert await records.delete_dose(db_session, row.id,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     ) is True
-    assert await hrt_service.delete_dose(db_session, row.id,
+    assert await records.delete_dose(db_session, row.id,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     ) is False
@@ -297,7 +298,7 @@ async def test_update_and_delete_dose(db_session, owner_write):
 
 # ── Side effects ──────────────────────────────────────────────────────────────
 async def test_side_effect_severity_bounds(db_session, owner_write):
-    ok = await hrt_service.log_side_effect(
+    ok = await records.log_side_effect(
         db_session, on_date=date(2026, 6, 1), effect_type="acne", severity=3,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
@@ -305,7 +306,7 @@ async def test_side_effect_severity_bounds(db_session, owner_write):
     await db_session.commit()
     assert ok.id is not None
     with pytest.raises(ValueError):
-        await hrt_service.log_side_effect(
+        await records.log_side_effect(
             db_session, on_date=date(2026, 6, 1), effect_type="acne", severity=9,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
@@ -314,15 +315,15 @@ async def test_side_effect_severity_bounds(db_session, owner_write):
 
 # ── Conflict resolver ─────────────────────────────────────────────────────────
 async def test_resolve_active_returns_recent_compound_class(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
-    await hrt_service.log_dose(
+    await records.log_dose(
         db_session, compound_key="oxandrolone", on_date=today_local(), dose=20, unit="mg",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    items = await hrt_service.resolve_active_scoped(
+    items = await records.resolve_active_scoped(
         db_session, scope=owner_write.context.scope
     )
     keys = {i["compound_key"]: i for i in items}
@@ -332,15 +333,15 @@ async def test_resolve_active_returns_recent_compound_class(db_session, owner_wr
 
 
 async def test_resolve_active_ignores_old_doses(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
-    await hrt_service.log_dose(
+    await records.log_dose(
         db_session, compound_key="oxandrolone", on_date=date(2020, 1, 1), dose=20, unit="mg",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2020, 1, 1)),
     )
     await db_session.commit()
-    assert await hrt_service.resolve_active_scoped(
+    assert await records.resolve_active_scoped(
         db_session, scope=owner_write.context.scope
     ) == []
 
@@ -357,33 +358,33 @@ _VALID_ENTRY = {
 
 def test_validate_entry_accepts_a_good_entry():
     # Must not raise; 'partial' is a legal tri-state for aromatizes.
-    hrt_catalog._validate_entry("x", {**_VALID_ENTRY, "aromatizes": "partial"})
+    catalog._validate_entry("x", {**_VALID_ENTRY, "aromatizes": "partial"})
 
 
 def test_validate_entry_rejects_bad_compound_class():
     with pytest.raises(ValueError):
-        hrt_catalog._validate_entry("x", {**_VALID_ENTRY, "compound_class": "bogus"})
+        catalog._validate_entry("x", {**_VALID_ENTRY, "compound_class": "bogus"})
 
 
 def test_validate_entry_rejects_bad_route():
     with pytest.raises(ValueError):
-        hrt_catalog._validate_entry("x", {**_VALID_ENTRY, "route": "snorted"})
+        catalog._validate_entry("x", {**_VALID_ENTRY, "route": "snorted"})
 
 
 def test_validate_entry_rejects_bad_dose_unit():
     with pytest.raises(ValueError):
-        hrt_catalog._validate_entry("x", {**_VALID_ENTRY, "dose_unit": "teaspoon"})
+        catalog._validate_entry("x", {**_VALID_ENTRY, "dose_unit": "teaspoon"})
 
 
 def test_validate_entry_rejects_missing_required():
     broken = {k: v for k, v in _VALID_ENTRY.items() if k != "route"}
     with pytest.raises(ValueError):
-        hrt_catalog._validate_entry("x", broken)
+        catalog._validate_entry("x", broken)
 
 
 def test_validate_entry_rejects_component_without_mg():
     with pytest.raises(ValueError):
-        hrt_catalog._validate_entry(
+        catalog._validate_entry(
             "x", {**_VALID_ENTRY, "components": [{"ester": "propionate"}]}
         )
 
@@ -391,7 +392,7 @@ def test_validate_entry_rejects_component_without_mg():
 @pytest.mark.parametrize("value", [0, "propionate", {}])
 def test_validate_entry_rejects_nonlist_components(value):
     with pytest.raises(ValueError, match="components must be a list"):
-        hrt_catalog._validate_entry("x", {**_VALID_ENTRY, "components": value})
+        catalog._validate_entry("x", {**_VALID_ENTRY, "components": value})
 
 
 @pytest.mark.parametrize(
@@ -405,13 +406,13 @@ def test_validate_entry_rejects_nonlist_components(value):
 )
 def test_validate_entry_rejects_nonpositive_or_nonfinite_numbers(field, value):
     with pytest.raises(ValueError, match="positive finite"):
-        hrt_catalog._validate_entry("x", {**_VALID_ENTRY, field: value})
+        catalog._validate_entry("x", {**_VALID_ENTRY, field: value})
 
 
 @pytest.mark.parametrize("value", [0, -1, math.inf, math.nan, True])
 def test_validate_entry_rejects_invalid_component_amount(value):
     with pytest.raises(ValueError, match="positive finite"):
-        hrt_catalog._validate_entry(
+        catalog._validate_entry(
             "x",
             {
                 **_VALID_ENTRY,
@@ -422,18 +423,18 @@ def test_validate_entry_rejects_invalid_component_amount(value):
 
 # ── Compound catalog queries ──────────────────────────────────────────────────
 async def test_sync_stamps_source_system(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
-    row = await hrt_service.get_compound(db_session, "oxandrolone",
+    row = await records.get_compound(db_session, "oxandrolone",
         subject_id=owner_write.subject_id,
     )
     assert row.source == "system"
 
 
 async def test_list_compounds_filters_by_class(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
-    ais = await hrt_service.list_compounds(db_session, compound_class="ai",
+    ais = await records.list_compounds(db_session, compound_class="ai",
         subject_id=owner_write.subject_id,
     )
     keys = {c.key for c in ais}
@@ -441,30 +442,30 @@ async def test_list_compounds_filters_by_class(db_session, owner_write):
 
 
 async def test_set_compound_active_hides_from_active_list(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
-    ana = await hrt_service.get_compound(db_session, "anastrozole",
+    ana = await records.get_compound(db_session, "anastrozole",
         subject_id=owner_write.subject_id,
     )
     # The catalog's active flag is global and deliberately frozen: passing a
     # subject is refused, so the toggle is exercised the only way it still
     # works.
-    with pytest.raises(hrt_service.HrtCompoundActivationCutoverRequiredError):
-        await hrt_service.set_compound_active(
+    with pytest.raises(records.HrtCompoundActivationCutoverRequiredError):
+        await records.set_compound_active(
             db_session,
             ana.id,
             active=False,
             subject_id=owner_write.subject_id,
         )
-    await hrt_service.set_compound_active(
+    await records.set_compound_active(
         db_session, ana.id, active=False, subject_id=None
     )
     await db_session.commit()
-    active_ais = await hrt_service.list_compounds(db_session, compound_class="ai",
+    active_ais = await records.list_compounds(db_session, compound_class="ai",
         subject_id=owner_write.subject_id,
     )
     assert "anastrozole" not in {c.key for c in active_ais}
-    all_ais = await hrt_service.list_compounds(
+    all_ais = await records.list_compounds(
         db_session, active_only=False, compound_class="ai",
         subject_id=owner_write.subject_id,
     )
@@ -473,10 +474,10 @@ async def test_set_compound_active_hides_from_active_list(db_session, owner_writ
 
 # ── Dose units (mg / IU / mcg) ────────────────────────────────────────────────
 async def test_dose_unit_defaults_from_catalog_iu(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
     # Somatropin (GH) is dosed in IU — omitting unit must inherit it, not fall to mg.
-    row = await hrt_service.log_dose(
+    row = await records.log_dose(
         db_session, compound_key="somatropin", on_date=date(2026, 6, 1), dose=4,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
@@ -486,9 +487,9 @@ async def test_dose_unit_defaults_from_catalog_iu(db_session, owner_write):
 
 
 async def test_dose_unit_defaults_from_catalog_mcg(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
-    row = await hrt_service.log_dose(
+    row = await records.log_dose(
         db_session, compound_key="bpc_157", on_date=date(2026, 6, 1), dose=250,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
@@ -498,7 +499,7 @@ async def test_dose_unit_defaults_from_catalog_mcg(db_session, owner_write):
 
 
 async def test_dose_unit_is_normalized(db_session, owner_write):
-    row = await hrt_service.log_dose(
+    row = await records.log_dose(
         db_session, compound_key="testosterone_enanthate",
         on_date=date(2026, 6, 1), dose=250, unit="  MG ",
         identity=owner_write.identity,
@@ -509,9 +510,9 @@ async def test_dose_unit_is_normalized(db_session, owner_write):
 
 
 async def test_dose_persists_volume_ml(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
-    row = await hrt_service.log_dose(
+    row = await records.log_dose(
         db_session, compound_key="testosterone_enanthate",
         on_date=date(2026, 6, 1), volume_ml=0.8,
         identity=owner_write.identity,
@@ -523,13 +524,13 @@ async def test_dose_persists_volume_ml(db_session, owner_write):
 
 
 async def test_dose_with_unknown_key_logs_without_compound_id(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
     # 'anavar' is an alias, not a catalog key (the key is 'oxandrolone'). A
     # scoped dose has to name a molecule the catalog knows, so free text is
     # refused rather than stored with no catalog row behind it.
     with pytest.raises(ValueError, match="checked-in HRT catalog"):
-        await hrt_service.log_dose(
+        await records.log_dose(
             db_session,
             compound_key="anavar",
             on_date=date(2026, 6, 1),
@@ -543,13 +544,13 @@ async def test_dose_with_unknown_key_logs_without_compound_id(db_session, owner_
 # ── list_doses / side-effect list ─────────────────────────────────────────────
 async def test_list_doses_date_range(db_session, owner_write):
     for d in (date(2026, 6, 1), date(2026, 6, 10), date(2026, 6, 20)):
-        await hrt_service.log_dose(
+        await records.log_dose(
             db_session, compound_key="oxandrolone", on_date=d, dose=20, unit="mg",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d),
     )
     await db_session.commit()
-    rows = await hrt_service.list_doses(
+    rows = await records.list_doses(
         db_session, start=date(2026, 6, 5), end=date(2026, 6, 15),
         subject_id=owner_write.subject_id,
     )
@@ -557,20 +558,20 @@ async def test_list_doses_date_range(db_session, owner_write):
 
 
 async def test_side_effect_list_and_delete(db_session, owner_write):
-    e = await hrt_service.log_side_effect(
+    e = await records.log_side_effect(
         db_session, on_date=date(2026, 6, 1), effect_type="acne", severity=2,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
     )
     await db_session.commit()
-    assert len(await hrt_service.list_side_effects(db_session,
+    assert len(await records.list_side_effects(db_session,
         subject_id=owner_write.subject_id,
     )) == 1
-    assert await hrt_service.delete_side_effect(db_session, e.id,
+    assert await records.delete_side_effect(db_session, e.id,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     ) is True
-    assert await hrt_service.list_side_effects(db_session,
+    assert await records.list_side_effects(db_session,
         subject_id=owner_write.subject_id,
     ) == []
 
@@ -587,17 +588,17 @@ async def test_resolve_active_reports_one_entity_per_dose_of_one_compound(
     compound matches whether it sees the compound once or three times.
     """
 
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
     for _ in range(3):
-        await hrt_service.log_dose(
+        await records.log_dose(
             db_session, compound_key="oxandrolone", on_date=today_local(),
             dose=20, unit="mg",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    items = await hrt_service.resolve_active_scoped(
+    items = await records.resolve_active_scoped(
         db_session, scope=owner_write.context.scope
     )
     oxa = [i for i in items if i["compound_key"] == "oxandrolone"]
@@ -608,7 +609,7 @@ async def test_resolve_active_reports_one_entity_per_dose_of_one_compound(
 
 # ── Dashboard route ───────────────────────────────────────────────────────────
 async def test_hrt_dashboard_renders(auth_client, db_session):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
     r = await auth_client.get("/hrt")
     assert r.status_code == 200

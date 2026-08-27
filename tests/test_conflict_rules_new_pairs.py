@@ -11,10 +11,10 @@ from vitals.services import (
     conflict_catalog,
     conflict_engine,
     glp1_service,
-    hrt_catalog,
     labs_service,
     skincare_service,
 )
+from vitals.services.hrt import catalog
 from vitals.utils.timeutils import today_local
 
 
@@ -71,7 +71,7 @@ async def test_glp1_normal_lipase_silent(db_session, owner_write):
 
 # ── hrt ↔ skincare ────────────────────────────────────────────────────────────
 async def _androgen_over_skincare(db_session, *, peel: bool, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await conflict_catalog.sync_catalog(db_session)
     # A scoped write consults every registered domain, so register them all.
     conflict_registrations.register_all_resolvers()

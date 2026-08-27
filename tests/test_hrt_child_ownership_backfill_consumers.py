@@ -12,7 +12,7 @@ from vitals.models.hrt import (
     HrtCycleTemplate,
     HrtCycleTemplateItem,
 )
-from vitals.services import hrt_cycle_service, hrt_template_service
+from vitals.services.hrt import cycles, templates
 from vitals.services.conflict_engine import ConflictScopeError
 from vitals.operations.ownership.hrt_child import (
     HrtChildOwnershipBackfillStatus,
@@ -88,9 +88,9 @@ async def test_hrt_child_backfill_closes_the_strict_child_scope_bridge(
 
     subject_id = legacy_owner_roots.subject_id
     with pytest.raises(ConflictScopeError):
-        await hrt_cycle_service.list_cycles(db_session, subject_id=subject_id)
+        await cycles.list_cycles(db_session, subject_id=subject_id)
     with pytest.raises(ConflictScopeError):
-        await hrt_template_service.list_templates(
+        await templates.list_templates(
             db_session,
             subject_id=subject_id,
         )
@@ -124,13 +124,13 @@ async def test_hrt_child_backfill_closes_the_strict_child_scope_bridge(
     assert template_item.schedule == cycle_item.schedule
 
     assert list(
-        await hrt_cycle_service.list_cycles(
+        await cycles.list_cycles(
             db_session,
             subject_id=subject_id,
         )
     ) == [cycle]
     assert list(
-        await hrt_template_service.list_templates(
+        await templates.list_templates(
             db_session,
             subject_id=subject_id,
         )

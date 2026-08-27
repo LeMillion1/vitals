@@ -12,12 +12,9 @@ from vitals.services import (
     conflict_catalog,
     conflict_engine,
     conflict_registrations,
-    hrt_catalog,
-    hrt_cycle_service,
-    hrt_reminders,
-    hrt_service,
     labs_service,
 )
+from vitals.services.hrt import catalog, cycles, reminders, records
 from vitals.utils.timeutils import today_local
 
 
@@ -30,14 +27,14 @@ def _scoped_resolvers():
 
 # ── Hormone panel seed ────────────────────────────────────────────────────────
 async def test_seed_hormone_panel_idempotent(db_session, owner_write):
-    r1 = await hrt_reminders.seed_hormone_panel(
+    r1 = await reminders.seed_hormone_panel(
         db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    assert r1["created"] == len(hrt_reminders.HORMONE_PANEL)
-    r2 = await hrt_reminders.seed_hormone_panel(
+    assert r1["created"] == len(reminders.HORMONE_PANEL)
+    r2 = await reminders.seed_hormone_panel(
         db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
@@ -54,39 +51,39 @@ async def test_seed_hormone_panel_idempotent(db_session, owner_write):
 
 # ── Bloodwork-due reminder ────────────────────────────────────────────────────
 async def test_labs_due_raised_on_cycle_without_bloodwork(db_session, owner_write):
-    await hrt_reminders.seed_hormone_panel(
+    await reminders.seed_hormone_panel(
         db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
-    await hrt_cycle_service.add_cycle(
+    await cycles.add_cycle(
         db_session, kind="course", start_date=today_local() - timedelta(days=3),
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    await hrt_reminders.refresh_labs_due(db_session,
+    await reminders.refresh_labs_due(db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
-    assert any(a.alert_key == hrt_reminders.LABS_DUE_KEY for a in alerts)
+    assert any(a.alert_key == reminders.LABS_DUE_KEY for a in alerts)
 
 
 async def test_labs_due_cleared_by_recent_panel_result(db_session, owner_write):
-    await hrt_reminders.seed_hormone_panel(
+    await reminders.seed_hormone_panel(
         db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
-    await hrt_cycle_service.add_cycle(
+    await cycles.add_cycle(
         db_session, kind="course", start_date=today_local() - timedelta(days=3),
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    await hrt_reminders.refresh_labs_due(db_session,
+    await reminders.refresh_labs_due(db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
@@ -101,41 +98,41 @@ async def test_labs_due_cleared_by_recent_panel_result(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    await hrt_reminders.refresh_labs_due(db_session,
+    await reminders.refresh_labs_due(db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
-    assert not any(a.alert_key == hrt_reminders.LABS_DUE_KEY for a in alerts)
+    assert not any(a.alert_key == reminders.LABS_DUE_KEY for a in alerts)
 
 
 async def test_labs_due_absent_without_active_cycle(db_session, owner_write):
-    await hrt_reminders.seed_hormone_panel(
+    await reminders.seed_hormone_panel(
         db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    await hrt_reminders.refresh_labs_due(db_session,
+    await reminders.refresh_labs_due(db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
-    assert not any(a.alert_key == hrt_reminders.LABS_DUE_KEY for a in alerts)
+    assert not any(a.alert_key == reminders.LABS_DUE_KEY for a in alerts)
 
 
 # ── Injection-due reminder ────────────────────────────────────────────────────
 async def test_injection_due_raised_when_shot_missed(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
-    cycle = await hrt_cycle_service.add_cycle(
+    await catalog.sync_catalog(db_session)
+    cycle = await cycles.add_cycle(
         db_session, kind="course", start_date=today_local() - timedelta(days=10),
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    await hrt_cycle_service.add_cycle_item(
+    await cycles.add_cycle_item(
         db_session, cycle.id, compound_key="testosterone_enanthate",
         schedule=[{"dose": 125, "interval_days": 3.5}],
         identity=owner_write.identity,
@@ -143,51 +140,51 @@ async def test_injection_due_raised_when_shot_missed(db_session, owner_write):
     )
     await db_session.commit()
     # No doses logged over 10 days of an E3.5D plan → overdue.
-    await hrt_reminders.refresh_injection_due(db_session,
+    await reminders.refresh_injection_due(db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
-    due = [a for a in alerts if a.alert_key == hrt_reminders.INJECTION_DUE_KEY]
+    due = [a for a in alerts if a.alert_key == reminders.INJECTION_DUE_KEY]
     assert due and due[0].entity_ref == "testosterone_enanthate"
 
 
 async def test_injection_due_cleared_after_logging(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
-    cycle = await hrt_cycle_service.add_cycle(
+    await catalog.sync_catalog(db_session)
+    cycle = await cycles.add_cycle(
         db_session, kind="course", start_date=today_local() - timedelta(days=10),
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    await hrt_cycle_service.add_cycle_item(
+    await cycles.add_cycle_item(
         db_session, cycle.id, compound_key="testosterone_enanthate",
         schedule=[{"dose": 125, "interval_days": 3.5}],
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    await hrt_reminders.refresh_injection_due(db_session,
+    await reminders.refresh_injection_due(db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     # Logging today's shot catches the grid up → resolved.
-    await hrt_service.log_dose(
+    await records.log_dose(
         db_session, compound_key="testosterone_enanthate", on_date=today_local(),
         dose=125, unit="mg",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    await hrt_reminders.refresh_injection_due(db_session,
+    await reminders.refresh_injection_due(db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
-    assert not any(a.alert_key == hrt_reminders.INJECTION_DUE_KEY for a in alerts)
+    assert not any(a.alert_key == reminders.INJECTION_DUE_KEY for a in alerts)
 
 
 # ── Conflict rules (hrt ↔ labs) ───────────────────────────────────────────────
@@ -197,7 +194,7 @@ async def _register_hrt_labs_resolvers():
 
 
 async def test_oral_17aa_high_alt_fires_soft_warn(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await conflict_catalog.sync_catalog(db_session)
     await _register_hrt_labs_resolvers()
     # High ALT on the panel.
@@ -226,7 +223,7 @@ async def test_oral_17aa_high_alt_fires_soft_warn(db_session, owner_write):
 
 
 async def test_testosterone_high_hematocrit_fires(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await conflict_catalog.sync_catalog(db_session)
     await _register_hrt_labs_resolvers()
     await labs_service.add_result(
@@ -253,7 +250,7 @@ async def test_testosterone_high_hematocrit_fires(db_session, owner_write):
 
 
 async def test_no_conflict_when_labs_normal(db_session, owner_write):
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await conflict_catalog.sync_catalog(db_session)
     await _register_hrt_labs_resolvers()
     await labs_service.add_result(
@@ -303,7 +300,7 @@ async def _optional_modules_on(session_factory, legacy_owner_roots):
 
 async def test_mcp_log_and_get_hrt_dose(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
 
     res = await mcp_router.log_hrt_dose(
@@ -320,7 +317,7 @@ async def test_mcp_log_and_get_hrt_dose(db_session, session_factory, monkeypatch
 
 async def test_mcp_add_cycle_and_item(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     await db_session.commit()
 
     cycle = await mcp_router.add_hrt_cycle(kind="course", name="Test", start_date="2026-06-01")
@@ -346,14 +343,14 @@ async def test_mcp_add_item_unknown_cycle(db_session, session_factory, monkeypat
 
 async def test_injection_due_not_raised_before_item_offset(db_session, owner_write):
     """A compound scheduled from week 5 must not nag during weeks 1-4."""
-    await hrt_catalog.sync_catalog(db_session)
-    cycle = await hrt_cycle_service.add_cycle(
+    await catalog.sync_catalog(db_session)
+    cycle = await cycles.add_cycle(
         db_session, kind="course", start_date=today_local() - timedelta(days=3),
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    await hrt_cycle_service.add_cycle_item(
+    await cycles.add_cycle_item(
         db_session, cycle.id, compound_key="stanozolol_oral",
         schedule=[{"dose": 30, "interval_days": 1, "duration_days": 28}],
         start_offset_days=28,
@@ -361,14 +358,14 @@ async def test_injection_due_not_raised_before_item_offset(db_session, owner_wri
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    await hrt_reminders.refresh_injection_due(db_session,
+    await reminders.refresh_injection_due(db_session,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     assert not any(
-        a.alert_key == hrt_reminders.INJECTION_DUE_KEY
+        a.alert_key == reminders.INJECTION_DUE_KEY
         and a.entity_ref == "stanozolol_oral"
         for a in alerts
     )

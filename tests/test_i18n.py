@@ -266,7 +266,7 @@ def test_every_compound_class_in_the_catalog_can_be_named():
     a class without anything in the code changing. The dose picker groups by it."""
 
     from vitals.i18n import STRINGS
-    from vitals.services.hrt_catalog import load_compound_catalog
+    from vitals.services.hrt.catalog import load_compound_catalog
 
     classes = {entry["compound_class"] for _key, entry in load_compound_catalog()}
     for lang in ("en", "ru"):

@@ -3,7 +3,7 @@
 Owns the HRT domain:
 
   * **Compounds** — read/manage the molecule catalog (seeded by
-    ``hrt_catalog.sync_catalog``; the user may add custom rows).
+    ``catalog.sync_catalog``; the user may add custom rows).
   * **Doses** — CRUD over the administration log. Injectables are entered as
     ``volume_ml`` × concentration and the mg is computed here; orals/IU/mcg are
     entered directly. The write path is sanitised because the same functions are
@@ -116,13 +116,13 @@ async def _owned_row_for_update(
 
 
 def _curated_compound_keys() -> tuple[str, ...]:
-    from vitals.services.hrt_catalog import load_compound_catalog
+    from vitals.services.hrt.catalog import load_compound_catalog
 
     return tuple(key for key, _definition in load_compound_catalog())
 
 
 def _require_curated_compound_integrity(row: HrtCompound) -> None:
-    from vitals.services.hrt_catalog import _normalize_values, load_compound_catalog
+    from vitals.services.hrt.catalog import _normalize_values, load_compound_catalog
 
     if not (
         row.domain == DOMAIN
@@ -182,7 +182,7 @@ async def _curated_compound_for_write(
     row = await _get_curated_compound(session, key)
     if row is not None:
         return row
-    from vitals.services.hrt_catalog import load_compound_catalog
+    from vitals.services.hrt.catalog import load_compound_catalog
 
     definition = dict(load_compound_catalog()).get(key)
     if definition is None:
@@ -742,7 +742,7 @@ def _scoped_compound_join(
 async def legacy_unowned_present(session: AsyncSession) -> bool:
     """Mirror of every HRT widening, which is four tables rather than one.
 
-    Doses and cycles are the resolver's. Cycle items are ``hrt_reminders``':
+    Doses and cycles are the resolver's. Cycle items are ``reminders``':
     with the bridge open an unstamped item is tolerated, and with it closed the
     same item makes its cycle invalid, so an unstamped item has to keep the
     bridge open or a working page would start refusing.
@@ -753,7 +753,7 @@ async def legacy_unowned_present(session: AsyncSession) -> bool:
     the curated definitions.
     """
 
-    from vitals.services.hrt_catalog import load_compound_catalog
+    from vitals.services.hrt.catalog import load_compound_catalog
 
     for model in (HrtDose, HrtCycle):
         found = await session.scalar(
@@ -795,7 +795,7 @@ async def resolve_active_scoped(
 ) -> list[dict]:
     """Resolve one subject's current protocol with catalog-safe joins."""
 
-    from vitals.services.hrt_catalog import load_compound_catalog
+    from vitals.services.hrt.catalog import load_compound_catalog
 
     on_date = scope.evaluation_date
     curated_catalog = dict(load_compound_catalog())

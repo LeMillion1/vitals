@@ -29,13 +29,13 @@ from vitals.services import conflict_engine
 from vitals.services import (
     body_scan_service,
     glp1_service,
-    hrt_service,
     labs_service,
     nutrition_service,
     skincare_service,
     supplements_service,
     weight_service,
 )
+from vitals.services.hrt import records
 from vitals.services.genetics import variants
 
 
@@ -74,8 +74,8 @@ def register_all_resolvers() -> None:
     )
     conflict_engine.register_domain_resolver(
         Domain.HRT.value,
-        hrt_service.resolve_active_scoped,
-        legacy_probe=hrt_service.legacy_unowned_present,
+        records.resolve_active_scoped,
+        legacy_probe=records.legacy_unowned_present,
     )
     conflict_engine.register_domain_resolver(
         Domain.WEIGHT.value,

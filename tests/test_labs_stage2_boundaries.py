@@ -365,7 +365,8 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
     from vitals.process_mode import ProcessMode
     from vitals.scheduler import jobs as jobs_module
     from vitals.scheduler import scheduler as scheduler_module
-    from vitals.services import conflict_catalog, hrt_catalog, hrt_reminders
+    from vitals.services import conflict_catalog
+    from vitals.services.hrt import catalog, reminders
     from vitals.services.proactive import prefs
     from web import main as web_main
 
@@ -419,8 +420,8 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
     monkeypatch.setattr(jobs_module, "register_all_jobs", lambda settings: None)
     monkeypatch.setattr(prefs, "get_prefs", get_prefs_probe)
     monkeypatch.setattr(conflict_catalog, "sync_catalog", no_op)
-    monkeypatch.setattr(hrt_catalog, "sync_catalog", no_op)
-    monkeypatch.setattr(hrt_reminders, "seed_hormone_panel", seed_probe)
+    monkeypatch.setattr(catalog, "sync_catalog", no_op)
+    monkeypatch.setattr(reminders, "seed_hormone_panel", seed_probe)
     monkeypatch.setattr(
         scheduler_module,
         "setup_scheduler",

@@ -298,9 +298,9 @@ async def _load_nutrition(
 async def _load_hrt(
     session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
 ) -> _LoadedSection:
-    from vitals.services import hrt_cycle_service
+    from vitals.services.hrt import cycles
 
-    cycle = await hrt_cycle_service.care_active_cycle(
+    cycle = await cycles.care_active_cycle(
         session,
         on_date=window.period_end,
         subject_id=subject_id,

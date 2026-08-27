@@ -25,11 +25,8 @@ from sqlalchemy.pool import NullPool
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.operations.ownership import portability_v1
-from vitals.services import (
-    conflict_catalog,
-    data_portability_service,
-    hrt_catalog,
-)
+from vitals.services import conflict_catalog, data_portability_service
+from vitals.services.hrt import catalog
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,
 )
@@ -273,7 +270,7 @@ async def _bootstrap_roots(engine: AsyncEngine):
 async def _sync_catalogs(engine: AsyncEngine) -> None:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
-        await hrt_catalog.sync_catalog(session)
+        await catalog.sync_catalog(session)
         await conflict_catalog.sync_catalog(session)
         await session.commit()
 

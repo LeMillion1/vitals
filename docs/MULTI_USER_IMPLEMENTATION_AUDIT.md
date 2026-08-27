@@ -65,7 +65,7 @@ verdict:
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
 | Web routers | 34 tracked non-`__init__` modules under `web/routers` | Verified |
 | Application services | 103 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
-| Flat service debt | 52 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 22 |
+| Flat service debt | 47 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 27 |
 | Scheduled jobs | 16 registered jobs; 11 fan out per subject or provider connection | Verified |
 | Platform-scope callers | the AST contract in `tests/test_row_level_security.py` enumerates 9 exact permitted functions; invitation acceptance is no longer one of them | Verified and shrinking |
 | Browser scenarios | `pytest tests/ui -m ui -q` → 43 passed in 138.35s | Verified on the current runtime tree |
@@ -443,8 +443,9 @@ remaining historical checkpoint projections through a non-mutating
 `vitals/ownership_transition` seam, so no application service imports an
 operation and no compatibility forwarding modules preserve the old flat paths.
 The architecture test fixes that direction and lowered the flat-service ceiling
-from 74 modules to 52. Genetics variant persistence and VCF parsing now form a
-dedicated bounded-context package rather than two flat service modules.
+from 74 modules to 47. Genetics variant persistence and VCF parsing now form one
+bounded-context package; the HRT catalog, records, cycles, templates, and
+reminders form another rather than five flat service modules.
 
 Continue moving bounded contexts in dependency order and split
 the 2,000–4,000-line monoliths under characterization tests. Delivery adapters

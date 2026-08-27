@@ -26,12 +26,8 @@ from vitals.models.skincare import SkincareLog, SkincareObservation, SkincarePro
 from vitals.models.system_alert import SystemAlert
 from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, WeightLog
-from vitals.services import (
-    alerts_service,
-    digest_service,
-    hrt_cycle_service,
-    modules_service,
-)
+from vitals.services import alerts_service, digest_service, modules_service
+from vitals.services.hrt import cycles
 
 pytestmark = pytest.mark.usefixtures("all_modules_on", "owned_by_legacy_subject")
 
@@ -497,7 +493,7 @@ async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_
         ]
     )
     await db_session.flush()
-    cycle = await hrt_cycle_service.add_cycle(
+    cycle = await cycles.add_cycle(
         db_session,
         kind="course",
         start_date=DAY - timedelta(days=10),
@@ -505,7 +501,7 @@ async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
-    await hrt_cycle_service.add_cycle_item(
+    await cycles.add_cycle_item(
         db_session,
         cycle.id,
         compound_key="test_enanthate",

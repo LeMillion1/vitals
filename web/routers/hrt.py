@@ -12,13 +12,12 @@ from datetime import timedelta
 
 from vitals.enums import CycleKind, Domain, DoseUnit, HrtInjectionSite, Source
 from vitals.i18n import current_lang
-from vitals.services import (
-    alerts_service,
-    conflict_engine,
-    hrt_cycle_service,
-    hrt_reminders,
-    hrt_service,
-    hrt_template_service,
+from vitals.services import alerts_service, conflict_engine
+from vitals.services.hrt import (
+    cycles as cycle_records,
+    reminders,
+    records,
+    templates as template_records,
 )
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
@@ -108,7 +107,7 @@ async def hrt_dashboard(
         username=username,
         evaluation_date=today,
     )
-    await hrt_reminders.refresh_all(
+    await reminders.refresh_all(
         db,
         identity=context.identity,
         prepared_conflict_write=prepared,
@@ -116,7 +115,7 @@ async def hrt_dashboard(
     scope_kwargs = {
         "subject_id": context.identity.subject_id,
     }
-    compounds = await hrt_service.list_compounds(
+    compounds = await records.list_compounds(
         db,
         subject_id=context.identity.subject_id,
         active_only=True,
@@ -125,7 +124,7 @@ async def hrt_dashboard(
     # (e.g. "Тестостерон энантат") rather than the raw slug. Covers inactive rows
     # too, so a deactivated compound's history still reads nicely.
     lang = current_lang.get()
-    all_compounds = await hrt_service.list_compounds(
+    all_compounds = await records.list_compounds(
         db,
         subject_id=context.identity.subject_id,
         active_only=False,
@@ -134,18 +133,18 @@ async def hrt_dashboard(
         c.key: ((c.name_ru or c.name) if lang == "ru" else (c.name or c.name_ru))
         for c in all_compounds
     }
-    doses = await hrt_service.list_doses(db, limit=200, **scope_kwargs)
-    side_effects = await hrt_service.list_side_effects(db, **scope_kwargs)
+    doses = await records.list_doses(db, limit=200, **scope_kwargs)
+    side_effects = await records.list_side_effects(db, **scope_kwargs)
     alerts = await alerts_service.list_active_scoped(
         db,
         context=alerts_service.HealthAlertContext(context.identity),
         domain=Domain.HRT,
         legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
     )
-    last = await hrt_service.last_dose(db, **scope_kwargs)
+    last = await records.last_dose(db, **scope_kwargs)
 
-    active_cycle = await hrt_cycle_service.active_cycle(db, **scope_kwargs)
-    planned = await hrt_cycle_service.planned_administrations(
+    active_cycle = await cycle_records.active_cycle(db, **scope_kwargs)
+    planned = await cycle_records.planned_administrations(
         db,
         start=today,
         end=today + timedelta(days=21),
@@ -154,19 +153,19 @@ async def hrt_dashboard(
     )
     # A 90-day window (30 back, 60 forward) for the server-rendered release
     # sparkline — actual doses behind, planned projection ahead.
-    release = await hrt_cycle_service.release_series(
+    release = await cycle_records.release_series(
         db, start=today - timedelta(days=30), end=today + timedelta(days=60),
         cycle=active_cycle, **scope_kwargs,
     )
 
-    cycle_templates = await hrt_template_service.list_templates(db, **scope_kwargs)
+    cycle_templates = await template_records.list_templates(db, **scope_kwargs)
     # Pre-rendered share JSON per template — the UI shows it in a copyable
     # <textarea>, so sharing needs no JS beyond select-and-copy.
     template_exports = {
-        tp.id: hrt_template_service.export_template_json(tp, **scope_kwargs)
+        tp.id: template_records.export_template_json(tp, **scope_kwargs)
         for tp in cycle_templates
     }
-    cycles = await hrt_cycle_service.list_cycles(db, **scope_kwargs)
+    cycles = await cycle_records.list_cycles(db, **scope_kwargs)
     await db.commit()
 
     return templates.TemplateResponse(
@@ -191,14 +190,14 @@ async def hrt_dashboard(
             # Kind-dependent bloodwork cadence, surfaced on the active-cycle card
             # so the kinds visibly differ beyond the label.
             "panel_window": (
-                hrt_reminders.PANEL_WINDOW_BY_KIND.get(active_cycle.kind, 90)
+                reminders.PANEL_WINDOW_BY_KIND.get(active_cycle.kind, 90)
                 if active_cycle else None
             ),
             # How far through a closed-ended cycle today sits — drawn as the same
             # .v-meter the rest of the app uses for "share of a target". Only
             # meaningful with an end date; an open-ended cycle has no denominator.
             "cycle_progress": _cycle_progress(active_cycle, today),
-            "site_counts": hrt_service.site_frequency(doses),
+            "site_counts": records.site_frequency(doses),
             "sites": [s.value for s in HrtInjectionSite],
             "units": [u.value for u in DoseUnit],
             "today": today.isoformat(),
@@ -274,13 +273,13 @@ async def add_dose(
     )
     try:
         if id is not None:
-            await hrt_service.update_dose(
+            await records.update_dose(
                 db,
                 id,
                 **kwargs,
             )
         else:
-            await hrt_service.log_dose(
+            await records.log_dose(
                 db,
                 source=Source.MANUAL.value,
                 **kwargs,
@@ -320,7 +319,7 @@ async def add_cycle(
             username=username,
             evaluation_date=start,
         )
-        await hrt_cycle_service.add_cycle(
+        await cycle_records.add_cycle(
             db,
             kind=kind,
             start_date=start,
@@ -379,7 +378,7 @@ async def add_cycle_item(
             username=username,
             evaluation_date=today_local(),
         )
-        await hrt_cycle_service.add_cycle_item(
+        await cycle_records.add_cycle_item(
             db, cycle_id, compound_key=compound_key, schedule=[segment],
             unit=unit or None, start_offset_days=offset_days, note=note,
             identity=context.identity,
@@ -409,7 +408,7 @@ async def close_cycle(
             username=username,
             evaluation_date=end,
         )
-        await hrt_cycle_service.close_cycle(
+        await cycle_records.close_cycle(
             db,
             cycle_id,
             end_date=end,
@@ -437,7 +436,7 @@ async def delete_cycle(
         username=username,
         evaluation_date=today_local(),
     )
-    await hrt_cycle_service.delete_cycle(
+    await cycle_records.delete_cycle(
         db,
         cycle_id,
         identity=context.identity,
@@ -483,7 +482,7 @@ async def edit_cycle_item(
             username=username,
             evaluation_date=today_local(),
         )
-        item = await hrt_cycle_service.update_cycle_item(
+        item = await cycle_records.update_cycle_item(
             db,
             item_id,
             schedule=schedule,
@@ -516,7 +515,7 @@ async def delete_cycle_item(
         username=username,
         evaluation_date=today_local(),
     )
-    await hrt_cycle_service.delete_cycle_item(
+    await cycle_records.delete_cycle_item(
         db,
         item_id,
         identity=context.identity,
@@ -540,7 +539,7 @@ async def save_cycle_template(
             username=username,
             evaluation_date=today_local(),
         )
-        await hrt_template_service.save_cycle_as_template(
+        await template_records.save_cycle_as_template(
             db,
             cycle_id,
             name=name,
@@ -573,7 +572,7 @@ async def create_cycle_from_template(
             username=username,
             evaluation_date=start,
         )
-        await hrt_template_service.create_cycle_from_template(
+        await template_records.create_cycle_from_template(
             db,
             template_id,
             start_date=start,
@@ -603,7 +602,7 @@ async def delete_template(
         username=username,
         evaluation_date=today_local(),
     )
-    await hrt_template_service.delete_template(
+    await template_records.delete_template(
         db,
         template_id,
         identity=context.identity,
@@ -627,14 +626,14 @@ async def export_template(
     scope_kwargs = {
         "subject_id": ownership.subject_id,
     }
-    template = await hrt_template_service.get_template(
+    template = await template_records.get_template(
         db,
         template_id,
         **scope_kwargs,
     )
     if template is None:
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"error": "not found"})
-    payload = hrt_template_service.export_template(template, **scope_kwargs)
+    payload = template_records.export_template(template, **scope_kwargs)
     safe_name = "".join(
         ch if ch.isalnum() or ch in "-_" else "_" for ch in template.name
     )[:64] or "template"
@@ -659,7 +658,7 @@ async def import_template(
             username=username,
             evaluation_date=today_local(),
         )
-        await hrt_template_service.import_template(
+        await template_records.import_template(
             db,
             payload,
             source=Source.MANUAL.value,
@@ -687,7 +686,7 @@ async def release_json(
         db,
         actor_username=username,
     )
-    series = await hrt_cycle_service.release_series(
+    series = await cycle_records.release_series(
         db, start=today - timedelta(days=days_back),
         end=today + timedelta(days=days_forward),
         subject_id=ownership.subject_id,
@@ -712,7 +711,7 @@ async def add_side_effect(
             username=username,
             evaluation_date=on_date,
         )
-        await hrt_service.log_side_effect(
+        await records.log_side_effect(
             db,
             on_date=on_date,
             effect_type=effect_type,
@@ -744,7 +743,7 @@ async def delete_dose(
         username=username,
         evaluation_date=today_local(),
     )
-    await hrt_service.delete_dose(
+    await records.delete_dose(
         db,
         id,
         identity=context.identity,
@@ -766,7 +765,7 @@ async def delete_side_effect(
         username=username,
         evaluation_date=today_local(),
     )
-    await hrt_service.delete_side_effect(
+    await records.delete_side_effect(
         db,
         id,
         identity=context.identity,

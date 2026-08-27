@@ -870,15 +870,15 @@ async def _hrt_block(
     session, ctx, stats, start, end, flagged_only, *, subject_id
 ) -> dict:
     from vitals.i18n import current_lang
-    from vitals.services import hrt_service
+    from vitals.services.hrt import records
 
     hrt = ctx.get("hrt") or {}
-    doses = await hrt_service.list_doses(
+    doses = await records.list_doses(
         session, start=start, end=end, subject_id=subject_id
     )
     effects = [
         e
-        for e in await hrt_service.list_side_effects(session, subject_id=subject_id)
+        for e in await records.list_side_effects(session, subject_id=subject_id)
         if start <= e.date <= end
     ]
     cycle = hrt.get("cycle")
@@ -887,7 +887,7 @@ async def _hrt_block(
 
     # A doctor gets the molecule's name, not the catalog slug ("test_enanthate").
     lang = current_lang.get()
-    compounds = await hrt_service.list_compounds(
+    compounds = await records.list_compounds(
         session, subject_id=subject_id, active_only=False
     )
     names = {

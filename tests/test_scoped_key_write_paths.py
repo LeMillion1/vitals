@@ -33,12 +33,8 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    alerts_service,
-    conflict_catalog,
-    garmin_service,
-    hrt_catalog,
-)
+from vitals.services import alerts_service, conflict_catalog, garmin_service
+from vitals.services.hrt import catalog
 
 
 DAY = date(2026, 8, 19)
@@ -158,7 +154,7 @@ async def test_a_subjects_compound_may_reuse_a_curated_key(db_session):
 
     # The catalog cannot see a subject's own compound at all, so it seeds the
     # curated definition beside it instead of refusing or overwriting it.
-    result = await hrt_catalog.sync_catalog(db_session)
+    result = await catalog.sync_catalog(db_session)
     assert result["inserted"] > 0
 
     assert theirs.name == "A subject's own definition"
@@ -222,7 +218,7 @@ async def test_a_subjects_compound_still_cannot_squat_an_unowned_curated_key(
     db_session.add(unowned)
     await db_session.flush()
 
-    with pytest.raises(hrt_catalog.HrtCatalogCollisionError):
-        await hrt_catalog.sync_catalog(db_session)
+    with pytest.raises(catalog.HrtCatalogCollisionError):
+        await catalog.sync_catalog(db_session)
 
     assert unowned.name == "An unowned manual definition"

@@ -14,7 +14,8 @@ from vitals.enums import Source, UserStatus
 from vitals.models.hrt import HrtCycle, HrtCycleItem, HrtDose, HrtSideEffect
 from vitals.models.identity import HealthSubject, User
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, hrt_catalog, hrt_cycle_service, modules_service
+from vitals.services import conflict_engine, modules_service
+from vitals.services.hrt import catalog, cycles
 
 
 mcp_router = pytest.importorskip("web.routers.mcp")
@@ -34,7 +35,7 @@ async def _enable_hrt(session_factory, legacy_owner_roots):
             enabled=True,
             subject_id=legacy_owner_roots.subject_id,
         )
-        await hrt_catalog.sync_catalog(session)
+        await catalog.sync_catalog(session)
         await session.commit()
 
 
@@ -253,7 +254,7 @@ async def test_postgres_concurrent_open_cycles_leave_one_active(
                 session,
                 context=context,
             )
-            await hrt_cycle_service.add_cycle(
+            await cycles.add_cycle(
                 session,
                 kind="course",
                 start_date=context.evaluation_date,

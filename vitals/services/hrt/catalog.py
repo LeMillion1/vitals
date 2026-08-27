@@ -27,7 +27,7 @@ from vitals.models.hrt import DOMAIN, HrtCompound, HrtCompoundComponent
 
 logger = logging.getLogger(__name__)
 
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 _COMPOUNDS_PATH = _DATA_DIR / "hrt_compounds.yaml"
 
 _VALID_ROUTES = {r.value for r in Route}
@@ -199,7 +199,7 @@ async def sync_catalog(session: AsyncSession) -> dict[str, int]:
 
     await session.flush()
     logger.info(
-        "hrt_catalog.sync_catalog: %d inserted, %d updated (of %d total)",
+        "hrt.catalog.sync_catalog: %d inserted, %d updated (of %d total)",
         inserted, updated, len(catalog),
     )
     return {"inserted": inserted, "updated": updated, "total": len(catalog)}

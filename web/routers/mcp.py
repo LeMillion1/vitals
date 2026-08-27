@@ -1939,7 +1939,7 @@ async def get_hrt_logs(
     """Retrieves HRT/TRT dose administrations, side effects, and the active cycle
     with its per-compound plan. Doses/side effects default to the most recent 100.
     READ tool."""
-    from vitals.services import hrt_cycle_service, hrt_service
+    from vitals.services.hrt import cycles, records
 
     session_factory = get_session_factory()
     start = _parse_date(start_date, field="start_date")
@@ -1948,21 +1948,21 @@ async def get_hrt_logs(
     async with session_factory() as session:
         scope = await _mcp_v1_conflict_scope(session)
         scope_kwargs = {"subject_id": scope.subject_id}
-        doses = await hrt_service.list_doses(
+        doses = await records.list_doses(
             session,
             start=start,
             end=end,
             limit=limit,
             **scope_kwargs,
         )
-        effects = await hrt_service.list_side_effects(
+        effects = await records.list_side_effects(
             session,
             start=start,
             end=end,
             limit=limit,
             **scope_kwargs,
         )
-        active = await hrt_cycle_service.active_cycle(session, **scope_kwargs)
+        active = await cycles.active_cycle(session, **scope_kwargs)
         active_cycle = None
         if active is not None:
             active_cycle = serialize_row(active)
@@ -1997,7 +1997,7 @@ async def log_hrt_dose(
     compute mg. Grey-market ``brand``/``lab``/``batch`` are optional. WRITE tool —
     on a hard block returns ``{"blocked": true, ...}``; retry with
     ``override=True``."""
-    from vitals.services import hrt_service
+    from vitals.services.hrt import records
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
@@ -2013,7 +2013,7 @@ async def log_hrt_dose(
             context=conflict_context,
         )
         try:
-            row = await hrt_service.log_dose(
+            row = await records.log_dose(
                 session, compound_key=compound_key, on_date=parsed_date, dose=dose,
                 unit=unit, volume_ml=volume_ml, concentration_mg_ml=concentration_mg_ml,
                 brand=brand, lab=lab, batch=batch, site=site, note=note, override=override,
@@ -2043,7 +2043,7 @@ async def add_hrt_cycle(
     """Starts an HRT cycle (``kind``: course | pct — put nuance like TRT/blast/
     cruise in ``name``). An open-ended cycle closes the previous open one. WRITE
     tool. Add compounds with ``add_hrt_cycle_item``."""
-    from vitals.services import hrt_cycle_service
+    from vitals.services.hrt import cycles
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
@@ -2060,7 +2060,7 @@ async def add_hrt_cycle(
             context=conflict_context,
         )
         try:
-            cycle = await hrt_cycle_service.add_cycle(
+            cycle = await cycles.add_cycle(
                 session, kind=kind, start_date=start, name=name, end_date=end, note=note,
                 source=Source.MCP.value,
                 identity=conflict_context.identity,
@@ -2092,7 +2092,7 @@ async def add_hrt_cycle_item(
     for titration/ramps, or the simple ``dose``+``interval_days`` for one flat
     segment. ``start_offset_days`` delays the compound's grid relative to the
     cycle start (week 5 → 28) for staggered courses. WRITE tool."""
-    from vitals.services import hrt_cycle_service
+    from vitals.services.hrt import cycles
 
     if not schedule:
         if dose is None or interval_days is None:
@@ -2113,7 +2113,7 @@ async def add_hrt_cycle_item(
             context=conflict_context,
         )
         try:
-            item = await hrt_cycle_service.add_cycle_item(
+            item = await cycles.add_cycle_item(
                 session, cycle_id, compound_key=compound_key, schedule=schedule,
                 unit=unit, start_offset_days=int(start_offset_days or 0), note=note,
                 identity=conflict_context.identity,
@@ -2150,7 +2150,7 @@ async def update_hrt_dose(
     date. A new ``volume_ml`` or ``concentration_mg_ml`` without a ``dose`` recomputes
     the mg. WRITE tool — on a hard block returns ``{"blocked": true, ...}``; retry
     with ``override=True``."""
-    from vitals.services import hrt_service
+    from vitals.services.hrt import records
 
     session_factory = get_session_factory()
     parsed_date = _parse_date(on_date, field="on_date")
@@ -2164,7 +2164,7 @@ async def update_hrt_dose(
             session,
             context=conflict_context,
         )
-        current = await hrt_service.get_dose_for_update(
+        current = await records.get_dose_for_update(
             session,
             dose_id,
             identity=conflict_context.identity,
@@ -2207,7 +2207,7 @@ async def update_hrt_dose(
         if dose is None and (volume_ml is not None or concentration_mg_ml is not None):
             merged["dose"] = None
         try:
-            row = await hrt_service.update_dose(
+            row = await records.update_dose(
                 session,
                 dose_id,
                 on_date=final_date,
@@ -2237,7 +2237,7 @@ async def log_hrt_side_effect(
     """Records an HRT/TRT side effect (e.g. "акне", "отёки") with a severity 1–5 for
     a date (default today). Distinct from ``log_side_effect``, which belongs to
     GLP-1. WRITE tool — saved immediately."""
-    from vitals.services import hrt_service
+    from vitals.services.hrt import records
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
@@ -2253,7 +2253,7 @@ async def log_hrt_side_effect(
             context=conflict_context,
         )
         try:
-            row = await hrt_service.log_side_effect(
+            row = await records.log_side_effect(
                 session, on_date=parsed_date, effect_type=effect_type,
                 severity=severity, note=note,
                 source=Source.MCP.value,
@@ -2271,7 +2271,7 @@ async def log_hrt_side_effect(
 @gated("hrt")
 async def close_hrt_cycle(cycle_id: int, end_date: Optional[str] = None) -> dict:
     """Closes an HRT cycle by giving it an end date (default today). WRITE tool."""
-    from vitals.services import hrt_cycle_service
+    from vitals.services.hrt import cycles
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
@@ -2287,7 +2287,7 @@ async def close_hrt_cycle(cycle_id: int, end_date: Optional[str] = None) -> dict
             context=conflict_context,
         )
         try:
-            cycle = await hrt_cycle_service.close_cycle(
+            cycle = await cycles.close_cycle(
                 session,
                 cycle_id,
                 end_date=end,
@@ -2307,12 +2307,12 @@ async def close_hrt_cycle(cycle_id: int, end_date: Optional[str] = None) -> dict
 @gated("hrt")
 async def get_hrt_cycles() -> dict:
     """Lists all HRT cycles (newest first) with their per-compound plans. READ tool."""
-    from vitals.services import hrt_cycle_service
+    from vitals.services.hrt import cycles as cycle_records
 
     session_factory = get_session_factory()
     async with session_factory() as session:
         scope = await _mcp_v1_conflict_scope(session)
-        cycles = await hrt_cycle_service.list_cycles(
+        cycles = await cycle_records.list_cycles(
             session,
             subject_id=scope.subject_id,
         )
@@ -2828,10 +2828,10 @@ _DELETE_TARGETS: dict[str, tuple[Optional[str], str, str]] = {
     "glp1": ("glp1", "glp1_service", "delete_injection"),
     "glp1_side_effect": ("glp1", "glp1_service", "delete_side_effect"),
     "glp1_dose_phase": ("glp1", "glp1_service", "delete_dose_phase"),
-    "hrt_dose": ("hrt", "hrt_service", "delete_dose"),
-    "hrt_side_effect": ("hrt", "hrt_service", "delete_side_effect"),
-    "hrt_cycle": ("hrt", "hrt_cycle_service", "delete_cycle"),
-    "hrt_cycle_item": ("hrt", "hrt_cycle_service", "delete_cycle_item"),
+    "hrt_dose": ("hrt", "hrt.records", "delete_dose"),
+    "hrt_side_effect": ("hrt", "hrt.records", "delete_side_effect"),
+    "hrt_cycle": ("hrt", "hrt.cycles", "delete_cycle"),
+    "hrt_cycle_item": ("hrt", "hrt.cycles", "delete_cycle_item"),
     "body_comp": ("body_comp", "body_scan_service", "delete_scan"),
     "timeline": ("timeline", "timeline_service", "delete_annotation"),
     "skincare_observation": ("skincare", "skincare_service", "delete_observation"),

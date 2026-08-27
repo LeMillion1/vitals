@@ -24,7 +24,8 @@ from sqlalchemy.pool import NullPool
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.operations.ownership import portability_v1
-from vitals.services import data_portability_service, hrt_catalog
+from vitals.services import data_portability_service
+from vitals.services.hrt import catalog
 from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_PHASE,
 )
@@ -174,8 +175,8 @@ def _seed_revision_0034(connection: sa.Connection) -> None:
         )
     )
 
-    definition = dict(hrt_catalog.load_compound_catalog())[CURATED_KEY]
-    curated_values = hrt_catalog._normalize_values(definition)
+    definition = dict(catalog.load_compound_catalog())[CURATED_KEY]
+    curated_values = catalog._normalize_values(definition)
     connection.execute(
         tables["hrt_compounds"].insert(),
         [
@@ -405,7 +406,7 @@ async def _catalog_component_ids(engine: AsyncEngine) -> tuple[int, ...]:
 async def _sync_catalog(engine: AsyncEngine) -> None:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
-        await hrt_catalog.sync_catalog(session)
+        await catalog.sync_catalog(session)
         await session.commit()
 
 

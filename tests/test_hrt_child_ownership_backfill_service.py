@@ -20,10 +20,8 @@ from vitals.models.hrt import (
 )
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
-from vitals.services import (
-    conflict_engine,
-    hrt_catalog,
-)
+from vitals.services import conflict_engine
+from vitals.services.hrt import catalog
 from vitals.operations.ownership import hrt_child as backfill_service
 from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
@@ -40,9 +38,9 @@ from vitals.operations.ownership.hrt_child import (
     reset_hrt_child_backfill_for_portability_v1_restore,
     run_hrt_child_ownership_backfill_batch,
 )
-from vitals.services.hrt_cycle_service import list_cycles
-from vitals.services.hrt_service import resolve_active_scoped
-from vitals.services.hrt_template_service import list_templates
+from vitals.services.hrt.cycles import list_cycles
+from vitals.services.hrt.records import resolve_active_scoped
+from vitals.services.hrt.templates import list_templates
 from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
@@ -567,7 +565,7 @@ async def test_system_compound_requires_full_checked_in_catalog_integrity(db_ses
     cycle, _template = await _parents(
         db_session, owner=owner, subject=subject
     )
-    await hrt_catalog.sync_catalog(db_session)
+    await catalog.sync_catalog(db_session)
     compound = await db_session.scalar(
         select(HrtCompound).where(
             HrtCompound.key == "testosterone_enanthate"

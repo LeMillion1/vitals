@@ -40,7 +40,7 @@ from vitals.operations.ownership.hevy_child import (
 from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_service import (
+from vitals.services.hrt.records import (
     HrtCatalogIntegrityError,
     _require_curated_compound_integrity,
 )
@@ -519,7 +519,7 @@ def _require_hevy_dependency_pair(dependencies: Mapping[str, Any]) -> None:
 
 
 def _catalog() -> dict[str, dict]:
-    from vitals.services.hrt_catalog import load_compound_catalog
+    from vitals.services.hrt.catalog import load_compound_catalog
 
     return dict(load_compound_catalog())
 

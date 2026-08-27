@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — HRT services form one bounded context
+
+The HRT catalog, records, cycles, templates, and reminder scheduling now live
+under `vitals.services.hrt`. Web, MCP, scheduler, ownership operations, reports,
+and tests use the semantic package directly with no flat forwarding modules;
+the guarded flat-service ceiling falls from 52 modules to 47 without behavior
+or schema changes.
+
 ### Changed — genetics services form one bounded context
 
 Genetic variant persistence, raw-first VCF ingestion, and the shared pure VCF

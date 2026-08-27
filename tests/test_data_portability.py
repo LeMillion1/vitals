@@ -3468,34 +3468,34 @@ async def test_import_http_boundaries_reject_future_version_without_mutation(
 
 # ── HRT in the exports (PR #7 review item) ────────────────────────────────────
 async def _seed_hrt(session, owner_write):
-    from vitals.services import hrt_catalog, hrt_cycle_service, hrt_service, hrt_template_service
+    from vitals.services.hrt import catalog, cycles, records, templates
     from vitals.utils.timeutils import today_local
 
-    await hrt_catalog.sync_catalog(session)
-    await hrt_service.log_dose(
+    await catalog.sync_catalog(session)
+    await records.log_dose(
         session, compound_key="testosterone_enanthate", on_date=today_local(),
         dose=250, unit="mg", brand="TestBrand", lab="UGL",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(today_local()),
     )
-    await hrt_service.log_side_effect(
+    await records.log_side_effect(
         session, on_date=today_local(), effect_type="acne", severity=2,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(today_local()),
     )
-    cycle = await hrt_cycle_service.add_cycle(
+    cycle = await cycles.add_cycle(
         session, kind="course", start_date=today_local(), name="Cut",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
-    await hrt_cycle_service.add_cycle_item(
+    await cycles.add_cycle_item(
         session, cycle.id, compound_key="stanozolol_oral",
         schedule=[{"dose": 30, "interval_days": 1, "duration_days": 28}],
         start_offset_days=28,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
-    await hrt_template_service.save_cycle_as_template(session, cycle.id, name="Cut tpl",
+    await templates.save_cycle_as_template(session, cycle.id, name="Cut tpl",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )

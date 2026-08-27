@@ -7,7 +7,7 @@ anchored to a calendar. Three flows:
   * **Save** — :func:`save_cycle_as_template` snapshots an existing cycle's
     items verbatim.
   * **Apply** — :func:`create_cycle_from_template` materializes a template into
-    a real cycle at a chosen start date (delegating to ``hrt_cycle_service`` so
+    a real cycle at a chosen start date (delegating to ``cycles`` so
     auto-close / catalog resolution behave exactly like a hand-built cycle).
   * **Share** — :func:`export_template` / :func:`import_template` round-trip a
     template through portable JSON. Portable because items reference compounds
@@ -31,7 +31,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import CycleKind, DoseUnit, Source
 from vitals.models.hrt import DOMAIN, HrtCycle, HrtCycleTemplate, HrtCycleTemplateItem
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, hrt_cycle_service
+from vitals.services import conflict_engine
+from vitals.services.hrt import cycles
 
 # Portable-JSON envelope. Bump the version if the item shape ever changes so an
 # importer can tell an old payload from a malformed one.
@@ -236,7 +237,7 @@ async def save_cycle_as_template(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    graph = await hrt_cycle_service._lock_cycle_graph(
+    graph = await cycles._lock_cycle_graph(
         session,
         cycle_id,
         subject_id=identity.subject_id if identity is not None else None,
@@ -253,7 +254,7 @@ async def save_cycle_as_template(
         subject_id=identity.subject_id if identity is not None else None,
         actor_user_id=identity.actor_user_id if identity is not None else None,
         domain=DOMAIN,
-        source=hrt_cycle_service._source_value(source),
+        source=cycles._source_value(source),
         name=name,
         kind=cycle.kind,
         note=note,
@@ -293,7 +294,7 @@ async def create_cycle_from_template(
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[HrtCycle]:
     """Materialize a template into a real cycle starting on ``start_date``.
-    Goes through ``hrt_cycle_service`` item-by-item so compound resolution and
+    Goes through ``cycles`` item-by-item so compound resolution and
     the open-cycle auto-close behave exactly as if built by hand."""
     _require_scoped_prepared_write(
         session,
@@ -308,7 +309,7 @@ async def create_cycle_from_template(
     if graph is None:
         return None
     template, template_items = graph
-    cycle = await hrt_cycle_service.add_cycle(
+    cycle = await cycles.add_cycle(
         session,
         kind=template.kind,
         start_date=start_date,
@@ -319,7 +320,7 @@ async def create_cycle_from_template(
         prepared_conflict_write=prepared_conflict_write,
     )
     for item in template_items:
-        await hrt_cycle_service.add_cycle_item(
+        await cycles.add_cycle_item(
             session,
             cycle.id,
             compound_key=item.compound_key,
@@ -451,7 +452,7 @@ async def import_template(
         key = str(raw.get("compound_key") or "").strip()
         if not key:
             raise ValueError(f"{where}: compound_key is required")
-        compound = await hrt_cycle_service._resolve_scoped_compound(
+        compound = await cycles._resolve_scoped_compound(
             session,
             key,
             subject_id=identity.subject_id if identity is not None else None,
@@ -469,7 +470,7 @@ async def import_template(
         if offset < 0:
             raise ValueError(f"{where}: start_offset_days must be >= 0")
         try:
-            schedule = hrt_cycle_service.validate_schedule(raw.get("schedule"))
+            schedule = cycles.validate_schedule(raw.get("schedule"))
         except ValueError as e:
             raise ValueError(f"{where}: {e}") from None
         note = raw.get("note")
@@ -535,7 +536,7 @@ async def import_template(
         subject_id=identity.subject_id if identity is not None else None,
         actor_user_id=identity.actor_user_id if identity is not None else None,
         domain=DOMAIN,
-        source=hrt_cycle_service._source_value(source),
+        source=cycles._source_value(source),
         name=name,
         kind=kind,
         note=str(note) if note is not None else None,

@@ -246,7 +246,7 @@ def test_no_new_flat_service_modules() -> None:
         for path in _tracked_python_paths(SERVICES)
         if path.parent == Path("vitals/services") and path.name != "__init__.py"
     }
-    baseline = 52
+    baseline = 47
 
     assert len(legacy) <= baseline, (
         f"Flat service module count grew from the guarded ceiling {baseline} to {len(legacy)}. "

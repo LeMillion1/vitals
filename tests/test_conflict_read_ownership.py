@@ -976,10 +976,10 @@ async def test_checked_in_hrt_catalog_is_global_without_bridge(
     legacy_owner_roots,
     link_kind,
 ):
-    from vitals.services import hrt_catalog
+    from vitals.services.hrt import catalog
 
-    key, definition = hrt_catalog.load_compound_catalog()[0]
-    await hrt_catalog.sync_catalog(db_session)
+    key, definition = catalog.load_compound_catalog()[0]
+    await catalog.sync_catalog(db_session)
     catalog_compound = await db_session.scalar(
         select(HrtCompound).where(HrtCompound.key == key)
     )
@@ -1013,7 +1013,7 @@ async def test_hrt_catalog_metadata_comes_from_checked_in_definition(
     db_session,
     legacy_owner_roots,
 ):
-    from vitals.services.hrt_catalog import load_compound_catalog
+    from vitals.services.hrt.catalog import load_compound_catalog
 
     key, _definition = load_compound_catalog()[0]
     forged = _hrt_compound(
