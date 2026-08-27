@@ -29,7 +29,10 @@ that basis would hand over the whole record.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +46,9 @@ from vitals.services.identity_service import (
     normalize_username,
 )
 from vitals.utils.timeutils import now_utc
+
+if TYPE_CHECKING:
+    from vitals.services.authentication.oidc import FederatedIdentity
 
 
 class FederatedLoginError(RuntimeError):
@@ -94,6 +100,32 @@ class IdentityAlreadyLinked(FederatedLoginError):
 
 class NoSuchAccount(FederatedLoginError):
     """There is no local account by that name to link."""
+
+
+@dataclass(frozen=True, slots=True)
+class FederatedSessionDecision:
+    """The local identity needed to issue a browser session."""
+
+    username: str
+    user_id: uuid.UUID
+    session_version: int
+    authenticated_at: datetime | None
+    subject_id: uuid.UUID | None
+
+
+class FederatedRegistrationState(StrEnum):
+    """Non-enumerating state exposed to a registration applicant."""
+
+    PENDING = "pending"
+    CLOSED = "closed"
+
+
+@dataclass(frozen=True, slots=True)
+class FederatedRegistrationDecision:
+    """An admission state that must be shown without issuing a session."""
+
+    reference: uuid.UUID
+    state: FederatedRegistrationState
 
 
 async def _synchronize_verified_email_claim(
@@ -515,11 +547,120 @@ async def resolve_federated_user(
     )
 
 
+async def decide_federated_login(
+    session: AsyncSession,
+    *,
+    identity: FederatedIdentity,
+    bootstrap_subject: str,
+    invitation_id: uuid.UUID | None,
+    step_up: bool,
+) -> FederatedSessionDecision | FederatedRegistrationDecision:
+    """Resolve one validated provider identity into a local login outcome.
+
+    OIDC validation belongs to the provider adapter and browser redirects belong
+    to the web layer. This function owns the application decision between an
+    existing account, the one-time owner bootstrap, a registration request, and
+    an exact invitation. It never commits; the delivery boundary acknowledges
+    a registration request only after committing it.
+    """
+
+    from vitals.enums import RegistrationRequestStatus
+    from vitals.models.identity import HealthSubject
+    from vitals.services.authentication import admission
+
+    if invitation_id is None or identity.subject == bootstrap_subject:
+        try:
+            user = await resolve_federated_user(
+                session,
+                issuer=identity.issuer,
+                subject=identity.subject,
+                authenticated_at=identity.authenticated_at,
+                bootstrap_subject=bootstrap_subject,
+                email=identity.email,
+                email_verified=identity.email_verified,
+                preferred_username=identity.preferred_username,
+            )
+        except BootstrapRefused:
+            # A failed bootstrap ceremony must not become a public application.
+            raise
+        except UnknownFederatedIdentity:
+            if step_up:
+                # Step-up can only re-authenticate an already known account.
+                raise
+            try:
+                row = await admission.submit_request(
+                    session,
+                    issuer=identity.issuer,
+                    subject=identity.subject,
+                    verified_email=identity.email,
+                    email_verified=identity.email_verified,
+                    preferred_username=identity.preferred_username,
+                )
+            except admission.AdmissionRefused as submission_error:
+                row = await admission.get_request(
+                    session,
+                    issuer=identity.issuer,
+                    subject=identity.subject,
+                )
+                if row is None:
+                    raise submission_error
+
+            if row.status == RegistrationRequestStatus.PENDING.value:
+                state = FederatedRegistrationState.PENDING
+            elif row.status in {
+                RegistrationRequestStatus.REJECTED.value,
+                RegistrationRequestStatus.EXPIRED.value,
+            }:
+                state = FederatedRegistrationState.CLOSED
+            else:
+                raise admission.AdmissionStateError(
+                    "approved registration request has no federated identity"
+                )
+            return FederatedRegistrationDecision(reference=row.id, state=state)
+    else:
+        user = await resolve_existing_federated_user(
+            session,
+            issuer=identity.issuer,
+            subject=identity.subject,
+            authenticated_at=identity.authenticated_at,
+            email=identity.email,
+            email_verified=identity.email_verified,
+        )
+        if user is None:
+            user = (
+                await admission.consume_invitation_claim(
+                    session,
+                    invitation_id=invitation_id,
+                    issuer=identity.issuer,
+                    subject=identity.subject,
+                    authenticated_at=identity.authenticated_at,
+                    verified_email=identity.email,
+                    email_verified=identity.email_verified,
+                    preferred_username=identity.preferred_username,
+                )
+            ).user
+
+    subject_id = await session.scalar(
+        select(HealthSubject.id).where(HealthSubject.owner_user_id == user.id)
+    )
+    return FederatedSessionDecision(
+        username=user.username,
+        user_id=user.id,
+        session_version=user.session_version,
+        authenticated_at=identity.authenticated_at,
+        subject_id=subject_id,
+    )
+
+
 __all__ = [
     "BootstrapRefused",
+    "FederatedRegistrationDecision",
+    "FederatedRegistrationState",
     "FederatedLoginError",
+    "FederatedSessionDecision",
     "InactiveAccount",
     "UnknownFederatedIdentity",
+    "decide_federated_login",
     "resolve_existing_federated_user",
     "resolve_federated_user",
 ]

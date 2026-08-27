@@ -191,8 +191,9 @@ async def test_unconfigured_subject_proactive_jobs_are_clean_noops(
     partially stored preferences remain strict failures.
     """
 
-    from vitals.services import garmin_service
-    from vitals.services.proactive import brief, channels, nudges
+    from vitals.services.garmin import jobs as garmin_jobs
+    from vitals.services.proactive import channels, nudges
+    from vitals.services.proactive.brief import jobs as brief_jobs
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     provisioned = await account_provisioning_service.provision_account(
@@ -210,9 +211,11 @@ async def test_unconfigured_subject_proactive_jobs_are_clean_noops(
     async def unexpected_sync(*args, **kwargs):
         raise AssertionError("an unconfigured brief must stop before network work")
 
-    monkeypatch.setattr(garmin_service, "sync_job", unexpected_sync)
+    monkeypatch.setattr(garmin_jobs, "sync_job", unexpected_sync)
 
-    await brief.brief_job(session_factory, subject_id=provisioned.subject_id)
+    await brief_jobs.brief_job(
+        session_factory, subject_id=provisioned.subject_id
+    )
     await nudges.nudges_job(session_factory, subject_id=provisioned.subject_id)
 
     async with session_factory() as session:

@@ -10,7 +10,8 @@ Three tables:
   * ``glp1_side_effects`` — symptom log (date, type, severity 1-5).
 
 Nothing here blocks: the product is a navigator. The plateau detector raises a
-passive ``warn`` alert (no auto-escalation) — that lives in ``glp1_service``.
+passive ``warn`` alert (no auto-escalation) — that lives in
+``vitals.services.glp1.plateau``.
 """
 from __future__ import annotations
 

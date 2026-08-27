@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+from vitals.services.ai_gateway import contracts as ai_gateway_contracts
+from vitals.services.ai_gateway import dispatch as ai_gateway_dispatch
+from vitals.services.ai_gateway import invocations as ai_gateway_invocations
+
+from vitals.services.proactive.delivery import contracts as delivery_contracts
+from vitals.services.proactive.delivery import policy as delivery_policy
+from vitals.services.proactive.delivery import queries as delivery_queries
+from vitals.services.proactive.delivery import preparation as delivery_preparation
+from vitals.services.proactive.delivery import dispatch as delivery_dispatch
+from vitals.services.proactive.delivery import reconciliation as delivery_reconciliation
+from vitals.services.proactive.delivery import legacy as delivery_legacy
+
 import asyncio
 import copy
 import pickle
@@ -28,10 +40,11 @@ from vitals.models.scoped_settings import (
     SubjectSetting,
 )
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.proactive import channels, delivery, prefs
+from vitals.services.proactive import channels
+from vitals.services.proactive.preferences import contracts as preference_contracts
+from vitals.services.proactive.preferences import queries as preference_queries
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 from vitals.ownership import WriteIdentity
-from vitals.services import ai_gateway_service as ai_gateway
 from vitals.persistence import transactions as transaction_outcome
 
 
@@ -66,7 +79,7 @@ class _BoundFakeNotifier:
 
 def test_sync_notification_scope_never_allows_omitted_ownership():
     with pytest.raises(TypeError):
-        delivery.notification_ownership_scope(None)
+        delivery_policy.notification_ownership_scope(None)
 
 
 @pytest.mark.asyncio
@@ -84,7 +97,7 @@ async def test_ai_and_delivery_capabilities_share_exact_root_outcome_registry(
         subject_id=ownership.subject_id,
         actor_user_id=ownership.recipient_user_id,
     )
-    reservation = await ai_gateway.reserve_ai_invocation(
+    reservation = await ai_gateway_invocations.reserve_ai_invocation(
         db_session,
         identity=identity,
         purpose=AIInvocationPurpose.WEEKLY_DIGEST,
@@ -96,18 +109,18 @@ async def test_ai_and_delivery_capabilities_share_exact_root_outcome_registry(
     )
     await db_session.commit()
 
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="shared root",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "shared-root"
         ),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
-    ai_lease = await ai_gateway.start_ai_dispatch(
+    ai_lease = await ai_gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=identity,
         invocation_id=reservation.invocation_id,
@@ -122,14 +135,14 @@ async def test_ai_and_delivery_capabilities_share_exact_root_outcome_registry(
     async def provider_call(_request):
         return {"memory": "payload"}
 
-    with pytest.raises(ai_gateway.AICapabilityError):
-        await ai_gateway.dispatch_ai(
+    with pytest.raises(ai_gateway_contracts.AICapabilityError):
+        await ai_gateway_dispatch.dispatch_ai(
             ai_lease,
             provider_call=provider_call,
-            usage_extractor=lambda _result: ai_gateway.SanitizedAIUsage(),
+            usage_extractor=lambda _result: ai_gateway_contracts.SanitizedAIUsage(),
         )
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.start_delivery_dispatch(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.start_delivery_dispatch(
             db_session,
             prepared,
             notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
@@ -137,17 +150,17 @@ async def test_ai_and_delivery_capabilities_share_exact_root_outcome_registry(
     await db_session.commit()
     assert transaction_outcome.pending_root_transaction_outcomes(db_session) == 0
 
-    ai_completion = await ai_gateway.dispatch_ai(
+    ai_completion = await ai_gateway_dispatch.dispatch_ai(
         ai_lease,
         provider_call=provider_call,
-        usage_extractor=lambda _result: ai_gateway.SanitizedAIUsage(
+        usage_extractor=lambda _result: ai_gateway_contracts.SanitizedAIUsage(
             input_tokens=1,
             output_tokens=1,
             cost_microunits=1,
         ),
     )
     assert ai_completion.payload == {"memory": "payload"}
-    delivery_lease = await delivery.start_delivery_dispatch(
+    delivery_lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         now=datetime(2026, 8, 20, 12, 1),
@@ -155,8 +168,8 @@ async def test_ai_and_delivery_capabilities_share_exact_root_outcome_registry(
     )
     assert delivery_lease is not None
     await db_session.rollback()
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.dispatch_delivery(delivery_lease)
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.dispatch_delivery(delivery_lease)
 
 
 async def _ready(
@@ -183,7 +196,9 @@ async def _ready(
             "quiet_end": "10:00",
         }
 
-    monkeypatch.setattr(prefs, "get_locked_delivery_policy", policy, raising=False)
+    monkeypatch.setattr(
+        preference_queries, "get_locked_delivery_policy", policy, raising=False
+    )
     ownership = await channels.resolve_legacy_channel_ownership(
         db_session,
         actor_username=None,
@@ -204,7 +219,7 @@ async def _stale_raw_pending(
     ownership,
     binding,
     suffix: str,
-    category=delivery.CATEGORY_REPLY,
+    category=delivery_contracts.CATEGORY_REPLY,
     text="deterministic reply",
     actor_user_id=None,
     redact_journal_content=False,
@@ -221,10 +236,10 @@ async def _stale_raw_pending(
     )
     db_session.add(raw)
     await db_session.flush()
-    key = delivery.make_delivery_idempotency_key(
+    key = delivery_contracts.make_delivery_idempotency_key(
         f"raw-{category}", raw.id, suffix
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text=text,
@@ -266,14 +281,14 @@ async def test_preparation_scope_composes_raw_terminal_state_and_intent_atomical
     await db_session.commit()
 
     notifier = _BoundFakeNotifier(binding)
-    scope = await delivery.lock_delivery_preparation_scope(
+    scope = await delivery_preparation.lock_delivery_preparation_scope(
         db_session,
         notifier,
-        category=delivery.CATEGORY_ECHO,
+        category=delivery_contracts.CATEGORY_ECHO,
         ownership=ownership,
         now=datetime(2026, 8, 20, 12),
     )
-    assert isinstance(scope, delivery.DeliveryPreparationScope)
+    assert isinstance(scope, delivery_contracts.DeliveryPreparationScope)
     assert repr(scope) == "<DeliveryPreparationScope redacted>"
     with pytest.raises(TypeError):
         pickle.dumps(scope)
@@ -285,12 +300,12 @@ async def test_preparation_scope_composes_raw_terminal_state_and_intent_atomical
     )
     locked_raw.processed_at = datetime(2026, 8, 20, 12)
     await db_session.flush()
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         notifier,
         text="deterministic echo",
-        category=delivery.CATEGORY_ECHO,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_ECHO,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "composed-raw-t1"
         ),
         now=datetime(2026, 8, 20, 12),
@@ -318,21 +333,21 @@ async def test_preparation_scope_savepoint_root_rollback_and_close_boundaries(
         db_session, legacy_owner_roots, monkeypatch
     )
     notifier = _BoundFakeNotifier(binding)
-    scope = await delivery.lock_delivery_preparation_scope(
+    scope = await delivery_preparation.lock_delivery_preparation_scope(
         db_session,
         notifier,
-        category=delivery.CATEGORY_TEST,
+        category=delivery_contracts.CATEGORY_TEST,
         ownership=ownership,
         now=datetime(2026, 8, 20, 12),
     )
     nested = await db_session.begin_nested()
     await nested.commit()
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         notifier,
         text="savepoint stays inside root",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "scope-savepoint"
         ),
         now=datetime(2026, 8, 20, 12),
@@ -341,39 +356,39 @@ async def test_preparation_scope_savepoint_root_rollback_and_close_boundaries(
     )
     assert prepared is not None
     await db_session.rollback()
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.start_delivery_dispatch(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.start_delivery_dispatch(
             db_session,
             prepared,
             notifier_resolver=lambda *_: notifier,
         )
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.prepare_delivery_intent(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_preparation.prepare_delivery_intent(
             db_session,
             notifier,
             text="cannot reuse rolled-back scope",
-            category=delivery.CATEGORY_TEST,
-            idempotency_key=delivery.make_delivery_idempotency_key(
+            category=delivery_contracts.CATEGORY_TEST,
+            idempotency_key=delivery_contracts.make_delivery_idempotency_key(
                 "test", "scope-rollback-reuse"
             ),
             ownership=ownership,
             preparation_scope=scope,
         )
 
-    closed_scope = await delivery.lock_delivery_preparation_scope(
+    closed_scope = await delivery_preparation.lock_delivery_preparation_scope(
         db_session,
         notifier,
-        category=delivery.CATEGORY_TEST,
+        category=delivery_contracts.CATEGORY_TEST,
         ownership=ownership,
     )
     await db_session.close()
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.prepare_delivery_intent(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_preparation.prepare_delivery_intent(
             db_session,
             notifier,
             text="cannot reuse closed scope",
-            category=delivery.CATEGORY_TEST,
-            idempotency_key=delivery.make_delivery_idempotency_key(
+            category=delivery_contracts.CATEGORY_TEST,
+            idempotency_key=delivery_contracts.make_delivery_idempotency_key(
                 "test", "scope-close-reuse"
             ),
             ownership=ownership,
@@ -392,13 +407,13 @@ async def test_preparation_scope_rejects_forgery_and_another_session(
         db_session, legacy_owner_roots, monkeypatch
     )
     notifier = _BoundFakeNotifier(binding)
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        delivery.DeliveryPreparationScope()
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        delivery_contracts.DeliveryPreparationScope()
 
-    scope = await delivery.lock_delivery_preparation_scope(
+    scope = await delivery_preparation.lock_delivery_preparation_scope(
         db_session,
         notifier,
-        category=delivery.CATEGORY_TEST,
+        category=delivery_contracts.CATEGORY_TEST,
         ownership=ownership,
     )
     assert db_session.bind is not None
@@ -408,13 +423,13 @@ async def test_preparation_scope_rejects_forgery_and_another_session(
         class_=AsyncSession,
     )
     async with factory() as other_session:
-        with pytest.raises(delivery.DeliveryCapabilityError):
-            await delivery.prepare_delivery_intent(
+        with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+            await delivery_preparation.prepare_delivery_intent(
                 other_session,
                 notifier,
                 text="foreign session",
-                category=delivery.CATEGORY_TEST,
-                idempotency_key=delivery.make_delivery_idempotency_key(
+                category=delivery_contracts.CATEGORY_TEST,
+                idempotency_key=delivery_contracts.make_delivery_idempotency_key(
                     "test", "scope-foreign-session"
                 ),
                 ownership=ownership,
@@ -422,14 +437,14 @@ async def test_preparation_scope_rejects_forgery_and_another_session(
             )
         await other_session.rollback()
 
-    object.__setattr__(scope, "_category", delivery.CATEGORY_REPLY)
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.prepare_delivery_intent(
+    object.__setattr__(scope, "_category", delivery_contracts.CATEGORY_REPLY)
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_preparation.prepare_delivery_intent(
             db_session,
             notifier,
             text="tampered scope",
-            category=delivery.CATEGORY_REPLY,
-            idempotency_key=delivery.make_delivery_idempotency_key(
+            category=delivery_contracts.CATEGORY_REPLY,
+            idempotency_key=delivery_contracts.make_delivery_idempotency_key(
                 "test", "scope-forged-field"
             ),
             ownership=ownership,
@@ -450,15 +465,15 @@ async def test_preparation_scope_is_consumed_by_non_dispatchable_continuation(
         db_session, legacy_owner_roots, monkeypatch
     )
     notifier = _BoundFakeNotifier(binding)
-    key = delivery.make_delivery_idempotency_key(
+    key = delivery_contracts.make_delivery_idempotency_key(
         "test", f"scope-early-{early_exit}"
     )
     if early_exit == "dedupe":
-        first = await delivery.prepare_delivery_intent(
+        first = await delivery_preparation.prepare_delivery_intent(
             db_session,
             notifier,
             text="same immutable occurrence",
-            category=delivery.CATEGORY_TEST,
+            category=delivery_contracts.CATEGORY_TEST,
             idempotency_key=key,
             ownership=ownership,
         )
@@ -471,32 +486,32 @@ async def test_preparation_scope_is_consumed_by_non_dispatchable_continuation(
                 SubjectSetting.key == "enabled_modules",
             )
         )
-        module_policy.value = {**module_policy.value, prefs.MODULE_KEY: False}
+        module_policy.value = {**module_policy.value, preference_contracts.MODULE_KEY: False}
         await db_session.commit()
 
-    scope = await delivery.lock_delivery_preparation_scope(
+    scope = await delivery_preparation.lock_delivery_preparation_scope(
         db_session,
         notifier,
-        category=delivery.CATEGORY_TEST,
+        category=delivery_contracts.CATEGORY_TEST,
         ownership=ownership,
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         notifier,
         text="same immutable occurrence",
-        category=delivery.CATEGORY_TEST,
+        category=delivery_contracts.CATEGORY_TEST,
         idempotency_key=key,
         ownership=ownership,
         preparation_scope=scope,
     )
     assert prepared is None
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.prepare_delivery_intent(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_preparation.prepare_delivery_intent(
             db_session,
             notifier,
             text="scope cannot be repurposed",
-            category=delivery.CATEGORY_TEST,
-            idempotency_key=delivery.make_delivery_idempotency_key(
+            category=delivery_contracts.CATEGORY_TEST,
+            idempotency_key=delivery_contracts.make_delivery_idempotency_key(
                 "test", f"scope-early-reuse-{early_exit}"
             ),
             ownership=ownership,
@@ -517,21 +532,21 @@ async def test_preparation_scope_rejects_same_session_authority_tamper(
     monkeypatch,
     tamper,
 ):
-    real_policy_getter = prefs.get_locked_delivery_policy
+    real_policy_getter = preference_queries.get_locked_delivery_policy
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
     if tamper == "policy":
         monkeypatch.setattr(
-            prefs,
+            preference_queries,
             "get_locked_delivery_policy",
             real_policy_getter,
         )
     notifier = _BoundFakeNotifier(binding)
-    scope = await delivery.lock_delivery_preparation_scope(
+    scope = await delivery_preparation.lock_delivery_preparation_scope(
         db_session,
         notifier,
-        category=delivery.CATEGORY_TEST,
+        category=delivery_contracts.CATEGORY_TEST,
         ownership=ownership,
         now=datetime(2026, 8, 20, 12),
     )
@@ -547,13 +562,13 @@ async def test_preparation_scope_rejects_same_session_authority_tamper(
                 SubjectSetting.key == "enabled_modules",
             )
         )
-        module_policy.value = {**module_policy.value, prefs.MODULE_KEY: False}
+        module_policy.value = {**module_policy.value, preference_contracts.MODULE_KEY: False}
     else:
         policy_row = await db_session.get(
             IntegrationConnectionSetting,
             {
                 "integration_connection_id": ownership.connection_id,
-                "key": prefs.TELEGRAM_DELIVERY_POLICY_KEY,
+                "key": preference_contracts.TELEGRAM_DELIVERY_POLICY_KEY,
             },
         )
         assert policy_row is not None
@@ -563,30 +578,30 @@ async def test_preparation_scope_rejects_same_session_authority_tamper(
         }
 
     expected = (
-        delivery.DeliveryScopeError
+        delivery_contracts.DeliveryScopeError
         if tamper == "connection"
-        else delivery.DeliveryPolicyUnavailableError
+        else delivery_contracts.DeliveryPolicyUnavailableError
     )
     with pytest.raises(expected):
-        await delivery.prepare_delivery_intent(
+        await delivery_preparation.prepare_delivery_intent(
             db_session,
             notifier,
             text="must remain local",
-            category=delivery.CATEGORY_TEST,
-            idempotency_key=delivery.make_delivery_idempotency_key(
+            category=delivery_contracts.CATEGORY_TEST,
+            idempotency_key=delivery_contracts.make_delivery_idempotency_key(
                 "test", f"scope-tamper-{tamper}"
             ),
             now=datetime(2026, 8, 20, 12),
             ownership=ownership,
             preparation_scope=scope,
         )
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.prepare_delivery_intent(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_preparation.prepare_delivery_intent(
             db_session,
             notifier,
             text="consumed after failed revalidation",
-            category=delivery.CATEGORY_TEST,
-            idempotency_key=delivery.make_delivery_idempotency_key(
+            category=delivery_contracts.CATEGORY_TEST,
+            idempotency_key=delivery_contracts.make_delivery_idempotency_key(
                 "test", f"scope-tamper-reuse-{tamper}"
             ),
             ownership=ownership,
@@ -605,12 +620,12 @@ async def test_happy_path_requires_each_commit_and_links_exact_graph(
         db_session, legacy_owner_roots, monkeypatch
     )
     availability = _BoundFakeNotifier(binding)
-    key = delivery.make_delivery_idempotency_key("brief", "2026-08-20")
-    prepared = await delivery.prepare_delivery_intent(
+    key = delivery_contracts.make_delivery_idempotency_key("brief", "2026-08-20")
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         availability,
         text="sensitive health summary",
-        category=delivery.CATEGORY_BRIEF,
+        category=delivery_contracts.CATEGORY_BRIEF,
         idempotency_key=key,
         legacy_dedupe_key="brief:2026-08-20",
         now=datetime(2026, 8, 20, 12),
@@ -620,8 +635,8 @@ async def test_happy_path_requires_each_commit_and_links_exact_graph(
     assert "sensitive" not in repr(prepared)
     with pytest.raises(TypeError):
         pickle.dumps(prepared)
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.start_delivery_dispatch(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.start_delivery_dispatch(
             db_session,
             prepared,
             notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
@@ -629,21 +644,21 @@ async def test_happy_path_requires_each_commit_and_links_exact_graph(
     await db_session.commit()
 
     transport = _BoundFakeNotifier(binding, result="702")
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         now=datetime(2026, 8, 20, 12, 1),
         notifier_resolver=lambda *_: transport,
     )
     assert lease is not None
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.dispatch_delivery(lease)
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.dispatch_delivery(lease)
     await db_session.commit()
 
-    completion = await delivery.dispatch_delivery(lease)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
     assert completion.status is NotificationDeliveryStatus.SENT
     assert transport.calls == [("sensitive health summary", None, None)]
-    journal = await delivery.finalize_delivery(db_session, completion)
+    journal = await delivery_dispatch.finalize_delivery(db_session, completion)
     assert journal is not None
     assert journal.subject_id == ownership.subject_id
     assert journal.recipient_user_id == ownership.recipient_user_id
@@ -658,8 +673,8 @@ async def test_happy_path_requires_each_commit_and_links_exact_graph(
 
     intent = await db_session.get(NotificationDeliveryIntent, prepared.intent_id)
     assert intent.status == NotificationDeliveryStatus.SENT.value
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.dispatch_delivery(lease)
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.dispatch_delivery(lease)
 
 
 @pytest.mark.asyncio
@@ -671,23 +686,23 @@ async def test_existing_pending_never_reconstructs_payload_or_dispatches(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    key = delivery.make_delivery_idempotency_key("evening", "2026-08-20")
-    first = await delivery.prepare_delivery_intent(
+    key = delivery_contracts.make_delivery_idempotency_key("evening", "2026-08-20")
+    first = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="first payload",
-        category=delivery.CATEGORY_EVENING,
+        category=delivery_contracts.CATEGORY_EVENING,
         idempotency_key=key,
         now=datetime(2026, 8, 20, 20),
         ownership=ownership,
     )
     assert first is not None
     await db_session.commit()
-    inherited = await delivery.prepare_delivery_intent(
+    inherited = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="different caller payload",
-        category=delivery.CATEGORY_EVENING,
+        category=delivery_contracts.CATEGORY_EVENING,
         idempotency_key=key,
         now=datetime(2026, 8, 20, 20, 5),
         ownership=ownership,
@@ -719,17 +734,17 @@ async def test_stale_raw_pending_is_domain_rearmed_and_never_scheduler_cancelled
         suffix="crash-after-t1",
     )
 
-    assert await delivery.reconcile_stale_pending_deliveries(
+    assert await delivery_reconciliation.reconcile_stale_pending_deliveries(
         db_session,
         stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
     ) == 0
     await db_session.commit()
 
-    recovered = await delivery.rearm_stale_raw_delivery_intent(
+    recovered = await delivery_preparation.rearm_stale_raw_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="deterministic reply",
-        category=delivery.CATEGORY_REPLY,
+        category=delivery_contracts.CATEGORY_REPLY,
         idempotency_key=key,
         stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
         now=datetime(2026, 8, 20, 12, tzinfo=UTC),
@@ -740,8 +755,8 @@ async def test_stale_raw_pending_is_domain_rearmed_and_never_scheduler_cancelled
 
     nested = await db_session.begin_nested()
     await nested.commit()
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.start_delivery_dispatch(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.start_delivery_dispatch(
             db_session,
             recovered,
             notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
@@ -750,8 +765,8 @@ async def test_stale_raw_pending_is_domain_rearmed_and_never_scheduler_cancelled
 
     # Recovery rotates a sealed timestamp, so a still-live pre-crash
     # capability cannot race the re-rendered payload after recovery committed.
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.start_delivery_dispatch(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.start_delivery_dispatch(
             db_session,
             original,
             notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
@@ -759,15 +774,15 @@ async def test_stale_raw_pending_is_domain_rearmed_and_never_scheduler_cancelled
     await db_session.rollback()
 
     transport = _BoundFakeNotifier(binding, result="7401")
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         recovered,
         notifier_resolver=lambda *_: transport,
     )
     assert lease is not None
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
-    journal = await delivery.finalize_delivery(db_session, completion)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
+    journal = await delivery_dispatch.finalize_delivery(db_session, completion)
     await db_session.commit()
 
     assert transport.calls == [("deterministic reply", None, None)]
@@ -791,11 +806,11 @@ async def test_raw_rearm_requires_strict_staleness_and_root_commit(
         suffix="rollback",
     )
     raw_id = raw.id
-    not_stale = await delivery.rearm_stale_raw_delivery_intent(
+    not_stale = await delivery_preparation.rearm_stale_raw_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="deterministic reply",
-        category=delivery.CATEGORY_REPLY,
+        category=delivery_contracts.CATEGORY_REPLY,
         idempotency_key=key,
         stale_before=datetime(2026, 8, 20, 8, tzinfo=UTC),
         now=datetime(2026, 8, 20, 12, tzinfo=UTC),
@@ -805,11 +820,11 @@ async def test_raw_rearm_requires_strict_staleness_and_root_commit(
     assert not_stale is None
     await db_session.rollback()
 
-    rolled_back = await delivery.rearm_stale_raw_delivery_intent(
+    rolled_back = await delivery_preparation.rearm_stale_raw_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="deterministic reply",
-        category=delivery.CATEGORY_REPLY,
+        category=delivery_contracts.CATEGORY_REPLY,
         idempotency_key=key,
         stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
         now=datetime(2026, 8, 20, 12, tzinfo=UTC),
@@ -818,8 +833,8 @@ async def test_raw_rearm_requires_strict_staleness_and_root_commit(
     )
     assert rolled_back is not None
     await db_session.rollback()
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.start_delivery_dispatch(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.start_delivery_dispatch(
             db_session,
             rolled_back,
             notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
@@ -846,7 +861,7 @@ async def test_raw_rearm_reopens_only_proven_zero_io_cancellations(
         suffix="scope-invalid",
     )
     raw_id = raw.id
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         original,
         now=datetime(2026, 8, 20, 12, tzinfo=UTC),
@@ -862,11 +877,11 @@ async def test_raw_rearm_reopens_only_proven_zero_io_cancellations(
     cancelled.updated_at = datetime(2026, 8, 20, 11, tzinfo=UTC)
     await db_session.commit()
 
-    assert await delivery.rearm_stale_raw_delivery_intent(
+    assert await delivery_preparation.rearm_stale_raw_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="deterministic reply",
-        category=delivery.CATEGORY_REPLY,
+        category=delivery_contracts.CATEGORY_REPLY,
         idempotency_key=key,
         stale_before=datetime(2026, 8, 20, 12, tzinfo=UTC),
         now=datetime(2026, 8, 20, 12, 5, tzinfo=UTC),
@@ -875,11 +890,11 @@ async def test_raw_rearm_reopens_only_proven_zero_io_cancellations(
     ) is None
     await db_session.rollback()
 
-    recovered = await delivery.rearm_stale_raw_delivery_intent(
+    recovered = await delivery_preparation.rearm_stale_raw_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="deterministic reply",
-        category=delivery.CATEGORY_REPLY,
+        category=delivery_contracts.CATEGORY_REPLY,
         idempotency_key=key,
         stale_before=datetime(2026, 8, 20, 12, 1, tzinfo=UTC),
         now=datetime(2026, 8, 20, 12, 5, tzinfo=UTC),
@@ -895,12 +910,12 @@ async def test_raw_rearm_reopens_only_proven_zero_io_cancellations(
     cancelled.completed_at = datetime(2026, 8, 20, 12, tzinfo=UTC)
     cancelled.error_code = "cancelled_by_policy"
     await db_session.commit()
-    with pytest.raises(delivery.DeliveryStateError):
-        await delivery.rearm_stale_raw_delivery_intent(
+    with pytest.raises(delivery_contracts.DeliveryStateError):
+        await delivery_preparation.rearm_stale_raw_delivery_intent(
             db_session,
             _BoundFakeNotifier(binding),
             text="deterministic reply",
-            category=delivery.CATEGORY_REPLY,
+            category=delivery_contracts.CATEGORY_REPLY,
             idempotency_key=key,
             stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
             now=datetime(2026, 8, 20, 12, 10, tzinfo=UTC),
@@ -933,7 +948,7 @@ async def test_raw_rearm_honors_both_historical_journal_keys(
     db_session.add(
         Notification(
             sent_at=datetime(2026, 8, 20, 10),
-            category=delivery.CATEGORY_REPLY,
+            category=delivery_contracts.CATEGORY_REPLY,
             dedupe_key=(key if journal_key_kind == "opaque" else legacy_key),
             channel=IntegrationProvider.TELEGRAM.value,
             external_id="7399",
@@ -942,11 +957,11 @@ async def test_raw_rearm_honors_both_historical_journal_keys(
     )
     await db_session.commit()
 
-    assert await delivery.rearm_stale_raw_delivery_intent(
+    assert await delivery_preparation.rearm_stale_raw_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="must not duplicate historical send",
-        category=delivery.CATEGORY_REPLY,
+        category=delivery_contracts.CATEGORY_REPLY,
         idempotency_key=key,
         legacy_dedupe_key=legacy_key,
         stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
@@ -975,13 +990,13 @@ async def test_raw_rearm_metadata_and_terminal_tampering_fail_closed(
         suffix="tamper",
     )
     raw_id = raw.id
-    with pytest.raises(delivery.DeliveryIdempotencyConflictError):
-        await delivery.rearm_stale_raw_delivery_intent(
+    with pytest.raises(delivery_contracts.DeliveryIdempotencyConflictError):
+        await delivery_preparation.rearm_stale_raw_delivery_intent(
             db_session,
             _BoundFakeNotifier(binding),
             text="different occurrence",
-            category=delivery.CATEGORY_REPLY,
-            idempotency_key=delivery.make_delivery_idempotency_key(
+            category=delivery_contracts.CATEGORY_REPLY,
+            idempotency_key=delivery_contracts.make_delivery_idempotency_key(
                 "raw-reply", raw_id, "wrong-key"
             ),
             stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
@@ -990,12 +1005,12 @@ async def test_raw_rearm_metadata_and_terminal_tampering_fail_closed(
             raw_payload_id=raw_id,
         )
     await db_session.rollback()
-    with pytest.raises(delivery.DeliveryScopeError):
-        await delivery.rearm_stale_raw_delivery_intent(
+    with pytest.raises(delivery_contracts.DeliveryScopeError):
+        await delivery_preparation.rearm_stale_raw_delivery_intent(
             db_session,
             _BoundFakeNotifier(binding),
             text="echo",
-            category=delivery.CATEGORY_ECHO,
+            category=delivery_contracts.CATEGORY_ECHO,
             idempotency_key=key,
             stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
             now=datetime(2026, 8, 20, 12, tzinfo=UTC),
@@ -1004,19 +1019,19 @@ async def test_raw_rearm_metadata_and_terminal_tampering_fail_closed(
             redact_journal_content=True,
         )
 
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         original,
         notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
     )
     assert lease is not None
     await db_session.commit()
-    with pytest.raises(delivery.DeliveryStateError):
-        await delivery.rearm_stale_raw_delivery_intent(
+    with pytest.raises(delivery_contracts.DeliveryStateError):
+        await delivery_preparation.rearm_stale_raw_delivery_intent(
             db_session,
             _BoundFakeNotifier(binding),
             text="must not resume dispatching",
-            category=delivery.CATEGORY_REPLY,
+            category=delivery_contracts.CATEGORY_REPLY,
             idempotency_key=key,
             stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
             now=datetime(2026, 8, 20, 12, tzinfo=UTC),
@@ -1070,11 +1085,11 @@ async def test_stale_raw_rearm_rebinds_only_before_dispatch_after_c_rotation(
     )
     await db_session.commit()
 
-    recovered = await delivery.rearm_stale_raw_delivery_intent(
+    recovered = await delivery_preparation.rearm_stale_raw_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="answer on the current recipient",
-        category=delivery.CATEGORY_REPLY,
+        category=delivery_contracts.CATEGORY_REPLY,
         idempotency_key=key,
         stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
         now=datetime(2026, 8, 20, 12, tzinfo=UTC),
@@ -1089,14 +1104,14 @@ async def test_stale_raw_rearm_rebinds_only_before_dispatch_after_c_rotation(
     assert raw.integration_connection_id == old_connection.id
 
     transport = _BoundFakeNotifier(binding, result="7402")
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         recovered,
         notifier_resolver=lambda *_: transport,
     )
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
-    journal = await delivery.finalize_delivery(db_session, completion)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
+    journal = await delivery_dispatch.finalize_delivery(db_session, completion)
     await db_session.commit()
     assert journal is not None
     assert journal.integration_connection_id == current_connection.id
@@ -1122,11 +1137,11 @@ async def test_postgres_original_capability_racing_rearm_sends_once(
         binding=binding,
         suffix="postgres-race",
     )
-    recovered = await delivery.rearm_stale_raw_delivery_intent(
+    recovered = await delivery_preparation.rearm_stale_raw_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="deterministic reply",
-        category=delivery.CATEGORY_REPLY,
+        category=delivery_contracts.CATEGORY_REPLY,
         idempotency_key=key,
         stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
         now=datetime(2026, 8, 20, 12, tzinfo=UTC),
@@ -1146,14 +1161,14 @@ async def test_postgres_original_capability_racing_rearm_sends_once(
     async def attempt(prepared):
         async with factory() as session:
             try:
-                lease = await delivery.start_delivery_dispatch(
+                lease = await delivery_dispatch.start_delivery_dispatch(
                     session,
                     prepared,
                     notifier_resolver=lambda *_: transport,
                 )
                 await session.commit()
                 return lease
-            except delivery.DeliveryError:
+            except delivery_contracts.DeliveryError:
                 await session.rollback()
                 return None
 
@@ -1163,8 +1178,8 @@ async def test_postgres_original_capability_racing_rearm_sends_once(
         if lease is not None
     ]
     assert len(leases) == 1
-    completion = await delivery.dispatch_delivery(leases[0])
-    assert await delivery.finalize_delivery(db_session, completion) is not None
+    completion = await delivery_dispatch.dispatch_delivery(leases[0])
+    assert await delivery_dispatch.finalize_delivery(db_session, completion) is not None
     await db_session.commit()
     assert transport.calls == [("deterministic reply", None, None)]
 
@@ -1182,12 +1197,12 @@ async def test_uncertain_or_invalid_transport_is_ambiguous_without_journal(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="private sentinel",
-        category=delivery.CATEGORY_REPLY,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_REPLY,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "reply", repr(result), type(error).__name__
         ),
         now=datetime(2026, 8, 20, 12),
@@ -1195,7 +1210,7 @@ async def test_uncertain_or_invalid_transport_is_ambiguous_without_journal(
     )
     assert prepared is not None
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         notifier_resolver=lambda *_: _BoundFakeNotifier(
@@ -1204,9 +1219,9 @@ async def test_uncertain_or_invalid_transport_is_ambiguous_without_journal(
     )
     assert lease is not None
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
     assert completion.status is NotificationDeliveryStatus.AMBIGUOUS
-    assert await delivery.finalize_delivery(db_session, completion) is None
+    assert await delivery_dispatch.finalize_delivery(db_session, completion) is None
     await db_session.commit()
     assert await db_session.scalar(select(Notification.id)) is None
     logs = caplog.text
@@ -1223,12 +1238,12 @@ async def test_stale_reconciliation_never_calls_provider(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="will be abandoned",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key("test", "stale"),
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key("test", "stale"),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
@@ -1237,7 +1252,7 @@ async def test_stale_reconciliation_never_calls_provider(
     intent = await db_session.get(NotificationDeliveryIntent, prepared.intent_id)
     intent.updated_at = datetime(2026, 8, 20, 10, tzinfo=UTC)
     await db_session.commit()
-    changed = await delivery.reconcile_stale_pending_deliveries(
+    changed = await delivery_reconciliation.reconcile_stale_pending_deliveries(
         db_session,
         stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
     )
@@ -1256,12 +1271,12 @@ async def test_owned_monolithic_send_is_banned(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    with pytest.raises(delivery.DurableDeliveryRequiredError):
-        await delivery.send(
+    with pytest.raises(delivery_contracts.DurableDeliveryRequiredError):
+        await delivery_legacy.send(
             db_session,
             _BoundFakeNotifier(binding),
             text="must not cross network",
-            category=delivery.CATEGORY_REPLY,
+            category=delivery_contracts.CATEGORY_REPLY,
             ownership=ownership,
         )
 
@@ -1275,17 +1290,17 @@ async def test_cancelled_error_is_captured_after_dispatch_started(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="cancel sentinel",
-        category=delivery.CATEGORY_REPLY,
-        idempotency_key=delivery.make_delivery_idempotency_key("reply", "cancel"),
+        category=delivery_contracts.CATEGORY_REPLY,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key("reply", "cancel"),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         notifier_resolver=lambda *_: _BoundFakeNotifier(
@@ -1293,9 +1308,9 @@ async def test_cancelled_error_is_captured_after_dispatch_started(
         ),
     )
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
     assert completion.status is NotificationDeliveryStatus.AMBIGUOUS
-    assert await delivery.finalize_delivery(db_session, completion) is None
+    assert await delivery_dispatch.finalize_delivery(db_session, completion) is None
     await db_session.commit()
 
 
@@ -1308,17 +1323,17 @@ async def test_identity_database_cannot_use_omitted_ownership_compatibility(
     _ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    with pytest.raises(delivery.DurableDeliveryRequiredError):
-        await delivery.send(
+    with pytest.raises(delivery_contracts.DurableDeliveryRequiredError):
+        await delivery_legacy.send(
             db_session,
             _BoundFakeNotifier(binding),
             text="omitted ownership",
-            category=delivery.CATEGORY_REPLY,
+            category=delivery_contracts.CATEGORY_REPLY,
             ownership=None,
         )
     await db_session.rollback()
-    with pytest.raises(delivery.DurableDeliveryRequiredError):
-        await delivery.already_sent(
+    with pytest.raises(delivery_contracts.DurableDeliveryRequiredError):
+        await delivery_queries.already_sent(
             db_session,
             "legacy-key",
             ownership=None,
@@ -1335,25 +1350,25 @@ async def test_text_is_clipped_before_dispatch_and_journal(
         db_session, legacy_owner_roots, monkeypatch
     )
     long_text = "x" * 5000
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text=long_text,
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key("test", "clip"),
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key("test", "clip"),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     await db_session.commit()
     transport = _BoundFakeNotifier(binding)
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         notifier_resolver=lambda *_: transport,
     )
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
-    journal = await delivery.finalize_delivery(db_session, completion)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
+    journal = await delivery_dispatch.finalize_delivery(db_session, completion)
     await db_session.commit()
     physically_sent = transport.calls[0][0]
     assert len(physically_sent) == 4096
@@ -1372,12 +1387,12 @@ async def test_malformed_buttons_fail_before_intent_or_network(
     )
     transport = _BoundFakeNotifier(binding)
     with pytest.raises(ValueError):
-        await delivery.prepare_delivery_intent(
+        await delivery_preparation.prepare_delivery_intent(
             db_session,
             transport,
             text="safe",
-            category=delivery.CATEGORY_TEST,
-            idempotency_key=delivery.make_delivery_idempotency_key(
+            category=delivery_contracts.CATEGORY_TEST,
+            idempotency_key=delivery_contracts.make_delivery_idempotency_key(
                 "test", "bad-buttons"
             ),
             buttons=[("label", "x" * 65)],
@@ -1398,36 +1413,36 @@ async def test_midnight_expires_initiative_but_not_reply(
         db_session, legacy_owner_roots, monkeypatch
     )
     availability = _BoundFakeNotifier(binding)
-    reply = await delivery.prepare_delivery_intent(
+    reply = await delivery_preparation.prepare_delivery_intent(
         db_session,
         availability,
         text="reply",
-        category=delivery.CATEGORY_REPLY,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_REPLY,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "reply", "midnight"
         ),
         now=datetime(2026, 8, 20, 23, 59),
         ownership=ownership,
     )
-    brief = await delivery.prepare_delivery_intent(
+    brief = await delivery_preparation.prepare_delivery_intent(
         db_session,
         availability,
         text="brief",
-        category=delivery.CATEGORY_BRIEF,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_BRIEF,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "brief", "midnight"
         ),
         now=datetime(2026, 8, 20, 23, 59),
         ownership=ownership,
     )
     await db_session.commit()
-    reply_lease = await delivery.start_delivery_dispatch(
+    reply_lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         reply,
         now=datetime(2026, 8, 21, 0, 1),
         notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
     )
-    brief_lease = await delivery.start_delivery_dispatch(
+    brief_lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         brief,
         now=datetime(2026, 8, 21, 0, 1),
@@ -1452,42 +1467,42 @@ async def test_savepoint_commit_never_arms_t1_or_t2_capability(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    first = await delivery.prepare_delivery_intent(
+    first = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="t1",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key("test", "nested-t1"),
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key("test", "nested-t1"),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     nested = await db_session.begin_nested()
     await nested.commit()
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.start_delivery_dispatch(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.start_delivery_dispatch(
             db_session,
             first,
             notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
         )
     await db_session.rollback()
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.start_delivery_dispatch(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.start_delivery_dispatch(
             db_session,
             first,
             notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
         )
 
-    second = await delivery.prepare_delivery_intent(
+    second = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="t2",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key("test", "nested-t2"),
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key("test", "nested-t2"),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         second,
         notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
@@ -1495,8 +1510,8 @@ async def test_savepoint_commit_never_arms_t1_or_t2_capability(
     nested = await db_session.begin_nested()
     await nested.commit()
     await db_session.rollback()
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.dispatch_delivery(lease)
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.dispatch_delivery(lease)
     intent = await db_session.get(NotificationDeliveryIntent, second.intent_id)
     assert intent.status == NotificationDeliveryStatus.PENDING.value
 
@@ -1510,20 +1525,20 @@ async def test_session_close_invalidates_uncommitted_t1_and_t2_capabilities(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    first = await delivery.prepare_delivery_intent(
+    first = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="t1 close",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "close-t1"
         ),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     await db_session.close()
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.start_delivery_dispatch(
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.start_delivery_dispatch(
             db_session,
             first,
             notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
@@ -1531,26 +1546,26 @@ async def test_session_close_invalidates_uncommitted_t1_and_t2_capabilities(
     assert await db_session.get(NotificationDeliveryIntent, first.intent_id) is None
     await db_session.rollback()
 
-    second = await delivery.prepare_delivery_intent(
+    second = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="t2 close",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "close-t2"
         ),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         second,
         notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
     )
     await db_session.close()
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.dispatch_delivery(lease)
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.dispatch_delivery(lease)
     intent = await db_session.get(NotificationDeliveryIntent, second.intent_id)
     assert intent.status == NotificationDeliveryStatus.PENDING.value
 
@@ -1564,28 +1579,28 @@ async def test_t3_savepoint_then_outer_rollback_keeps_completion_retryable(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="one physical send",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key("test", "t3-rollback"),
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key("test", "t3-rollback"),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
     )
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
-    assert await delivery.finalize_delivery(db_session, completion) is not None
+    completion = await delivery_dispatch.dispatch_delivery(lease)
+    assert await delivery_dispatch.finalize_delivery(db_session, completion) is not None
     nested = await db_session.begin_nested()
     await nested.commit()
     await db_session.rollback()
-    assert await delivery.finalize_delivery(db_session, completion) is not None
+    assert await delivery_dispatch.finalize_delivery(db_session, completion) is not None
     await db_session.commit()
     assert (
         await db_session.scalar(select(NotificationDeliveryIntent.status))
@@ -1602,30 +1617,30 @@ async def test_session_close_rolls_back_t3_and_keeps_completion_retryable(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="one physical send",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "t3-close-rollback"
         ),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
     )
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
 
-    assert await delivery.finalize_delivery(db_session, completion) is not None
+    assert await delivery_dispatch.finalize_delivery(db_session, completion) is not None
     await db_session.close()
 
-    assert await delivery.finalize_delivery(db_session, completion) is not None
+    assert await delivery_dispatch.finalize_delivery(db_session, completion) is not None
     await db_session.commit()
     assert (
         await db_session.scalar(select(NotificationDeliveryIntent.status))
@@ -1642,33 +1657,33 @@ async def test_pending_historical_connection_cannot_finalize_provider_success(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="sent before graph tamper",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "pending-historical-c"
         ),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
     )
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
     connection = await db_session.get(
         IntegrationConnection, ownership.connection_id
     )
     connection.status = IntegrationConnectionStatus.PENDING.value
     await db_session.commit()
 
-    with pytest.raises(delivery.DeliveryScopeError):
-        await delivery.finalize_delivery(db_session, completion)
+    with pytest.raises(delivery_contracts.DeliveryScopeError):
+        await delivery_dispatch.finalize_delivery(db_session, completion)
     await db_session.rollback()
 
 
@@ -1681,31 +1696,31 @@ async def test_t3_rejects_actor_tamper_in_persisted_intent(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="frozen actor graph",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "actor-tamper"
         ),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
     )
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
     intent = await db_session.get(NotificationDeliveryIntent, prepared.intent_id)
     intent.actor_user_id = ownership.recipient_user_id
     await db_session.commit()
 
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.finalize_delivery(db_session, completion)
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.finalize_delivery(db_session, completion)
     await db_session.rollback()
     assert await db_session.scalar(select(Notification.id)) is None
 
@@ -1760,12 +1775,12 @@ async def test_raw_backed_reply_survives_telegram_connection_rotation(
     )
     await db_session.commit()
 
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="answer after rotation",
-        category=delivery.CATEGORY_REPLY,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_REPLY,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "reply", raw.id
         ),
         now=datetime(2026, 8, 20, 12),
@@ -1774,12 +1789,12 @@ async def test_raw_backed_reply_survives_telegram_connection_rotation(
         raw_payload_id=raw.id,
         redact_journal_content=True,
     )
-    duplicate = await delivery.prepare_delivery_intent(
+    duplicate = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="different payload must not reconstruct the occurrence",
-        category=delivery.CATEGORY_REPLY,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_REPLY,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "reply", raw.id, "different-key"
         ),
         now=datetime(2026, 8, 20, 12, 1),
@@ -1790,14 +1805,14 @@ async def test_raw_backed_reply_survives_telegram_connection_rotation(
     )
     assert duplicate is None
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
     )
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
-    journal = await delivery.finalize_delivery(db_session, completion)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
+    journal = await delivery_dispatch.finalize_delivery(db_session, completion)
     await db_session.commit()
 
     assert journal.integration_connection_id == current_connection.id
@@ -1819,13 +1834,13 @@ async def test_ai_question_reply_cannot_opt_out_of_redacted_journal(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    with pytest.raises(delivery.DeliveryScopeError):
-        await delivery.prepare_delivery_intent(
+    with pytest.raises(delivery_contracts.DeliveryScopeError):
+        await delivery_preparation.prepare_delivery_intent(
             db_session,
             _BoundFakeNotifier(binding),
             text="model-generated health answer",
-            category=delivery.CATEGORY_REPLY,
-            idempotency_key=delivery.make_delivery_idempotency_key(
+            category=delivery_contracts.CATEGORY_REPLY,
+            idempotency_key=delivery_contracts.make_delivery_idempotency_key(
                 "reply", "unredacted-ai"
             ),
             now=datetime(2026, 8, 20, 12),
@@ -1847,13 +1862,13 @@ async def test_ambiguous_nudge_claim_suppresses_policy_cooldown_retry(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    policy_key = delivery.make_delivery_policy_key("nudge", "steps-short")
-    prepared = await delivery.prepare_delivery_intent(
+    policy_key = delivery_contracts.make_delivery_policy_key("nudge", "steps-short")
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="initiative",
-        category=delivery.CATEGORY_NUDGE,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_NUDGE,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "nudge", "steps-short", "2026-08-20T12"
         ),
         policy_key=policy_key,
@@ -1861,7 +1876,7 @@ async def test_ambiguous_nudge_claim_suppresses_policy_cooldown_retry(
         ownership=ownership,
     )
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         now=datetime(2026, 8, 20, 12, 1),
@@ -1870,12 +1885,12 @@ async def test_ambiguous_nudge_claim_suppresses_policy_cooldown_retry(
         ),
     )
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
     assert completion.status is NotificationDeliveryStatus.AMBIGUOUS
-    assert await delivery.finalize_delivery(db_session, completion) is None
+    assert await delivery_dispatch.finalize_delivery(db_session, completion) is None
     await db_session.commit()
 
-    assert await delivery.delivery_policy_claimed_since(
+    assert await delivery_queries.delivery_policy_claimed_since(
         db_session,
         policy_key=policy_key,
         not_before=datetime(2026, 8, 19, tzinfo=UTC),
@@ -1893,37 +1908,37 @@ async def test_quiet_hours_and_pending_claim_enforce_subject_daily_budget(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch, budget=1
     )
-    quiet_nudge = await delivery.prepare_delivery_intent(
+    quiet_nudge = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="quiet initiative",
-        category=delivery.CATEGORY_NUDGE,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_NUDGE,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "nudge", "quiet"
         ),
-        policy_key=delivery.make_delivery_policy_key("nudge", "quiet"),
+        policy_key=delivery_contracts.make_delivery_policy_key("nudge", "quiet"),
         now=datetime(2026, 8, 20, 3),
         ownership=ownership,
     )
     assert quiet_nudge is None
-    brief = await delivery.prepare_delivery_intent(
+    brief = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="first initiative claim",
-        category=delivery.CATEGORY_BRIEF,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_BRIEF,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "brief", "budget-day"
         ),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     assert brief is not None
-    over_budget = await delivery.prepare_delivery_intent(
+    over_budget = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="second initiative claim",
-        category=delivery.CATEGORY_EVENING,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_EVENING,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "evening", "budget-day"
         ),
         now=datetime(2026, 8, 20, 12, 1),
@@ -1946,12 +1961,12 @@ async def test_expired_lease_becomes_ambiguous_without_network(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="must expire locally",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "expired-lease"
         ),
         now=datetime(2026, 8, 20, 12),
@@ -1959,22 +1974,31 @@ async def test_expired_lease_becomes_ambiguous_without_network(
     )
     await db_session.commit()
     monotonic_values = iter(
-        [100.0, 100.0 + delivery.DISPATCHING_STALE_AFTER.total_seconds()]
+        [100.0, 100.0 + delivery_contracts.DISPATCHING_STALE_AFTER.total_seconds()]
     )
-    monkeypatch.setattr(delivery, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(
+        delivery_contracts,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
+    monkeypatch.setattr(
+        delivery_dispatch,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
     transport = _BoundFakeNotifier(binding)
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         notifier_resolver=lambda *_: transport,
     )
     await db_session.commit()
 
-    completion = await delivery.dispatch_delivery(lease)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
     assert completion.status is NotificationDeliveryStatus.AMBIGUOUS
     assert completion.error_code.value == "stale_dispatch"
     assert transport.calls == []
-    assert await delivery.finalize_delivery(db_session, completion) is None
+    assert await delivery_dispatch.finalize_delivery(db_session, completion) is None
     await db_session.commit()
 
 
@@ -1987,19 +2011,19 @@ async def test_stale_reconciler_rejects_late_mismatched_completion(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="provider outcome races recovery",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "reconcile-race"
         ),
         now=datetime(2026, 8, 20, 9),
         ownership=ownership,
     )
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         now=datetime(2026, 8, 20, 10),
@@ -2008,19 +2032,19 @@ async def test_stale_reconciler_rejects_late_mismatched_completion(
         ),
     )
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
-    changed = await delivery.reconcile_stale_delivery_dispatches(
+    completion = await delivery_dispatch.dispatch_delivery(lease)
+    changed = await delivery_reconciliation.reconcile_stale_delivery_dispatches(
         db_session,
         stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
     )
     assert changed == 1
     await db_session.commit()
 
-    with pytest.raises(delivery.DeliveryStateError):
-        await delivery.finalize_delivery(db_session, completion)
+    with pytest.raises(delivery_contracts.DeliveryStateError):
+        await delivery_dispatch.finalize_delivery(db_session, completion)
     await db_session.rollback()
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.finalize_delivery(db_session, completion)
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.finalize_delivery(db_session, completion)
 
 
 @pytest.mark.asyncio
@@ -2032,12 +2056,12 @@ async def test_mutated_t2_notifier_binding_is_one_shot_ambiguous_without_send(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="binding must remain exact",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "mutable-binding"
         ),
         now=datetime(2026, 8, 20, 12),
@@ -2045,7 +2069,7 @@ async def test_mutated_t2_notifier_binding_is_one_shot_ambiguous_without_send(
     )
     await db_session.commit()
     transport = _BoundFakeNotifier(binding)
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         notifier_resolver=lambda *_: transport,
@@ -2058,13 +2082,13 @@ async def test_mutated_t2_notifier_binding_is_one_shot_ambiguous_without_send(
         channel=binding.channel,
     )
 
-    completion = await delivery.dispatch_delivery(lease)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
     assert completion.status is NotificationDeliveryStatus.AMBIGUOUS
     assert completion.error_code.value == "internal_error"
     assert transport.calls == []
-    with pytest.raises(delivery.DeliveryCapabilityError):
-        await delivery.dispatch_delivery(lease)
-    assert await delivery.finalize_delivery(db_session, completion) is None
+    with pytest.raises(delivery_contracts.DeliveryCapabilityError):
+        await delivery_dispatch.dispatch_delivery(lease)
+    assert await delivery_dispatch.finalize_delivery(db_session, completion) is None
     await db_session.commit()
 
 
@@ -2077,27 +2101,27 @@ async def test_future_t2_timestamp_can_finalize_without_clock_order_failure(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="future clock",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "future-t2"
         ),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         now=datetime(2099, 8, 20, 12),
         notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
     )
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
-    journal = await delivery.finalize_delivery(db_session, completion)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
+    journal = await delivery_dispatch.finalize_delivery(db_session, completion)
     await db_session.commit()
 
     intent = await db_session.get(NotificationDeliveryIntent, prepared.intent_id)
@@ -2117,13 +2141,13 @@ async def test_subject_timezone_rejects_nonexistent_naive_dst_wall_time(
         monkeypatch,
         timezone="America/New_York",
     )
-    with pytest.raises(delivery.DeliveryPolicyUnavailableError):
-        await delivery.prepare_delivery_intent(
+    with pytest.raises(delivery_contracts.DeliveryPolicyUnavailableError):
+        await delivery_preparation.prepare_delivery_intent(
             db_session,
             _BoundFakeNotifier(binding),
             text="nonexistent wall time",
-            category=delivery.CATEGORY_TEST,
-            idempotency_key=delivery.make_delivery_idempotency_key(
+            category=delivery_contracts.CATEGORY_TEST,
+            idempotency_key=delivery_contracts.make_delivery_idempotency_key(
                 "test", "dst-gap"
             ),
             now=datetime(2026, 3, 8, 2, 30),
@@ -2145,12 +2169,12 @@ async def test_aware_now_converts_once_to_subject_local_policy_date(
         monkeypatch,
         timezone="America/New_York",
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="aware instant",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "test", "aware-dst"
         ),
         now=datetime(2026, 3, 8, 7, 30, tzinfo=UTC),
@@ -2192,11 +2216,11 @@ async def test_zero_subject_send_starts_governance_guard_before_policy_reads(
     event.listen(sync_engine, "before_cursor_execute", record_statement)
     notifier = _BoundFakeNotifier(None, result="811")
     try:
-        journal = await delivery.send(
+        journal = await delivery_legacy.send(
             db_session,
             notifier,
             text="legacy-only message",
-            category=delivery.CATEGORY_REPLY,
+            category=delivery_contracts.CATEGORY_REPLY,
         )
     finally:
         event.remove(sync_engine, "before_cursor_execute", record_statement)
@@ -2219,12 +2243,12 @@ async def test_unrecognized_preopened_transaction_cannot_authorize_legacy_send(
     del signals_module_on
     await db_session.scalar(select(Notification.id).limit(1))
     notifier = _BoundFakeNotifier(None)
-    with pytest.raises(delivery.DurableDeliveryRequiredError):
-        await delivery.send(
+    with pytest.raises(delivery_contracts.DurableDeliveryRequiredError):
+        await delivery_legacy.send(
             db_session,
             notifier,
             text="must stay local",
-            category=delivery.CATEGORY_REPLY,
+            category=delivery_contracts.CATEGORY_REPLY,
         )
     assert notifier.calls == []
     await db_session.rollback()
@@ -2247,24 +2271,24 @@ async def test_journal_time_comes_from_t2_not_t1_reservation(
     ownership, binding = await _ready(
         db_session, legacy_owner_roots, monkeypatch
     )
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         _BoundFakeNotifier(binding),
         text="delayed",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key("test", "delayed"),
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key("test", "delayed"),
         now=datetime(2026, 8, 20, 12),
         ownership=ownership,
     )
     await db_session.commit()
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         db_session,
         prepared,
         now=datetime(2026, 8, 20, 14, 30),
         notifier_resolver=lambda *_: _BoundFakeNotifier(binding),
     )
     await db_session.commit()
-    completion = await delivery.dispatch_delivery(lease)
-    journal = await delivery.finalize_delivery(db_session, completion)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
+    journal = await delivery_dispatch.finalize_delivery(db_session, completion)
     assert journal.sent_at == datetime(2026, 8, 20, 14, 30)
     await db_session.commit()

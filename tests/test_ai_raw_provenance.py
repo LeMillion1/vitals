@@ -1,6 +1,13 @@
 """0042 raw-backed AI provenance and capability binding contracts."""
 from __future__ import annotations
 
+from vitals.services.ai_gateway import config as gateway_config
+from vitals.services.ai_gateway import contracts as gateway_contracts
+from vitals.services.ai_gateway import dispatch as gateway_dispatch
+from vitals.services.ai_gateway import invocations as gateway_invocations
+from vitals.services.ai_gateway import quota as gateway_quota
+from vitals.services.ai_gateway import reconciliation as gateway_reconciliation
+
 import asyncio
 import importlib
 import uuid
@@ -33,7 +40,6 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection, PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import ai_gateway_service as gateway
 from vitals.services import platform_admin_service
 from web.config import get_web_config
 
@@ -70,6 +76,16 @@ DOWNGRADE_REFUSALS = {
 }
 
 
+def _freeze_gateway_clock(monkeypatch) -> None:
+    for module in (
+        gateway_config,
+        gateway_dispatch,
+        gateway_invocations,
+        gateway_reconciliation,
+    ):
+        monkeypatch.setattr(module, "now_utc", lambda: NOW)
+
+
 def _identity(roots) -> WriteIdentity:
     return WriteIdentity(roots.subject_id, roots.user_id)
 
@@ -81,13 +97,13 @@ async def _configure_gateway(session, roots) -> PlatformIntegrationConnection:
         session,
         actor_username=get_web_config().auth_username,
     )
-    root = await gateway.create_gateway(
+    root = await gateway_config.create_gateway(
         session,
         prepared=prepared,
         external_account_discriminator="opaque-0042-root",
         credential_ref="env:VITALS_OPENROUTER_API_KEY",
     )
-    await gateway.configure_platform_quota_period(
+    await gateway_quota.configure_platform_quota_period(
         session,
         prepared=prepared,
         period_start=PERIOD_START,
@@ -95,7 +111,7 @@ async def _configure_gateway(session, roots) -> PlatformIntegrationConnection:
         cost_limit_microunits=100_000,
         unit_limit=100_000,
     )
-    await gateway.configure_subject_quota_period(
+    await gateway_quota.configure_subject_quota_period(
         session,
         prepared=prepared,
         subject_id=roots.subject_id,
@@ -282,12 +298,12 @@ async def test_gateway_binds_each_raw_backed_purpose_through_dispatch_capability
     monkeypatch,
     purpose,
 ):
-    monkeypatch.setattr(gateway, "now_utc", lambda: NOW)
+    _freeze_gateway_clock(monkeypatch)
     await _configure_gateway(db_session, legacy_owner_roots)
     raw = await _raw(db_session, legacy_owner_roots, suffix=purpose.value)
     await db_session.commit()
 
-    reservation = await gateway.reserve_ai_invocation(
+    reservation = await gateway_invocations.reserve_ai_invocation(
         db_session,
         identity=_identity(legacy_owner_roots),
         purpose=purpose,
@@ -299,7 +315,7 @@ async def test_gateway_binds_each_raw_backed_purpose_through_dispatch_capability
         raw_payload_id=raw.id,
     )
     await db_session.commit()
-    lease = await gateway.start_ai_dispatch(
+    lease = await gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -316,17 +332,17 @@ async def test_gateway_binds_each_raw_backed_purpose_through_dispatch_capability
         assert "raw_payload_id" not in repr(request)
         return "synthetic result"
 
-    completion = await gateway.dispatch_ai(
+    completion = await gateway_dispatch.dispatch_ai(
         lease,
         provider_call=provider_call,
-        usage_extractor=lambda _result: gateway.SanitizedAIUsage(
+        usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(
             input_tokens=10,
             output_tokens=10,
             cost_microunits=10,
         ),
     )
     assert seen == [(raw.id, False)]
-    await gateway.finalize_ai_invocation(db_session, completion=completion)
+    await gateway_dispatch.finalize_ai_invocation(db_session, completion=completion)
     await db_session.commit()
     stored = await db_session.get(AIInvocation, reservation.invocation_id)
     assert stored is not None
@@ -356,7 +372,7 @@ async def test_gateway_rejects_invalid_purpose_raw_pair_before_db_work(
     raw_payload_id,
 ):
     with pytest.raises(ValueError):
-        await gateway.reserve_ai_invocation(
+        await gateway_invocations.reserve_ai_invocation(
             db_session,
             identity=_identity(legacy_owner_roots),
             purpose=purpose,
@@ -375,7 +391,7 @@ async def test_gateway_rejects_foreign_raw_and_binds_raw_in_idempotency(
     legacy_owner_roots,
     monkeypatch,
 ):
-    monkeypatch.setattr(gateway, "now_utc", lambda: NOW)
+    _freeze_gateway_clock(monkeypatch)
     await _configure_gateway(db_session, legacy_owner_roots)
     own_one = await _raw(db_session, legacy_owner_roots, suffix="own-one")
     own_two = await _raw(db_session, legacy_owner_roots, suffix="own-two")
@@ -408,8 +424,8 @@ async def test_gateway_rejects_foreign_raw_and_binds_raw_in_idempotency(
     own_two_id = own_two.id
     foreign_raw_id = foreign_raw.id
 
-    with pytest.raises(gateway.AIGatewayAuthorizationError):
-        await gateway.reserve_ai_invocation(
+    with pytest.raises(gateway_contracts.AIGatewayAuthorizationError):
+        await gateway_invocations.reserve_ai_invocation(
             db_session,
             identity=_identity(legacy_owner_roots),
             purpose=AIInvocationPurpose.SIGNAL_PARSE,
@@ -422,7 +438,7 @@ async def test_gateway_rejects_foreign_raw_and_binds_raw_in_idempotency(
         )
     await db_session.rollback()
 
-    first = await gateway.reserve_ai_invocation(
+    first = await gateway_invocations.reserve_ai_invocation(
         db_session,
         identity=_identity(legacy_owner_roots),
         purpose=AIInvocationPurpose.SIGNAL_PARSE,
@@ -434,8 +450,8 @@ async def test_gateway_rejects_foreign_raw_and_binds_raw_in_idempotency(
         raw_payload_id=own_one_id,
     )
     await db_session.commit()
-    with pytest.raises(gateway.AIIdempotencyConflictError):
-        await gateway.reserve_ai_invocation(
+    with pytest.raises(gateway_contracts.AIIdempotencyConflictError):
+        await gateway_invocations.reserve_ai_invocation(
             db_session,
             identity=_identity(legacy_owner_roots),
             purpose=AIInvocationPurpose.SIGNAL_PARSE,
@@ -459,12 +475,12 @@ async def test_completion_fails_closed_if_raw_provenance_changes(
     legacy_owner_roots,
     monkeypatch,
 ):
-    monkeypatch.setattr(gateway, "now_utc", lambda: NOW)
+    _freeze_gateway_clock(monkeypatch)
     await _configure_gateway(db_session, legacy_owner_roots)
     first_raw = await _raw(db_session, legacy_owner_roots, suffix="sealed-one")
     second_raw = await _raw(db_session, legacy_owner_roots, suffix="sealed-two")
     await db_session.commit()
-    reservation = await gateway.reserve_ai_invocation(
+    reservation = await gateway_invocations.reserve_ai_invocation(
         db_session,
         identity=_identity(legacy_owner_roots),
         purpose=AIInvocationPurpose.QUESTION_REPLY,
@@ -476,25 +492,25 @@ async def test_completion_fails_closed_if_raw_provenance_changes(
         raw_payload_id=first_raw.id,
     )
     await db_session.commit()
-    lease = await gateway.start_ai_dispatch(
+    lease = await gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
         credential_resolver=lambda _reference: "synthetic-secret",
     )
     await db_session.commit()
-    completion = await gateway.dispatch_ai(
+    completion = await gateway_dispatch.dispatch_ai(
         lease,
         provider_call=lambda _request: asyncio.sleep(0, result="result"),
-        usage_extractor=lambda _result: gateway.SanitizedAIUsage(),
+        usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(),
     )
 
     invocation = await db_session.get(AIInvocation, reservation.invocation_id)
     assert invocation is not None
     invocation.raw_payload_id = second_raw.id
     await db_session.commit()
-    with pytest.raises(gateway.AICapabilityError, match="provenance"):
-        await gateway.finalize_ai_invocation(db_session, completion=completion)
+    with pytest.raises(gateway_contracts.AICapabilityError, match="provenance"):
+        await gateway_dispatch.finalize_ai_invocation(db_session, completion=completion)
     await db_session.rollback()
 
 
@@ -503,7 +519,7 @@ async def test_succeeded_raw_partial_unique_and_raw_delete_restrict(
     legacy_owner_roots,
     monkeypatch,
 ):
-    monkeypatch.setattr(gateway, "now_utc", lambda: NOW)
+    _freeze_gateway_clock(monkeypatch)
     root = await _configure_gateway(db_session, legacy_owner_roots)
     raw = await _raw(db_session, legacy_owner_roots, suffix="unique")
     first = _invocation(
@@ -559,7 +575,7 @@ async def test_notification_and_alert_links_enforce_exact_subject_and_shapes(
     legacy_owner_roots,
     monkeypatch,
 ):
-    monkeypatch.setattr(gateway, "now_utc", lambda: NOW)
+    _freeze_gateway_clock(monkeypatch)
     root = await _configure_gateway(db_session, legacy_owner_roots)
     raw = await _raw(db_session, legacy_owner_roots, suffix="journal")
     invocation = _invocation(
@@ -662,7 +678,7 @@ async def test_notification_and_alert_links_reject_cross_subject_invocation(
     legacy_owner_roots,
     monkeypatch,
 ):
-    monkeypatch.setattr(gateway, "now_utc", lambda: NOW)
+    _freeze_gateway_clock(monkeypatch)
     root = await _configure_gateway(db_session, legacy_owner_roots)
     raw = await _raw(db_session, legacy_owner_roots, suffix="cross-subject")
     invocation = _invocation(
@@ -1114,7 +1130,7 @@ async def test_postgres_0042_downgrade_guards_preserve_schema_and_data(
     monkeypatch,
     incompatibility,
 ):
-    monkeypatch.setattr(gateway, "now_utc", lambda: NOW)
+    _freeze_gateway_clock(monkeypatch)
     if incompatibility == "platform_alert":
         row = SystemAlert(
             subject_id=legacy_owner_roots.subject_id,

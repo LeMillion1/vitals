@@ -206,11 +206,13 @@ async def test_module_state_failure_keeps_the_listing_scoped_and_core_only(
 ):
     """A settings outage cannot widen either half of the advertised surface."""
 
+    from web.mcp import server as mcp_server
+
     async def unavailable(*_args, **_kwargs):
         raise RuntimeError("synthetic module-state outage")
 
     monkeypatch.setattr(
-        mcp_router.modules_service,
+        mcp_server.modules_service,
         "get_enabled_modules",
         unavailable,
     )

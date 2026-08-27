@@ -7,6 +7,8 @@ Adding a normal care section therefore cannot expand break-glass access.
 
 from __future__ import annotations
 
+from vitals.services.digest import window as digest_window
+
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -20,7 +22,7 @@ from vitals.analytics import exclude_ranges
 from vitals.analytics.regression import fit_trend
 from vitals.analytics.rolling import rolling_mean_by_date
 from vitals.enums import Domain
-from vitals.services import digest_service, garmin_service
+from vitals.services.garmin import advice as garmin_advice
 from vitals.utils.timeutils import subject_timezone
 
 _WEIGHT_HISTORY_LIMIT = 400
@@ -72,16 +74,8 @@ class _LoadedSection:
     coverage_extra: Mapping[str, Any] | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _RecoverySnapshot:
-    sleep_score: int | None
-    body_battery_high: int | None
-    spo2_lowest: int | None
-    breathing_disruption: str | None
-
-
 Loader = Callable[
-    [AsyncSession, uuid.UUID, digest_service.ReportWindow], Awaitable[_LoadedSection]
+    [AsyncSession, uuid.UUID, digest_window.ReportWindow], Awaitable[_LoadedSection]
 ]
 
 
@@ -94,7 +88,7 @@ def _coverage(
     *,
     section: EmergencySection,
     loaded: _LoadedSection,
-    window: digest_service.ReportWindow,
+    window: digest_window.ReportWindow,
 ) -> dict[str, Any]:
     latest = max(loaded.dates) if loaded.dates else None
     value = {
@@ -125,38 +119,20 @@ def _coverage(
 
 
 async def _weight(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
-    from vitals.models.weight import NoiseMarker, WeightLog
+    from vitals.services.weight.queries import emergency_weight_history
 
-    candidates = (
-        await session.execute(
-            select(WeightLog.date, WeightLog.weight_kg)
-            .where(
-                WeightLog.subject_id == subject_id,
-                WeightLog.domain == Domain.WEIGHT.value,
-                WeightLog.superseded.is_(False),
-                WeightLog.date <= window.period_end,
-            )
-            .order_by(WeightLog.date.desc(), WeightLog.id.desc())
-            .limit(_WEIGHT_HISTORY_LIMIT + 1)
-        )
-    ).all()
-    rows = list(reversed(candidates[:_WEIGHT_HISTORY_LIMIT]))
-    marker_candidates = (
-        await session.execute(
-            select(NoiseMarker.start_date, NoiseMarker.end_date)
-            .where(
-                NoiseMarker.subject_id == subject_id,
-                NoiseMarker.domain == Domain.WEIGHT.value,
-                NoiseMarker.start_date <= window.period_end,
-            )
-            .order_by(NoiseMarker.start_date.desc(), NoiseMarker.id.desc())
-            .limit(_WEIGHT_NOISE_LIMIT + 1)
-        )
-    ).all()
-    markers = marker_candidates[:_WEIGHT_NOISE_LIMIT]
-    noise_truncated = len(marker_candidates) > _WEIGHT_NOISE_LIMIT
+    history = await emergency_weight_history(
+        session,
+        subject_id=subject_id,
+        end=window.period_end,
+        history_limit=_WEIGHT_HISTORY_LIMIT,
+        noise_limit=_WEIGHT_NOISE_LIMIT,
+    )
+    rows = list(history.rows)
+    markers = history.noise_markers
+    noise_truncated = history.noise_truncated
     points = [(row.date, row.weight_kg) for row in rows]
     ranges = [(marker.start_date, marker.end_date) for marker in markers]
     clean = [] if noise_truncated else exclude_ranges(points, ranges)
@@ -173,7 +149,7 @@ async def _weight(
         },
         row_count=len(rows),
         dates=tuple(row.date for row in rows),
-        truncated=len(candidates) > _WEIGHT_HISTORY_LIMIT or noise_truncated,
+        truncated=history.history_truncated or noise_truncated,
         coverage_extra={
             "history_limit": _WEIGHT_HISTORY_LIMIT,
             "noise_limit": _WEIGHT_NOISE_LIMIT,
@@ -183,44 +159,17 @@ async def _weight(
 
 
 async def _labs(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
-    from vitals.models.labs import LabResult
+    from vitals.services.labs.results import emergency_latest_results_by_marker
 
-    ranked = (
-        select(
-            LabResult.id.label("result_id"),
-            func.row_number()
-            .over(
-                partition_by=LabResult.marker_key,
-                order_by=(LabResult.date.desc(), LabResult.id.desc()),
-            )
-            .label("marker_rank"),
-        )
-        .where(
-            LabResult.subject_id == subject_id,
-            LabResult.date <= window.period_end,
-        )
-        .subquery()
+    page = await emergency_latest_results_by_marker(
+        session,
+        subject_id=subject_id,
+        end=window.period_end,
+        marker_limit=_LAB_MARKER_LIMIT,
     )
-    candidates = (
-        await session.execute(
-            select(
-                LabResult.marker,
-                LabResult.value,
-                LabResult.unit,
-                LabResult.flag,
-                LabResult.date,
-                LabResult.ref_low,
-                LabResult.ref_high,
-            )
-            .join(ranked, LabResult.id == ranked.c.result_id)
-            .where(ranked.c.marker_rank == 1)
-            .order_by(LabResult.marker_key, LabResult.id)
-            .limit(_LAB_MARKER_LIMIT + 1)
-        )
-    ).all()
-    rows = candidates[:_LAB_MARKER_LIMIT]
+    rows = page.rows
     out_of_range = {"low", "high", "critical_low", "critical_high"}
     flagged = [
         {
@@ -240,13 +189,13 @@ async def _labs(
         value={"out_of_range": flagged},
         row_count=len(rows),
         dates=tuple(row.date for row in rows),
-        truncated=len(candidates) > _LAB_MARKER_LIMIT,
+        truncated=page.truncated,
         coverage_extra={"marker_limit": _LAB_MARKER_LIMIT},
     )
 
 
 async def _body_comp(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
     from vitals.models.body_scan import BodyScan
 
@@ -270,7 +219,7 @@ async def _body_comp(
 
 
 async def _nutrition(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
     from vitals.models.nutrition import MealLog
 
@@ -320,7 +269,7 @@ async def _nutrition(
 
 
 async def _hrt(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
     from vitals.models.hrt import HrtCycle, HrtCycleItem
 
@@ -373,7 +322,7 @@ async def _hrt(
 
 
 async def _glp1(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
     from vitals.models.glp1 import DosePhase
 
@@ -398,7 +347,7 @@ async def _glp1(
 
 
 async def _supplements(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
     del window
     from vitals.models.supplements import Supplement
@@ -421,7 +370,7 @@ async def _supplements(
 
 
 async def _skincare(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
     from vitals.models.skincare import SkincareObservation, SkincareProduct
 
@@ -471,7 +420,7 @@ async def _skincare(
 
 
 async def _genetics(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
     del window
     from vitals.models.genetics import GeneticVariant
@@ -498,92 +447,45 @@ async def _genetics(
 
 
 async def _garmin(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
-    from vitals.models.garmin import GarminDaily
+    from vitals.services.garmin import queries as garmin_queries
 
-    reported = or_(
-        GarminDaily.sleep_score.is_not(None),
-        GarminDaily.sleep_seconds.is_not(None),
-        GarminDaily.resting_hr.is_not(None),
-        GarminDaily.hrv_avg.is_not(None),
-        GarminDaily.body_battery_high.is_not(None),
-        GarminDaily.avg_stress.is_not(None),
-        GarminDaily.steps.is_not(None),
-        GarminDaily.active_calories.is_not(None),
-    )
-    total = int(
-        await session.scalar(
-            select(func.count(GarminDaily.id)).where(
-                GarminDaily.subject_id == subject_id,
-                GarminDaily.date <= window.period_end,
-                reported,
-            )
-        )
-        or 0
-    )
-    latest = (
-        await session.execute(
-            select(
-                GarminDaily.date,
-                GarminDaily.sleep_score,
-                GarminDaily.body_battery_high,
-                GarminDaily.spo2_lowest,
-                GarminDaily.breathing_disruption,
-            )
-            .where(
-                GarminDaily.subject_id == subject_id,
-                GarminDaily.date <= window.period_end,
-                reported,
-            )
-            .order_by(GarminDaily.date.desc(), GarminDaily.id.desc())
-            .limit(1)
-        )
-    ).first()
-    snapshot = (
-        _RecoverySnapshot(
-            sleep_score=latest.sleep_score,
-            body_battery_high=latest.body_battery_high,
-            spo2_lowest=latest.spo2_lowest,
-            breathing_disruption=latest.breathing_disruption,
-        )
-        if latest
-        else None
+    summary = await garmin_queries.recovery_summary(
+        session,
+        subject_id=subject_id,
+        before_or_on=window.period_end,
     )
     return _LoadedSection(
         value={
-            "advice": garmin_service.recovery_advice(snapshot),
-            "total_days_logged": total,
+            "advice": garmin_advice.recovery_advice(summary.latest),
+            "total_days_logged": summary.total_days_logged,
         },
-        row_count=total,
-        dates=(latest.date,) if latest else (),
+        row_count=summary.total_days_logged,
+        dates=(summary.latest.date,) if summary.latest else (),
     )
 
 
 async def _hevy(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
-    from vitals.models.hevy import HevyWorkout
+    from vitals.services.hevy import queries as hevy_queries
 
-    current_count, latest = (
-        await session.execute(
-            select(
-                func.count().filter(HevyWorkout.date >= window.period_start),
-                func.max(HevyWorkout.date),
-            ).where(
-                HevyWorkout.subject_id == subject_id,
-                HevyWorkout.date <= window.period_end,
-            )
-        )
-    ).one()
-    count = int(current_count or 0)
+    summary = await hevy_queries.workout_window_summary(
+        session,
+        subject_id=subject_id,
+        start=window.period_start,
+        end=window.period_end,
+    )
     return _LoadedSection(
         value={
-            "total_workouts": count,
-            "last_workout": latest.isoformat() if latest else None,
+            "total_workouts": summary.current_count,
+            "last_workout": (
+                summary.latest_date.isoformat() if summary.latest_date else None
+            ),
         },
-        row_count=max(count, int(latest is not None)),
-        dates=(latest,) if latest else (),
+        row_count=max(summary.current_count, int(summary.latest_date is not None)),
+        dates=(summary.latest_date,) if summary.latest_date else (),
     )
 
 
@@ -619,7 +521,7 @@ async def assemble_record_projection(
     if not allowed or allowed - supported or len(allowed) != len(allowed_domain_keys):
         raise ValueError("emergency projection requires unique reviewed domains")
     with subject_timezone(subject_timezone_name):
-        window = digest_service.report_window(
+        window = digest_window.report_window(
             on_date=on_date,
             period_days=period_days,
         )

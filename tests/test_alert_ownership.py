@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from vitals.services.alerts import contracts as alerts_contracts
+from vitals.services.alerts import legacy as alerts_legacy
+from vitals.services.alerts import lifecycle as alerts_lifecycle
+
 import asyncio
 import uuid
 
@@ -23,7 +27,6 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import alerts_service as alerts
 from vitals.utils.timeutils import now_local
 
 _PASSWORD_HASH = "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
@@ -97,8 +100,8 @@ def _health(
     subject: HealthSubject,
     *,
     system: bool = False,
-) -> alerts.HealthAlertContext:
-    return alerts.HealthAlertContext(
+) -> alerts_contracts.HealthAlertContext:
+    return alerts_contracts.HealthAlertContext(
         WriteIdentity(
             subject_id=subject.id,
             actor_user_id=None if system else owner.id,
@@ -113,8 +116,8 @@ def _provider(
     *,
     provider: IntegrationProvider = IntegrationProvider.GARMIN,
     system: bool = False,
-) -> alerts.ProviderAlertContext:
-    return alerts.ProviderAlertContext(
+) -> alerts_contracts.ProviderAlertContext:
+    return alerts_contracts.ProviderAlertContext(
         identity=WriteIdentity(
             subject_id=subject.id,
             actor_user_id=None if system else owner.id,
@@ -150,7 +153,7 @@ async def _direct_alert(
 
 
 async def test_legacy_api_remains_unscoped_and_string_compatible(db_session):
-    row = await alerts.raise_alert(
+    row = await alerts_legacy.raise_alert(
         db_session,
         domain=Domain.WEIGHT.value,
         severity=Severity.INFO.value,
@@ -165,27 +168,27 @@ async def test_legacy_api_remains_unscoped_and_string_compatible(db_session):
 
 
 def test_contexts_and_registries_are_strict_and_immutable():
-    with pytest.raises(alerts.AlertContextError):
-        alerts.HealthAlertContext(object())  # type: ignore[arg-type]
-    with pytest.raises(alerts.AlertContextError):
-        alerts.PlatformAlertContext("scheduler")  # type: ignore[arg-type]
+    with pytest.raises(alerts_contracts.AlertContextError):
+        alerts_contracts.HealthAlertContext(object())  # type: ignore[arg-type]
+    with pytest.raises(alerts_contracts.AlertContextError):
+        alerts_contracts.PlatformAlertContext("scheduler")  # type: ignore[arg-type]
     with pytest.raises(TypeError):
-        alerts.PROVIDER_ALERT_KEYS[IntegrationProvider.GARMIN] = frozenset()  # type: ignore[index]
-    assert PLATFORM_KEY in alerts.PLATFORM_ALERT_KEYS[
-        alerts.PlatformAlertNamespace.SCHEDULER_JOB_FAILURE
+        alerts_contracts.PROVIDER_ALERT_KEYS[IntegrationProvider.GARMIN] = frozenset()  # type: ignore[index]
+    assert PLATFORM_KEY in alerts_contracts.PLATFORM_ALERT_KEYS[
+        alerts_contracts.PlatformAlertNamespace.SCHEDULER_JOB_FAILURE
     ]
-    classified_exact = set(alerts.HEALTH_ALERT_KEYS).union(
-        *alerts.PROVIDER_ALERT_KEYS.values(),
-        *alerts.PLATFORM_ALERT_KEYS.values(),
+    classified_exact = set(alerts_contracts.HEALTH_ALERT_KEYS).union(
+        *alerts_contracts.PROVIDER_ALERT_KEYS.values(),
+        *alerts_contracts.PLATFORM_ALERT_KEYS.values(),
     )
-    assert set(alerts.ALERT_KEY_DOMAINS) == classified_exact
-    assert set(alerts.PROVIDER_ALERT_CONNECTION_TYPES) == set(IntegrationProvider)
+    assert set(alerts_contracts.ALERT_KEY_DOMAINS) == classified_exact
+    assert set(alerts_contracts.PROVIDER_ALERT_CONNECTION_TYPES) == set(IntegrationProvider)
 
 
 async def test_health_raise_refreshes_exact_scope_and_preserves_domain(db_session):
     owner, subject = await _subject(db_session, "owner")
     context = _health(owner, subject)
-    first = await alerts.raise_scoped_alert(
+    first = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=context,
         domain=Domain.WEIGHT,
@@ -193,7 +196,7 @@ async def test_health_raise_refreshes_exact_scope_and_preserves_domain(db_sessio
         message="old",
         alert_key=HEALTH_KEY,
     )
-    second = await alerts.raise_scoped_alert(
+    second = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=context,
         domain=Domain.WEIGHT,
@@ -210,8 +213,8 @@ async def test_health_raise_refreshes_exact_scope_and_preserves_domain(db_sessio
     assert second.overridden_by_user_id is None
     assert second.resolved_by_user_id is None
 
-    with pytest.raises(alerts.AlertScopeConflictError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertScopeConflictError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=context,
             domain=Domain.LABS,
@@ -227,7 +230,7 @@ async def test_lifecycle_actor_semantics_are_idempotent(db_session):
     system_context = _health(owner, subject, system=True)
     human_context = _health(owner, subject)
 
-    automatic = await alerts.raise_scoped_alert(
+    automatic = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=system_context,
         domain=Domain.WEIGHT,
@@ -235,14 +238,14 @@ async def test_lifecycle_actor_semantics_are_idempotent(db_session):
         message="automatic",
         alert_key=HEALTH_KEY,
     )
-    await alerts.resolve_scoped_by_key(
+    await alerts_lifecycle.resolve_scoped_by_key(
         db_session,
         context=system_context,
         alert_key=HEALTH_KEY,
     )
     assert automatic.resolved_by_user_id is None
 
-    human = await alerts.raise_scoped_alert(
+    human = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=human_context,
         domain=Domain.WEIGHT,
@@ -250,26 +253,26 @@ async def test_lifecycle_actor_semantics_are_idempotent(db_session):
         message="human",
         alert_key=HEALTH_KEY,
     )
-    await alerts.override_scoped_alert(db_session, human.id, context=human_context)
-    await alerts.resolve_scoped_alert(db_session, human.id, context=human_context)
+    await alerts_lifecycle.override_scoped_alert(db_session, human.id, context=human_context)
+    await alerts_lifecycle.resolve_scoped_alert(db_session, human.id, context=human_context)
     override_at = human.override_at
     resolved_at = human.resolved_at
     assert human.overridden_by_user_id == owner.id
     assert human.resolved_by_user_id == owner.id
 
     other = await _user(db_session, "professional")
-    other_context = alerts.HealthAlertContext(
+    other_context = alerts_contracts.HealthAlertContext(
         WriteIdentity(subject_id=subject.id, actor_user_id=other.id)
     )
-    await alerts.override_scoped_alert(db_session, human.id, context=other_context)
-    await alerts.resolve_scoped_alert(db_session, human.id, context=other_context)
+    await alerts_lifecycle.override_scoped_alert(db_session, human.id, context=other_context)
+    await alerts_lifecycle.resolve_scoped_alert(db_session, human.id, context=other_context)
     assert human.override_at == override_at
     assert human.resolved_at == resolved_at
     assert human.overridden_by_user_id == owner.id
     assert human.resolved_by_user_id == owner.id
 
-    with pytest.raises(alerts.AlertActorRequiredError):
-        await alerts.override_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertActorRequiredError):
+        await alerts_lifecycle.override_scoped_alert(
             db_session,
             human.id,
             context=system_context,
@@ -278,11 +281,11 @@ async def test_lifecycle_actor_semantics_are_idempotent(db_session):
 
 async def test_missing_and_inactive_actors_fail_before_mutation(db_session):
     _owner, subject = await _subject(db_session, "owner")
-    missing = alerts.HealthAlertContext(
+    missing = alerts_contracts.HealthAlertContext(
         WriteIdentity(subject_id=subject.id, actor_user_id=uuid.uuid4())
     )
-    with pytest.raises(alerts.AlertActorNotFoundError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertActorNotFoundError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=missing,
             domain=Domain.WEIGHT,
@@ -292,11 +295,11 @@ async def test_missing_and_inactive_actors_fail_before_mutation(db_session):
         )
 
     inactive = await _user(db_session, "inactive", status=UserStatus.SUSPENDED)
-    suspended = alerts.HealthAlertContext(
+    suspended = alerts_contracts.HealthAlertContext(
         WriteIdentity(subject_id=subject.id, actor_user_id=inactive.id)
     )
-    with pytest.raises(alerts.AlertActorInactiveError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertActorInactiveError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=suspended,
             domain=Domain.WEIGHT,
@@ -312,7 +315,7 @@ async def test_foreign_scope_is_hidden_and_both_subjects_keep_their_own_alert(
 ):
     owner_a, subject_a = await _subject(db_session, "owner-a")
     owner_b, subject_b = await _subject(db_session, "owner-b")
-    row = await alerts.raise_scoped_alert(
+    row = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=_health(owner_a, subject_a),
         domain=Domain.WEIGHT,
@@ -322,13 +325,13 @@ async def test_foreign_scope_is_hidden_and_both_subjects_keep_their_own_alert(
     )
 
     context_b = _health(owner_b, subject_b)
-    assert await alerts.list_active_scoped(db_session, context=context_b) == []
-    assert await alerts.resolve_scoped_alert(
+    assert await alerts_lifecycle.list_active_scoped(db_session, context=context_b) == []
+    assert await alerts_lifecycle.resolve_scoped_alert(
         db_session, row.id, context=context_b
     ) is None
     # One health key, two people: the scoped key is per subject, so raising it
     # for B neither reads nor refreshes A's row.
-    mine = await alerts.raise_scoped_alert(
+    mine = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=context_b,
         domain=Domain.WEIGHT,
@@ -348,7 +351,7 @@ async def test_provider_scope_validates_subject_provider_type_and_status(db_sess
     owner, subject = await _subject(db_session, "owner")
     connection = await _connection(db_session, subject)
     context = _provider(owner, subject, connection)
-    row = await alerts.raise_scoped_alert(
+    row = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=context,
         domain=Domain.GARMIN,
@@ -361,8 +364,8 @@ async def test_provider_scope_validates_subject_provider_type_and_status(db_sess
 
     connection.status = IntegrationConnectionStatus.DISABLED.value
     await db_session.flush()
-    with pytest.raises(alerts.AlertConnectionStateError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertConnectionStateError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=context,
             domain=Domain.GARMIN,
@@ -370,10 +373,10 @@ async def test_provider_scope_validates_subject_provider_type_and_status(db_sess
             message="disabled",
             alert_key=PROVIDER_KEY,
         )
-    assert [item.id for item in await alerts.list_active_scoped(
+    assert [item.id for item in await alerts_lifecycle.list_active_scoped(
         db_session, context=context
     )] == [row.id]
-    assert await alerts.resolve_scoped_by_key(
+    assert await alerts_lifecycle.resolve_scoped_by_key(
         db_session, context=context, alert_key=PROVIDER_KEY
     ) is row
 
@@ -383,16 +386,16 @@ async def test_provider_scope_validates_subject_provider_type_and_status(db_sess
         status=IntegrationConnectionStatus.PENDING,
     )
     pending_context = _provider(owner, subject, pending)
-    with pytest.raises(alerts.AlertConnectionStateError):
-        await alerts.list_active_scoped(db_session, context=pending_context)
+    with pytest.raises(alerts_contracts.AlertConnectionStateError):
+        await alerts_lifecycle.list_active_scoped(db_session, context=pending_context)
 
     wrong_type = await _connection(
         db_session,
         subject,
         connection_type=IntegrationConnectionType.IMPORT,
     )
-    with pytest.raises(alerts.AlertConnectionTypeError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertConnectionTypeError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=_provider(owner, subject, wrong_type),
             domain=Domain.GARMIN,
@@ -401,8 +404,8 @@ async def test_provider_scope_validates_subject_provider_type_and_status(db_sess
             alert_key="garmin.weight_export",
         )
 
-    with pytest.raises(alerts.AlertConnectionProviderError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertConnectionProviderError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=_provider(
                 owner,
@@ -417,8 +420,8 @@ async def test_provider_scope_validates_subject_provider_type_and_status(db_sess
         )
 
     other_owner, other_subject = await _subject(db_session, "other-owner")
-    with pytest.raises(alerts.AlertConnectionOwnershipError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertConnectionOwnershipError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=_provider(other_owner, other_subject, connection),
             domain=Domain.GARMIN,
@@ -444,13 +447,13 @@ async def test_retired_connection_is_historical_only(db_session):
         connection_id=connection.id,
     )
 
-    assert [item.id for item in await alerts.list_active_scoped(
+    assert [item.id for item in await alerts_lifecycle.list_active_scoped(
         db_session, context=context
     )] == [row.id]
-    await alerts.resolve_scoped_alert(db_session, row.id, context=context)
+    await alerts_lifecycle.resolve_scoped_alert(db_session, row.id, context=context)
     assert row.resolved_by_user_id == owner.id
-    with pytest.raises(alerts.AlertConnectionStateError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertConnectionStateError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=context,
             domain=Domain.GARMIN,
@@ -462,10 +465,10 @@ async def test_retired_connection_is_historical_only(db_session):
 
 async def test_platform_namespace_is_exact_and_not_domain_inferred(db_session):
     owner, subject = await _subject(db_session, "owner")
-    platform = alerts.PlatformAlertContext(
-        alerts.PlatformAlertNamespace.SCHEDULER_JOB_FAILURE
+    platform = alerts_contracts.PlatformAlertContext(
+        alerts_contracts.PlatformAlertNamespace.SCHEDULER_JOB_FAILURE
     )
-    platform_row = await alerts.raise_scoped_alert(
+    platform_row = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=platform,
         domain=Domain.SYSTEM,
@@ -473,7 +476,7 @@ async def test_platform_namespace_is_exact_and_not_domain_inferred(db_session):
         message="sweep",
         alert_key=PLATFORM_KEY,
     )
-    health_row = await alerts.raise_scoped_alert(
+    health_row = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=_health(owner, subject, system=True),
         domain=Domain.SYSTEM,
@@ -483,12 +486,12 @@ async def test_platform_namespace_is_exact_and_not_domain_inferred(db_session):
     )
     assert platform_row.subject_id is None
     assert health_row.subject_id == subject.id
-    assert [row.id for row in await alerts.list_active_scoped(
+    assert [row.id for row in await alerts_lifecycle.list_active_scoped(
         db_session, context=platform
     )] == [platform_row.id]
 
-    with pytest.raises(alerts.AlertPlatformNamespaceError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertPlatformNamespaceError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=platform,
             domain=Domain.SYSTEM,
@@ -496,8 +499,8 @@ async def test_platform_namespace_is_exact_and_not_domain_inferred(db_session):
             message="wrong job",
             alert_key="scheduler.job_failed:garmin_sync",
         )
-    with pytest.raises(alerts.AlertPlatformNamespaceError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertPlatformNamespaceError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=_health(owner, subject),
             domain=Domain.SYSTEM,
@@ -517,8 +520,8 @@ async def test_full_null_health_and_provider_rows_adopt_only_with_bridge(db_sess
         domain=Domain.GARMIN,
     )
 
-    with pytest.raises(alerts.AlertScopeConflictError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertScopeConflictError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=_health(owner, subject),
             domain=Domain.WEIGHT,
@@ -527,23 +530,23 @@ async def test_full_null_health_and_provider_rows_adopt_only_with_bridge(db_sess
             alert_key=HEALTH_KEY,
         )
 
-    adopted_health = await alerts.raise_scoped_alert(
+    adopted_health = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=_health(owner, subject),
         domain=Domain.WEIGHT,
         severity=Severity.INFO,
         message="adopted",
         alert_key=HEALTH_KEY,
-        legacy_bridge=alerts.LegacyAlertBridge.FULLY_UNOWNED,
+        legacy_bridge=alerts_contracts.LegacyAlertBridge.FULLY_UNOWNED,
     )
-    adopted_provider = await alerts.raise_scoped_alert(
+    adopted_provider = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=_provider(owner, subject, connection),
         domain=Domain.GARMIN,
         severity=Severity.WARN,
         message="adopted provider",
         alert_key="garmin.token_cache",
-        legacy_bridge=alerts.LegacyAlertBridge.FULLY_UNOWNED,
+        legacy_bridge=alerts_contracts.LegacyAlertBridge.FULLY_UNOWNED,
     )
     assert adopted_health.id == health_legacy.id
     assert adopted_health.subject_id == subject.id
@@ -557,36 +560,36 @@ async def test_bridge_rejects_second_subject_partial_and_unknown_rows(db_session
     owner, subject = await _subject(db_session, "owner")
     await _direct_alert(db_session)
     await _subject(db_session, "other")
-    with pytest.raises(alerts.AlertLegacyBridgeError):
-        await alerts.list_active_scoped(
+    with pytest.raises(alerts_contracts.AlertLegacyBridgeError):
+        await alerts_lifecycle.list_active_scoped(
             db_session,
             context=_health(owner, subject),
-            legacy_bridge=alerts.LegacyAlertBridge.FULLY_UNOWNED,
+            legacy_bridge=alerts_contracts.LegacyAlertBridge.FULLY_UNOWNED,
         )
 
     await db_session.rollback()
     owner, subject = await _subject(db_session, "sole")
     connection = await _connection(db_session, subject)
     partial = await _direct_alert(db_session, connection_id=connection.id)
-    with pytest.raises(alerts.AlertScopeConflictError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertScopeConflictError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=_health(owner, subject),
             domain=Domain.WEIGHT,
             severity=Severity.INFO,
             message="partial",
             alert_key=HEALTH_KEY,
-            legacy_bridge=alerts.LegacyAlertBridge.FULLY_UNOWNED,
+            legacy_bridge=alerts_contracts.LegacyAlertBridge.FULLY_UNOWNED,
         )
     assert partial.subject_id is None
 
     partial.resolved_at = now_local()
     await _direct_alert(db_session, key="unknown.alert", domain=Domain.SYSTEM)
-    with pytest.raises(alerts.AlertLegacyBridgeError):
-        await alerts.list_active_scoped(
+    with pytest.raises(alerts_contracts.AlertLegacyBridgeError):
+        await alerts_lifecycle.list_active_scoped(
             db_session,
             context=_health(owner, subject),
-            legacy_bridge=alerts.LegacyAlertBridge.FULLY_UNOWNED,
+            legacy_bridge=alerts_contracts.LegacyAlertBridge.FULLY_UNOWNED,
         )
 
 
@@ -595,19 +598,19 @@ async def test_bridge_requires_active_sole_subject_owner(db_session):
     await _direct_alert(db_session)
     owner.status = UserStatus.SUSPENDED.value
     await db_session.flush()
-    with pytest.raises(alerts.AlertLegacyBridgeError):
-        await alerts.list_active_scoped(
+    with pytest.raises(alerts_contracts.AlertLegacyBridgeError):
+        await alerts_lifecycle.list_active_scoped(
             db_session,
             context=_health(owner, subject, system=True),
-            legacy_bridge=alerts.LegacyAlertBridge.FULLY_UNOWNED,
+            legacy_bridge=alerts_contracts.LegacyAlertBridge.FULLY_UNOWNED,
         )
 
 
 async def test_registered_domain_and_conflict_rule_integrity(db_session):
     owner, subject = await _subject(db_session, "owner")
     context = _health(owner, subject)
-    with pytest.raises(alerts.AlertScopeConflictError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertScopeConflictError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=context,
             domain=Domain.LABS,
@@ -621,15 +624,15 @@ async def test_registered_domain_and_conflict_rule_integrity(db_session):
         key="labs.retest_due",
         domain=Domain.WEIGHT,
     )
-    with pytest.raises(alerts.AlertLegacyBridgeError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertLegacyBridgeError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=context,
             domain=Domain.LABS,
             severity=Severity.INFO,
             message="wrong legacy domain",
             alert_key="labs.retest_due",
-            legacy_bridge=alerts.LegacyAlertBridge.FULLY_UNOWNED,
+            legacy_bridge=alerts_contracts.LegacyAlertBridge.FULLY_UNOWNED,
         )
     assert legacy_wrong_domain.subject_id is None
     legacy_wrong_domain.resolved_at = now_local()
@@ -648,7 +651,7 @@ async def test_registered_domain_and_conflict_rule_integrity(db_session):
     db_session.add(rule)
     await db_session.flush()
     conflict_key = f"conflict:{rule.id}"
-    row = await alerts.raise_scoped_alert(
+    row = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=context,
         domain=Domain.WEIGHT,
@@ -657,8 +660,8 @@ async def test_registered_domain_and_conflict_rule_integrity(db_session):
         alert_key=conflict_key,
     )
     assert row.subject_id == subject.id
-    with pytest.raises(alerts.AlertScopeConflictError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertScopeConflictError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=context,
             domain=Domain.LABS,
@@ -666,8 +669,8 @@ async def test_registered_domain_and_conflict_rule_integrity(db_session):
             message="wrong side",
             alert_key=conflict_key,
         )
-    with pytest.raises(alerts.AlertScopeConflictError):
-        await alerts.raise_scoped_alert(
+    with pytest.raises(alerts_contracts.AlertScopeConflictError):
+        await alerts_lifecycle.raise_scoped_alert(
             db_session,
             context=context,
             domain=Domain.WEIGHT,
@@ -698,7 +701,7 @@ async def test_scoped_history_supersede_and_bulk_resolution_are_isolated(db_sess
         subject_id=subject_a.id,
     )
 
-    changed = await alerts.resolve_scoped_superseded(
+    changed = await alerts_lifecycle.resolve_scoped_superseded(
         db_session,
         context=context_a,
         alert_key=HEALTH_KEY,
@@ -709,19 +712,19 @@ async def test_scoped_history_supersede_and_bulk_resolution_are_isolated(db_sess
     assert current.resolved_at is None
     assert foreign.resolved_at is None
 
-    assert await alerts.was_scoped_ever_dismissed(
+    assert await alerts_lifecycle.was_scoped_ever_dismissed(
         db_session,
         context=context_a,
         alert_key=HEALTH_KEY,
         entity_ref="old",
     ) is True
-    assert await alerts.was_scoped_dismissed_today(
+    assert await alerts_lifecycle.was_scoped_dismissed_today(
         db_session,
         context=context_a,
         alert_key=HEALTH_KEY,
         entity_ref="old",
     ) is True
-    assert await alerts.resolve_all_scoped(
+    assert await alerts_lifecycle.resolve_all_scoped(
         db_session, context=context_a, domain=Domain.LABS
     ) == 1
     assert labs.resolved_by_user_id == owner_a.id
@@ -735,14 +738,14 @@ async def test_scoped_service_flushes_without_commit_and_rollback_restores_adopt
     legacy = await _direct_alert(db_session)
     await db_session.commit()
 
-    adopted = await alerts.raise_scoped_alert(
+    adopted = await alerts_lifecycle.raise_scoped_alert(
         db_session,
         context=_health(owner, subject),
         domain=Domain.WEIGHT,
         severity=Severity.INFO,
         message="adopt",
         alert_key=HEALTH_KEY,
-        legacy_bridge=alerts.LegacyAlertBridge.FULLY_UNOWNED,
+        legacy_bridge=alerts_contracts.LegacyAlertBridge.FULLY_UNOWNED,
     )
     assert adopted.id == legacy.id
     assert adopted.subject_id == subject.id
@@ -769,7 +772,7 @@ async def test_postgres_concurrent_same_scope_raise_returns_one_row(db_session):
 
     async def run_once() -> int:
         async with factory() as session:
-            row = await alerts.raise_scoped_alert(
+            row = await alerts_lifecycle.raise_scoped_alert(
                 session,
                 context=context,
                 domain=Domain.WEIGHT,
@@ -800,10 +803,10 @@ async def test_postgres_competing_scopes_each_get_their_own_alert(db_session):
         class_=AsyncSession,
     )
 
-    async def run_once(context: alerts.HealthAlertContext) -> str:
+    async def run_once(context: alerts_contracts.HealthAlertContext) -> str:
         async with factory() as session:
             try:
-                await alerts.raise_scoped_alert(
+                await alerts_lifecycle.raise_scoped_alert(
                     session,
                     context=context,
                     domain=Domain.WEIGHT,
@@ -813,7 +816,7 @@ async def test_postgres_competing_scopes_each_get_their_own_alert(db_session):
                 )
                 await session.commit()
                 return "created"
-            except alerts.AlertScopeConflictError:
+            except alerts_contracts.AlertScopeConflictError:
                 await session.rollback()
                 return "conflict"
 

@@ -2,10 +2,12 @@
 and macro bars in the Masthead interface (I2)."""
 from __future__ import annotations
 
+from vitals.services.nutrition import writes as nutrition_writes
+
 from datetime import timedelta
 
 
-from vitals.services import nutrition_service
+
 from vitals.utils.timeutils import today_local
 
 
@@ -18,7 +20,7 @@ async def test_nutrition_dashboard_defaults_to_today(auth_client):
 async def test_nutrition_dashboard_by_date_shows_that_days_meals_only(auth_client, db_session, owner_write):
     day_with_food = today_local() - timedelta(days=30)
     empty_day = today_local() - timedelta(days=31)
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session,
         on_date=day_with_food,
         name="Овсянка с бананом",
@@ -58,7 +60,7 @@ async def test_nutrition_dashboard_masthead_day_nav_and_empty_state(auth_client,
     next_day = day_with_food + timedelta(days=1)
     empty_day = today_local() - timedelta(days=31)
 
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session,
         on_date=day_with_food,
         name="Гречка с курицей",
@@ -87,7 +89,7 @@ async def test_intake_uses_the_shared_meter_not_a_bespoke_ring(auth_client, db_s
     """One progress language. Calories used to be an SVG donut and protein an
     inline bar right beside it — the same fact drawn as two different kinds of
     thing. Both are now .v-meter, and the ring is gone from the codebase."""
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session,
         on_date=today_local(),
         name="Овсянка",

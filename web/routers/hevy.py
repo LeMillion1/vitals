@@ -2,6 +2,9 @@
 history + progression."""
 from __future__ import annotations
 
+from vitals.services.alerts import contracts as alerts_service_contracts
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
 import logging
 from typing import Optional
 
@@ -12,11 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Domain, IntegrationProvider, Severity
 from vitals.integrations.hevy_client import HevyAPIError, HevyClient, HevyNotConfigured
 from vitals.services import (
-    alerts_service,
-    hevy_service,
     legacy_subject_alerts,
 )
 from vitals.services.credentials import providers
+from vitals.services.hevy import ownership as hevy_ownership
+import vitals.services.hevy.queries as hevy_queries
+import vitals.services.hevy.sync as hevy_sync
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from web.deps import get_redis, get_session, require_auth
 from web.templating import templates
@@ -44,12 +48,18 @@ async def hevy_dashboard(
         actor_username=username,
         required_connections=tuple(IntegrationProvider),
     )
-    workouts = await hevy_service.list_workouts(db, limit=30)
-    catalog = await hevy_service.exercise_catalog(
+    workouts = await hevy_queries.list_workouts(
+        db, subject_id=ownership.subject_id, limit=30
+    )
+    catalog = await hevy_queries.exercise_catalog(
         db, subject_id=ownership.subject_id
     )
-    count = await hevy_service.workout_count(db)
-    last_date = await hevy_service.latest_workout_date(db)
+    count = await hevy_queries.workout_count(
+        db, subject_id=ownership.subject_id
+    )
+    last_date = await hevy_queries.latest_workout_date(
+        db, subject_id=ownership.subject_id
+    )
     alerts = await legacy_subject_alerts.list_active(
         db,
         ownership=ownership,
@@ -63,13 +73,13 @@ async def hevy_dashboard(
     notes = None
     selected_title = None
     if selected:
-        series = await hevy_service.working_weight_series(
+        series = await hevy_queries.working_weight_series(
             db, selected, subject_id=ownership.subject_id
         )
-        verdict = await hevy_service.progression_for_exercise(
+        verdict = await hevy_queries.progression_for_exercise(
             db, selected, subject_id=ownership.subject_id
         )
-        notes = await hevy_service.latest_notes(
+        notes = await hevy_queries.latest_notes(
             db, selected, subject_id=ownership.subject_id
         )
         selected_title = next(
@@ -144,7 +154,7 @@ async def sync_now(
     if account is None or not account.configured:
         return _redirect(request, "?sync=not_configured")
     client = HevyClient.from_config(account.config)
-    alert_context = alerts_service.ProviderAlertContext(
+    alert_context = alerts_service_contracts.ProviderAlertContext(
         identity=ownership.system_action(),
         provider=IntegrationProvider.HEVY,
         integration_connection_id=ownership.connection_id(
@@ -152,7 +162,7 @@ async def sync_now(
         ),
     )
     try:
-        summary = await hevy_service.sync_owned(
+        summary = await hevy_sync.sync_owned(
             db,
             client,
             identity=ownership.owner_action(),
@@ -160,11 +170,11 @@ async def sync_now(
                 IntegrationProvider.HEVY
             ),
         )
-        await alerts_service.resolve_scoped_by_key(
+        await alerts_service_lifecycle.resolve_scoped_by_key(
             db,
             context=alert_context,
             alert_key=SYNC_ALERT_KEY,
-            legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+            legacy_bridge=alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED,
         )
         await db.commit()
 
@@ -175,19 +185,19 @@ async def sync_now(
             ),
             str(int(time.time())),
         )
-    except hevy_service.HevyOwnershipInactiveConnectionError:
+    except hevy_ownership.HevyOwnershipInactiveConnectionError:
         await db.rollback()
         return _redirect(request, "?sync=not_configured")
     except (HevyNotConfigured, HevyAPIError) as e:
         logger.warning("Hevy sync failed: %s", e)
-        await alerts_service.raise_scoped_alert(
+        await alerts_service_lifecycle.raise_scoped_alert(
             db,
             context=alert_context,
             domain=Domain.WORKOUTS,
             severity=Severity.WARN,
             message=f"Не удалось синхронизировать Hevy: {e}",
             alert_key=SYNC_ALERT_KEY,
-            legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+            legacy_bridge=alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED,
         )
         await db.commit()
         return _redirect(request, "?sync=error")

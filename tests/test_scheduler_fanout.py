@@ -121,7 +121,7 @@ def test_the_wrapper_keeps_the_job_findable():
     inventory exists to catch.
     """
 
-    from vitals.services.digest_service import digest_job
+    from vitals.services.digest.jobs import digest_job
 
     wrapped = for_each_subject(digest_job, job_id="weekly_digest")
     assert wrapped.__module__ == digest_job.__module__

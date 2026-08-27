@@ -10,7 +10,11 @@ Usage:
     python -m scripts.import_vcf path/to/genome.vcf --actor-username owner
     python -m scripts.import_vcf path/to/genome.vcf --actor-username owner --only-interpreted
 """
+
 from __future__ import annotations
+
+from vitals.services.genetics import contracts as genetics_contracts
+from vitals.services.genetics import vcf_ingestion as genetics_vcf_ingestion
 
 import argparse
 import asyncio
@@ -30,7 +34,6 @@ async def _import(path: str, only_interpreted: bool, actor_username: str) -> int
     from vitals.config import load_config
     from vitals.database import create_session_factory
     from vitals.services.conflicts import engine
-    from vitals.services.genetics import variants as variant_records
 
     raw_variants: list[ParsedVariant] = []
     curated_variants: list[ParsedVariant] = []
@@ -40,7 +43,7 @@ async def _import(path: str, only_interpreted: bool, actor_username: str) -> int
             variant = parse_vcf_line(line)
             if variant is None:
                 continue
-            if len(raw_variants) < variant_records.MAX_RAW_VARIANTS:
+            if len(raw_variants) < genetics_contracts.MAX_RAW_VARIANTS:
                 raw_variants.append(variant)
             else:
                 truncated = True
@@ -60,7 +63,7 @@ async def _import(path: str, only_interpreted: bool, actor_username: str) -> int
                 session,
                 context=context,
             )
-            summary = await variant_records.ingest_vcf_batch(
+            summary = await genetics_vcf_ingestion.ingest_vcf_batch(
                 session,
                 filename=Path(path).name,
                 curated_variants=curated_variants,
@@ -92,9 +95,7 @@ def main() -> None:
         help="Authenticated owner username responsible for this import.",
     )
     args = parser.parse_args()
-    count = asyncio.run(
-        _import(args.vcf_path, args.only_interpreted, args.actor_username)
-    )
+    count = asyncio.run(_import(args.vcf_path, args.only_interpreted, args.actor_username))
     print(f"Imported/updated {count} variants.")
 
 

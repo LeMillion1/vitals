@@ -1,6 +1,13 @@
 """Hard quota, authorization, and transaction seams for platform-funded AI."""
 from __future__ import annotations
 
+from vitals.services.ai_gateway import config as gateway_config
+from vitals.services.ai_gateway import contracts as gateway_contracts
+from vitals.services.ai_gateway import dispatch as gateway_dispatch
+from vitals.services.ai_gateway import invocations as gateway_invocations
+from vitals.services.ai_gateway import quota as gateway_quota
+from vitals.services.ai_gateway import reconciliation as gateway_reconciliation
+
 import asyncio
 import pickle
 from datetime import UTC, date, datetime, timedelta
@@ -25,7 +32,6 @@ from vitals.models.ai import (
 from vitals.models.identity import User
 from vitals.models.tenancy import PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import ai_gateway_service as gateway
 from vitals.services import platform_admin_service
 from vitals.persistence import transactions as transaction_outcome
 from vitals.services.identity_service import assign_role, change_user_status
@@ -60,13 +66,13 @@ async def _configure(
     subject_units: int = 10_000,
 ):
     prepared = await _prepared_admin(session)
-    root = await gateway.create_gateway(
+    root = await gateway_config.create_gateway(
         session,
         prepared=prepared,
         external_account_discriminator="opaque-platform-v1",
         credential_ref="env:VITALS_OPENROUTER_API_KEY",
     )
-    await gateway.configure_platform_quota_period(
+    await gateway_quota.configure_platform_quota_period(
         session,
         prepared=prepared,
         period_start=PERIOD_START,
@@ -74,7 +80,7 @@ async def _configure(
         cost_limit_microunits=platform_cost,
         unit_limit=platform_units,
     )
-    await gateway.configure_subject_quota_period(
+    await gateway_quota.configure_subject_quota_period(
         session,
         prepared=prepared,
         subject_id=roots.subject_id,
@@ -88,7 +94,7 @@ async def _configure(
 
 
 async def _reserve(session, roots, *, key="opaque-call-1", cost=100, units=500):
-    return await gateway.reserve_ai_invocation(
+    return await gateway_invocations.reserve_ai_invocation(
         session,
         identity=_identity(roots),
         purpose=AIInvocationPurpose.WEEKLY_DIGEST,
@@ -102,7 +108,13 @@ async def _reserve(session, roots, *, key="opaque-call-1", cost=100, units=500):
 
 @pytest.fixture(autouse=True)
 def _fixed_utc(monkeypatch):
-    monkeypatch.setattr(gateway, "now_utc", lambda: FIXED_NOW)
+    for module in (
+        gateway_config,
+        gateway_dispatch,
+        gateway_invocations,
+        gateway_reconciliation,
+    ):
+        monkeypatch.setattr(module, "now_utc", lambda: FIXED_NOW)
 
 
 async def test_dispatch_has_no_db_transaction_and_persists_only_sanitized_usage(
@@ -113,7 +125,7 @@ async def test_dispatch_has_no_db_transaction_and_persists_only_sanitized_usage(
     reservation = await _reserve(db_session, legacy_owner_roots)
     await db_session.commit()
 
-    lease = await gateway.start_ai_dispatch(
+    lease = await gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -124,11 +136,11 @@ async def test_dispatch_has_no_db_transaction_and_persists_only_sanitized_usage(
     assert "synthetic-secret" not in repr(lease)
     with pytest.raises(TypeError):
         pickle.dumps(lease)
-    with pytest.raises(gateway.AICapabilityError):
-        await gateway.dispatch_ai(
+    with pytest.raises(gateway_contracts.AICapabilityError):
+        await gateway_dispatch.dispatch_ai(
             lease,
             provider_call=lambda _request: None,  # type: ignore[arg-type]
-            usage_extractor=lambda _result: gateway.SanitizedAIUsage(),
+            usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(),
         )
     await db_session.commit()
 
@@ -143,10 +155,10 @@ async def test_dispatch_has_no_db_transaction_and_persists_only_sanitized_usage(
         assert "synthetic-secret" not in repr(request)
         return payload
 
-    completion = await gateway.dispatch_ai(
+    completion = await gateway_dispatch.dispatch_ai(
         lease,
         provider_call=provider_call,
-        usage_extractor=lambda _result: gateway.SanitizedAIUsage(
+        usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(
             upstream_request_id="opaque-upstream-1",
             input_tokens=100,
             output_tokens=200,
@@ -161,14 +173,14 @@ async def test_dispatch_has_no_db_transaction_and_persists_only_sanitized_usage(
     assert "memory-only" not in repr(completion)
     with pytest.raises(TypeError):
         pickle.dumps(completion)
-    with pytest.raises(gateway.AICapabilityError):
-        await gateway.dispatch_ai(
+    with pytest.raises(gateway_contracts.AICapabilityError):
+        await gateway_dispatch.dispatch_ai(
             lease,
             provider_call=provider_call,
-            usage_extractor=lambda _result: gateway.SanitizedAIUsage(),
+            usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(),
         )
 
-    invocation = await gateway.finalize_ai_invocation(
+    invocation = await gateway_dispatch.finalize_ai_invocation(
         db_session,
         completion=completion,
     )
@@ -176,20 +188,20 @@ async def test_dispatch_has_no_db_transaction_and_persists_only_sanitized_usage(
     assert invocation.upstream_request_id == "opaque-upstream-1"
     assert invocation.cost_microunits == 80
     assert not hasattr(invocation, "payload")
-    with pytest.raises(gateway.AICapabilityError):
-        await gateway.finalize_ai_invocation(db_session, completion=completion)
+    with pytest.raises(gateway_contracts.AICapabilityError):
+        await gateway_dispatch.finalize_ai_invocation(db_session, completion=completion)
     await db_session.rollback()
     assert completion.payload is payload
 
-    retried = await gateway.finalize_ai_invocation(
+    retried = await gateway_dispatch.finalize_ai_invocation(
         db_session,
         completion=completion,
     )
     assert retried.status == AIInvocationStatus.SUCCEEDED.value
     await db_session.commit()
     assert completion.payload is None
-    with pytest.raises(gateway.AICapabilityError):
-        await gateway.finalize_ai_invocation(db_session, completion=completion)
+    with pytest.raises(gateway_contracts.AICapabilityError):
+        await gateway_dispatch.finalize_ai_invocation(db_session, completion=completion)
 
 
 async def test_savepoint_commit_cannot_arm_dispatch_before_outer_commit(
@@ -204,7 +216,7 @@ async def test_savepoint_commit_cannot_arm_dispatch_before_outer_commit(
     )
     await db_session.commit()
 
-    lease = await gateway.start_ai_dispatch(
+    lease = await gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -216,18 +228,18 @@ async def test_savepoint_commit_cannot_arm_dispatch_before_outer_commit(
     async def provider_call(_request):
         raise AssertionError("provider must not run before the root commits")
 
-    with pytest.raises(gateway.AICapabilityError):
-        await gateway.dispatch_ai(
+    with pytest.raises(gateway_contracts.AICapabilityError):
+        await gateway_dispatch.dispatch_ai(
             lease,
             provider_call=provider_call,
-            usage_extractor=lambda _result: gateway.SanitizedAIUsage(),
+            usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(),
         )
     await db_session.rollback()
-    with pytest.raises(gateway.AICapabilityError):
-        await gateway.dispatch_ai(
+    with pytest.raises(gateway_contracts.AICapabilityError):
+        await gateway_dispatch.dispatch_ai(
             lease,
             provider_call=provider_call,
-            usage_extractor=lambda _result: gateway.SanitizedAIUsage(),
+            usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(),
         )
 
     invocation = await db_session.get(AIInvocation, reservation.invocation_id)
@@ -246,7 +258,7 @@ async def test_t3_savepoint_commit_then_outer_rollback_keeps_payload_retryable(
         key="savepoint-finalize",
     )
     await db_session.commit()
-    lease = await gateway.start_ai_dispatch(
+    lease = await gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -259,23 +271,23 @@ async def test_t3_savepoint_commit_then_outer_rollback_keeps_payload_retryable(
     async def provider_call(_request):
         return payload
 
-    completion = await gateway.dispatch_ai(
+    completion = await gateway_dispatch.dispatch_ai(
         lease,
         provider_call=provider_call,
-        usage_extractor=lambda _result: gateway.SanitizedAIUsage(
+        usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(
             input_tokens=1,
             output_tokens=1,
             cost_microunits=1,
         ),
     )
-    await gateway.finalize_ai_invocation(db_session, completion=completion)
+    await gateway_dispatch.finalize_ai_invocation(db_session, completion=completion)
     nested = await db_session.begin_nested()
     await nested.commit()
     assert completion.payload is payload
     await db_session.rollback()
     assert completion.payload is payload
 
-    await gateway.finalize_ai_invocation(db_session, completion=completion)
+    await gateway_dispatch.finalize_ai_invocation(db_session, completion=completion)
     await db_session.commit()
     assert completion.payload is None
     assert transaction_outcome.pending_root_transaction_outcomes(db_session) == 0
@@ -292,7 +304,7 @@ async def test_session_close_invalidates_uncommitted_ai_lease(
         key="close-dispatch",
     )
     await db_session.commit()
-    lease = await gateway.start_ai_dispatch(
+    lease = await gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -300,11 +312,11 @@ async def test_session_close_invalidates_uncommitted_ai_lease(
     )
     await db_session.close()
 
-    with pytest.raises(gateway.AICapabilityError):
-        await gateway.dispatch_ai(
+    with pytest.raises(gateway_contracts.AICapabilityError):
+        await gateway_dispatch.dispatch_ai(
             lease,
             provider_call=lambda _request: None,  # type: ignore[arg-type]
-            usage_extractor=lambda _result: gateway.SanitizedAIUsage(),
+            usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(),
         )
     assert lease._credential is None
 
@@ -320,7 +332,7 @@ async def test_session_close_rolls_back_ai_finalization_and_allows_retry(
         key="close-finalize",
     )
     await db_session.commit()
-    lease = await gateway.start_ai_dispatch(
+    lease = await gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -332,20 +344,20 @@ async def test_session_close_rolls_back_ai_finalization_and_allows_retry(
     async def provider_call(_request):
         return payload
 
-    completion = await gateway.dispatch_ai(
+    completion = await gateway_dispatch.dispatch_ai(
         lease,
         provider_call=provider_call,
-        usage_extractor=lambda _result: gateway.SanitizedAIUsage(
+        usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(
             input_tokens=1,
             output_tokens=1,
             cost_microunits=1,
         ),
     )
-    await gateway.finalize_ai_invocation(db_session, completion=completion)
+    await gateway_dispatch.finalize_ai_invocation(db_session, completion=completion)
     await db_session.close()
     assert completion.payload is payload
 
-    await gateway.finalize_ai_invocation(db_session, completion=completion)
+    await gateway_dispatch.finalize_ai_invocation(db_session, completion=completion)
     await db_session.commit()
     assert completion.payload is None
 
@@ -355,7 +367,7 @@ async def test_missing_budget_fails_before_any_dispatch_surface(
     legacy_owner_roots,
 ):
     prepared = await _prepared_admin(db_session)
-    await gateway.create_gateway(
+    await gateway_config.create_gateway(
         db_session,
         prepared=prepared,
         external_account_discriminator="opaque-no-budget",
@@ -363,7 +375,7 @@ async def test_missing_budget_fails_before_any_dispatch_surface(
     )
     await db_session.commit()
 
-    with pytest.raises(gateway.AIGatewayConfigurationError, match="exactly one"):
+    with pytest.raises(gateway_contracts.AIGatewayConfigurationError, match="exactly one"):
         await _reserve(db_session, legacy_owner_roots)
     assert await db_session.scalar(select(func.count()).select_from(AIInvocation)) == 0
 
@@ -375,23 +387,23 @@ async def test_duplicate_terminal_reservation_is_non_dispatchable(
     await _configure(db_session, legacy_owner_roots)
     first = await _reserve(db_session, legacy_owner_roots)
     await db_session.commit()
-    lease = await gateway.start_ai_dispatch(
+    lease = await gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=first.invocation_id,
         credential_resolver=lambda _ref: "synthetic-secret",
     )
     await db_session.commit()
-    completion = await gateway.dispatch_ai(
+    completion = await gateway_dispatch.dispatch_ai(
         lease,
         provider_call=lambda _request: asyncio.sleep(0, result="ok"),
-        usage_extractor=lambda _result: gateway.SanitizedAIUsage(
+        usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(
             input_tokens=1,
             output_tokens=1,
             cost_microunits=1,
         ),
     )
-    await gateway.finalize_ai_invocation(db_session, completion=completion)
+    await gateway_dispatch.finalize_ai_invocation(db_session, completion=completion)
     await db_session.commit()
 
     duplicate = await _reserve(db_session, legacy_owner_roots)
@@ -407,7 +419,7 @@ async def test_revoked_owner_and_rotated_root_fail_before_credential_resolution(
 ):
     await _configure(db_session, legacy_owner_roots)
     revoked = await _reserve(db_session, legacy_owner_roots, key="revoked")
-    rotated = await gateway.reserve_ai_invocation(
+    rotated = await gateway_invocations.reserve_ai_invocation(
         db_session,
         identity=WriteIdentity(legacy_owner_roots.subject_id, None),
         purpose=AIInvocationPurpose.WEEKLY_DIGEST,
@@ -447,8 +459,8 @@ async def test_revoked_owner_and_rotated_root_fail_before_credential_resolution(
         resolver_calls += 1
         return "synthetic-secret"
 
-    with pytest.raises(gateway.AIGatewayAuthorizationError):
-        await gateway.start_ai_dispatch(
+    with pytest.raises(gateway_contracts.AIGatewayAuthorizationError):
+        await gateway_dispatch.start_ai_dispatch(
             db_session,
             identity=_identity(legacy_owner_roots),
             invocation_id=revoked.invocation_id,
@@ -463,15 +475,15 @@ async def test_revoked_owner_and_rotated_root_fail_before_credential_resolution(
         db_session,
         actor_username="Second Admin",
     )
-    await gateway.rotate_gateway(
+    await gateway_config.rotate_gateway(
         db_session,
         prepared=prepared,
         external_account_discriminator="opaque-platform-v2",
         credential_ref="legacy_env:openrouter",
     )
     await db_session.commit()
-    with pytest.raises(gateway.AIGatewayConfigurationError):
-        await gateway.start_ai_dispatch(
+    with pytest.raises(gateway_contracts.AIGatewayConfigurationError):
+        await gateway_dispatch.start_ai_dispatch(
             db_session,
             identity=WriteIdentity(legacy_owner_roots.subject_id, None),
             invocation_id=rotated.invocation_id,
@@ -479,7 +491,7 @@ async def test_revoked_owner_and_rotated_root_fail_before_credential_resolution(
         )
     assert resolver_calls == 0
 
-    disabled = await gateway.reserve_ai_invocation(
+    disabled = await gateway_invocations.reserve_ai_invocation(
         db_session,
         identity=WriteIdentity(legacy_owner_roots.subject_id, None),
         purpose=AIInvocationPurpose.WEEKLY_DIGEST,
@@ -494,10 +506,10 @@ async def test_revoked_owner_and_rotated_root_fail_before_credential_resolution(
         db_session,
         actor_username="Second Admin",
     )
-    await gateway.disable_gateway(db_session, prepared=prepared)
+    await gateway_config.disable_gateway(db_session, prepared=prepared)
     await db_session.commit()
-    with pytest.raises(gateway.AIGatewayConfigurationError):
-        await gateway.start_ai_dispatch(
+    with pytest.raises(gateway_contracts.AIGatewayConfigurationError):
+        await gateway_dispatch.start_ai_dispatch(
             db_session,
             identity=WriteIdentity(legacy_owner_roots.subject_id, None),
             invocation_id=disabled.invocation_id,
@@ -512,7 +524,7 @@ async def test_cancel_releases_both_reservations_before_dispatch(
 ):
     await _configure(db_session, legacy_owner_roots)
     reservation = await _reserve(db_session, legacy_owner_roots)
-    invocation = await gateway.cancel_reserved_ai_invocation(
+    invocation = await gateway_dispatch.cancel_reserved_ai_invocation(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -540,7 +552,7 @@ async def test_provider_exception_is_sanitized_and_fully_charged(
     await _configure(db_session, legacy_owner_roots)
     reservation = await _reserve(db_session, legacy_owner_roots)
     await db_session.commit()
-    lease = await gateway.start_ai_dispatch(
+    lease = await gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -551,14 +563,14 @@ async def test_provider_exception_is_sanitized_and_fully_charged(
     async def provider_call(_request):
         raise RuntimeError("sensitive upstream exception text")
 
-    completion = await gateway.dispatch_ai(
+    completion = await gateway_dispatch.dispatch_ai(
         lease,
         provider_call=provider_call,
-        usage_extractor=lambda _result: gateway.SanitizedAIUsage(),
+        usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(),
     )
     assert completion.status is AIInvocationStatus.AMBIGUOUS
     assert "sensitive" not in repr(completion)
-    invocation = await gateway.finalize_ai_invocation(
+    invocation = await gateway_dispatch.finalize_ai_invocation(
         db_session,
         completion=completion,
     )
@@ -574,7 +586,7 @@ async def test_rolled_back_dispatch_lease_wipes_secret_and_cannot_run(
     await _configure(db_session, legacy_owner_roots)
     reservation = await _reserve(db_session, legacy_owner_roots)
     await db_session.commit()
-    lease = await gateway.start_ai_dispatch(
+    lease = await gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -583,11 +595,11 @@ async def test_rolled_back_dispatch_lease_wipes_secret_and_cannot_run(
     await db_session.rollback()
     assert lease._credential is None
     assert lease._session is None
-    with pytest.raises(gateway.AICapabilityError):
-        await gateway.dispatch_ai(
+    with pytest.raises(gateway_contracts.AICapabilityError):
+        await gateway_dispatch.dispatch_ai(
             lease,
             provider_call=lambda _request: asyncio.sleep(0, result="never"),
-            usage_extractor=lambda _result: gateway.SanitizedAIUsage(),
+            usage_extractor=lambda _result: gateway_contracts.SanitizedAIUsage(),
         )
 
 
@@ -598,7 +610,7 @@ async def test_stale_dispatch_reconciliation_is_no_network_and_keeps_charge(
     await _configure(db_session, legacy_owner_roots)
     reservation = await _reserve(db_session, legacy_owner_roots)
     await db_session.commit()
-    await gateway.start_ai_dispatch(
+    await gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -610,7 +622,7 @@ async def test_stale_dispatch_reconciliation_is_no_network_and_keeps_charge(
     assert invocation is not None
     invocation.started_at = datetime(2026, 8, 19, 12, tzinfo=UTC)
     await db_session.commit()
-    changed = await gateway.reconcile_stale_dispatches(
+    changed = await gateway_reconciliation.reconcile_stale_dispatches(
         db_session,
         stale_before=FIXED_NOW,
     )
@@ -624,7 +636,7 @@ async def test_quota_periods_reject_overlap_and_subject_misalignment(
     legacy_owner_roots,
 ):
     prepared = await _prepared_admin(db_session)
-    await gateway.configure_platform_quota_period(
+    await gateway_quota.configure_platform_quota_period(
         db_session,
         prepared=prepared,
         period_start=PERIOD_START,
@@ -632,8 +644,8 @@ async def test_quota_periods_reject_overlap_and_subject_misalignment(
         cost_limit_microunits=100,
         unit_limit=100,
     )
-    with pytest.raises(gateway.AIQuotaImmutableError, match="overlap"):
-        await gateway.configure_platform_quota_period(
+    with pytest.raises(gateway_contracts.AIQuotaImmutableError, match="overlap"):
+        await gateway_quota.configure_platform_quota_period(
             db_session,
             prepared=prepared,
             period_start=date(2026, 8, 15),
@@ -641,8 +653,8 @@ async def test_quota_periods_reject_overlap_and_subject_misalignment(
             cost_limit_microunits=100,
             unit_limit=100,
         )
-    with pytest.raises(gateway.AIGatewayConfigurationError, match="align"):
-        await gateway.configure_subject_quota_period(
+    with pytest.raises(gateway_contracts.AIGatewayConfigurationError, match="align"):
+        await gateway_quota.configure_subject_quota_period(
             db_session,
             prepared=prepared,
             subject_id=legacy_owner_roots.subject_id,
@@ -660,7 +672,7 @@ async def test_cancelled_invocation_keeps_platform_quota_limits_immutable(
     await _configure(db_session, legacy_owner_roots)
     reservation = await _reserve(db_session, legacy_owner_roots)
     await db_session.commit()
-    await gateway.cancel_reserved_ai_invocation(
+    await gateway_dispatch.cancel_reserved_ai_invocation(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -674,7 +686,7 @@ async def test_cancelled_invocation_keeps_platform_quota_limits_immutable(
     assert period is not None
     assert period.reserved_cost_microunits == 0
     prepared = await _prepared_admin(db_session)
-    same = await gateway.configure_platform_quota_period(
+    same = await gateway_quota.configure_platform_quota_period(
         db_session,
         prepared=prepared,
         period_start=PERIOD_START,
@@ -683,8 +695,8 @@ async def test_cancelled_invocation_keeps_platform_quota_limits_immutable(
         unit_limit=10_000,
     )
     assert same is period
-    with pytest.raises(gateway.AIQuotaImmutableError, match="used"):
-        await gateway.configure_platform_quota_period(
+    with pytest.raises(gateway_contracts.AIQuotaImmutableError, match="used"):
+        await gateway_quota.configure_platform_quota_period(
             db_session,
             prepared=prepared,
             period_start=PERIOD_START,
@@ -701,7 +713,7 @@ async def test_cancelled_invocation_keeps_subject_quota_limits_immutable(
     await _configure(db_session, legacy_owner_roots)
     reservation = await _reserve(db_session, legacy_owner_roots)
     await db_session.commit()
-    await gateway.cancel_reserved_ai_invocation(
+    await gateway_dispatch.cancel_reserved_ai_invocation(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -715,7 +727,7 @@ async def test_cancelled_invocation_keeps_subject_quota_limits_immutable(
     assert period is not None
     assert period.reserved_units == 0
     prepared = await _prepared_admin(db_session)
-    same = await gateway.configure_subject_quota_period(
+    same = await gateway_quota.configure_subject_quota_period(
         db_session,
         prepared=prepared,
         subject_id=legacy_owner_roots.subject_id,
@@ -725,8 +737,8 @@ async def test_cancelled_invocation_keeps_subject_quota_limits_immutable(
         unit_limit=10_000,
     )
     assert same is period
-    with pytest.raises(gateway.AIQuotaImmutableError, match="used"):
-        await gateway.configure_subject_quota_period(
+    with pytest.raises(gateway_contracts.AIQuotaImmutableError, match="used"):
+        await gateway_quota.configure_subject_quota_period(
             db_session,
             prepared=prepared,
             subject_id=legacy_owner_roots.subject_id,
@@ -748,7 +760,7 @@ async def test_gateway_rejects_unreviewed_or_secret_credential_refs(
 ):
     prepared = await _prepared_admin(db_session)
     with pytest.raises(ValueError, match="resolver registry"):
-        await gateway.create_gateway(
+        await gateway_config.create_gateway(
             db_session,
             prepared=prepared,
             external_account_discriminator="opaque-bad-ref",
@@ -764,8 +776,8 @@ async def test_source_actor_semantics_are_core_authorization_invariants(
     legacy_owner_roots,
 ):
     await _configure(db_session, legacy_owner_roots)
-    with pytest.raises(gateway.AIGatewayAuthorizationError, match="source"):
-        await gateway.reserve_ai_invocation(
+    with pytest.raises(gateway_contracts.AIGatewayAuthorizationError, match="source"):
+        await gateway_invocations.reserve_ai_invocation(
             db_session,
             identity=_identity(legacy_owner_roots),
             purpose=AIInvocationPurpose.WEEKLY_DIGEST,
@@ -775,8 +787,8 @@ async def test_source_actor_semantics_are_core_authorization_invariants(
             reserved_cost_microunits=1,
             reserved_units=1,
         )
-    with pytest.raises(gateway.AIGatewayAuthorizationError, match="source"):
-        await gateway.reserve_ai_invocation(
+    with pytest.raises(gateway_contracts.AIGatewayAuthorizationError, match="source"):
+        await gateway_invocations.reserve_ai_invocation(
             db_session,
             identity=WriteIdentity(legacy_owner_roots.subject_id, None),
             purpose=AIInvocationPurpose.WEEKLY_DIGEST,
@@ -797,7 +809,7 @@ async def test_oversized_reservation_is_rejected_before_database_arithmetic(
         await _reserve(
             db_session,
             legacy_owner_roots,
-            cost=gateway.MAX_SIGNED_BIGINT + 1,
+            cost=gateway_contracts.MAX_SIGNED_BIGINT + 1,
         )
     assert await db_session.scalar(select(func.count()).select_from(AIInvocation)) == 0
 
@@ -810,7 +822,7 @@ async def test_idempotency_and_start_bind_exact_actor_and_call_fingerprint(
     reservation = await _reserve(db_session, legacy_owner_roots, key="fingerprint")
     await db_session.commit()
 
-    with pytest.raises(gateway.AIIdempotencyConflictError):
+    with pytest.raises(gateway_contracts.AIIdempotencyConflictError):
         await _reserve(
             db_session,
             legacy_owner_roots,
@@ -818,8 +830,8 @@ async def test_idempotency_and_start_bind_exact_actor_and_call_fingerprint(
             cost=101,
         )
     await db_session.rollback()
-    with pytest.raises(gateway.AIIdempotencyConflictError):
-        await gateway.reserve_ai_invocation(
+    with pytest.raises(gateway_contracts.AIIdempotencyConflictError):
+        await gateway_invocations.reserve_ai_invocation(
             db_session,
             identity=WriteIdentity(legacy_owner_roots.subject_id, None),
             purpose=AIInvocationPurpose.WEEKLY_DIGEST,
@@ -837,8 +849,8 @@ async def test_idempotency_and_start_bind_exact_actor_and_call_fingerprint(
         resolver_calls += 1
         return "synthetic-secret"
 
-    with pytest.raises(gateway.AIGatewayAuthorizationError):
-        await gateway.start_ai_dispatch(
+    with pytest.raises(gateway_contracts.AIGatewayAuthorizationError):
+        await gateway_dispatch.start_ai_dispatch(
             db_session,
             identity=WriteIdentity(legacy_owner_roots.subject_id, None),
             invocation_id=reservation.invocation_id,
@@ -852,14 +864,14 @@ async def test_usage_metadata_is_canonical_and_extractor_errors_are_sanitized(
     legacy_owner_roots,
 ):
     assert (
-        gateway.SanitizedAIUsage(upstream_request_id="  opaque-id  ")
+        gateway_contracts.SanitizedAIUsage(upstream_request_id="  opaque-id  ")
         .upstream_request_id
         == "opaque-id"
     )
     await _configure(db_session, legacy_owner_roots)
     reservation = await _reserve(db_session, legacy_owner_roots)
     await db_session.commit()
-    lease = await gateway.start_ai_dispatch(
+    lease = await gateway_dispatch.start_ai_dispatch(
         db_session,
         identity=_identity(legacy_owner_roots),
         invocation_id=reservation.invocation_id,
@@ -870,7 +882,7 @@ async def test_usage_metadata_is_canonical_and_extractor_errors_are_sanitized(
     def bad_extractor(_result):
         raise RuntimeError("sensitive extractor exception")
 
-    completion = await gateway.dispatch_ai(
+    completion = await gateway_dispatch.dispatch_ai(
         lease,
         provider_call=lambda _request: asyncio.sleep(0, result="memory payload"),
         usage_extractor=bad_extractor,
@@ -878,7 +890,7 @@ async def test_usage_metadata_is_canonical_and_extractor_errors_are_sanitized(
     assert completion.status is AIInvocationStatus.FAILED
     assert completion.error_code is AIInvocationErrorCode.INVALID_RESPONSE
     assert "sensitive" not in repr(completion)
-    await gateway.finalize_ai_invocation(db_session, completion=completion)
+    await gateway_dispatch.finalize_ai_invocation(db_session, completion=completion)
 
 
 async def test_stale_prepared_reconciliation_releases_exact_ledgers(
@@ -893,7 +905,7 @@ async def test_stale_prepared_reconciliation_releases_exact_ledgers(
     invocation.created_at = FIXED_NOW - timedelta(days=2)
     await db_session.commit()
 
-    changed = await gateway.reconcile_stale_reservations(
+    changed = await gateway_reconciliation.reconcile_stale_reservations(
         db_session,
         stale_before=FIXED_NOW - timedelta(days=1),
     )
@@ -918,12 +930,12 @@ async def test_stale_reconciliation_requires_aware_utc_threshold(
     db_session,
 ):
     with pytest.raises(ValueError, match="timezone-aware UTC"):
-        await gateway.reconcile_stale_dispatches(
+        await gateway_reconciliation.reconcile_stale_dispatches(
             db_session,
             stale_before=datetime(2026, 8, 20, 12),
         )
     with pytest.raises(ValueError, match="timezone-aware UTC"):
-        await gateway.reconcile_stale_reservations(
+        await gateway_reconciliation.reconcile_stale_reservations(
             db_session,
             stale_before=datetime(2026, 8, 20, 12),
         )
@@ -961,7 +973,7 @@ async def test_postgres_concurrent_reservations_hard_stop_at_shared_limit(
                 )
                 await session.commit()
                 return result
-            except gateway.AIQuotaExceededError as exc:
+            except gateway_contracts.AIQuotaExceededError as exc:
                 await session.rollback()
                 return exc
 
@@ -969,8 +981,8 @@ async def test_postgres_concurrent_reservations_hard_stop_at_shared_limit(
         asyncio.gather(reserve("race-1"), reserve("race-2")),
         timeout=10,
     )
-    assert sum(isinstance(item, gateway.AIReservationResult) for item in outcomes) == 1
-    assert sum(isinstance(item, gateway.AIQuotaExceededError) for item in outcomes) == 1
+    assert sum(isinstance(item, gateway_contracts.AIReservationResult) for item in outcomes) == 1
+    assert sum(isinstance(item, gateway_contracts.AIQuotaExceededError) for item in outcomes) == 1
 
 
 @pytest.mark.integration
@@ -1002,7 +1014,7 @@ async def test_postgres_concurrent_idempotency_and_start_issue_one_lease(
     async def start():
         async with factory() as session:
             try:
-                lease = await gateway.start_ai_dispatch(
+                lease = await gateway_dispatch.start_ai_dispatch(
                     session,
                     identity=_identity(legacy_owner_roots),
                     invocation_id=first.invocation_id,
@@ -1010,7 +1022,7 @@ async def test_postgres_concurrent_idempotency_and_start_issue_one_lease(
                 )
                 await session.commit()
                 return lease
-            except gateway.AIInvocationStateError as exc:
+            except gateway_contracts.AIInvocationStateError as exc:
                 await session.rollback()
                 return exc
 
@@ -1018,8 +1030,8 @@ async def test_postgres_concurrent_idempotency_and_start_issue_one_lease(
         asyncio.gather(start(), start()),
         timeout=10,
     )
-    assert sum(isinstance(item, gateway.AIDispatchLease) for item in outcomes) == 1
-    assert sum(isinstance(item, gateway.AIInvocationStateError) for item in outcomes) == 1
+    assert sum(isinstance(item, gateway_contracts.AIDispatchLease) for item in outcomes) == 1
+    assert sum(isinstance(item, gateway_contracts.AIInvocationStateError) for item in outcomes) == 1
 
 
 @pytest.mark.integration
@@ -1038,7 +1050,7 @@ async def test_postgres_concurrent_overlap_configuration_is_serialized(
     await first.__aenter__()
     try:
         prepared = await _prepared_admin(first)
-        await gateway.configure_platform_quota_period(
+        await gateway_quota.configure_platform_quota_period(
             first,
             prepared=prepared,
             period_start=PERIOD_START,
@@ -1062,7 +1074,7 @@ async def test_postgres_concurrent_overlap_configuration_is_serialized(
         async def configure_overlap():
             async with factory() as session:
                 prepared_second = await _prepared_admin(session)
-                return await gateway.configure_platform_quota_period(
+                return await gateway_quota.configure_platform_quota_period(
                     session,
                     prepared=prepared_second,
                     period_start=date(2026, 8, 15),
@@ -1074,7 +1086,7 @@ async def test_postgres_concurrent_overlap_configuration_is_serialized(
         contender = asyncio.create_task(configure_overlap())
         await asyncio.wait_for(attempted.wait(), timeout=5)
         await first.commit()
-        with pytest.raises(gateway.AIQuotaImmutableError):
+        with pytest.raises(gateway_contracts.AIQuotaImmutableError):
             await asyncio.wait_for(contender, timeout=5)
     finally:
         await first.__aexit__(None, None, None)
@@ -1100,20 +1112,24 @@ async def test_postgres_rotation_and_revocation_win_before_fresh_start(
     await rotation_session.__aenter__()
     try:
         prepared = await _prepared_admin(rotation_session)
-        await gateway.rotate_gateway(
+        await gateway_config.rotate_gateway(
             rotation_session,
             prepared=prepared,
             external_account_discriminator="opaque-race-v2",
             credential_ref="legacy_env:openrouter",
         )
         attempted = asyncio.Event()
-        original = gateway.acquire_identity_governance_lock
+        original = gateway_config.acquire_identity_governance_lock
 
         async def observed_lock(session):
             attempted.set()
             await original(session)
 
-        monkeypatch.setattr(gateway, "acquire_identity_governance_lock", observed_lock)
+        monkeypatch.setattr(
+            gateway_dispatch,
+            "acquire_identity_governance_lock",
+            observed_lock,
+        )
         resolver_calls = 0
 
         def resolver(_ref):
@@ -1123,7 +1139,7 @@ async def test_postgres_rotation_and_revocation_win_before_fresh_start(
 
         async def start():
             async with factory() as session:
-                return await gateway.start_ai_dispatch(
+                return await gateway_dispatch.start_ai_dispatch(
                     session,
                     identity=_identity(legacy_owner_roots),
                     invocation_id=rotation_call.invocation_id,
@@ -1133,7 +1149,7 @@ async def test_postgres_rotation_and_revocation_win_before_fresh_start(
         contender = asyncio.create_task(start())
         await asyncio.wait_for(attempted.wait(), timeout=5)
         await rotation_session.commit()
-        with pytest.raises(gateway.AIGatewayConfigurationError):
+        with pytest.raises(gateway_contracts.AIGatewayConfigurationError):
             await asyncio.wait_for(contender, timeout=5)
         assert resolver_calls == 0
     finally:
@@ -1180,13 +1196,17 @@ async def test_postgres_actor_revocation_serializes_before_fresh_start(
             actor_user_id=second_admin.id,
         )
         attempted = asyncio.Event()
-        original = gateway.acquire_identity_governance_lock
+        original = gateway_config.acquire_identity_governance_lock
 
         async def observed_lock(session):
             attempted.set()
             await original(session)
 
-        monkeypatch.setattr(gateway, "acquire_identity_governance_lock", observed_lock)
+        monkeypatch.setattr(
+            gateway_dispatch,
+            "acquire_identity_governance_lock",
+            observed_lock,
+        )
         resolver_calls = 0
 
         def resolver(_ref):
@@ -1196,7 +1216,7 @@ async def test_postgres_actor_revocation_serializes_before_fresh_start(
 
         async def start():
             async with factory() as session:
-                return await gateway.start_ai_dispatch(
+                return await gateway_dispatch.start_ai_dispatch(
                     session,
                     identity=_identity(legacy_owner_roots),
                     invocation_id=reservation.invocation_id,
@@ -1206,7 +1226,7 @@ async def test_postgres_actor_revocation_serializes_before_fresh_start(
         contender = asyncio.create_task(start())
         await asyncio.wait_for(attempted.wait(), timeout=5)
         await revocation_session.commit()
-        with pytest.raises(gateway.AIGatewayAuthorizationError):
+        with pytest.raises(gateway_contracts.AIGatewayAuthorizationError):
             await asyncio.wait_for(contender, timeout=5)
         assert resolver_calls == 0
     finally:

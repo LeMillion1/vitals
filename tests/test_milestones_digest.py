@@ -2,6 +2,21 @@
 context assembly + LLM narrative generation (with a fake LLM, no network)."""
 from __future__ import annotations
 
+from vitals.services.genetics import writes as genetics_writes
+
+from vitals.services.alerts import legacy as alerts_service_legacy
+
+from vitals.services.milestones import goals as milestone_goals
+from vitals.services.milestones import progress as milestone_progress
+from vitals.services.milestones import queries as milestone_queries
+from vitals.services.supplements import writes as supplement_writes
+from vitals.services.timeline import annotations as timeline_annotations
+
+from vitals.services.skincare import writes as skincare_writes
+
+from vitals.services.digest.projection import assembly as digest_projection
+from vitals.services.digest import prompt as digest_prompt
+
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -9,12 +24,8 @@ import pytest
 from vitals.ownership import WriteIdentity
 
 from vitals.enums import Domain, Source
-from vitals.services import (
-    digest_service,
-    garmin_service,
-    milestones_service,
-    weight_service,
-)
+from vitals.services import weight as weight_domain
+from vitals.services.garmin import ingestion as garmin_ingestion
 
 DAY = date(2026, 6, 10)
 
@@ -28,14 +39,14 @@ composed = pytest.mark.usefixtures("owned_by_legacy_subject")
 # ── Milestones ────────────────────────────────────────────────────────────────
 @composed
 async def test_create_and_progress_weight_goal(db_session, owner_write):
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=DAY,
         weight_kg=90.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(DAY),
     )
-    m = await milestones_service.create_milestone(
+    m = await milestone_goals.create_milestone(
         db_session, name="Дойти до 82", domain="weight", target_value=82.0,
         target_unit="кг", deadline=DAY + timedelta(days=60),
         identity=owner_write.identity,
@@ -43,7 +54,7 @@ async def test_create_and_progress_weight_goal(db_session, owner_write):
     )
     await db_session.commit()
 
-    cards = await milestones_service.dashboard_cards(db_session,
+    cards = await milestone_progress.dashboard_cards(db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(cards) == 1
@@ -52,21 +63,21 @@ async def test_create_and_progress_weight_goal(db_session, owner_write):
     assert card["remaining"] == 8.0  # 90 - 82
     assert card["days_left"] is not None
 
-    assert await milestones_service.set_status(db_session, m.id, "achieved",
+    assert await milestone_goals.set_status(db_session, m.id, "achieved",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    assert (await milestones_service.list_milestones(db_session, status="achieved",
+    assert (await milestone_queries.list_milestones(db_session, status="achieved",
         subject_id=owner_write.subject_id,
     ))[0].id == m.id
 
-    assert await milestones_service.delete_milestone(db_session, m.id,
+    assert await milestone_goals.delete_milestone(db_session, m.id,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    assert len(await milestones_service.list_milestones(db_session,
+    assert len(await milestone_queries.list_milestones(db_session,
         subject_id=owner_write.subject_id,
     )) == 0
 
@@ -77,14 +88,14 @@ async def test_progress_guards_against_unit_domain_mismatch(db_session, owner_wr
     copy-pasted from a body-fat goal) must not compute current/remaining — on the
     old code this compared a percentage target against a kilogram reading and
     printed a nonsense "remaining"."""
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=DAY,
         weight_kg=86.1,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(DAY),
     )
-    m = await milestones_service.create_milestone(
+    m = await milestone_goals.create_milestone(
         db_session, name="Body fat under 15%", domain="weight", target_value=15.0,
         target_unit="%",
         identity=owner_write.identity,
@@ -92,31 +103,31 @@ async def test_progress_guards_against_unit_domain_mismatch(db_session, owner_wr
     )
     await db_session.commit()
 
-    card = (await milestones_service.dashboard_cards(db_session,
+    card = (await milestone_progress.dashboard_cards(db_session,
         subject_id=owner_write.subject_id,
     ))[0]
     assert card["current"] is None
     assert card["remaining"] is None
 
     # A matching unit still computes normally (kg goal, kg unit).
-    await milestones_service.update_milestone(db_session, m.id, target_unit="кг",
+    await milestone_goals.update_milestone(db_session, m.id, target_unit="кг",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    card = (await milestones_service.dashboard_cards(db_session,
+    card = (await milestone_progress.dashboard_cards(db_session,
         subject_id=owner_write.subject_id,
     ))[0]
     assert card["current"] == 86.1
     assert card["remaining"] == pytest.approx(71.1, abs=0.01)
 
     # No unit at all stays permissive (older goals predate this field).
-    await milestones_service.update_milestone(db_session, m.id, target_unit=None,
+    await milestone_goals.update_milestone(db_session, m.id, target_unit=None,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    card = (await milestones_service.dashboard_cards(db_session,
+    card = (await milestone_progress.dashboard_cards(db_session,
         subject_id=owner_write.subject_id,
     ))[0]
     assert card["current"] == 86.1
@@ -125,14 +136,14 @@ async def test_progress_guards_against_unit_domain_mismatch(db_session, owner_wr
 @composed
 async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_write):
     # 1. Log Navy body fat (approx 14.52% for height=190, neck=38, waist=85, weight=88)
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=DAY,
         weight_kg=88.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(DAY),
     )
-    await weight_service.upsert_body_measurement(
+    await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=DAY,
         neck_cm=38,
@@ -141,7 +152,7 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
         prepared_conflict_write=await owner_write.write(DAY),
     )
 
-    await milestones_service.create_milestone(
+    await milestone_goals.create_milestone(
         db_session, name="Снизить жир до 12%", domain="body_comp", target_value=12.0,
         target_unit="%", deadline=DAY + timedelta(days=60),
         identity=owner_write.identity,
@@ -149,7 +160,7 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
     )
     await db_session.commit()
 
-    cards = await milestones_service.dashboard_cards(db_session,
+    cards = await milestone_progress.dashboard_cards(db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(cards) == 1
@@ -190,7 +201,7 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
     await db_session.commit()
 
     # Get cards - BIA is available, so "latest" (default) picks it over Navy
-    cards = await milestones_service.dashboard_cards(db_session,
+    cards = await milestone_progress.dashboard_cards(db_session,
         subject_id=owner_write.subject_id,
     )
     card = cards[0]
@@ -199,7 +210,7 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
 
     # 3. Test body_fat_source preference - force "navy"
     monkeypatch.setenv("VITALS_BODY_FAT_SOURCE", "navy")
-    cards = await milestones_service.dashboard_cards(db_session,
+    cards = await milestone_progress.dashboard_cards(db_session,
         subject_id=owner_write.subject_id,
     )
     card = cards[0]
@@ -207,7 +218,7 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
 
     # 4. Force "bia"
     monkeypatch.setenv("VITALS_BODY_FAT_SOURCE", "bia")
-    cards = await milestones_service.dashboard_cards(db_session,
+    cards = await milestone_progress.dashboard_cards(db_session,
         subject_id=owner_write.subject_id,
     )
     card = cards[0]
@@ -217,7 +228,7 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
     # BIA scan must not steal the spot back — BIA outranks Navy whenever it's
     # available, this isn't a "most recent date wins" contest.
     monkeypatch.delenv("VITALS_BODY_FAT_SOURCE", raising=False)
-    await weight_service.upsert_body_measurement(
+    await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=DAY + timedelta(days=2),
         neck_cm=39,
@@ -226,7 +237,7 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
         prepared_conflict_write=await owner_write.write(DAY + timedelta(days=2)),
     )
     await db_session.commit()
-    cards = await milestones_service.dashboard_cards(db_session,
+    cards = await milestone_progress.dashboard_cards(db_session,
         subject_id=owner_write.subject_id,
     )
     card = cards[0]
@@ -243,7 +254,7 @@ async def test_assemble_context_is_robust_when_empty(db_session, monkeypatch, le
     monkeypatch.setenv("VITALS_USER_AGE", "18")
     monkeypatch.setenv("VITALS_SEX", "male")
     monkeypatch.setenv("VITALS_HEIGHT_CM", "190")
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY)
     assert ctx["date"] == "2026-06-10"
@@ -269,20 +280,20 @@ async def test_assemble_context_is_robust_when_empty(db_session, monkeypatch, le
 
 @composed
 async def test_assemble_context_pulls_each_domain(db_session, legacy_owner_roots, owner_write, *, garmin_owned_scope):
-    from vitals.services import labs_service
+    import vitals.services.labs.results as lab_results
 
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=DAY,
         weight_kg=88.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(DAY),
     )
-    await garmin_service.ingest_owned_daily(
+    await garmin_ingestion.ingest_owned_daily(
         db_session, DAY, {"summary": {"restingHeartRate": 52},
                           "sleep": {"dailySleepDTO": {"sleepScores": {"overall": {"value": 80}}}}}
     , identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY - timedelta(days=10),
         marker="TSH",
@@ -294,7 +305,7 @@ async def test_assemble_context_pulls_each_domain(db_session, legacy_owner_roots
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY)
     assert ctx["weight"]["latest_kg"] == 88.0
@@ -311,29 +322,23 @@ async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db
     alerts — previously these enabled domains were absent, so cross-domain
     reasoning (e.g. 'started a supplement → sleep shifted', 'introduced a retinoid
     → skin reacted') had no data to work with."""
-    from vitals.services import (
-        alerts_service,
-        skincare_service,
-        supplements_service,
-    )
-    from vitals.services.genetics import variants
 
-    await supplements_service.add_supplement(
+    await supplement_writes.add_supplement(
         db_session, name="Creatine", dose="5 g", timing="morning", evidence="A",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write()
     )
-    await skincare_service.add_observation(
+    await skincare_writes.add_observation(
         db_session, on_date=DAY, inflammation=3, pih=1, zone="cheeks", note="reacted",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(DAY),
     )
-    await variants.add_variant(
+    await genetics_writes.add_variant(
         db_session, gene="HFE", rsid="rs1800562", genotype="GG", marker="hemochromatosis_carrier",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
-    alert = await alerts_service.raise_alert(
+    alert = await alerts_service_legacy.raise_alert(
         db_session, domain="labs", severity="warn", message="Ferritin high",
         alert_key="ferritin_high", entity_ref="labs:ferritin",
     )
@@ -343,7 +348,7 @@ async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db
     alert.subject_id = legacy_owner_roots.subject_id
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY)
 
@@ -387,7 +392,7 @@ async def test_assemble_context_includes_body_comp(db_session, legacy_owner_root
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY)
     bc = ctx["body_comp"]
@@ -425,13 +430,13 @@ async def test_assemble_context_with_custom_period_days(db_session, legacy_owner
     await db_session.commit()
 
     # With period_days=7, both workouts should be counted
-    ctx_7 = await digest_service.assemble_context(
+    ctx_7 = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
     assert ctx_7["hevy"]["total_workouts"] == 2
 
     # With period_days=4, only the one from 2 days ago should be counted
-    ctx_4 = await digest_service.assemble_context(
+    ctx_4 = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=4)
     assert ctx_4["hevy"]["total_workouts"] == 1
@@ -442,7 +447,7 @@ async def test_assemble_context_includes_hrt_and_timeline(db_session, legacy_own
     """Hormones and the timeline must reach the digest. Without them the
     strongest intervention in the lake (a compound change) and the ready-made
     explanation for a dip (illness, travel) were invisible to the narrative."""
-    from vitals.services import timeline_service
+
     from vitals.services.hrt import cycles, records
 
     await cycles.add_cycle(
@@ -461,7 +466,7 @@ async def test_assemble_context_includes_hrt_and_timeline(db_session, legacy_own
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(DAY - timedelta(days=1)),
     )
-    await timeline_service.create_annotation(
+    await timeline_annotations.create_annotation(
         db_session, title="Грипп", on_date=DAY - timedelta(days=3),
         end_date=DAY - timedelta(days=1), kind="illness",
         identity=WriteIdentity(
@@ -469,7 +474,7 @@ async def test_assemble_context_includes_hrt_and_timeline(db_session, legacy_own
         ),
     )
     # Outside the 7-day window — must not leak in.
-    await timeline_service.create_annotation(
+    await timeline_annotations.create_annotation(
         db_session,
         title="Старая поездка",
         on_date=DAY - timedelta(days=60),
@@ -480,7 +485,7 @@ async def test_assemble_context_includes_hrt_and_timeline(db_session, legacy_own
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
 
@@ -493,7 +498,7 @@ async def test_assemble_context_includes_hrt_and_timeline(db_session, legacy_own
     assert [a["title"] for a in ctx["timeline"]] == ["Грипп"]
 
     # The model ignores keys the system prompt never names.
-    system_prompt = digest_service.DIGEST_SYSTEM
+    system_prompt = digest_prompt.DIGEST_SYSTEM
     assert "hrt:" in system_prompt
     assert "timeline:" in system_prompt
 
@@ -555,14 +560,14 @@ def test_every_domain_is_mapped_to_digest_keys():
     """A new domain needs an explicit subtable-level context contract."""
     assert set(DIGEST_DOMAIN_PATHS) == set(Domain)
     assert all(DIGEST_DOMAIN_PATHS.values())
-    assert set(digest_service._DOMAIN_MODULE) == {domain.value for domain in Domain}
+    assert set(digest_projection._DOMAIN_MODULE) == {domain.value for domain in Domain}
 
 
 @composed
 async def test_assemble_context_has_a_key_for_every_domain(db_session, legacy_owner_roots):
     """Every mapped key is actually assembled — on an empty database too, so a
     domain can't be "present" only when it happens to have rows."""
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY)
     for paths in DIGEST_DOMAIN_PATHS.values():
@@ -664,7 +669,7 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session, 
     # DAY is 2026-06-10. Current is [06-04, 06-10], previous [05-28, 06-03].
 
     # 1. Overlapping noise marker (ends during the period)
-    await weight_service.add_noise_marker(
+    await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=date(2026, 6, 1),
         end_date=date(2026, 6, 5),
@@ -673,7 +678,7 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session, 
         prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
     )
     # 2. Ongoing noise marker starting during the period
-    await weight_service.add_noise_marker(
+    await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=date(2026, 6, 8),
         end_date=None,
@@ -682,7 +687,7 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session, 
         prepared_conflict_write=await owner_write.write(date(2026, 6, 8)),
     )
     # 3. Non-overlapping noise marker in the future
-    await weight_service.add_noise_marker(
+    await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=date(2026, 6, 12),
         end_date=date(2026, 6, 15),
@@ -691,7 +696,7 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session, 
         prepared_conflict_write=await owner_write.write(date(2026, 6, 12)),
     )
     # 4. Marker in the comparison window
-    await weight_service.add_noise_marker(
+    await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=date(2026, 5, 20),
         end_date=date(2026, 6, 2),
@@ -701,7 +706,7 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session, 
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
     markers = ctx["weight"]["noise_markers"]
@@ -729,7 +734,7 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session, 
     assert past_marker["periods"] == ["previous"]
 
     # Check that system prompt mentions noise_markers
-    system_prompt = digest_service.DIGEST_SYSTEM
+    system_prompt = digest_prompt.DIGEST_SYSTEM
     assert "noise_markers" in system_prompt
     assert "период" in system_prompt or "period" in system_prompt
 
@@ -742,7 +747,7 @@ async def test_assemble_context_trend_excludes_noise(db_session, legacy_owner_ro
 
     base = date(2026, 6, 1)
     for i in range(11):
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=base + timedelta(days=i),
             weight_kg=100.0 - i,
@@ -750,14 +755,14 @@ async def test_assemble_context_trend_excludes_noise(db_session, legacy_owner_ro
             prepared_weight_write=await owner_write.weight_write(base + timedelta(days=i)),
         )
     # Water-weight spike on 06-06, marked as noise.
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=base + timedelta(days=5),
         weight_kg=120.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(base + timedelta(days=5)),
     )
-    await weight_service.add_noise_marker(
+    await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=base + timedelta(days=5),
         end_date=base + timedelta(days=5),
@@ -767,7 +772,7 @@ async def test_assemble_context_trend_excludes_noise(db_session, legacy_owner_ro
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         on_date=base + timedelta(days=10), period_days=7

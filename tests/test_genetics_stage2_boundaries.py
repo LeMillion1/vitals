@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from vitals.services.genetics import contracts as genetics_contracts
+from vitals.services.genetics import queries as genetics_queries
+from vitals.services.genetics import reparse as genetics_reparse
+from vitals.services.genetics import validation as genetics_validation
+from vitals.services.genetics import vcf as genetics_vcf
+from vitals.services.genetics import vcf_ingestion as genetics_vcf_ingestion
+from vitals.services.genetics import writes as genetics_writes
+
 import asyncio
 from datetime import timedelta
 
@@ -16,7 +24,6 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services.conflicts import engine
-from vitals.services.genetics import variants as variant_records
 from vitals.services.genetics.vcf import ParsedVariant
 from vitals.utils.timeutils import now_local
 
@@ -89,7 +96,7 @@ async def _ingest(
     only_interpreted: bool = False,
     legacy: bool = False,
 ):
-    return await variant_records.ingest_vcf_batch(
+    return await genetics_vcf_ingestion.ingest_vcf_batch(
         session,
         filename=filename,
         raw_variants=[variant],
@@ -108,7 +115,7 @@ async def test_scoped_manual_write_and_list_stamp_owner(
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity)
 
-    row = await variant_records.add_variant(
+    row = await genetics_writes.add_variant(
         db_session,
         gene="COMT",
         rsid="rs4680",
@@ -123,10 +130,13 @@ async def test_scoped_manual_write_and_list_stamp_owner(
     assert row.actor_user_id == identity.actor_user_id
     assert row.source == Source.MANUAL.value
     assert row.raw_payload_id is None
-    assert [item.id for item in await variant_records.list_variants(
-        db_session,
-        subject_id=identity.subject_id,
-    )] == [row.id]
+    assert [
+        item.id
+        for item in await genetics_queries.list_variants(
+            db_session,
+            subject_id=identity.subject_id,
+        )
+    ] == [row.id]
 
 
 async def test_rsid_case_normalization_prevents_duplicate_facts(
@@ -135,7 +145,7 @@ async def test_rsid_case_normalization_prevents_duplicate_facts(
 ):
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity)
-    first = await variant_records.upsert_by_rsid(
+    first = await genetics_writes.upsert_by_rsid(
         db_session,
         gene="HFE",
         rsid="RS1800562",
@@ -144,7 +154,7 @@ async def test_rsid_case_normalization_prevents_duplicate_facts(
         identity=identity,
         prepared_conflict_write=prepared,
     )
-    second = await variant_records.upsert_by_rsid(
+    second = await genetics_writes.upsert_by_rsid(
         db_session,
         gene="HFE",
         rsid="rs1800562",
@@ -178,8 +188,8 @@ async def test_partial_actor_root_fails_closed(
     )
     await db_session.flush()
 
-    with pytest.raises(variant_records.GeneticsOwnershipError):
-        await variant_records.list_variants(
+    with pytest.raises(genetics_contracts.GeneticsOwnershipError):
+        await genetics_queries.list_variants(
             db_session,
             subject_id=legacy_owner_roots.subject_id,
         )
@@ -201,8 +211,8 @@ async def test_partial_legacy_fact_fails_closed_in_conflict_resolver(
     )
     await db_session.flush()
 
-    with pytest.raises(variant_records.GeneticsOwnershipError, match="partial"):
-        await variant_records.resolve_variants_scoped(
+    with pytest.raises(genetics_contracts.GeneticsOwnershipError, match="partial"):
+        await genetics_queries.resolve_variants_scoped(
             db_session,
             scope=engine.ConflictScope(
                 subject_id=legacy_owner_roots.subject_id,
@@ -230,19 +240,22 @@ async def test_foreign_id_is_non_enumerating_and_both_subjects_keep_the_rsid(
 
     owner_identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, owner_identity)
-    assert await variant_records.get_variant(
-        db_session,
-        foreign.id,
-        subject_id=owner_identity.subject_id,
-    ) is None
-    assert not await variant_records.delete_variant(
+    assert (
+        await genetics_queries.get_variant(
+            db_session,
+            foreign.id,
+            subject_id=owner_identity.subject_id,
+        )
+        is None
+    )
+    assert not await genetics_writes.delete_variant(
         db_session,
         foreign.id,
         identity=owner_identity,
         prepared_conflict_write=prepared,
     )
     # An rsID names a locus, not a person: both subjects hold their own row.
-    mine = await variant_records.upsert_by_rsid(
+    mine = await genetics_writes.upsert_by_rsid(
         db_session,
         gene="HFE",
         rsid="rs1800562",
@@ -265,9 +278,7 @@ async def test_vcf_batch_is_owned_raw_first_and_reimport_clears_stale_marker(
     prepared = await _prepared(db_session, identity, legacy=True)
     first = await _ingest(db_session, identity, prepared, RISK, legacy=True)
     assert first.raw is not None
-    row = await db_session.scalar(
-        select(GeneticVariant).where(GeneticVariant.rsid == RISK.rsid)
-    )
+    row = await db_session.scalar(select(GeneticVariant).where(GeneticVariant.rsid == RISK.rsid))
     assert row is not None
     assert row.marker == "hemochromatosis_carrier"
     assert row.subject_id == identity.subject_id
@@ -319,9 +330,7 @@ async def test_vcf_reimport_from_new_file_relinks_corrected_fact_to_new_raw(
     assert second.raw is not None
     assert second.raw.id != first.raw.id
 
-    row = await db_session.scalar(
-        select(GeneticVariant).where(GeneticVariant.rsid == RISK.rsid)
-    )
+    row = await db_session.scalar(select(GeneticVariant).where(GeneticVariant.rsid == RISK.rsid))
     assert row is not None
     assert row.genotype == REFERENCE.genotype
     assert row.raw_payload_id == second.raw.id
@@ -334,7 +343,7 @@ async def test_same_filename_reimport_preserves_prior_raw_evidence(
 ):
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity, legacy=True)
-    first = await variant_records.ingest_vcf_batch(
+    first = await genetics_vcf_ingestion.ingest_vcf_batch(
         db_session,
         filename="reused-name.vcf",
         raw_variants=[RISK, MTHFR],
@@ -363,7 +372,7 @@ async def test_same_filename_reimport_preserves_prior_raw_evidence(
     ]
     rows = {
         row.rsid: row
-        for row in await variant_records.list_variants(
+        for row in await genetics_queries.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -381,7 +390,7 @@ async def test_mcp_patch_preserves_vcf_origin_and_omitted_fields(
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity, legacy=True)
     summary = await _ingest(db_session, identity, prepared, MTHFR, legacy=True)
-    row = await variant_records.upsert_by_rsid(
+    row = await genetics_writes.upsert_by_rsid(
         db_session,
         gene="MTHFR",
         rsid=MTHFR.rsid,
@@ -434,8 +443,8 @@ async def test_wrong_shape_raw_link_fails_before_read(
     )
     await db_session.flush()
 
-    with pytest.raises(variant_records.GeneticsRawProvenanceError):
-        await variant_records.list_variants(
+    with pytest.raises(genetics_contracts.GeneticsRawProvenanceError):
+        await genetics_queries.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -473,20 +482,20 @@ async def test_manual_fact_cannot_use_raw_bridge_and_raw_flags_are_typed(
     await db_session.flush()
 
     with pytest.raises(
-        variant_records.GeneticsRawProvenanceError,
+        genetics_contracts.GeneticsRawProvenanceError,
         match="manual and MCP",
     ):
-        await variant_records.list_variants(
+        await genetics_queries.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
 
     manual.source = Source.VCF_IMPORT.value
     with pytest.raises(
-        variant_records.GeneticsRawProvenanceError,
+        genetics_contracts.GeneticsRawProvenanceError,
         match="truncation flag",
     ):
-        await variant_records.list_variants(
+        await genetics_queries.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -500,10 +509,10 @@ async def test_truncated_curated_hit_must_agree_with_retained_raw_evidence(
     prepared = await _prepared(db_session, identity)
 
     with pytest.raises(
-        variant_records.GeneticsRawProvenanceError,
+        genetics_contracts.GeneticsRawProvenanceError,
         match="contradicts",
     ):
-        await variant_records.ingest_vcf_batch(
+        await genetics_vcf_ingestion.ingest_vcf_batch(
             db_session,
             filename="contradictory.vcf",
             raw_variants=[RISK],
@@ -515,10 +524,6 @@ async def test_truncated_curated_hit_must_agree_with_retained_raw_evidence(
 
     assert list(await db_session.scalars(select(RawPayload))) == []
     assert list(await db_session.scalars(select(GeneticVariant))) == []
-
-
-
-
 
 
 async def test_replay_fills_missing_curated_children_and_is_idempotent(
@@ -560,21 +565,27 @@ async def test_replay_fills_missing_curated_children_and_is_idempotent(
 
     system = WriteIdentity(owner.subject_id, None)
     prepared = await _prepared(db_session, system, legacy=True)
-    assert await variant_records.reparse_owned_pending(
-        db_session,
-        identity=system,
-        prepared_conflict_write=prepared,
-    ) == 1
+    assert (
+        await genetics_reparse.reparse_owned_pending(
+            db_session,
+            identity=system,
+            prepared_conflict_write=prepared,
+        )
+        == 1
+    )
     assert raw.processed_at is not None
     assert set(await db_session.scalars(select(GeneticVariant.rsid))) == {
         RISK.rsid,
         MTHFR.rsid,
     }
-    assert await variant_records.reparse_owned_pending(
-        db_session,
-        identity=system,
-        prepared_conflict_write=prepared,
-    ) == 0
+    assert (
+        await genetics_reparse.reparse_owned_pending(
+            db_session,
+            identity=system,
+            prepared_conflict_write=prepared,
+        )
+        == 0
+    )
 
 
 async def test_replay_accepts_exact_stage3a_subject_only_vcf_history(
@@ -601,21 +612,23 @@ async def test_replay_accepts_exact_stage3a_subject_only_vcf_history(
     system = WriteIdentity(owner.subject_id, None)
     prepared = await _prepared(db_session, system, legacy=True)
 
-    assert await variant_records.reparse_owned_pending(
-        db_session,
-        identity=system,
-        prepared_conflict_write=prepared,
-    ) == 1
+    assert (
+        await genetics_reparse.reparse_owned_pending(
+            db_session,
+            identity=system,
+            prepared_conflict_write=prepared,
+        )
+        == 1
+    )
     variants = list(
         await db_session.scalars(
             select(GeneticVariant).where(GeneticVariant.raw_payload_id == raw.id)
         )
     )
     assert variants
-    assert {
-        (row.subject_id, row.actor_user_id, row.raw_payload_id)
-        for row in variants
-    } == {(owner.subject_id, None, raw.id)}
+    assert {(row.subject_id, row.actor_user_id, row.raw_payload_id) for row in variants} == {
+        (owner.subject_id, None, raw.id)
+    }
     assert raw.processed_at is not None
 
 
@@ -635,9 +648,7 @@ async def test_replay_cannot_roll_fact_back_to_older_pending_raw(
             "filename": "old-reference.vcf",
             "truncated": False,
             "only_interpreted": False,
-            "variants": [
-                [REFERENCE.rsid, REFERENCE.ref, REFERENCE.alt, REFERENCE.genotype]
-            ],
+            "variants": [[REFERENCE.rsid, REFERENCE.ref, REFERENCE.alt, REFERENCE.genotype]],
         },
     )
     current_raw = RawPayload(
@@ -673,11 +684,14 @@ async def test_replay_cannot_roll_fact_back_to_older_pending_raw(
 
     system = WriteIdentity(owner.subject_id, None)
     prepared = await _prepared(db_session, system, legacy=True)
-    assert await variant_records.reparse_owned_pending(
-        db_session,
-        identity=system,
-        prepared_conflict_write=prepared,
-    ) == 1
+    assert (
+        await genetics_reparse.reparse_owned_pending(
+            db_session,
+            identity=system,
+            prepared_conflict_write=prepared,
+        )
+        == 1
+    )
     assert old_raw.processed_at is not None
     assert fact.raw_payload_id == current_raw.id
     assert fact.genotype == RISK.genotype
@@ -699,9 +713,7 @@ async def test_replay_uses_durable_only_interpreted_policy(
     payload = {
         "filename": "policy.vcf",
         "truncated": False,
-        "variants": [
-            [REFERENCE.rsid, REFERENCE.ref, REFERENCE.alt, REFERENCE.genotype]
-        ],
+        "variants": [[REFERENCE.rsid, REFERENCE.ref, REFERENCE.alt, REFERENCE.genotype]],
     }
     if only_interpreted is not None:
         payload["only_interpreted"] = only_interpreted
@@ -718,11 +730,14 @@ async def test_replay_uses_durable_only_interpreted_policy(
 
     system = WriteIdentity(owner.subject_id, None)
     prepared = await _prepared(db_session, system, legacy=True)
-    assert await variant_records.reparse_owned_pending(
-        db_session,
-        identity=system,
-        prepared_conflict_write=prepared,
-    ) == 1
+    assert (
+        await genetics_reparse.reparse_owned_pending(
+            db_session,
+            identity=system,
+            prepared_conflict_write=prepared,
+        )
+        == 1
+    )
     rows = list(await db_session.scalars(select(GeneticVariant)))
     assert len(rows) == expected_rows
     if rows:
@@ -738,7 +753,7 @@ async def test_header_only_batch_is_write_free(
 ):
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity)
-    summary = await variant_records.ingest_vcf_batch(
+    summary = await genetics_vcf_ingestion.ingest_vcf_batch(
         db_session,
         filename="header-only.vcf",
         raw_variants=[],
@@ -760,7 +775,7 @@ async def test_truncated_same_name_tail_change_creates_distinct_raw_revision(
     prepared = await _prepared(db_session, identity, legacy=True)
     retained_prefix = ParsedVariant("rs-retained-prefix", "A", "G", "A/G")
 
-    first = await variant_records.ingest_vcf_batch(
+    first = await genetics_vcf_ingestion.ingest_vcf_batch(
         db_session,
         filename="same-truncated.vcf",
         raw_variants=[retained_prefix],
@@ -769,7 +784,7 @@ async def test_truncated_same_name_tail_change_creates_distinct_raw_revision(
         identity=identity,
         prepared_conflict_write=prepared,
     )
-    second = await variant_records.ingest_vcf_batch(
+    second = await genetics_vcf_ingestion.ingest_vcf_batch(
         db_session,
         filename="same-truncated.vcf",
         raw_variants=[retained_prefix],
@@ -784,7 +799,7 @@ async def test_truncated_same_name_tail_change_creates_distinct_raw_revision(
     assert first.raw.id != second.raw.id
     rows = {
         row.rsid: row
-        for row in await variant_records.list_variants(
+        for row in await genetics_queries.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -802,7 +817,7 @@ async def test_truncated_curated_tail_child_can_be_rebuilt_from_pending_raw(
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity, legacy=True)
     retained_prefix = ParsedVariant("rs-retained-prefix", "A", "G", "A/G")
-    summary = await variant_records.ingest_vcf_batch(
+    summary = await genetics_vcf_ingestion.ingest_vcf_batch(
         db_session,
         filename="tail-replay.vcf",
         raw_variants=[retained_prefix],
@@ -812,9 +827,7 @@ async def test_truncated_curated_tail_child_can_be_rebuilt_from_pending_raw(
         prepared_conflict_write=prepared,
     )
     assert summary.raw is not None
-    fact = await db_session.scalar(
-        select(GeneticVariant).where(GeneticVariant.rsid == RISK.rsid)
-    )
+    fact = await db_session.scalar(select(GeneticVariant).where(GeneticVariant.rsid == RISK.rsid))
     assert fact is not None
     await db_session.delete(fact)
     summary.raw.processed_at = None
@@ -822,11 +835,14 @@ async def test_truncated_curated_tail_child_can_be_rebuilt_from_pending_raw(
 
     system = WriteIdentity(identity.subject_id, None)
     replay_prepared = await _prepared(db_session, system, legacy=True)
-    assert await variant_records.reparse_owned_pending(
-        db_session,
-        identity=system,
-        prepared_conflict_write=replay_prepared,
-    ) == 1
+    assert (
+        await genetics_reparse.reparse_owned_pending(
+            db_session,
+            identity=system,
+            prepared_conflict_write=replay_prepared,
+        )
+        == 1
+    )
     rebuilt = await db_session.scalar(
         select(GeneticVariant).where(GeneticVariant.rsid == RISK.rsid)
     )
@@ -851,7 +867,7 @@ async def test_partial_raw_candidate_rejects_before_adoption_or_mutation(
         actor_user_id=identity.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=variant_records._vcf_external_id(payload),
+        external_id=genetics_validation._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(raw)
@@ -859,8 +875,8 @@ async def test_partial_raw_candidate_rejects_before_adoption_or_mutation(
     original_fetched_at = raw.fetched_at
     prepared = await _prepared(db_session, identity, legacy=True)
 
-    with pytest.raises(variant_records.GeneticsRawProvenanceError, match="partial"):
-        await variant_records.ingest_vcf_batch(
+    with pytest.raises(genetics_contracts.GeneticsRawProvenanceError, match="partial"):
+        await genetics_vcf_ingestion.ingest_vcf_batch(
             db_session,
             filename="partial-candidate.vcf",
             raw_variants=[RISK],
@@ -892,7 +908,7 @@ async def test_pending_partial_raw_fails_preflight_instead_of_silent_zero(
         actor_user_id=owner.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=variant_records._vcf_external_id(payload),
+        external_id=genetics_validation._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(raw)
@@ -900,8 +916,8 @@ async def test_pending_partial_raw_fails_preflight_instead_of_silent_zero(
 
     system = WriteIdentity(owner.subject_id, None)
     prepared = await _prepared(db_session, system, legacy=True)
-    with pytest.raises(variant_records.GeneticsRawProvenanceError, match="partial"):
-        await variant_records.reparse_owned_pending(
+    with pytest.raises(genetics_contracts.GeneticsRawProvenanceError, match="partial"):
+        await genetics_reparse.reparse_owned_pending(
             db_session,
             identity=system,
             prepared_conflict_write=prepared,
@@ -919,7 +935,7 @@ async def test_disappeared_truncated_tail_child_keeps_prior_raw_revision(
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity, legacy=True)
     retained_prefix = ParsedVariant("rs-stable-prefix", "A", "G", "A/G")
-    first = await variant_records.ingest_vcf_batch(
+    first = await genetics_vcf_ingestion.ingest_vcf_batch(
         db_session,
         filename="stable-prefix.vcf",
         raw_variants=[retained_prefix],
@@ -928,7 +944,7 @@ async def test_disappeared_truncated_tail_child_keeps_prior_raw_revision(
         identity=identity,
         prepared_conflict_write=prepared,
     )
-    second = await variant_records.ingest_vcf_batch(
+    second = await genetics_vcf_ingestion.ingest_vcf_batch(
         db_session,
         filename="stable-prefix.vcf",
         raw_variants=[retained_prefix],
@@ -969,7 +985,7 @@ async def test_vcf_v2_format_version_requires_exact_integer_two(
         actor_user_id=identity.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=variant_records._vcf_external_id(payload),
+        external_id=genetics_validation._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(raw)
@@ -990,10 +1006,10 @@ async def test_vcf_v2_format_version_requires_exact_integer_two(
     await db_session.flush()
 
     with pytest.raises(
-        variant_records.GeneticsRawProvenanceError,
+        genetics_contracts.GeneticsRawProvenanceError,
         match="format version",
     ):
-        await variant_records.list_variants(
+        await genetics_queries.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -1017,7 +1033,7 @@ async def test_scoped_list_limit_validates_corrupt_graph_beyond_return_window(
                 source=Source.MANUAL.value,
                 gene=f"AAA-{number:03d}",
             )
-            for number in range(variant_records.MAX_LIST_LIMIT)
+            for number in range(genetics_contracts.MAX_LIST_LIMIT)
         ]
     )
     payload = {
@@ -1030,7 +1046,7 @@ async def test_scoped_list_limit_validates_corrupt_graph_beyond_return_window(
         actor_user_id=foreign_identity.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=variant_records._vcf_external_id(payload),
+        external_id=genetics_validation._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(foreign_raw)
@@ -1050,8 +1066,8 @@ async def test_scoped_list_limit_validates_corrupt_graph_beyond_return_window(
     )
     await db_session.flush()
 
-    with pytest.raises(variant_records.GeneticsRawProvenanceError):
-        await variant_records.list_variants(
+    with pytest.raises(genetics_contracts.GeneticsRawProvenanceError):
+        await genetics_queries.list_variants(
             db_session,
             subject_id=owner.subject_id,
             limit=1,
@@ -1067,9 +1083,7 @@ async def test_scoped_list_limit_validates_corrupt_graph_beyond_return_window(
                 "filename": "missing-policy.vcf",
                 "truncated": False,
                 "variants": [[RISK.rsid, RISK.ref, RISK.alt, RISK.genotype]],
-                "curated_variants": [
-                    [RISK.rsid, RISK.ref, RISK.alt, RISK.genotype]
-                ],
+                "curated_variants": [[RISK.rsid, RISK.ref, RISK.alt, RISK.genotype]],
             },
             "replay policy",
         ),
@@ -1080,9 +1094,7 @@ async def test_scoped_list_limit_validates_corrupt_graph_beyond_return_window(
                 "truncated": False,
                 "only_interpreted": False,
                 "variants": [["rs-prefix", "A", "G", "A/G"]],
-                "curated_variants": [
-                    [RISK.rsid, RISK.ref, RISK.alt, RISK.genotype]
-                ],
+                "curated_variants": [[RISK.rsid, RISK.ref, RISK.alt, RISK.genotype]],
             },
             "absent from retained",
         ),
@@ -1149,15 +1161,15 @@ def test_vcf_v2_raw_evidence_is_canonical(payload, message):
     raw = RawPayload(
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=variant_records._vcf_external_id(payload),
+        external_id=genetics_validation._vcf_external_id(payload),
         payload=payload,
     )
 
     with pytest.raises(
-        variant_records.GeneticsRawProvenanceError,
+        genetics_contracts.GeneticsRawProvenanceError,
         match=message,
     ):
-        variant_records._raw_normalization_variants(raw)
+        genetics_validation._raw_normalization_variants(raw)
 
 
 def test_vcf_v2_history_is_not_reinterpreted_as_malformed_after_catalog_change(
@@ -1174,16 +1186,12 @@ def test_vcf_v2_history_is_not_reinterpreted_as_malformed_after_catalog_change(
     raw = RawPayload(
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=variant_records._vcf_external_id(payload),
+        external_id=genetics_validation._vcf_external_id(payload),
         payload=payload,
     )
-    monkeypatch.delitem(variant_records.INTERPRETATIONS, RISK.rsid)
+    monkeypatch.delitem(genetics_vcf.INTERPRETATIONS, RISK.rsid)
 
-    assert variant_records._raw_normalization_variants(raw) == [RISK]
-
-
-
-
+    assert genetics_validation._raw_normalization_variants(raw) == [RISK]
 
 
 async def test_replay_propagates_current_fact_provenance_corruption(
@@ -1206,7 +1214,7 @@ async def test_replay_propagates_current_fact_provenance_corruption(
         actor_user_id=owner.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=variant_records._vcf_external_id(payload),
+        external_id=genetics_validation._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(raw)
@@ -1224,8 +1232,8 @@ async def test_replay_propagates_current_fact_provenance_corruption(
     system = WriteIdentity(owner.subject_id, None)
     prepared = await _prepared(db_session, system)
 
-    with pytest.raises(variant_records.GeneticsOwnershipError):
-        await variant_records.reparse_owned_pending(
+    with pytest.raises(genetics_contracts.GeneticsOwnershipError):
+        await genetics_reparse.reparse_owned_pending(
             db_session,
             identity=system,
             prepared_conflict_write=prepared,
@@ -1251,7 +1259,7 @@ async def test_replay_propagates_inner_conflict_scope_error(
         actor_user_id=owner.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=variant_records._vcf_external_id(payload),
+        external_id=genetics_validation._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(raw)
@@ -1272,7 +1280,7 @@ async def test_replay_propagates_inner_conflict_scope_error(
         engine.ConflictActorInactive,
         match="inactive actor",
     ):
-        await variant_records.reparse_owned_pending(
+        await genetics_reparse.reparse_owned_pending(
             db_session,
             identity=system,
             prepared_conflict_write=prepared,
@@ -1299,7 +1307,7 @@ async def test_replay_propagates_malformed_v2_evidence(
         actor_user_id=owner.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=variant_records._vcf_external_id(payload),
+        external_id=genetics_validation._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(raw)
@@ -1308,10 +1316,10 @@ async def test_replay_propagates_malformed_v2_evidence(
     prepared = await _prepared(db_session, system)
 
     with pytest.raises(
-        variant_records.GeneticsRawProvenanceError,
+        genetics_contracts.GeneticsRawProvenanceError,
         match="malformed variant evidence",
     ):
-        await variant_records.reparse_owned_pending(
+        await genetics_reparse.reparse_owned_pending(
             db_session,
             identity=system,
             prepared_conflict_write=prepared,
@@ -1351,8 +1359,8 @@ async def test_scoped_list_refreshes_preloaded_raw_provenance(
     )
     assert summary.raw.actor_user_id == identity.actor_user_id
 
-    with pytest.raises(variant_records.GeneticsRawProvenanceError, match="foreign"):
-        await variant_records.list_variants(
+    with pytest.raises(genetics_contracts.GeneticsRawProvenanceError, match="foreign"):
+        await genetics_queries.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -1400,7 +1408,7 @@ async def test_same_key_ingest_refreshes_raw_owner_before_mutation(
     assert summary.raw.actor_user_id == identity.actor_user_id
     assert variant.raw_payload_id == summary.raw.id
 
-    with pytest.raises(variant_records.GeneticsRawProvenanceError, match="foreign"):
+    with pytest.raises(genetics_contracts.GeneticsRawProvenanceError, match="foreign"):
         await _ingest(
             db_session,
             identity,
@@ -1440,7 +1448,7 @@ async def test_postgres_scoped_list_revalidates_page_after_preflight_change(
 
     preflight_validated = asyncio.Event()
     release_final_query = asyncio.Event()
-    original_validate = variant_records._validate_variant_graph
+    original_validate = genetics_validation._validate_variant_graph
     validation_attempts = 0
 
     async def validation_barrier(*args, **kwargs):
@@ -1454,14 +1462,14 @@ async def test_postgres_scoped_list_revalidates_page_after_preflight_change(
         return await original_validate(*args, **kwargs)
 
     monkeypatch.setattr(
-        variant_records,
+        genetics_queries,
         "_validate_variant_graph",
         validation_barrier,
     )
 
     async def read_page():
         async with factory() as session:
-            return await variant_records.list_variants(
+            return await genetics_queries.list_variants(
                 session,
                 subject_id=identity.subject_id,
                 limit=1,
@@ -1478,7 +1486,7 @@ async def test_postgres_scoped_list_revalidates_page_after_preflight_change(
         await writer.commit()
     release_final_query.set()
 
-    with pytest.raises(variant_records.GeneticsRawProvenanceError, match="foreign"):
+    with pytest.raises(genetics_contracts.GeneticsRawProvenanceError, match="foreign"):
         await asyncio.wait_for(reader, timeout=10)
     assert validation_attempts == 2
 
@@ -1500,7 +1508,7 @@ async def test_postgres_concurrent_same_subject_rsid_upserts_serialize(
 
     session_a = factory()
     prepared_a = await _prepared(session_a, identity)
-    await variant_records.upsert_by_rsid(
+    await genetics_writes.upsert_by_rsid(
         session_a,
         gene="HFE",
         rsid=RISK.rsid,
@@ -1514,7 +1522,7 @@ async def test_postgres_concurrent_same_subject_rsid_upserts_serialize(
         async with factory() as session_b:
             writer_b_attempted.set()
             prepared_b = await _prepared(session_b, identity)
-            await variant_records.upsert_by_rsid(
+            await genetics_writes.upsert_by_rsid(
                 session_b,
                 gene="HFE",
                 rsid=RISK.rsid,
@@ -1582,7 +1590,7 @@ async def test_postgres_legacy_write_holds_exact_one_governance_through_commit(
                 session,
                 context=context,
             )
-            await variant_records.upsert_by_rsid(
+            await genetics_writes.upsert_by_rsid(
                 session,
                 gene="HFE",
                 rsid=RISK.rsid,
@@ -1617,9 +1625,7 @@ async def test_postgres_legacy_write_holds_exact_one_governance_through_commit(
 
     async with factory() as verify:
         subjects = list(await verify.scalars(select(HealthSubject.id)))
-        row = await verify.scalar(
-            select(GeneticVariant).where(GeneticVariant.rsid == RISK.rsid)
-        )
+        row = await verify.scalar(select(GeneticVariant).where(GeneticVariant.rsid == RISK.rsid))
     assert len(subjects) == 2
     assert row is not None
     assert row.subject_id == legacy_owner_roots.subject_id
@@ -1661,7 +1667,7 @@ async def test_postgres_concurrent_owned_replay_claims_one_raw_exactly_once(
     first_replacement_started = asyncio.Event()
     release_first_replacement = asyncio.Event()
     worker_b_attempted = asyncio.Event()
-    original_replace = variant_records._replace_vcf_rows
+    original_replace = genetics_vcf_ingestion._replace_vcf_rows
     replacements = 0
 
     async def replacement_barrier(*args, **kwargs):
@@ -1672,14 +1678,19 @@ async def test_postgres_concurrent_owned_replay_claims_one_raw_exactly_once(
             await asyncio.wait_for(release_first_replacement.wait(), timeout=5)
         return await original_replace(*args, **kwargs)
 
-    monkeypatch.setattr(variant_records, "_replace_vcf_rows", replacement_barrier)
+    monkeypatch.setattr(genetics_reparse, "_replace_vcf_rows", replacement_barrier)
+    monkeypatch.setattr(
+        genetics_vcf_ingestion,
+        "_replace_vcf_rows",
+        replacement_barrier,
+    )
 
     async def worker(*, attempted: asyncio.Event | None = None) -> int:
         async with factory() as session:
             if attempted is not None:
                 attempted.set()
             prepared = await _prepared(session, system, legacy=True)
-            done = await variant_records.reparse_owned_pending(
+            done = await genetics_reparse.reparse_owned_pending(
                 session,
                 identity=system,
                 prepared_conflict_write=prepared,
@@ -1746,9 +1757,7 @@ async def test_postgres_newer_ingest_wins_race_with_older_pending_replay(
             "filename": "older-race.vcf",
             "truncated": False,
             "only_interpreted": False,
-            "variants": [
-                [REFERENCE.rsid, REFERENCE.ref, REFERENCE.alt, REFERENCE.genotype]
-            ],
+            "variants": [[REFERENCE.rsid, REFERENCE.ref, REFERENCE.alt, REFERENCE.genotype]],
         },
     )
     db_session.add(old_raw)
@@ -1759,17 +1768,14 @@ async def test_postgres_newer_ingest_wins_race_with_older_pending_replay(
     first_replacement_started = asyncio.Event()
     release_first_replacement = asyncio.Event()
     second_writer_attempted = asyncio.Event()
-    original_replace = variant_records._replace_vcf_rows
+    original_replace = genetics_vcf_ingestion._replace_vcf_rows
     paused = False
 
     async def replacement_barrier(*args, **kwargs):
         nonlocal paused
         raw = kwargs["raw"]
-        is_selected_first = (
-            first_writer == "replay" and raw.id == old_raw_id
-        ) or (
-            first_writer == "ingest"
-            and raw.payload.get("filename") == "newer-race.vcf"
+        is_selected_first = (first_writer == "replay" and raw.id == old_raw_id) or (
+            first_writer == "ingest" and raw.payload.get("filename") == "newer-race.vcf"
         )
         if is_selected_first and not paused:
             paused = True
@@ -1777,14 +1783,19 @@ async def test_postgres_newer_ingest_wins_race_with_older_pending_replay(
             await asyncio.wait_for(release_first_replacement.wait(), timeout=5)
         return await original_replace(*args, **kwargs)
 
-    monkeypatch.setattr(variant_records, "_replace_vcf_rows", replacement_barrier)
+    monkeypatch.setattr(genetics_reparse, "_replace_vcf_rows", replacement_barrier)
+    monkeypatch.setattr(
+        genetics_vcf_ingestion,
+        "_replace_vcf_rows",
+        replacement_barrier,
+    )
 
     async def replay(*, attempted: bool = False) -> int:
         async with factory() as session:
             if attempted:
                 second_writer_attempted.set()
             prepared = await _prepared(session, system, legacy=True)
-            done = await variant_records.reparse_owned_pending(
+            done = await genetics_reparse.reparse_owned_pending(
                 session,
                 identity=system,
                 prepared_conflict_write=prepared,

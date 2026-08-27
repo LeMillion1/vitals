@@ -175,7 +175,7 @@ def test_portability_import_receipt_is_nonportable_subject_control():
 
 
 def test_portability_exclusions_follow_the_registry_contract():
-    from vitals.services.data_portability_service import _EXCLUDED_TABLES
+    from vitals.services.portability.v1_contract import _EXCLUDED_TABLES
 
     expected = {
         table_name

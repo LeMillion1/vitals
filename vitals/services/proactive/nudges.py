@@ -20,6 +20,16 @@ recorded in the plan; the weekly digest is where the protocol gets discussed.
 """
 from __future__ import annotations
 
+from vitals.services.proactive.delivery import contracts as delivery_contracts
+from vitals.services.proactive.delivery import policy as delivery_policy
+from vitals.services.proactive.delivery import queries as delivery_queries
+from vitals.services.proactive.delivery import preparation as delivery_preparation
+from vitals.services.proactive.delivery import dispatch as delivery_dispatch
+from vitals.services.proactive.delivery import legacy as delivery_legacy
+
+from vitals.services.nutrition import analytics as nutrition_analytics
+from vitals.services.nutrition import queries as nutrition_queries
+
 import logging
 from dataclasses import dataclass
 from datetime import date as date_type, datetime, timedelta
@@ -29,7 +39,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.proactive import Notification
-from vitals.services.proactive import channels, delivery, prefs
+from vitals.services.proactive import channels
+from vitals.services.proactive.preferences import contracts as preference_contracts
+from vitals.services.proactive.preferences import legacy as preference_legacy
+from vitals.services.proactive.preferences import queries as preference_queries
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 from vitals.utils.timeutils import now_local
 
@@ -38,9 +51,9 @@ logger = logging.getLogger(__name__)
 # Categories = the toggles the settings card renders. They are defined
 # in ``prefs`` — a category is a setting first — and re-exported here so a nudge
 # spec reads as one thing.
-CATEGORY_ACTIVITY = prefs.CATEGORY_ACTIVITY
-CATEGORY_NUTRITION = prefs.CATEGORY_NUTRITION
-CATEGORY_DATA = prefs.CATEGORY_DATA
+CATEGORY_ACTIVITY = preference_contracts.CATEGORY_ACTIVITY
+CATEGORY_NUTRITION = preference_contracts.CATEGORY_NUTRITION
+CATEGORY_DATA = preference_contracts.CATEGORY_DATA
 
 # Below this the evening walk is a real suggestion; above it he's basically there
 # and a ping is noise. Not a настройка until it's ever wrong.
@@ -75,11 +88,18 @@ async def _steps_short(session: AsyncSession, ctx: dict) -> bool:
     left to do something about it. Depends on the light pulse (N3) for a step
     count that isn't hours stale.
     """
-    from vitals.services import garmin_service
+    from vitals.services.garmin import queries as garmin_queries
 
     if not 18 <= ctx["now"].hour < 22:
         return False
-    row = await garmin_service.get_daily(session, ctx["today"])
+    ownership = ctx.get("ownership")
+    if ownership is None:
+        return False
+    row = await garmin_queries.get_daily(
+        session,
+        ctx["today"],
+        subject_id=ownership.subject_id,
+    )
     steps = getattr(row, "steps", None)
     if not steps:  # no row, or a watch that hasn't synced a single step today
         return False
@@ -94,7 +114,7 @@ async def _protein_short(session: AsyncSession, ctx: dict) -> bool:
     dinner can fix it. Requires at least *something* logged: an empty log is a
     day he didn't track, and nagging about that is a different (unwanted) product.
     """
-    from vitals.services import nutrition_service
+
 
     if not 16 <= ctx["now"].hour < 21:
         return False
@@ -103,7 +123,7 @@ async def _protein_short(session: AsyncSession, ctx: dict) -> bool:
         # A protein nudge is about one person's day; without a subject there is
         # nobody to be behind on it.
         return False
-    meals = await nutrition_service.list_meals_for_date(
+    meals = await nutrition_queries.list_meals_for_date(
         session, ctx["today"], subject_id=ownership.subject_id
     )
     if not meals:
@@ -111,7 +131,7 @@ async def _protein_short(session: AsyncSession, ctx: dict) -> bool:
     eaten = sum(m.protein_g or 0 for m in meals)
     if not eaten:
         return False
-    goals = await nutrition_service.get_goals(
+    goals = await nutrition_analytics.get_goals(
         session, subject_id=ownership.subject_id
     )
     target = goals["protein_target_g"]
@@ -134,14 +154,14 @@ async def _garmin_silent(session: AsyncSession, ctx: dict) -> bool:
     episode's message could not have gone out that late, because by then
     ``latest_daily`` was already returning this newer row.
     """
-    from vitals.services import garmin_service
+    from vitals.services.garmin import queries as garmin_queries
 
     ownership = ctx.get("ownership")
     if ownership is None:
         # Whose watch went quiet? Without a subject the question has no answer,
         # and the newest row in the database is somebody else's evidence.
         return False
-    row = await garmin_service.latest_daily(
+    row = await garmin_queries.latest_daily(
         session, subject_id=ownership.subject_id, before_or_on=ctx["today"]
     )
     if row is None:
@@ -213,7 +233,7 @@ async def last_sent_at(
     )
     if ownership is not None:
         query = query.where(
-            delivery.notification_ownership_scope(
+            delivery_policy.notification_ownership_scope(
                 ownership,
                 connection_scoped=False,
             )
@@ -246,7 +266,7 @@ async def run(
         "ownership": ownership,
     }
     if ownership is None:
-        categories = (await prefs.get_pre_identity_legacy_prefs(session))[
+        categories = (await preference_legacy.get_pre_identity_legacy_prefs(session))[
             "nudges"
         ]
         enabled_categories = {
@@ -254,7 +274,7 @@ async def run(
         }
     else:
         enabled_categories = (
-            await prefs.get_subject_policy(
+            await preference_queries.get_subject_policy(
                 session,
                 subject_id=ownership.subject_id,
             )
@@ -266,7 +286,7 @@ async def run(
             continue
         policy_at = None
         if ownership is not None:
-            policy_at, subject_local_now = await delivery.delivery_policy_clock(
+            policy_at, subject_local_now = await delivery_queries.delivery_policy_clock(
                 session,
                 ownership=ownership,
                 now=now,
@@ -290,11 +310,11 @@ async def run(
             continue
 
         if ownership is None:
-            row = await delivery.send(
+            row = await delivery_legacy.send(
                 session,
                 notifier,
                 text=text,
-                category=delivery.CATEGORY_NUDGE,
+                category=delivery_contracts.CATEGORY_NUDGE,
                 dedupe_key=dedupe_key(spec.key, now),
                 now=now,
                 ownership=None,
@@ -304,17 +324,17 @@ async def run(
             continue
 
         assert policy_at is not None
-        policy_key = delivery.make_delivery_policy_key("nudge", spec.key)
+        policy_key = delivery_contracts.make_delivery_policy_key("nudge", spec.key)
         not_before = policy_at - timedelta(hours=spec.cooldown_h)
         episode_start = ctx.pop("garmin_episode_start", None)
         if spec.key == GARMIN_SILENT_KEY and episode_start is not None:
-            episode_at, _ = await delivery.delivery_policy_clock(
+            episode_at, _ = await delivery_queries.delivery_policy_clock(
                 session,
                 ownership=ownership,
                 now=datetime.combine(episode_start, datetime.min.time()),
             )
             not_before = min(not_before, episode_at)
-        claimed = await delivery.delivery_policy_claimed_since(
+        claimed = await delivery_queries.delivery_policy_claimed_since(
             session,
             policy_key=policy_key,
             not_before=not_before,
@@ -331,12 +351,12 @@ async def run(
         )
         subject_local_now = ctx["now"]
         legacy_key = dedupe_key(spec.key, subject_local_now)
-        prepared_delivery = await delivery.prepare_delivery_intent(
+        prepared_delivery = await delivery_preparation.prepare_delivery_intent(
             session,
             bound_notifier,
             text=text,
-            category=delivery.CATEGORY_NUDGE,
-            idempotency_key=delivery.make_delivery_idempotency_key(
+            category=delivery_contracts.CATEGORY_NUDGE,
+            idempotency_key=delivery_contracts.make_delivery_idempotency_key(
                 "nudge",
                 spec.key,
                 subject_local_now.date(),
@@ -351,7 +371,7 @@ async def run(
         if prepared_delivery is None:
             continue
 
-        dispatch_lease = await delivery.start_delivery_dispatch(
+        dispatch_lease = await delivery_dispatch.start_delivery_dispatch(
             session,
             prepared_delivery,
             now=policy_at,
@@ -361,10 +381,10 @@ async def run(
         if dispatch_lease is None:
             continue
 
-        completion = await delivery.dispatch_delivery(dispatch_lease)
+        completion = await delivery_dispatch.dispatch_delivery(dispatch_lease)
         for finalize_try in range(2):
             try:
-                row = await delivery.finalize_delivery(session, completion)
+                row = await delivery_dispatch.finalize_delivery(session, completion)
                 await session.commit()
                 if row is not None:
                     sent.append(row)
@@ -395,7 +415,7 @@ async def nudges_job(session_factory, redis=None, *, subject_id) -> None:
                 None,
                 ownership=ownership,
             )
-        except prefs.ProactivePreferencesNotConfiguredError:
+        except preference_contracts.ProactivePreferencesNotConfiguredError:
             # A newly provisioned subject opts into proactive delivery by
             # saving notification settings. Until then this is a no-op, not an
             # operational failure worth surfacing on their dashboard.

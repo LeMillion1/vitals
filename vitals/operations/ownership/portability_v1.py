@@ -106,7 +106,7 @@ from vitals.operations.ownership.weight_log import (
     reset_weight_log_ownership_backfill_for_portability_v1_restore,
 )
 from vitals.ownership_transition.portability_v1 import PortabilityV1OwnershipHooks
-from vitals.services import data_portability_service as _portability
+from vitals.services.portability import v1_contract, v1_import
 
 
 def _hooks() -> PortabilityV1OwnershipHooks:
@@ -218,11 +218,11 @@ def _hooks() -> PortabilityV1OwnershipHooks:
     )
 
 
-async def import_full(session: AsyncSession, payload: Any) -> _portability.ImportStats:
+async def import_full(session: AsyncSession, payload: Any) -> v1_contract.ImportStats:
     """Run the destructive full-v1 restore with explicit ownership operations."""
 
-    live_schema = await _portability._live_schema_columns(session)
-    return await _portability._import_full_with_ownership_hooks(
+    live_schema = await v1_contract._live_schema_columns(session)
+    return await v1_import._import_full_with_ownership_hooks(
         session,
         payload,
         hooks=_hooks(),

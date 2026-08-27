@@ -8,7 +8,7 @@ like a bug:
 
 * the visible half — the profile was being written into every patient's weekly
   digest, doctor's report and share link as though it were theirs.
-  ``digest_service`` has been omitting it since, which costs the owner five
+  the digest projection has been omitting it since, which costs the owner five
   fields and is a placeholder rather than an answer;
 * the quiet half — the Navy body-fat formula takes a height and a sex. Every
   patient's body-fat percentage and lean body mass were computed from the
@@ -35,6 +35,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -118,6 +119,14 @@ class HealthProfile:
 
 
 EMPTY_PROFILE = HealthProfile()
+
+
+@dataclass(frozen=True, slots=True)
+class HealthProfileProjection:
+    """Subject-scoped profile plus the subject-owned timezone."""
+
+    profile: HealthProfile
+    timezone: str | None
 
 
 def _optional_int(raw: Any, *, low: int, high: int) -> int | None:
@@ -224,6 +233,73 @@ async def get_profile(
     if raw is None:
         return EMPTY_PROFILE
     return sanitize(raw)
+
+
+async def get_profile_projection(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> HealthProfileProjection:
+    """Return the reusable identity/profile slice used by delivery adapters."""
+
+    subject_id = _require_subject_id(subject_id)
+    profile = await get_profile(session, subject_id=subject_id)
+    timezone = await session.scalar(
+        select(HealthSubject.timezone).where(HealthSubject.id == subject_id)
+    )
+    return HealthProfileProjection(profile=profile, timezone=timezone)
+
+
+async def get_subject_timezone(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> str | None:
+    """Read the subject-owned timezone without loading profile settings."""
+
+    subject_id = _require_subject_id(subject_id)
+    return await session.scalar(
+        select(HealthSubject.timezone).where(HealthSubject.id == subject_id)
+    )
+
+
+async def set_subject_timezone(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    timezone: str,
+) -> bool:
+    """Update one subject's durable timezone without owning the commit."""
+
+    subject_id = _require_subject_id(subject_id)
+    subject = await session.get(HealthSubject, subject_id)
+    if subject is None:
+        return False
+    subject.timezone = timezone
+    await session.flush()
+    return True
+
+
+async def set_subject_timezone_if_valid(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    timezone: str,
+) -> bool:
+    """Validate an IANA timezone and update it, or leave state unchanged."""
+
+    value = timezone.strip()
+    if not value:
+        return False
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        return False
+    return await set_subject_timezone(
+        session,
+        subject_id=subject_id,
+        timezone=value,
+    )
 
 
 async def set_profile(

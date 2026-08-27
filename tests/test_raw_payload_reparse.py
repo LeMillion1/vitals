@@ -17,15 +17,13 @@ from datetime import date
 from sqlalchemy import select
 
 from vitals.enums import Source
+from vitals.models.garmin import DOMAIN as GARMIN_DOMAIN
 from vitals.models.garmin import GarminActivity, GarminDaily
-from vitals.models.hevy import HevyWorkout
+from vitals.models.hevy import DOMAIN, HevyWorkout
 from vitals.models.raw_payload import RawPayload
-from vitals.services import (
-    garmin_service,
-    hevy_service,
-    raw_payload_service,
-)
-
+from vitals.services import raw_payload_service
+from vitals.services.garmin import raw_payloads as garmin_raw_payloads
+from vitals.services.hevy import raw_payloads as hevy_raw_payloads
 
 import pytest
 
@@ -63,7 +61,7 @@ def _has_hevy_child():
 # ── Generic sweep_domain behaviour ────────────────────────────────────────────
 async def test_sweep_domain_reparses_a_pending_row_with_no_normalized_child(db_session):
     raw = await _seed_raw(
-        db_session, domain=hevy_service.DOMAIN, source=Source.HEVY_API.value,
+        db_session, domain=DOMAIN, source=Source.HEVY_API.value,
         external_id="w-pending", payload={"ok": True},
     )
     calls = []
@@ -72,7 +70,7 @@ async def test_sweep_domain_reparses_a_pending_row_with_no_normalized_child(db_s
         calls.append(raw_row.id)
 
     done = await raw_payload_service.sweep_domain(
-        db_session, domain=hevy_service.DOMAIN, reparse=_reparse, has_normalized=_has_hevy_child(),
+        db_session, domain=DOMAIN, reparse=_reparse, has_normalized=_has_hevy_child(),
     )
     assert done == 1
     assert calls == [raw.id]
@@ -81,11 +79,11 @@ async def test_sweep_domain_reparses_a_pending_row_with_no_normalized_child(db_s
 
 async def test_sweep_domain_skips_a_row_that_already_has_a_normalized_child(db_session, *, hevy_connection_id, legacy_owner_roots):
     raw = await _seed_raw(
-        db_session, domain=hevy_service.DOMAIN, source=Source.HEVY_API.value,
+        db_session, domain=DOMAIN, source=Source.HEVY_API.value,
         external_id="w-done", payload={"ok": True},
     )
     db_session.add(HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id,
-        external_id="w-done", domain=hevy_service.DOMAIN, date=date(2026, 6, 10), raw_payload_id=raw.id,
+        external_id="w-done", domain=DOMAIN, date=date(2026, 6, 10), raw_payload_id=raw.id,
     ))
     await db_session.flush()
     calls = []
@@ -94,7 +92,7 @@ async def test_sweep_domain_skips_a_row_that_already_has_a_normalized_child(db_s
         calls.append(raw_row.id)
 
     done = await raw_payload_service.sweep_domain(
-        db_session, domain=hevy_service.DOMAIN, reparse=_reparse, has_normalized=_has_hevy_child(),
+        db_session, domain=DOMAIN, reparse=_reparse, has_normalized=_has_hevy_child(),
     )
     assert done == 0
     assert calls == []
@@ -103,11 +101,11 @@ async def test_sweep_domain_skips_a_row_that_already_has_a_normalized_child(db_s
 
 async def test_sweep_domain_one_failure_does_not_abort_the_batch(db_session):
     bad = await _seed_raw(
-        db_session, domain=hevy_service.DOMAIN, source=Source.HEVY_API.value,
+        db_session, domain=DOMAIN, source=Source.HEVY_API.value,
         external_id="w-bad", payload={"ok": True},
     )
     good = await _seed_raw(
-        db_session, domain=hevy_service.DOMAIN, source=Source.HEVY_API.value,
+        db_session, domain=DOMAIN, source=Source.HEVY_API.value,
         external_id="w-good", payload={"ok": True},
     )
 
@@ -116,7 +114,7 @@ async def test_sweep_domain_one_failure_does_not_abort_the_batch(db_session):
             raise ValueError("boom")
 
     done = await raw_payload_service.sweep_domain(
-        db_session, domain=hevy_service.DOMAIN, reparse=_reparse, has_normalized=_has_hevy_child(),
+        db_session, domain=DOMAIN, reparse=_reparse, has_normalized=_has_hevy_child(),
     )
     assert done == 1
     assert bad.processed_at is None  # left pending for the next sweep
@@ -128,17 +126,17 @@ async def test_garmin_reparse_pending_recovers_daily_and_activity(db_session, *,
     """Garmin is the one domain with two models under an ``or_`` — exercise both
     the ``daily:``/``activity:`` dispatch branches in reparse_from_raw."""
     daily_raw = await _seed_raw(
-        db_session, domain=garmin_service.DOMAIN, source=Source.GARMIN_API.value,
+        db_session, domain=GARMIN_DOMAIN, source=Source.GARMIN_API.value,
         roots=garmin_owned_scope,
         external_id="daily:2026-06-10", payload={"summary": {"totalSteps": 4000}},
     )
     activity_raw = await _seed_raw(
-        db_session, domain=garmin_service.DOMAIN, source=Source.GARMIN_API.value,
+        db_session, domain=GARMIN_DOMAIN, source=Source.GARMIN_API.value,
         roots=garmin_owned_scope,
         external_id="activity:act1", payload={"activityId": "act1", "activityName": "Run"},
     )
 
-    done = await garmin_service.reparse_owned_pending(db_session, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    done = await garmin_raw_payloads.reparse_owned_pending(db_session, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     assert done == 2
 
     daily = (await db_session.execute(
@@ -154,7 +152,7 @@ async def test_garmin_reparse_pending_recovers_daily_and_activity(db_session, *,
 
 async def test_hevy_reparse_pending_recovers_pending_workout(db_session, *, hevy_owned_scope):
     raw = await _seed_raw(
-        db_session, domain=hevy_service.DOMAIN, source=Source.HEVY_API.value,
+        db_session, domain=DOMAIN, source=Source.HEVY_API.value,
         roots=hevy_owned_scope,
         external_id="w-reparse",
         payload={
@@ -162,7 +160,7 @@ async def test_hevy_reparse_pending_recovers_pending_workout(db_session, *, hevy
             "updated_at": "2026-06-10T11:00:00Z", "exercises": [],
         },
     )
-    done = await hevy_service.reparse_owned_pending(db_session, identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
+    done = await hevy_raw_payloads.reparse_owned_pending(db_session, identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     assert done == 1
 
     workout = (await db_session.execute(

@@ -19,11 +19,13 @@ from vitals.models.garmin import (
     SERIES_STRESS,
     SLEEP_SERIES_TYPES,
 )
-from vitals.services import (
-    garmin_service,
-    legacy_subject_alerts,
-)
+from vitals.services import legacy_subject_alerts
 from vitals.services.credentials import providers
+from vitals.services.garmin import advice as garmin_advice
+from vitals.services.garmin import ingestion as garmin_ingestion
+from vitals.services.garmin import queries as garmin_queries
+from vitals.services.garmin import sync as garmin_sync
+from vitals.services.garmin.errors import GarminConnectionInactiveError
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
@@ -49,23 +51,31 @@ async def garmin_dashboard(
         actor_username=username,
         required_connections=tuple(IntegrationProvider),
     )
-    latest = await garmin_service.latest_daily(db, subject_id=ownership.subject_id)
-    history = await garmin_service.list_daily(db, limit=30)
+    latest = await garmin_queries.latest_daily(db, subject_id=ownership.subject_id)
+    history = await garmin_queries.list_daily(
+        db,
+        subject_id=ownership.subject_id,
+        limit=30,
+    )
     # The latest day's stress / Body Battery / heart-rate curves (empty dict on a
     # day that has only day-level scalars — the template then hides the chart
     # card). Asked for by name: the same date also holds the night's ~2k samples,
     # which belong to the sleep page and would otherwise ride along for nothing.
     intraday = (
-        await garmin_service.intraday_series_map(
+        await garmin_queries.intraday_series_map(
             db,
             latest.date,
+            subject_id=ownership.subject_id,
             series_types=(SERIES_STRESS, SERIES_BODY_BATTERY, SERIES_HEART_RATE),
         )
         if latest
         else {}
     )
-    count = await garmin_service.daily_count(db)
-    advice = garmin_service.recovery_advice(latest)
+    count = await garmin_queries.daily_count(
+        db,
+        subject_id=ownership.subject_id,
+    )
+    advice = garmin_advice.recovery_advice(latest)
     alerts = await legacy_subject_alerts.list_active(
         db,
         ownership=ownership,
@@ -129,7 +139,15 @@ async def sleep_list(
 ):
     """The Sleep tab: recent nights (days with a recorded sleep session), newest
     first, and the latest one singled out for a highlighted summary."""
-    nights = await garmin_service.list_nights(db, limit=60)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    nights = await garmin_queries.list_nights(
+        db,
+        subject_id=ownership.subject_id,
+        limit=60,
+    )
     return templates.TemplateResponse(
         request,
         "garmin/sleep_list.html",
@@ -156,14 +174,29 @@ async def sleep_night(
 
     ``on_date`` is the date of the daily row, i.e. the morning you woke up; the
     samples themselves start the previous evening."""
-    daily = await garmin_service.get_daily(db, on_date)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    daily = await garmin_queries.get_daily(
+        db,
+        on_date,
+        subject_id=ownership.subject_id,
+    )
     if daily is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such day")
 
-    series = await garmin_service.intraday_series_map(
-        db, on_date, series_types=SLEEP_SERIES_TYPES
+    series = await garmin_queries.intraday_series_map(
+        db,
+        on_date,
+        subject_id=ownership.subject_id,
+        series_types=SLEEP_SERIES_TYPES,
     )
-    prev_date, next_date = await garmin_service.adjacent_night_dates(db, on_date)
+    prev_date, next_date = await garmin_queries.adjacent_night_dates(
+        db,
+        on_date,
+        subject_id=ownership.subject_id,
+    )
     return templates.TemplateResponse(
         request,
         "garmin/sleep.html",
@@ -185,7 +218,15 @@ async def activities_list(
     username: str = Depends(require_auth),
 ):
     """The Workouts tab: recorded sport activities, full width."""
-    activities = await garmin_service.list_activities(db, limit=20)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    activities = await garmin_queries.list_activities(
+        db,
+        subject_id=ownership.subject_id,
+        limit=20,
+    )
     return templates.TemplateResponse(
         request,
         "garmin/activities.html",
@@ -220,7 +261,7 @@ async def sync_now(
         return _redirect(request, "?sync=not_configured")
     client = GarminClient.from_config(account.config, redis)
     try:
-        summary = await garmin_service.sync_owned(
+        summary = await garmin_sync.sync_owned(
             db,
             client,
             identity=ownership.owner_action(),
@@ -228,7 +269,7 @@ async def sync_now(
                 IntegrationProvider.GARMIN
             ),
         )
-    except garmin_service.GarminConnectionInactiveError:
+    except GarminConnectionInactiveError:
         await db.rollback()
         return _redirect(request, "?sync=not_configured")
     await db.commit()
@@ -273,7 +314,7 @@ async def import_health_auto_export(
         actor_username=username,
         required_connections=(IntegrationProvider.GARMIN,),
     )
-    result = await garmin_service.ingest_owned_health_auto_export(
+    result = await garmin_ingestion.ingest_owned_health_auto_export(
         db,
         payload,
         identity=ownership.owner_action(),

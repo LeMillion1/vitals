@@ -11,6 +11,9 @@ must remain disabled while the fully-unowned bridge and global alert unique exis
 
 from __future__ import annotations
 
+from vitals.services.alerts import contracts as alerts_service_contracts
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -25,8 +28,7 @@ from vitals.enums import (
 from vitals.models.identity import HealthSubject
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services import alerts_service
-from vitals.services.alerts_service import (
+from vitals.services.alerts.contracts import (
     HealthAlertContext,
     LegacyAlertBridge,
     ProviderAlertContext,
@@ -113,7 +115,7 @@ def _validate_current_connection(
         raise LegacySubjectAlertsConnectionError(
             "an authoritative current connection has the wrong provider"
         )
-    expected_type = alerts_service.PROVIDER_ALERT_CONNECTION_TYPES[provider]
+    expected_type = alerts_service_contracts.PROVIDER_ALERT_CONNECTION_TYPES[provider]
     if row.connection_type != expected_type.value:
         raise LegacySubjectAlertsConnectionError(
             "an authoritative current connection has the wrong type"
@@ -171,7 +173,7 @@ async def _aggregate_scopes(
             ownership=ownership,
             provider=provider,
         )
-        expected_type = alerts_service.PROVIDER_ALERT_CONNECTION_TYPES[provider]
+        expected_type = alerts_service_contracts.PROVIDER_ALERT_CONNECTION_TYPES[provider]
         compatible = [
             row
             for row in rows
@@ -245,7 +247,7 @@ async def list_active(
 
     scopes = await _aggregate_scopes(session, ownership)
     rows = list(
-        await alerts_service.list_active_scoped(
+        await alerts_service_lifecycle.list_active_scoped(
             session,
             context=scopes.health,
             domain=domain,
@@ -254,7 +256,7 @@ async def list_active(
     )
     for scope in scopes.providers:
         rows.extend(
-            await alerts_service.list_active_scoped(
+            await alerts_service_lifecycle.list_active_scoped(
                 session,
                 context=scope.context,
                 domain=domain,
@@ -273,7 +275,7 @@ async def resolve(
     """Resolve one visible alert; missing, foreign, and platform IDs return None."""
 
     scopes = await _aggregate_scopes(session, ownership)
-    row = await alerts_service.resolve_scoped_alert(
+    row = await alerts_service_lifecycle.resolve_scoped_alert(
         session,
         alert_id,
         context=scopes.health,
@@ -282,7 +284,7 @@ async def resolve(
     if row is not None:
         return row
     for scope in scopes.providers:
-        row = await alerts_service.resolve_scoped_alert(
+        row = await alerts_service_lifecycle.resolve_scoped_alert(
             session,
             alert_id,
             context=scope.context,
@@ -302,7 +304,7 @@ async def override(
     """Override one owner-visible alert; system contexts remain human-ineligible."""
 
     scopes = await _aggregate_scopes(session, ownership)
-    row = await alerts_service.override_scoped_alert(
+    row = await alerts_service_lifecycle.override_scoped_alert(
         session,
         alert_id,
         context=scopes.health,
@@ -311,7 +313,7 @@ async def override(
     if row is not None:
         return row
     for scope in scopes.providers:
-        row = await alerts_service.override_scoped_alert(
+        row = await alerts_service_lifecycle.override_scoped_alert(
             session,
             alert_id,
             context=scope.context,
@@ -331,14 +333,14 @@ async def resolve_all(
     """Resolve visible health/provider alerts, optionally in one exact domain."""
 
     scopes = await _aggregate_scopes(session, ownership)
-    changed = await alerts_service.resolve_all_scoped(
+    changed = await alerts_service_lifecycle.resolve_all_scoped(
         session,
         context=scopes.health,
         domain=domain,
         legacy_bridge=LegacyAlertBridge.FULLY_UNOWNED,
     )
     for scope in scopes.providers:
-        changed += await alerts_service.resolve_all_scoped(
+        changed += await alerts_service_lifecycle.resolve_all_scoped(
             session,
             context=scope.context,
             domain=domain,

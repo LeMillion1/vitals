@@ -1,6 +1,19 @@
 """WeeklyDigest consumer contract for the platform-funded AI gateway."""
 from __future__ import annotations
 
+from vitals.services.ai_gateway import config as gateway_config
+from vitals.services.ai_gateway import contracts as gateway_contracts
+from vitals.services.ai_gateway import dispatch as gateway_dispatch
+from vitals.services.ai_gateway import invocations as gateway_invocations
+from vitals.services.ai_gateway import jobs as gateway_jobs
+from vitals.services.ai_gateway import reconciliation as gateway_reconciliation
+
+from vitals.services.digest import ownership as digest_ownership
+from vitals.services.digest import generation as digest_generation
+from vitals.services.digest import queries as digest_queries
+from vitals.services.digest import prompt as digest_prompt
+from vitals.services.digest import jobs as digest_jobs
+
 from tests.job_runner import run_job_for_every_subject
 
 import asyncio
@@ -38,12 +51,8 @@ from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.tenancy import PlatformIntegrationConnection
 from vitals.operations.ownership.portability_v1 import import_full
 from vitals.ownership import OWNERSHIP_REGISTRY
-from vitals.services import ai_gateway_service as gateway
-from vitals.services import digest_service
-from vitals.services.data_portability_service import (
-    _EXCLUDED_TABLES,
-    export_full,
-)
+from vitals.services.portability.v1_contract import _EXCLUDED_TABLES
+from vitals.services.portability.v1_export import export_full
 from vitals.services.legacy_ownership import LegacyOwnershipError
 from web.config import get_web_config
 
@@ -58,7 +67,14 @@ SENSITIVE_MARKER = "synthetic-sensitive-health-context"
 
 @pytest.fixture(autouse=True)
 def _fixed_gateway_clock(monkeypatch):
-    monkeypatch.setattr(gateway, "now_utc", lambda: NOW)
+    for module in (
+        gateway_config,
+        gateway_dispatch,
+        gateway_invocations,
+        gateway_jobs,
+        gateway_reconciliation,
+    ):
+        monkeypatch.setattr(module, "now_utc", lambda: NOW)
 
 
 async def _configure_platform(
@@ -119,12 +135,13 @@ def _install_fake_llm(
         openrouter_api_key=runtime_secret,
         llm_model_digest=MODEL,
     )
-    monkeypatch.setattr(digest_service, "load_config", lambda: base_config)
+    monkeypatch.setattr(digest_ownership, "load_config", lambda: base_config)
+    monkeypatch.setattr(digest_generation, "load_config", lambda: base_config)
 
     async def synthetic_context(*_args, **_kwargs):
         return {"synthetic": SENSITIVE_MARKER}
 
-    monkeypatch.setattr(digest_service, "assemble_context", synthetic_context)
+    monkeypatch.setattr(digest_ownership, "assemble_context", synthetic_context)
     observations = {
         "calls": 0,
         "no_transaction": [],
@@ -168,7 +185,7 @@ def _install_fake_llm(
                 cost_microunits=None if behavior == "missing_usage" else 56,
             )
 
-    monkeypatch.setattr(digest_service, "LLMClient", FakeLLMClient)
+    monkeypatch.setattr(digest_generation, "LLMClient", FakeLLMClient)
     return observations
 
 
@@ -179,7 +196,7 @@ def _actor_username(source: AIInvocationSource) -> str | None:
 
 
 async def _prepare_and_commit(session, source: AIInvocationSource):
-    prepared = await digest_service.prepare_digest(
+    prepared = await digest_ownership.prepare_digest(
         session,
         actor_username=_actor_username(source),
         invocation_source=source,
@@ -190,7 +207,7 @@ async def _prepare_and_commit(session, source: AIInvocationSource):
 
 
 async def _start_and_commit(session, prepared):
-    lease = await digest_service.start_digest_dispatch(
+    lease = await digest_generation.start_digest_dispatch(
         session,
         prepared,
         credential_resolver=lambda reference: (
@@ -230,13 +247,13 @@ async def test_full_gateway_flow_maps_source_actor_and_persists_exact_provenance
     assert SECRET not in repr(lease)
     with pytest.raises(TypeError):
         pickle.dumps(lease)
-    completion = await digest_service.render_digest(prepared, lease)
+    completion = await digest_generation.render_digest(prepared, lease)
     assert SENSITIVE_MARKER not in repr(completion)
     assert "Synthetic weekly narrative" not in repr(completion)
     with pytest.raises(TypeError):
         pickle.dumps(completion)
 
-    row = await digest_service.persist_digest(db_session, prepared, completion)
+    row = await digest_generation.persist_digest(db_session, prepared, completion)
     assert row is not None
     await db_session.commit()
     assert completion.payload is None
@@ -245,7 +262,7 @@ async def test_full_gateway_flow_maps_source_actor_and_persists_exact_provenance
         "no_transaction": [True],
         "credential_matches": [True],
         "models": [MODEL],
-        "max_tokens": [digest_service._DIGEST_MAX_TOKENS],
+        "max_tokens": [digest_ownership._DIGEST_MAX_TOKENS],
     }
 
     invocation = await db_session.get(AIInvocation, prepared.invocation_id)
@@ -306,11 +323,11 @@ async def test_invalid_or_failed_provider_call_is_once_sanitized_and_fully_charg
     )
     prepared = await _prepare_and_commit(db_session, AIInvocationSource.WEB)
     lease = await _start_and_commit(db_session, prepared)
-    completion = await digest_service.render_digest(prepared, lease)
+    completion = await digest_generation.render_digest(prepared, lease)
     assert completion.status is expected_status
     assert completion.error_code is expected_error
     assert "sensitive provider failure" not in repr(completion)
-    assert await digest_service.persist_digest(
+    assert await digest_generation.persist_digest(
         db_session, prepared, completion
     ) is None
     await db_session.commit()
@@ -336,13 +353,13 @@ async def test_finalize_and_artifact_rollback_can_retry_once(
     _install_fake_llm(monkeypatch, db_session)
     prepared = await _prepare_and_commit(db_session, AIInvocationSource.WEB)
     lease = await _start_and_commit(db_session, prepared)
-    completion = await digest_service.render_digest(prepared, lease)
+    completion = await digest_generation.render_digest(prepared, lease)
 
-    first = await digest_service.persist_digest(db_session, prepared, completion)
+    first = await digest_generation.persist_digest(db_session, prepared, completion)
     assert first is not None
     await db_session.rollback()
     assert completion.payload is not None
-    retried = await digest_service.persist_digest(db_session, prepared, completion)
+    retried = await digest_generation.persist_digest(db_session, prepared, completion)
     assert retried is not None
     await db_session.commit()
     assert completion.payload is None
@@ -360,8 +377,8 @@ async def test_deterministic_terminal_duplicate_reuses_existing_artifact_no_netw
     observations = _install_fake_llm(monkeypatch, db_session)
     first = await _prepare_and_commit(db_session, AIInvocationSource.WEB)
     lease = await _start_and_commit(db_session, first)
-    completion = await digest_service.render_digest(first, lease)
-    artifact = await digest_service.persist_digest(db_session, first, completion)
+    completion = await digest_generation.render_digest(first, lease)
+    artifact = await digest_generation.persist_digest(db_session, first, completion)
     assert artifact is not None
     await db_session.commit()
 
@@ -377,18 +394,18 @@ async def test_deterministic_terminal_duplicate_reuses_existing_artifact_no_netw
         resolver_calls += 1
         return SECRET
 
-    with pytest.raises(digest_service.DigestInvocationStateError):
-        await digest_service.start_digest_dispatch(
+    with pytest.raises(digest_ownership.DigestInvocationStateError):
+        await digest_generation.start_digest_dispatch(
             db_session,
             duplicate,
             credential_resolver=resolver,
         )
     await db_session.rollback()
-    owner = await digest_service.prepare_digest_owner(
+    owner = await digest_ownership.prepare_digest_owner(
         db_session,
         actor_username=get_web_config().auth_username,
     )
-    existing = await digest_service.existing_digest_for_prepared(
+    existing = await digest_generation.existing_digest_for_prepared(
         db_session,
         duplicate,
         prepared_owner=owner,
@@ -413,8 +430,8 @@ async def test_succeeded_product_reuses_artifact_after_root_and_context_change(
     observations = _install_fake_llm(monkeypatch, db_session)
     first = await _prepare_and_commit(db_session, AIInvocationSource.WEB)
     lease = await _start_and_commit(db_session, first)
-    completion = await digest_service.render_digest(first, lease)
-    artifact = await digest_service.persist_digest(db_session, first, completion)
+    completion = await digest_generation.render_digest(first, lease)
+    artifact = await digest_generation.persist_digest(db_session, first, completion)
     assert artifact is not None
     await db_session.commit()
 
@@ -438,7 +455,7 @@ async def test_succeeded_product_reuses_artifact_after_root_and_context_change(
     async def larger_context(*_args, **_kwargs):
         return {"synthetic": SENSITIVE_MARKER * 20}
 
-    monkeypatch.setattr(digest_service, "assemble_context", larger_context)
+    monkeypatch.setattr(digest_ownership, "assemble_context", larger_context)
     duplicate = await _prepare_and_commit(db_session, AIInvocationSource.WEB)
     assert duplicate.invocation_id == first.invocation_id
     assert duplicate.reservation_status is AIInvocationStatus.SUCCEEDED
@@ -483,7 +500,7 @@ async def test_dispatching_product_stays_pending_after_root_and_context_change(
     async def larger_context(*_args, **_kwargs):
         return {"synthetic": SENSITIVE_MARKER * 20}
 
-    monkeypatch.setattr(digest_service, "assemble_context", larger_context)
+    monkeypatch.setattr(digest_ownership, "assemble_context", larger_context)
     duplicate = await _prepare_and_commit(db_session, AIInvocationSource.WEB)
     assert duplicate.invocation_id == first.invocation_id
     assert duplicate.reservation_status is AIInvocationStatus.DISPATCHING
@@ -507,7 +524,7 @@ async def test_changed_prepared_fingerprint_releases_old_reservation_first(
     async def larger_context(*_args, **_kwargs):
         return {"synthetic": SENSITIVE_MARKER * 20}
 
-    monkeypatch.setattr(digest_service, "assemble_context", larger_context)
+    monkeypatch.setattr(digest_ownership, "assemble_context", larger_context)
     replacement = await _prepare_and_commit(db_session, AIInvocationSource.WEB)
     assert replacement.attempt == 1
     assert replacement.invocation_id != first.invocation_id
@@ -547,8 +564,8 @@ async def test_terminal_failure_advances_to_one_new_bounded_attempt(
     )
     failed = await _prepare_and_commit(db_session, AIInvocationSource.WEB)
     failed_lease = await _start_and_commit(db_session, failed)
-    failed_completion = await digest_service.render_digest(failed, failed_lease)
-    assert await digest_service.persist_digest(
+    failed_completion = await digest_generation.render_digest(failed, failed_lease)
+    assert await digest_generation.persist_digest(
         db_session,
         failed,
         failed_completion,
@@ -563,8 +580,8 @@ async def test_terminal_failure_advances_to_one_new_bounded_attempt(
     assert retried.invocation_id != failed.invocation_id
     assert retried.dispatchable is True
     lease = await _start_and_commit(db_session, retried)
-    completion = await digest_service.render_digest(retried, lease)
-    artifact = await digest_service.persist_digest(
+    completion = await digest_generation.render_digest(retried, lease)
+    artifact = await digest_generation.persist_digest(
         db_session,
         retried,
         completion,
@@ -606,14 +623,14 @@ async def test_rotated_root_start_failure_releases_old_reservation_and_retries(
     )
     await db_session.commit()
 
-    with pytest.raises(gateway.AIGatewayConfigurationError):
-        await digest_service.start_digest_dispatch(
+    with pytest.raises(gateway_contracts.AIGatewayConfigurationError):
+        await digest_generation.start_digest_dispatch(
             db_session,
             prepared,
             credential_resolver=lambda _reference: SECRET,
         )
     await db_session.rollback()
-    assert await digest_service.release_prepared_digest(db_session, prepared)
+    assert await digest_generation.release_prepared_digest(db_session, prepared)
     await db_session.commit()
     cancelled = await db_session.get(AIInvocation, prepared.invocation_id)
     assert cancelled is not None
@@ -636,10 +653,10 @@ async def test_platform_reconciliation_job_releases_stale_prepared_reservation(
     prepared = await _prepare_and_commit(db_session, AIInvocationSource.WEB)
     invocation = await db_session.get(AIInvocation, prepared.invocation_id)
     assert invocation is not None
-    invocation.created_at = NOW - gateway.PREPARED_STALE_AFTER - timedelta(seconds=1)
+    invocation.created_at = NOW - gateway_contracts.PREPARED_STALE_AFTER - timedelta(seconds=1)
     await db_session.commit()
 
-    await gateway.reconciliation_job(session_factory)
+    await gateway_jobs.reconciliation_job(session_factory)
     await db_session.refresh(invocation)
     assert invocation.status == AIInvocationStatus.CANCELLED.value
     platform = await db_session.get(
@@ -688,12 +705,12 @@ async def test_authorization_or_configuration_failure_has_zero_network(
 
     with pytest.raises(
         (
-            digest_service.DigestOwnershipError,
-            gateway.AIGatewayError,
+            digest_ownership.DigestOwnershipError,
+            gateway_contracts.AIGatewayError,
             LegacyOwnershipError,
         )
     ):
-        await digest_service.prepare_digest(
+        await digest_ownership.prepare_digest(
             db_session,
             actor_username=get_web_config().auth_username,
             invocation_source=AIInvocationSource.WEB,
@@ -713,7 +730,7 @@ async def test_reservation_formula_is_bounded_and_low_budget_fails_before_networ
 ):
     await _configure_platform(db_session, legacy_owner_roots)
     observations = _install_fake_llm(monkeypatch, db_session)
-    prepared = await digest_service.prepare_digest(
+    prepared = await digest_ownership.prepare_digest(
         db_session,
         actor_username=get_web_config().auth_username,
         invocation_source=AIInvocationSource.WEB,
@@ -722,22 +739,22 @@ async def test_reservation_formula_is_bounded_and_low_budget_fails_before_networ
     invocation = await db_session.get(AIInvocation, prepared.invocation_id)
     assert invocation is not None
     system = (
-        digest_service.DIGEST_SYSTEM_EN
+        digest_prompt.DIGEST_SYSTEM_EN
         if prepared._lang == "en"
-        else digest_service.DIGEST_SYSTEM
+        else digest_prompt.DIGEST_SYSTEM
     )
     expected_units = (
         len(
             (system + "\n" + prepared._prompt).encode("utf-8")
         )
-        + digest_service._DIGEST_MAX_TOKENS
-        + digest_service._DIGEST_RESERVATION_OVERHEAD_UNITS
+        + digest_ownership._DIGEST_MAX_TOKENS
+        + digest_ownership._DIGEST_RESERVATION_OVERHEAD_UNITS
     )
     assert invocation.reserved_units == expected_units
-    assert 0 < invocation.reserved_units <= gateway.MAX_SIGNED_BIGINT
+    assert 0 < invocation.reserved_units <= gateway_contracts.MAX_SIGNED_BIGINT
     assert (
         invocation.reserved_cost_microunits
-        == digest_service._DIGEST_RESERVED_COST_MICROUNITS
+        == digest_ownership._DIGEST_RESERVED_COST_MICROUNITS
     )
     await db_session.rollback()
     platform = await db_session.get(
@@ -750,14 +767,14 @@ async def test_reservation_formula_is_bounded_and_low_budget_fails_before_networ
     )
     assert platform is not None and subject is not None
     platform.cost_limit_microunits = (
-        digest_service._DIGEST_RESERVED_COST_MICROUNITS - 1
+        digest_ownership._DIGEST_RESERVED_COST_MICROUNITS - 1
     )
     subject.cost_limit_microunits = (
-        digest_service._DIGEST_RESERVED_COST_MICROUNITS - 1
+        digest_ownership._DIGEST_RESERVED_COST_MICROUNITS - 1
     )
     await db_session.commit()
-    with pytest.raises(gateway.AIQuotaExceededError):
-        await digest_service.prepare_digest(
+    with pytest.raises(gateway_contracts.AIQuotaExceededError):
+        await digest_ownership.prepare_digest(
             db_session,
             actor_username=get_web_config().auth_username,
             invocation_source=AIInvocationSource.WEB,
@@ -775,7 +792,7 @@ async def test_cancel_prepared_digest_releases_both_ledgers(
     await _configure_platform(db_session, legacy_owner_roots)
     observations = _install_fake_llm(monkeypatch, db_session)
     prepared = await _prepare_and_commit(db_session, AIInvocationSource.WEB)
-    invocation = await digest_service.cancel_prepared_digest(db_session, prepared)
+    invocation = await digest_generation.cancel_prepared_digest(db_session, prepared)
     assert invocation.status == AIInvocationStatus.CANCELLED.value
     await db_session.commit()
     platform = await db_session.get(
@@ -840,16 +857,16 @@ async def test_legacy_subject_connection_and_platform_invocation_rows_validate_t
     _install_fake_llm(monkeypatch, db_session)
     prepared = await _prepare_and_commit(db_session, AIInvocationSource.WEB)
     lease = await _start_and_commit(db_session, prepared)
-    completion = await digest_service.render_digest(prepared, lease)
-    new_row = await digest_service.persist_digest(db_session, prepared, completion)
+    completion = await digest_generation.render_digest(prepared, lease)
+    new_row = await digest_generation.persist_digest(db_session, prepared, completion)
     assert new_row is not None
     await db_session.commit()
 
-    owner = await digest_service.prepare_digest_owner(
+    owner = await digest_ownership.prepare_digest_owner(
         db_session,
         actor_username=get_web_config().auth_username,
     )
-    rows = await digest_service.list_digests(
+    rows = await digest_queries.list_digests(
         db_session,
         prepared_owner=owner,
     )
@@ -874,7 +891,7 @@ async def test_web_mcp_and_scheduler_boundaries_use_platform_gateway_phases(
         db_session,
         runtime_secret=SECRET,
     )
-    monkeypatch.setattr(digest_service, "today_local", lambda: DAY)
+    monkeypatch.setattr(digest_ownership, "today_local", lambda: DAY)
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
     response = await reports_router.generate_digest_now(
@@ -891,7 +908,7 @@ async def test_web_mcp_and_scheduler_boundaries_use_platform_gateway_phases(
     assert mcp_result["content"] == "Synthetic weekly narrative"
     assert "ai_invocation_id" not in mcp_result
 
-    await run_job_for_every_subject(digest_service.digest_job, session_factory)
+    await run_job_for_every_subject(digest_jobs.digest_job, session_factory)
     rows = list(
         await db_session.scalars(
             select(WeeklyDigest).order_by(WeeklyDigest.id)
@@ -932,8 +949,8 @@ async def test_backup_v1_preserves_ai_digests_in_place_and_never_exports_links(
     _install_fake_llm(monkeypatch, db_session)
     prepared = await _prepare_and_commit(db_session, AIInvocationSource.WEB)
     lease = await _start_and_commit(db_session, prepared)
-    completion = await digest_service.render_digest(prepared, lease)
-    artifact = await digest_service.persist_digest(
+    completion = await digest_generation.render_digest(prepared, lease)
+    artifact = await digest_generation.persist_digest(
         db_session,
         prepared,
         completion,
@@ -974,26 +991,26 @@ async def test_postgres_concurrent_consumer_start_issues_one_lease_and_artifact(
     async def contender():
         async with factory() as session:
             try:
-                lease = await digest_service.start_digest_dispatch(
+                lease = await digest_generation.start_digest_dispatch(
                     session,
                     prepared,
                     credential_resolver=lambda _reference: SECRET,
                 )
                 await session.commit()
                 return lease
-            except gateway.AIInvocationStateError as exc:
+            except gateway_contracts.AIInvocationStateError as exc:
                 await session.rollback()
                 return exc
 
     outcomes = await asyncio.gather(contender(), contender())
-    leases = [item for item in outcomes if isinstance(item, gateway.AIDispatchLease)]
+    leases = [item for item in outcomes if isinstance(item, gateway_contracts.AIDispatchLease)]
     assert len(leases) == 1
     assert sum(
-        isinstance(item, gateway.AIInvocationStateError) for item in outcomes
+        isinstance(item, gateway_contracts.AIInvocationStateError) for item in outcomes
     ) == 1
-    completion = await digest_service.render_digest(prepared, leases[0])
+    completion = await digest_generation.render_digest(prepared, leases[0])
     async with factory() as session:
-        artifact = await digest_service.persist_digest(
+        artifact = await digest_generation.persist_digest(
             session,
             prepared,
             completion,

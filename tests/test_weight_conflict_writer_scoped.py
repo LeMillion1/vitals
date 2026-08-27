@@ -30,8 +30,12 @@ from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import weight_service
+from vitals.services import weight as weight_domain
+from vitals.services.garmin_weight import outbox as garmin_weight_outbox
 from vitals.services.conflicts import engine
+from vitals.services.garmin import errors as garmin_errors
+from vitals.services.garmin import ingestion as garmin_ingestion
+from vitals.services.garmin import raw_payloads as garmin_raw_payloads
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped
@@ -72,8 +76,8 @@ def _context(
 async def _prepared(
     session: AsyncSession,
     context: engine.ConflictWriteContext,
-) -> weight_service.PreparedWeightWrite:
-    return await weight_service.prepare_weight_write(session, context=context)
+) -> weight_domain.contracts.PreparedWeightWrite:
+    return await weight_domain.governance.prepare_weight_write(session, context=context)
 
 
 async def _legacy_prepared(
@@ -82,7 +86,7 @@ async def _legacy_prepared(
     on_date: date = EVALUATION_DATE,
 ) -> tuple[
     engine.ConflictWriteContext,
-    weight_service.PreparedWeightWrite,
+    weight_domain.contracts.PreparedWeightWrite,
 ]:
     context = await engine.resolve_legacy_conflict_write_context(
         session,
@@ -155,7 +159,7 @@ async def test_prepared_weight_write_is_opaque_and_immutable(
         engine.ConflictPreparedWriteError,
         match="issued only",
     ):
-        weight_service.PreparedWeightWrite()
+        weight_domain.contracts.PreparedWeightWrite()
     prepared = await _prepared(
         db_session,
         _context(_identity(legacy_owner_roots)),
@@ -172,7 +176,7 @@ async def test_scoped_create_update_note_delete_and_date_move(
     context = _context(identity)
     prepared = await _prepared(db_session, context)
 
-    older = await weight_service.log_weight(
+    older = await weight_domain.writes.log_weight(
         db_session,
         on_date=EVALUATION_DATE,
         weight_kg=85.0,
@@ -180,7 +184,7 @@ async def test_scoped_create_update_note_delete_and_date_move(
         identity=identity,
         prepared_weight_write=prepared,
     )
-    newest = await weight_service.log_weight(
+    newest = await weight_domain.writes.log_weight(
         db_session,
         on_date=EVALUATION_DATE,
         weight_kg=84.5,
@@ -196,7 +200,7 @@ async def test_scoped_create_update_note_delete_and_date_move(
         Source.MCP.value,
     )
 
-    edited = await weight_service.update_weight_log(
+    edited = await weight_domain.writes.update_weight_log(
         db_session,
         newest.id,
         on_date=EVALUATION_DATE,
@@ -212,7 +216,7 @@ async def test_scoped_create_update_note_delete_and_date_move(
         Source.MCP.value,
     )
 
-    noted = await weight_service.update_weight_note(
+    noted = await weight_domain.writes.update_weight_note(
         db_session,
         newest.id,
         note="note only",
@@ -226,16 +230,19 @@ async def test_scoped_create_update_note_delete_and_date_move(
         identity.actor_user_id,
     )
 
-    assert await weight_service.delete_weight_log(
-        db_session,
-        newest.id,
-        identity=identity,
-        prepared_weight_write=prepared,
-    ) is True
+    assert (
+        await weight_domain.writes.delete_weight_log(
+            db_session,
+            newest.id,
+            identity=identity,
+            prepared_weight_write=prepared,
+        )
+        is True
+    )
     assert older.superseded is False
 
     move_context = _context(identity, on_date=OTHER_DATE)
-    moved = await weight_service.update_weight_log(
+    moved = await weight_domain.writes.update_weight_log(
         db_session,
         older.id,
         on_date=OTHER_DATE,
@@ -263,12 +270,15 @@ async def test_scoped_create_update_note_delete_and_date_move(
     )
     assert await db_session.get(WeightLog, older.id) is None
 
-    assert await weight_service.delete_weight_log(
-        db_session,
-        moved.id,
-        identity=identity,
-        prepared_weight_write=await _prepared(db_session, move_context),
-    ) is True
+    assert (
+        await weight_domain.writes.delete_weight_log(
+            db_session,
+            moved.id,
+            identity=identity,
+            prepared_weight_write=await _prepared(db_session, move_context),
+        )
+        is True
+    )
     assert await db_session.scalar(select(func.count()).select_from(WeightLog)) == 0
 
 
@@ -297,25 +307,34 @@ async def test_exact_subject_reads_and_mutations_hide_foreign_rows(
     db_session.add_all([owned, foreign])
     await db_session.commit()
 
-    assert [row.id for row in await weight_service.list_active_weights(
-        db_session,
-        subject_id=identity.subject_id,
-    )] == [owned.id]
+    assert [
+        row.id
+        for row in await weight_domain.logs.list_active_weights(
+            db_session,
+            subject_id=identity.subject_id,
+        )
+    ] == [owned.id]
     context = _context(identity)
     prepared = await _prepared(db_session, context)
-    assert await weight_service.update_weight_note(
-        db_session,
-        foreign.id,
-        note="forged",
-        identity=identity,
-        prepared_weight_write=prepared,
-    ) is None
-    assert await weight_service.delete_weight_log(
-        db_session,
-        foreign.id,
-        identity=identity,
-        prepared_weight_write=prepared,
-    ) is False
+    assert (
+        await weight_domain.writes.update_weight_note(
+            db_session,
+            foreign.id,
+            note="forged",
+            identity=identity,
+            prepared_weight_write=prepared,
+        )
+        is None
+    )
+    assert (
+        await weight_domain.writes.delete_weight_log(
+            db_session,
+            foreign.id,
+            identity=identity,
+            prepared_weight_write=prepared,
+        )
+        is False
+    )
     assert foreign.note is None
 
 
@@ -339,19 +358,25 @@ async def test_fully_unowned_row_is_neither_visible_nor_adoptable(
     await db_session.commit()
     identity = _identity(legacy_owner_roots)
 
-    assert await weight_service.list_active_weights(
-        db_session,
-        subject_id=identity.subject_id,
-    ) == []
+    assert (
+        await weight_domain.logs.list_active_weights(
+            db_session,
+            subject_id=identity.subject_id,
+        )
+        == []
+    )
 
     context, prepared = await _legacy_prepared(db_session)
-    assert await weight_service.update_weight_note(
-        db_session,
-        legacy.id,
-        note="claimed safely",
-        identity=context.identity,
-        prepared_weight_write=prepared,
-    ) is None
+    assert (
+        await weight_domain.writes.update_weight_note(
+            db_session,
+            legacy.id,
+            note="claimed safely",
+            identity=context.identity,
+            prepared_weight_write=prepared,
+        )
+        is None
+    )
     assert (legacy.subject_id, legacy.note) == (None, None)
 
 
@@ -406,16 +431,22 @@ async def test_a_backfilled_raw_does_not_lend_its_fact_a_subject(
 
     # The raw-first backfill stamped the payloads; the facts that cite them are
     # still waiting for the normalized phase, and until then they are nobody's.
-    assert await weight_service.list_active_weights(
-        db_session,
-        subject_id=identity.subject_id,
-    ) == []
-    for on_date in (OTHER_DATE, EVALUATION_DATE):
-        assert await weight_service.get_active_weight(
+    assert (
+        await weight_domain.logs.list_active_weights(
             db_session,
-            on_date,
             subject_id=identity.subject_id,
-        ) is None
+        )
+        == []
+    )
+    for on_date in (OTHER_DATE, EVALUATION_DATE):
+        assert (
+            await weight_domain.logs.get_active_weight(
+                db_session,
+                on_date,
+                subject_id=identity.subject_id,
+            )
+            is None
+        )
 
 
 async def test_partial_actor_connection_and_raw_roots_are_out_of_scope(
@@ -465,11 +496,14 @@ async def test_partial_actor_connection_and_raw_roots_are_out_of_scope(
     # None of these rows names a subject, so none of them is this subject's to
     # read — the reader passes over them rather than reporting them.
     for row in partial_rows:
-        assert await weight_service.get_active_weight(
-            db_session,
-            row.date,
-            subject_id=identity.subject_id,
-        ) is None
+        assert (
+            await weight_domain.logs.get_active_weight(
+                db_session,
+                row.date,
+                subject_id=identity.subject_id,
+            )
+            is None
+        )
 
 
 async def test_manual_mcp_garmin_and_body_scan_provenance(
@@ -523,16 +557,14 @@ async def test_manual_mcp_garmin_and_body_scan_provenance(
         raw: RawPayload | None = None,
     ) -> WeightLog:
         context = _context(identity, on_date=on_date)
-        return await weight_service.log_weight(
+        return await weight_domain.writes.log_weight(
             db_session,
             on_date=on_date,
             weight_kg=80.0 + on_date.day / 100,
             source=source.value,
             raw_payload_id=raw.id if raw is not None else None,
             identity=identity,
-            integration_connection_id=(
-                connection.id if connection is not None else None
-            ),
+            integration_connection_id=(connection.id if connection is not None else None),
             prepared_weight_write=await _prepared(db_session, context),
         )
 
@@ -589,18 +621,14 @@ async def test_provider_weight_without_raw_payload_is_rejected_write_free(
 ):
     identity = _identity(legacy_owner_roots)
     connection = await _connection(db_session, identity, provider)
-    before_weights = await db_session.scalar(
-        select(func.count()).select_from(WeightLog)
-    )
-    before_alerts = await db_session.scalar(
-        select(func.count()).select_from(SystemAlert)
-    )
+    before_weights = await db_session.scalar(select(func.count()).select_from(WeightLog))
+    before_alerts = await db_session.scalar(select(func.count()).select_from(SystemAlert))
 
     with pytest.raises(
         engine.ConflictRawOwnershipError,
         match="raw",
     ):
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=EVALUATION_DATE,
             weight_kg=85.0,
@@ -614,12 +642,8 @@ async def test_provider_weight_without_raw_payload_is_rejected_write_free(
             ),
         )
 
-    assert await db_session.scalar(
-        select(func.count()).select_from(WeightLog)
-    ) == before_weights
-    assert await db_session.scalar(
-        select(func.count()).select_from(SystemAlert)
-    ) == before_alerts
+    assert await db_session.scalar(select(func.count()).select_from(WeightLog)) == before_weights
+    assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == before_alerts
 
 
 async def test_garmin_rejects_strict_weight_capability_before_provider_mutation(
@@ -627,7 +651,6 @@ async def test_garmin_rejects_strict_weight_capability_before_provider_mutation(
     legacy_owner_roots,
 ):
     from vitals.models.garmin import GarminDaily
-    from vitals.services import garmin_service
 
     identity = _identity(legacy_owner_roots)
     garmin = await _connection(
@@ -638,10 +661,10 @@ async def test_garmin_rejects_strict_weight_capability_before_provider_mutation(
     prepared = await _prepared(db_session, _context(identity))
 
     with pytest.raises(
-        garmin_service.GarminOwnershipValidationError,
+        garmin_errors.GarminOwnershipValidationError,
         match="fully-unowned",
     ):
-        await garmin_service.ingest_owned_daily(
+        await garmin_ingestion.ingest_owned_daily(
             db_session,
             EVALUATION_DATE,
             {"summary": {"totalSteps": 12, "weight": 85000}},
@@ -650,15 +673,9 @@ async def test_garmin_rejects_strict_weight_capability_before_provider_mutation(
             prepared_weight_write=prepared,
         )
 
-    assert await db_session.scalar(
-        select(func.count()).select_from(GarminDaily)
-    ) == 0
-    assert await db_session.scalar(
-        select(func.count()).select_from(RawPayload)
-    ) == 0
-    assert await db_session.scalar(
-        select(func.count()).select_from(WeightLog)
-    ) == 0
+    assert await db_session.scalar(select(func.count()).select_from(GarminDaily)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(WeightLog)) == 0
 
 
 @pytest.mark.parametrize(
@@ -668,8 +685,8 @@ async def test_garmin_rejects_strict_weight_capability_before_provider_mutation(
         ("weight_raw_actor", engine.ConflictRawOwnershipError),
         ("weight_raw_source", engine.ConflictRawOwnershipError),
         ("raw_domain", engine.ConflictRawOwnershipError),
-        ("wrong_provider", weight_service.WeightOwnershipError),
-        ("wrong_connection_type", weight_service.WeightOwnershipError),
+        ("wrong_provider", weight_domain.contracts.WeightOwnershipError),
+        ("wrong_connection_type", weight_domain.contracts.WeightOwnershipError),
     ],
 )
 async def test_persisted_exact_subject_provenance_mismatch_fails_closed_everywhere(
@@ -748,18 +765,18 @@ async def test_persisted_exact_subject_provenance_mismatch_fails_closed_everywhe
     await db_session.flush()
 
     with pytest.raises(expected_error):
-        await weight_service.resolve_active_scoped(
+        await weight_domain.queries.resolve_active_scoped(
             db_session,
             scope=_context(identity).scope,
         )
     with pytest.raises(expected_error):
-        await weight_service.get_active_weight(
+        await weight_domain.logs.get_active_weight(
             db_session,
             EVALUATION_DATE,
             subject_id=identity.subject_id,
         )
     with pytest.raises(expected_error):
-        await weight_service.update_weight_note(
+        await weight_domain.writes.update_weight_note(
             db_session,
             row.id,
             note="must not be written",
@@ -790,7 +807,7 @@ async def _unsafe_reactivation_fixture(
         source=Source.GARMIN_API,
         external_id=f"daily:{EVALUATION_DATE.isoformat()}",
     )
-    unsafe = await weight_service.log_weight(
+    unsafe = await weight_domain.writes.log_weight(
         session,
         on_date=EVALUATION_DATE,
         weight_kg=90.0,
@@ -803,7 +820,7 @@ async def _unsafe_reactivation_fixture(
             _context(identity),
         ),
     )
-    active = await weight_service.log_weight(
+    active = await weight_domain.writes.log_weight(
         session,
         on_date=EVALUATION_DATE,
         weight_kg=80.0,
@@ -835,7 +852,7 @@ async def _unsafe_reactivation_fixture(
     engine.register_domain_resolver(Domain.LABS.value, labs)
     engine.register_domain_resolver(
         Domain.WEIGHT.value,
-        weight_service.resolve_active_scoped,
+        weight_domain.queries.resolve_active_scoped,
     )
     assert unsafe.superseded is True
     assert active.superseded is False
@@ -851,35 +868,40 @@ async def test_delete_does_not_reactivate_hard_conflicting_replacement(
         db_session,
         identity=identity,
     )
-    before_alerts = await db_session.scalar(
-        select(func.count()).select_from(SystemAlert)
-    )
+    before_alerts = await db_session.scalar(select(func.count()).select_from(SystemAlert))
 
-    assert await weight_service.delete_weight_log(
-        db_session,
-        active.id,
-        identity=identity,
-        prepared_weight_write=await _prepared(
+    assert (
+        await weight_domain.writes.delete_weight_log(
             db_session,
-            _context(identity),
-        ),
-    ) is True
+            active.id,
+            identity=identity,
+            prepared_weight_write=await _prepared(
+                db_session,
+                _context(identity),
+            ),
+        )
+        is True
+    )
 
     assert await db_session.get(WeightLog, active.id) is None
     assert unsafe.superseded is True
-    assert await weight_service.get_active_weight(
-        db_session,
-        EVALUATION_DATE,
-        subject_id=identity.subject_id,
-    ) is None
-    assert await db_session.scalar(
-        select(func.count()).select_from(SystemAlert)
-    ) == before_alerts
-    assert await db_session.scalar(
-        select(func.count()).select_from(SystemAlert).where(
-            SystemAlert.alert_key == f"conflict:{rule.id}"
+    assert (
+        await weight_domain.logs.get_active_weight(
+            db_session,
+            EVALUATION_DATE,
+            subject_id=identity.subject_id,
         )
-    ) == 0
+        is None
+    )
+    assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == before_alerts
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(SystemAlert)
+            .where(SystemAlert.alert_key == f"conflict:{rule.id}")
+        )
+        == 0
+    )
 
 
 async def test_date_move_does_not_reactivate_hard_conflict_on_old_date(
@@ -891,11 +913,9 @@ async def test_date_move_does_not_reactivate_hard_conflict_on_old_date(
         db_session,
         identity=identity,
     )
-    before_alerts = await db_session.scalar(
-        select(func.count()).select_from(SystemAlert)
-    )
+    before_alerts = await db_session.scalar(select(func.count()).select_from(SystemAlert))
 
-    moved = await weight_service.update_weight_log(
+    moved = await weight_domain.writes.update_weight_log(
         db_session,
         active.id,
         on_date=OTHER_DATE,
@@ -912,19 +932,23 @@ async def test_date_move_does_not_reactivate_hard_conflict_on_old_date(
     assert (moved.date, moved.superseded) == (OTHER_DATE, False)
     assert await db_session.get(WeightLog, active.id) is None
     assert unsafe.superseded is True
-    assert await weight_service.get_active_weight(
-        db_session,
-        EVALUATION_DATE,
-        subject_id=identity.subject_id,
-    ) is None
-    assert await db_session.scalar(
-        select(func.count()).select_from(SystemAlert)
-    ) == before_alerts
-    assert await db_session.scalar(
-        select(func.count()).select_from(SystemAlert).where(
-            SystemAlert.alert_key == f"conflict:{rule.id}"
+    assert (
+        await weight_domain.logs.get_active_weight(
+            db_session,
+            EVALUATION_DATE,
+            subject_id=identity.subject_id,
         )
-    ) == 0
+        is None
+    )
+    assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == before_alerts
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(SystemAlert)
+            .where(SystemAlert.alert_key == f"conflict:{rule.id}")
+        )
+        == 0
+    )
 
 
 async def test_resolver_replacement_excludes_the_edited_weight(
@@ -933,7 +957,7 @@ async def test_resolver_replacement_excludes_the_edited_weight(
 ):
     identity = _identity(legacy_owner_roots)
     context = _context(identity)
-    row = await weight_service.log_weight(
+    row = await weight_domain.writes.log_weight(
         db_session,
         on_date=EVALUATION_DATE,
         weight_kg=90.0,
@@ -962,10 +986,10 @@ async def test_resolver_replacement_excludes_the_edited_weight(
     engine.register_domain_resolver(Domain.LABS.value, labs)
     engine.register_domain_resolver(
         Domain.WEIGHT.value,
-        weight_service.resolve_active_scoped,
+        weight_domain.queries.resolve_active_scoped,
     )
 
-    updated = await weight_service.update_weight_log(
+    updated = await weight_domain.writes.update_weight_log(
         db_session,
         row.id,
         on_date=EVALUATION_DATE,
@@ -977,7 +1001,7 @@ async def test_resolver_replacement_excludes_the_edited_weight(
     assert row.weight_kg == 80.0
 
     with pytest.raises(engine.ConflictBlocked):
-        await weight_service.update_weight_log(
+        await weight_domain.writes.update_weight_log(
             db_session,
             row.id,
             on_date=EVALUATION_DATE,
@@ -997,7 +1021,7 @@ async def test_wrong_session_transaction_identity_and_date_are_rejected(
     prepared = await _prepared(db_session, context)
 
     with pytest.raises(engine.ConflictPreparedWriteError, match="date"):
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=OTHER_DATE,
             weight_kg=85.0,
@@ -1005,7 +1029,7 @@ async def test_wrong_session_transaction_identity_and_date_are_rejected(
             prepared_weight_write=prepared,
         )
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=EVALUATION_DATE,
             weight_kg=85.0,
@@ -1024,7 +1048,7 @@ async def test_wrong_session_transaction_identity_and_date_are_rejected(
             engine.ConflictPreparedWriteError,
             match="session",
         ):
-            await weight_service.log_weight(
+            await weight_domain.writes.log_weight(
                 other_session,
                 on_date=EVALUATION_DATE,
                 weight_kg=85.0,
@@ -1034,7 +1058,7 @@ async def test_wrong_session_transaction_identity_and_date_are_rejected(
 
     await db_session.commit()
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=EVALUATION_DATE,
             weight_kg=85.0,
@@ -1051,8 +1075,6 @@ async def test_postgres_owned_reparse_candidate_does_not_lock_raw_before_prepare
     monkeypatch,
 ):
     """Candidate discovery must leave raw free for callback lock preparation."""
-
-    from vitals.services import garmin_service
 
     assert db_session.bind is not None
     factory = async_sessionmaker(
@@ -1093,22 +1115,27 @@ async def test_postgres_owned_reparse_candidate_does_not_lock_raw_before_prepare
         del session, context, garmin_weight_export_context
         async with factory() as probe:
             locked = await probe.scalar(
-                select(RawPayload)
-                .where(RawPayload.id == raw_id)
-                .with_for_update(nowait=True)
+                select(RawPayload).where(RawPayload.id == raw_id).with_for_update(nowait=True)
             )
             assert locked is not None
             probe_acquired_raw = True
             await probe.rollback()
         raise _PreparationProbeComplete
 
-    monkeypatch.setattr(weight_service, "prepare_weight_write", probe_prepare)
+    monkeypatch.setattr(
+        weight_domain.governance,
+        "prepare_weight_write",
+        probe_prepare,
+    )
 
-    assert await garmin_service.reparse_owned_pending(
-        db_session,
-        identity=identity,
-        integration_connection_id=connection_id,
-    ) == 0
+    assert (
+        await garmin_raw_payloads.reparse_owned_pending(
+            db_session,
+            identity=identity,
+            integration_connection_id=connection_id,
+        )
+        == 0
+    )
     assert probe_acquired_raw is True
     persisted = await db_session.get(RawPayload, raw_id)
     assert persisted is not None
@@ -1123,8 +1150,6 @@ async def test_postgres_prepare_order_and_concurrent_same_day_writes_serialize(
 ):
     """Governance precedes outbox advisory and concurrent writers do not deadlock."""
 
-    from vitals.services import garmin_weight_service
-
     assert db_session.bind is not None
     factory = async_sessionmaker(
         db_session.bind,
@@ -1136,8 +1161,8 @@ async def test_postgres_prepare_order_and_concurrent_same_day_writes_serialize(
     await db_session.commit()
 
     order: dict[int, list[str]] = {}
-    original_governance = weight_service.acquire_identity_governance_lock
-    original_outbox = garmin_weight_service.lock_active_weight_change
+    original_governance = weight_domain.governance.acquire_identity_governance_lock
+    original_outbox = garmin_weight_outbox.lock_active_weight_change
 
     async def governance(session):
         order.setdefault(id(session), []).append("governance")
@@ -1148,19 +1173,19 @@ async def test_postgres_prepare_order_and_concurrent_same_day_writes_serialize(
         await original_outbox(session)
 
     monkeypatch.setattr(
-        weight_service,
+        weight_domain.governance,
         "acquire_identity_governance_lock",
         governance,
     )
     monkeypatch.setattr(
-        garmin_weight_service,
+        garmin_weight_outbox,
         "lock_active_weight_change",
         outbox,
     )
 
     async def create(weight_kg: float) -> None:
         async with factory() as session:
-            await weight_service.log_weight(
+            await weight_domain.writes.log_weight(
                 session,
                 on_date=EVALUATION_DATE,
                 weight_kg=weight_kg,

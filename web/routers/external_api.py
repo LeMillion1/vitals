@@ -33,17 +33,20 @@ answer then is to issue one from Settings, not to guess.
 """
 from __future__ import annotations
 
+from vitals.services.milestones import queries as milestone_queries
+
+from vitals.services.nutrition import analytics as nutrition_analytics
+from vitals.services.nutrition import queries as nutrition_queries
+
 import secrets
 import uuid
 from datetime import timedelta
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, MilestoneStatus
-from vitals.models.identity import HealthSubject
 from vitals.services.conflicts import engine
 from vitals.utils.timeutils import today_local
 from web.config import get_web_config
@@ -96,7 +99,7 @@ async def resolve_external_caller(
         # is configured and nothing is issued, the endpoint is off rather than
         # picky — but a database that holds credentials is switched on, and a
         # wrong token there is a wrong token.
-        if await _any_token_exists(session):
+        if await tokens.any_token_exists(session):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_token"
             )
@@ -111,23 +114,13 @@ async def resolve_external_caller(
         )
 
     # The environment token, which cannot say whose record it means.
-    subject_ids = tuple(
-        await session.scalars(select(HealthSubject.id).limit(2))
-    )
-    if len(subject_ids) != 1:
+    subject_id = await tokens.sole_subject_id(session)
+    if subject_id is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="external_api_token_cannot_name_a_record",
         )
-    return subject_ids[0]
-
-
-async def _any_token_exists(session: AsyncSession) -> bool:
-    from vitals.models.identity import ExternalApiToken
-
-    return (
-        await session.scalar(select(ExternalApiToken.id).limit(1))
-    ) is not None
+    return subject_id
 
 
 async def _weight_block(
@@ -137,9 +130,11 @@ async def _weight_block(
     """Latest weight, a noise-excluded MA7 sparkline, the trend slope, and — if an
     active weight goal exists — the projected date to reach it (all from
     ``weight_service``; nothing recomputed here)."""
-    from vitals.services import milestones_service, weight_service
 
-    weights = await weight_service.list_active_weights(
+    from vitals.services.weight import analytics as weight_analytics
+    from vitals.services.weight import logs as weight_logs
+
+    weights = await weight_logs.list_active_weights(
         session,
         subject_id=scope.subject_id,
     )
@@ -147,7 +142,7 @@ async def _weight_block(
 
     # An active weight goal (soonest deadline first, per list_milestones' order)
     # feeds chart_series so it returns a projection date for the goal.
-    active = await milestones_service.list_milestones(
+    active = await milestone_queries.list_milestones(
         session,
         status=MilestoneStatus.ACTIVE.value,
         subject_id=scope.subject_id,
@@ -158,7 +153,7 @@ async def _weight_block(
     )
     goal_kg = goal_ms.target_value if goal_ms else None
 
-    series = await weight_service.chart_series(
+    series = await weight_analytics.chart_series(
         session,
         subject_id=scope.subject_id,
         goal_kg=goal_kg,
@@ -189,9 +184,9 @@ async def _weight_block(
 async def _recovery_block(session: AsyncSession, scope) -> Optional[dict[str, Any]]:
     """The most recent Garmin daily row's recovery numbers — raw values only, so
     the caller renders its own advice/labels from thresholds it owns."""
-    from vitals.services import garmin_service
+    from vitals.services.garmin import queries as garmin_queries
 
-    g = await garmin_service.latest_daily(session, subject_id=scope.subject_id)
+    g = await garmin_queries.latest_daily(session, subject_id=scope.subject_id)
     if g is None:
         return None
     return {
@@ -212,26 +207,30 @@ async def _activity_block(
     first. The caller derives "current streak" from these — a presentation
     concept the caller owns, not a Vitals metric, so only the raw dates cross
     the wire."""
-    from vitals.services import garmin_service, nutrition_service, weight_service
+
+    from vitals.services.garmin import queries as garmin_queries
+    from vitals.services.weight import logs as weight_logs
 
     today = today_local()
     since = today - timedelta(days=_ACTIVITY_WINDOW_DAYS - 1)
 
-    weights = await weight_service.list_active_weights(
+    weights = await weight_logs.list_active_weights(
         session,
         start=since,
         end=today,
         subject_id=scope.subject_id,
     )
-    meals = await nutrition_service.list_meals(
+    meals = await nutrition_queries.list_meals(
         session,
         start=since,
         end=today,
         subject_id=scope.subject_id,
     )
-    # Garmin's current compatibility reader has no subject arguments; the
-    # summary-level exact-one governance proof remains its read boundary.
-    daily = await garmin_service.list_daily(session, limit=_ACTIVITY_WINDOW_DAYS)
+    daily = await garmin_queries.list_daily(
+        session,
+        subject_id=scope.subject_id,
+        limit=_ACTIVITY_WINDOW_DAYS,
+    )
 
     def _dates(rows) -> list[str]:
         seen = {r.date for r in rows}
@@ -257,14 +256,14 @@ async def external_summary(
     entire difference: every read below was already scoped, and was scoped to
     whoever the environment named.
     """
-    from vitals.services import nutrition_service
+
 
     scope = engine.ConflictScope(
         subject_id=subject_id,
         evaluation_date=today_local(),
         legacy_bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
     )
-    nutrition_today = await nutrition_service.daily_summary(
+    nutrition_today = await nutrition_analytics.daily_summary(
         session,
         today_local(),
         subject_id=scope.subject_id,

@@ -23,13 +23,24 @@ happen.
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
 
 from vitals.enums import Domain, Source, UserStatus
 from vitals.models.identity import HealthSubject, User
-from vitals.services import data_portability_service as portability
+from vitals.services.portability import v1_contract, v1_export, v1_import
+
+portability = SimpleNamespace(
+    CATALOG_NATURAL_KEYS=v1_export.CATALOG_NATURAL_KEYS,
+    KIND_SUBJECT=v1_export.KIND_SUBJECT,
+    PORTABLE_REFERENCES=v1_export.PORTABLE_REFERENCES,
+    PortabilityError=v1_contract.PortabilityError,
+    export_full=v1_export.export_full,
+    export_subject=v1_export.export_subject,
+    import_subject=v1_import.import_subject,
+)
 
 
 async def _subject(session, slug: str) -> HealthSubject:

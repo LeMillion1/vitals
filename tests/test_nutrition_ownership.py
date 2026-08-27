@@ -1,6 +1,9 @@
 """Subject/actor contracts for the Stage-2 nutrition compatibility path."""
 from __future__ import annotations
 
+from vitals.services.nutrition import queries as nutrition_queries
+from vitals.services.nutrition import writes as nutrition_writes
+
 from datetime import date
 
 from sqlalchemy import select
@@ -9,7 +12,7 @@ from vitals.enums import Domain, Source, UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.models.nutrition import MealLog
 from vitals.ownership import WriteIdentity
-from vitals.services import nutrition_service
+
 from vitals.services.conflicts import engine
 
 
@@ -43,14 +46,14 @@ async def test_owned_create_and_reads_are_subject_isolated(db_session):
     first_prepared = await _prepared(db_session, first, on_date)
     second_prepared = await _prepared(db_session, second, on_date)
 
-    first_row = await nutrition_service.log_meal(
+    first_row = await nutrition_writes.log_meal(
         db_session,
         on_date=on_date,
         name="first breakfast",
         identity=first,
         prepared_conflict_write=first_prepared,
     )
-    second_row = await nutrition_service.log_meal(
+    second_row = await nutrition_writes.log_meal(
         db_session,
         on_date=on_date,
         name="second breakfast",
@@ -63,14 +66,14 @@ async def test_owned_create_and_reads_are_subject_isolated(db_session):
     assert second_row.subject_id == second.subject_id
     assert second_row.actor_user_id == second.actor_user_id
     assert list(
-        await nutrition_service.list_meals_for_date(
+        await nutrition_queries.list_meals_for_date(
             db_session,
             on_date,
             subject_id=first.subject_id,
         )
     ) == [first_row]
     assert list(
-        await nutrition_service.list_meals_for_date(
+        await nutrition_queries.list_meals_for_date(
             db_session,
             on_date,
             subject_id=second.subject_id,
@@ -84,7 +87,7 @@ async def test_owned_update_and_delete_reject_cross_subject_ids(db_session):
     on_date = date(2026, 8, 19)
     first_prepared = await _prepared(db_session, first, on_date)
     second_prepared = await _prepared(db_session, second, on_date)
-    row = await nutrition_service.log_meal(
+    row = await nutrition_writes.log_meal(
         db_session,
         on_date=on_date,
         name="private meal",
@@ -94,7 +97,7 @@ async def test_owned_update_and_delete_reject_cross_subject_ids(db_session):
     )
 
     assert (
-        await nutrition_service.update_meal(
+        await nutrition_writes.update_meal(
             db_session,
             row.id,
             on_date=on_date,
@@ -105,7 +108,7 @@ async def test_owned_update_and_delete_reject_cross_subject_ids(db_session):
         )
         is None
     )
-    assert await nutrition_service.delete_meal(
+    assert await nutrition_writes.delete_meal(
         db_session,
         row.id,
         identity=second,
@@ -114,7 +117,7 @@ async def test_owned_update_and_delete_reject_cross_subject_ids(db_session):
     assert row.name == "private meal"
     assert row.note == "original"
 
-    updated = await nutrition_service.update_meal(
+    updated = await nutrition_writes.update_meal(
         db_session,
         row.id,
         on_date=on_date,
@@ -125,7 +128,7 @@ async def test_owned_update_and_delete_reject_cross_subject_ids(db_session):
     )
     assert updated is row
     assert row.actor_user_id == first.actor_user_id
-    assert await nutrition_service.delete_meal(
+    assert await nutrition_writes.delete_meal(
         db_session,
         row.id,
         identity=first,
@@ -153,7 +156,7 @@ async def test_unowned_legacy_rows_are_outside_every_scope(db_session, *, legacy
     await db_session.flush()
 
     assert list(
-        await nutrition_service.list_meals_for_date(
+        await nutrition_queries.list_meals_for_date(
             db_session,
             on_date,
             subject_id=identity.subject_id,

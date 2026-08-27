@@ -2,12 +2,18 @@
 isotretinoin→peel cross-domain block, observations, and the resolver."""
 from __future__ import annotations
 
+from vitals.services.supplements import writes as supplement_writes
+
+from vitals.services.skincare import conflicts as skincare_conflicts
+from vitals.services.skincare import queries as skincare_queries
+from vitals.services.skincare import writes as skincare_writes
+
 from datetime import date
 
 import pytest
 
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import skincare_service, supplements_service
+
 from vitals.services.conflicts import registrations
 from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
@@ -16,16 +22,16 @@ from vitals.utils.timeutils import today_local
 
 async def test_checklist_upsert_is_one_per_day(db_session, owner_write):
     d = date(2026, 6, 1)
-    await skincare_service.upsert_log(db_session, on_date=d, retinoid=True,
+    await skincare_writes.upsert_log(db_session, on_date=d, retinoid=True,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d),
     )
-    await skincare_service.upsert_log(db_session, on_date=d, retinoid=False, moisturizer=True,
+    await skincare_writes.upsert_log(db_session, on_date=d, retinoid=False, moisturizer=True,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d),
     )
     await db_session.commit()
-    logs = await skincare_service.list_logs(db_session,
+    logs = await skincare_queries.list_logs(db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(logs) == 1
@@ -53,7 +59,7 @@ async def _seed_retinoid_peel_rule(db_session):
 async def test_retinoid_plus_peel_blocked(db_session, owner_write):
     await _seed_retinoid_peel_rule(db_session)
     with pytest.raises(ConflictBlocked):
-        await skincare_service.upsert_log(
+        await skincare_writes.upsert_log(
             db_session, on_date=date(2026, 6, 2), retinoid=True, peel=True,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 2)),
@@ -63,7 +69,7 @@ async def test_retinoid_plus_peel_blocked(db_session, owner_write):
 
 async def test_retinoid_plus_peel_override_saves(db_session, owner_write):
     await _seed_retinoid_peel_rule(db_session)
-    row = await skincare_service.upsert_log(
+    row = await skincare_writes.upsert_log(
         db_session, on_date=date(2026, 6, 2), retinoid=True, peel=True, override=True,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 2)),
@@ -86,7 +92,7 @@ async def test_isotretinoin_blocks_peel_cross_domain(db_session, owner_write):
             active=True,
         )
     )
-    await supplements_service.add_supplement(
+    await supplement_writes.add_supplement(
         db_session, name="Изотретиноин", key="isotretinoin", active=True,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
@@ -95,7 +101,7 @@ async def test_isotretinoin_blocks_peel_cross_domain(db_session, owner_write):
 
     # Peel today while isotretinoin is active → blocked.
     with pytest.raises(ConflictBlocked):
-        await skincare_service.upsert_log(db_session, on_date=today_local(), peel=True,
+        await skincare_writes.upsert_log(db_session, on_date=today_local(), peel=True,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(today_local()),
     )
@@ -103,37 +109,37 @@ async def test_isotretinoin_blocks_peel_cross_domain(db_session, owner_write):
 
 
 async def test_observation_crud(db_session, owner_write):
-    o = await skincare_service.add_observation(
+    o = await skincare_writes.add_observation(
         db_session, on_date=date(2026, 6, 1), inflammation=3, pih=2, zone="лоб",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
     )
     await db_session.commit()
-    rows = await skincare_service.list_observations(db_session,
+    rows = await skincare_queries.list_observations(db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(rows) == 1 and rows[0].inflammation == 3
-    assert await skincare_service.delete_observation(
+    assert await skincare_writes.delete_observation(
         db_session,
         o.id,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     ) is True
     await db_session.commit()
-    assert len(await skincare_service.list_observations(db_session,
+    assert len(await skincare_queries.list_observations(db_session,
         subject_id=owner_write.subject_id,
     )) == 0
 
 
 async def test_resolve_today(db_session, owner_write):
     registrations.register_all_resolvers()
-    await skincare_service.upsert_log(db_session, on_date=today_local(), peel=True,
+    await skincare_writes.upsert_log(db_session, on_date=today_local(), peel=True,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
     # The scoped resolver is the one a scoped write consults.
-    items = await skincare_service.resolve_today_scoped(
+    items = await skincare_conflicts.resolve_today_scoped(
         db_session,
         scope=owner_write.context.scope,
     )

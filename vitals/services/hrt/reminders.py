@@ -19,6 +19,9 @@ alert and show up as a coherent group. Called once at startup, idempotent.
 """
 from __future__ import annotations
 
+from vitals.services.alerts import contracts as alerts_service_contracts
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
 import uuid
 
 import logging
@@ -33,9 +36,14 @@ from vitals.i18n import current_lang, t
 from vitals.models.hrt import DOMAIN, HrtCycle, HrtCycleItem
 from vitals.models.identity import HealthSubject
 from vitals.ownership import WriteIdentity
-from vitals.services import alerts_service, labs_service, modules_service
+from vitals.services import modules_service
 from vitals.services.conflicts import engine
 from vitals.services.hrt import cycles, records
+from vitals.services.labs.markers import (
+    ensure_marker_catalog_entry,
+    normalize_marker_key,
+)
+from vitals.services.labs.results import list_results
 from vitals.utils.timeutils import today_local
 
 logger = logging.getLogger(__name__)
@@ -44,7 +52,7 @@ LABS_DUE_KEY = "hrt.labs_due"
 INJECTION_DUE_KEY = "hrt.injection_due"
 
 # Hormone / safety panel: canonical marker name -> retest interval (days). Names
-# are in the normalized form Labs stores (labs_service.normalize_marker), so a
+# are in the normalized form Labs stores, so a
 # user-logged result lands on the same row.
 HORMONE_PANEL: dict[str, int] = {
     "Тестостерон общий": 90,
@@ -102,16 +110,16 @@ def _reminder_date(
 
 def _alert_bridge(
     context: engine.ConflictWriteContext,
-) -> alerts_service.LegacyAlertBridge:
+) -> alerts_service_contracts.LegacyAlertBridge:
     if context.legacy_bridge is engine.LegacyConflictBridge.FULLY_UNOWNED:
-        return alerts_service.LegacyAlertBridge.FULLY_UNOWNED
-    return alerts_service.LegacyAlertBridge.REJECT
+        return alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED
+    return alerts_service_contracts.LegacyAlertBridge.REJECT
 
 
 def _system_alert_context(
     context: engine.ConflictWriteContext,
-) -> alerts_service.HealthAlertContext:
-    return alerts_service.HealthAlertContext(
+) -> alerts_service_contracts.HealthAlertContext:
+    return alerts_service_contracts.HealthAlertContext(
         WriteIdentity(context.identity.subject_id, None)
     )
 
@@ -184,7 +192,7 @@ async def _resolve_alert(
     entity_ref: str,
     context: engine.ConflictWriteContext | None,
 ) -> object | None:
-    return await alerts_service.resolve_scoped_by_key(
+    return await alerts_service_lifecycle.resolve_scoped_by_key(
         session,
         context=_system_alert_context(context),
         alert_key=alert_key,
@@ -201,7 +209,7 @@ async def _was_dismissed_today(
     on_date: date_type,
     context: engine.ConflictWriteContext | None,
 ) -> bool:
-    return await alerts_service.was_scoped_dismissed_today(
+    return await alerts_service_lifecycle.was_scoped_dismissed_today(
         session,
         context=_system_alert_context(context),
         alert_key=alert_key,
@@ -220,7 +228,7 @@ async def _raise_alert(
     entity_ref: str,
     context: engine.ConflictWriteContext | None,
 ) -> object:
-    return await alerts_service.raise_scoped_alert(
+    return await alerts_service_lifecycle.raise_scoped_alert(
         session,
         context=_system_alert_context(context),
         domain=Domain.HRT,
@@ -245,7 +253,7 @@ async def seed_hormone_panel(
     updated = 0
     for name, interval in HORMONE_PANEL.items():
         _row, was_created, was_updated = (
-            await labs_service.ensure_marker_catalog_entry(
+            await ensure_marker_catalog_entry(
                 session,
                 name=name,
                 category=_PANEL_CATEGORY,
@@ -267,8 +275,8 @@ async def _latest_panel_result_date(
     on_date: date_type,
     context: engine.ConflictWriteContext | None,
 ) -> Optional[date_type]:
-    keys = {labs_service.normalize_marker_key(n) for n in HORMONE_PANEL}
-    rows = await labs_service.list_results(
+    keys = {normalize_marker_key(n) for n in HORMONE_PANEL}
+    rows = await list_results(
         session,
         end=on_date,
         limit=1_000_000,
@@ -446,7 +454,7 @@ async def refresh_injection_due(
                 )
 
     # Clear stale nags for compounds no longer in the active plan.
-    active_alerts = await alerts_service.list_active_scoped(
+    active_alerts = await alerts_service_lifecycle.list_active_scoped(
         session,
         context=_system_alert_context(context),
         domain=Domain.HRT,

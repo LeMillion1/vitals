@@ -2,7 +2,7 @@
 
 InBody and МедАсс analyzers print a known, finite vocabulary of metrics — unlike
 the open-ended lab-marker space — so the registry lives in code (like
-``labs_service.MARKER_ALIASES``), not a DB catalog. It maps every printed label
+``vitals.services.labs.markers.MARKER_ALIASES``), not a DB catalog. It maps every printed label
 (Russian / English / common abbreviations) onto a canonical ``metric_key`` with a
 display name (ru/en), a unit, a UI ``category``, and a ``headline`` flag.
 

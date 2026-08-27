@@ -16,7 +16,7 @@ from urllib.parse import urlencode, urlsplit
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from web.auth import _get_mcp_serializer, clear_session_cookie
+from web.authentication.tokens import _get_mcp_serializer, clear_session_cookie
 from web.config import get_web_config
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -580,7 +580,8 @@ async def oauth_token(
 
     # Sign the access token. Lifetime is 1 year (see expires_in below), enforced
     # on every request via max_age in the MCP auth middleware. Uses a dedicated
-    # salt — see web.auth._get_mcp_serializer — so this token can never be replayed
+    # salt — see web.authentication.tokens._get_mcp_serializer — so this token
+    # can never be replayed
     # as a session cookie or vice versa.
     #
     # Revocation: the payload carries a ``jti`` naming a row in

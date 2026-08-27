@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from vitals.services.skincare import conflicts as skincare_conflicts
+from vitals.services.skincare import queries as skincare_queries
+from vitals.services.skincare import writes as skincare_writes
+
 import asyncio
 import uuid
 from datetime import date
@@ -20,7 +24,7 @@ from vitals.models.skincare import (
 )
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import skincare_service
+
 from vitals.services.conflicts import engine
 
 
@@ -86,7 +90,7 @@ async def _legacy_context(db_session, *, on_date=EVALUATION_DATE):
 def _register_skincare_resolver() -> None:
     engine.register_domain_resolver(
         Domain.SKINCARE.value,
-        skincare_service.resolve_today_scoped,
+        skincare_conflicts.resolve_today_scoped,
     )
 
 
@@ -115,21 +119,21 @@ async def test_prepared_manual_writes_stamp_subject_actor_and_source(db_session)
     context = _context(identity)
     prepared = await _prepared(db_session, context)
 
-    log = await skincare_service.upsert_log(
+    log = await skincare_writes.upsert_log(
         db_session,
         on_date=EVALUATION_DATE,
         moisturizer=True,
         identity=identity,
         prepared_conflict_write=prepared,
     )
-    observation = await skincare_service.add_observation(
+    observation = await skincare_writes.add_observation(
         db_session,
         on_date=EVALUATION_DATE,
         inflammation=2,
         identity=identity,
         prepared_conflict_write=prepared,
     )
-    product = await skincare_service.add_product(
+    product = await skincare_writes.add_product(
         db_session,
         name="Synthetic serum",
         type="serum",
@@ -163,14 +167,14 @@ async def test_dated_writes_reject_prepared_evaluation_date_mismatch(
 
     with pytest.raises(engine.ConflictPreparedWriteError, match="date"):
         if writer == "log":
-            await skincare_service.upsert_log(
+            await skincare_writes.upsert_log(
                 db_session,
                 on_date=EVALUATION_DATE,
                 identity=identity,
                 prepared_conflict_write=prepared,
             )
         else:
-            await skincare_service.add_observation(
+            await skincare_writes.add_observation(
                 db_session,
                 on_date=EVALUATION_DATE,
                 identity=identity,
@@ -191,7 +195,7 @@ async def test_writes_reject_identity_mismatch_missing_and_stale_capabilities(
     mismatched = WriteIdentity(identity.subject_id, uuid.uuid4())
 
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await skincare_service.upsert_log(
+        await skincare_writes.upsert_log(
             db_session,
             on_date=EVALUATION_DATE,
             identity=mismatched,
@@ -199,13 +203,13 @@ async def test_writes_reject_identity_mismatch_missing_and_stale_capabilities(
         )
     # A subject cannot be passed without its conflict decision at all now.
     with pytest.raises(TypeError):
-        await skincare_service.add_observation(
+        await skincare_writes.add_observation(
             db_session,
             on_date=EVALUATION_DATE,
             identity=identity,
         )
     with pytest.raises(TypeError):
-        await skincare_service.add_product(
+        await skincare_writes.add_product(
             db_session,
             name="Unprepared",
             type="cream",
@@ -214,7 +218,7 @@ async def test_writes_reject_identity_mismatch_missing_and_stale_capabilities(
 
     await db_session.commit()
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await skincare_service.upsert_log(
+        await skincare_writes.upsert_log(
             db_session,
             on_date=EVALUATION_DATE,
             identity=identity,
@@ -227,7 +231,7 @@ async def test_day_replacement_marker_excludes_prior_checklist_state(
 ):
     identity = await _identity(db_session, "skin-replacement")
     context = _context(identity)
-    first = await skincare_service.upsert_log(
+    first = await skincare_writes.upsert_log(
         db_session,
         on_date=EVALUATION_DATE,
         retinoid=True,
@@ -238,7 +242,7 @@ async def test_day_replacement_marker_excludes_prior_checklist_state(
     await _blocking_rule(db_session, identity.subject_id)
     _register_skincare_resolver()
 
-    updated = await skincare_service.upsert_log(
+    updated = await skincare_writes.upsert_log(
         db_session,
         on_date=EVALUATION_DATE,
         retinoid=False,
@@ -259,7 +263,7 @@ async def test_hard_block_is_write_free_and_override_attributes_alert(db_session
     context = _context(identity)
 
     with pytest.raises(engine.ConflictBlocked):
-        await skincare_service.upsert_log(
+        await skincare_writes.upsert_log(
             db_session,
             on_date=EVALUATION_DATE,
             retinoid=True,
@@ -271,7 +275,7 @@ async def test_hard_block_is_write_free_and_override_attributes_alert(db_session
     assert await db_session.scalar(select(func.count()).select_from(SkincareLog)) == 0
     assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == 0
 
-    row = await skincare_service.upsert_log(
+    row = await skincare_writes.upsert_log(
         db_session,
         on_date=EVALUATION_DATE,
         retinoid=True,
@@ -303,42 +307,42 @@ async def test_subjects_are_isolated_for_same_day_reads_notes_and_deletes(db_ses
     first_prepared = await _prepared(db_session, first_context)
     second_prepared = await _prepared(db_session, second_context)
 
-    first_log = await skincare_service.upsert_log(
+    first_log = await skincare_writes.upsert_log(
         db_session,
         on_date=EVALUATION_DATE,
         note="A private note",
         identity=first,
         prepared_conflict_write=first_prepared,
     )
-    second_log = await skincare_service.upsert_log(
+    second_log = await skincare_writes.upsert_log(
         db_session,
         on_date=EVALUATION_DATE,
         note="B private note",
         identity=second,
         prepared_conflict_write=second_prepared,
     )
-    first_observation = await skincare_service.add_observation(
+    first_observation = await skincare_writes.add_observation(
         db_session,
         on_date=EVALUATION_DATE,
         zone="A-zone",
         identity=first,
         prepared_conflict_write=first_prepared,
     )
-    second_observation = await skincare_service.add_observation(
+    second_observation = await skincare_writes.add_observation(
         db_session,
         on_date=EVALUATION_DATE,
         zone="B-zone",
         identity=second,
         prepared_conflict_write=second_prepared,
     )
-    first_product = await skincare_service.add_product(
+    first_product = await skincare_writes.add_product(
         db_session,
         name="A product",
         type="serum",
         identity=first,
         prepared_conflict_write=first_prepared,
     )
-    second_product = await skincare_service.add_product(
+    second_product = await skincare_writes.add_product(
         db_session,
         name="B product",
         type="cream",
@@ -346,31 +350,31 @@ async def test_subjects_are_isolated_for_same_day_reads_notes_and_deletes(db_ses
         prepared_conflict_write=second_prepared,
     )
 
-    assert list(await skincare_service.list_logs(db_session, subject_id=first.subject_id)) == [first_log]
-    assert list(await skincare_service.list_logs(db_session, subject_id=second.subject_id)) == [second_log]
-    assert list(await skincare_service.list_observations(db_session, subject_id=first.subject_id)) == [first_observation]
-    assert list(await skincare_service.list_products(db_session, subject_id=second.subject_id)) == [second_product]
+    assert list(await skincare_queries.list_logs(db_session, subject_id=first.subject_id)) == [first_log]
+    assert list(await skincare_queries.list_logs(db_session, subject_id=second.subject_id)) == [second_log]
+    assert list(await skincare_queries.list_observations(db_session, subject_id=first.subject_id)) == [first_observation]
+    assert list(await skincare_queries.list_products(db_session, subject_id=second.subject_id)) == [second_product]
 
-    assert await skincare_service.update_log_note(
+    assert await skincare_writes.update_log_note(
         db_session,
         first_log.id,
         note="forged",
         identity=second,
         prepared_conflict_write=second_prepared,
     ) is None
-    assert await skincare_service.delete_log(
+    assert await skincare_writes.delete_log(
         db_session,
         first_log.id,
         identity=second,
         prepared_conflict_write=second_prepared,
     ) is False
-    assert await skincare_service.delete_observation(
+    assert await skincare_writes.delete_observation(
         db_session,
         first_observation.id,
         identity=second,
         prepared_conflict_write=second_prepared,
     ) is False
-    assert await skincare_service.update_product(
+    assert await skincare_writes.update_product(
         db_session,
         first_product.id,
         name="forged",
@@ -378,7 +382,7 @@ async def test_subjects_are_isolated_for_same_day_reads_notes_and_deletes(db_ses
         identity=second,
         prepared_conflict_write=second_prepared,
     ) is None
-    assert await skincare_service.delete_product(
+    assert await skincare_writes.delete_product(
         db_session,
         first_product.id,
         identity=second,
@@ -386,32 +390,32 @@ async def test_subjects_are_isolated_for_same_day_reads_notes_and_deletes(db_ses
     ) is False
     assert (first_log.note, first_product.name) == ("A private note", "A product")
 
-    assert await skincare_service.update_log_note(
+    assert await skincare_writes.update_log_note(
         db_session,
         first_log.id,
         note="A updated note",
         identity=first,
         prepared_conflict_write=first_prepared,
     ) is first_log
-    assert await skincare_service.delete_log(
+    assert await skincare_writes.delete_log(
         db_session,
         first_log.id,
         identity=first,
         prepared_conflict_write=first_prepared,
     ) is True
-    assert await skincare_service.delete_observation(
+    assert await skincare_writes.delete_observation(
         db_session,
         first_observation.id,
         identity=first,
         prepared_conflict_write=first_prepared,
     ) is True
-    assert await skincare_service.delete_product(
+    assert await skincare_writes.delete_product(
         db_session,
         first_product.id,
         identity=first,
         prepared_conflict_write=first_prepared,
     ) is True
-    assert second_observation in await skincare_service.list_observations(
+    assert second_observation in await skincare_queries.list_observations(
         db_session,
         subject_id=second.subject_id,
     )
@@ -444,18 +448,18 @@ async def test_duplicate_subject_day_is_an_explicit_scope_error(db_session):
     await db_session.flush()
 
     with pytest.raises(engine.ConflictScopeError, match="multiple"):
-        await skincare_service.get_log(
+        await skincare_queries.get_log(
             db_session,
             EVALUATION_DATE,
             subject_id=identity.subject_id,
         )
     with pytest.raises(engine.ConflictScopeError, match="multiple"):
-        await skincare_service.resolve_today_scoped(
+        await skincare_conflicts.resolve_today_scoped(
             db_session,
             scope=_context(identity).scope,
         )
     with pytest.raises(engine.ConflictScopeError, match="multiple"):
-        await skincare_service.upsert_log(
+        await skincare_writes.upsert_log(
             db_session,
             on_date=EVALUATION_DATE,
             identity=identity,
@@ -700,7 +704,7 @@ async def test_postgres_concurrent_same_subject_first_upserts_leave_one_row(
 
     async def upsert(*, retinoid: bool, moisturizer: bool) -> None:
         async with factory() as session:
-            await skincare_service.upsert_log(
+            await skincare_writes.upsert_log(
                 session,
                 on_date=EVALUATION_DATE,
                 retinoid=retinoid,
@@ -757,7 +761,7 @@ async def test_postgres_legacy_bridge_write_serializes_against_subject_creation(
             )
             bridge_locked.set()
             await asyncio.wait_for(mutation_attempted.wait(), timeout=5)
-            await skincare_service.upsert_log(
+            await skincare_writes.upsert_log(
                 session,
                 on_date=EVALUATION_DATE,
                 moisturizer=True,
@@ -875,11 +879,11 @@ async def test_a_skincare_row_without_a_subject_belongs_to_nobody(
     await db_session.flush()
 
     assert list(
-        await skincare_service.list_logs(
+        await skincare_queries.list_logs(
             db_session, subject_id=owner_write.subject_id
         )
     ) == []
-    written = await skincare_service.upsert_log(
+    written = await skincare_writes.upsert_log(
         db_session,
         on_date=EVALUATION_DATE,
         note="mine",

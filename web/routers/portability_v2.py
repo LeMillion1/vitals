@@ -11,14 +11,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.background import BackgroundTask
 
 from vitals.access import PolicyAction, PolicyResourceType
-from vitals.enums import IntegrationConnectionStatus
 from vitals.i18n import t
-from vitals.models.tenancy import IntegrationConnection
 from vitals.operations.portability.export_v2 import export_subject_encrypted
 from vitals.operations.portability.import_v2 import (
     ImportV2OperationError,
@@ -30,6 +27,7 @@ from vitals.services.portability.archive_reader import (
     ArchiveReadError,
     open_validated_encrypted_archive,
 )
+from vitals.services.portability import connection_mapping
 from vitals.services.portability.connection_mapping import ConnectionMappingError
 from vitals.services.portability.crypto import PortabilityCryptoError
 from vitals.services.portability.file_retirement import (
@@ -58,10 +56,6 @@ router = APIRouter(prefix="/settings/portability-v2", tags=["portability-v2"])
 
 PORTABILITY_EXTENSIONS = frozenset({".vitals"})
 _STATIC_ROOT = os.path.realpath(Path(__file__).resolve().parents[1] / "static")
-_USABLE_CONNECTION_STATUSES = (
-    IntegrationConnectionStatus.LEGACY.value,
-    IntegrationConnectionStatus.ACTIVE.value,
-)
 _MAX_MAPPING_JSON_BYTES = 64 * 1024
 _DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 _PROVIDER_LABELS = {
@@ -221,20 +215,9 @@ async def inspect_personal_record_v2(
     except (ArchiveReadError, PortabilityCryptoError, RecordDecodeError) as exc:
         raise _invalid_archive() from exc
 
-    candidates = tuple(
-        await db.scalars(
-            select(IntegrationConnection)
-            .where(
-                IntegrationConnection.subject_id == ownership.subject_id,
-                IntegrationConnection.status.in_(_USABLE_CONNECTION_STATUSES),
-            )
-            .order_by(
-                IntegrationConnection.provider,
-                IntegrationConnection.connection_type,
-                IntegrationConnection.created_at,
-                IntegrationConnection.id,
-            )
-        )
+    candidates = await connection_mapping.list_usable_connection_candidates(
+        db,
+        subject_id=ownership.subject_id,
     )
     connections: list[dict[str, object]] = []
     for descriptor in descriptors:

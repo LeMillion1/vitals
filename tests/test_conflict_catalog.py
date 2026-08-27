@@ -1,7 +1,7 @@
 """Ingredient-normalization unit tests (pure logic, no DB).
 
 normalize_ingredient() is the fix for the Cyrillic-matching bug: a Russian
-supplement name used to fall through supplements_service.slugify's ascii-only
+supplement name used to fall through supplement_parsing.slugify's ascii-only
 regex and collapse to the useless "supplement" slug, silently disabling any
 conflict rule written against a real key like "iron".
 """
@@ -17,7 +17,7 @@ from vitals.enums import UserStatus
 from vitals.models.conflict_rule import ConflictRule
 from vitals.models.identity import HealthSubject, User
 from vitals.services.conflicts import catalog
-from vitals.services.supplements_service import slugify
+from vitals.services.supplements.parsing import slugify
 from vitals.utils.identifiers import slugify as shared_slugify
 
 

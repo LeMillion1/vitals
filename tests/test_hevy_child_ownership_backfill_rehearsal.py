@@ -25,7 +25,8 @@ import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
-from vitals.services import hevy_service
+from vitals.services.hevy import queries as hevy_queries
+from vitals.services.hevy import raw_payloads as hevy_raw_payloads
 from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_PHASE,
 )
@@ -367,7 +368,7 @@ async def _strict_rebuild(engine: AsyncEngine, subject_id: Any) -> None:
         assert raw is not None
         connection_id = raw.integration_connection_id
         assert connection_id is not None
-        await hevy_service.reparse_owned_from_raw(
+        await hevy_raw_payloads.reparse_owned_from_raw(
             session,
             raw,
             identity=WriteIdentity(subject_id=subject_id, actor_user_id=None),
@@ -394,9 +395,11 @@ async def _strict_rebuild(engine: AsyncEngine, subject_id: Any) -> None:
         )
 
     async with factory() as session:
-        workouts = await hevy_service.list_workouts(session)
+        workouts = await hevy_queries.list_workouts(
+            session, subject_id=subject_id
+        )
         workout = next(row for row in workouts if row.id == WORKOUT_ID)
-        summary = hevy_service.workout_summary(workout)
+        summary = hevy_queries.workout_summary(workout)
         assert summary["working_sets"] == 2
         assert summary["exercises"] == ["Synthetic press", "Synthetic row"]
 

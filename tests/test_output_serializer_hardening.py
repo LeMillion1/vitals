@@ -22,7 +22,7 @@ from sqlalchemy import (
 from vitals.models.base import Base
 from vitals.ownership import OwnershipClass, OwnershipSpec, TargetColumn
 from vitals.operations.ownership import portability_v1
-from vitals.services import data_portability_service
+from vitals.services.portability import llm_projection, v1_contract, v1_export
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped
@@ -127,7 +127,7 @@ def test_mcp_generic_serialization_suppresses_only_private_plumbing():
 def test_llm_generic_row_dump_has_no_uuid_or_private_plumbing():
     row, private_uuids = _synthetic_owned_row()
 
-    payload = data_portability_service._row_dump(row)
+    payload = llm_projection._row_dump(row)
 
     _assert_no_private_plumbing(payload, private_uuids)
     # Preserve the curated LLM contract while retaining useful business fields.
@@ -169,10 +169,10 @@ async def test_full_backup_rebinds_subject_and_nulls_other_private_plumbing(
     connection = await db_session.connection()
     await connection.run_sync(table.create)
     monkeypatch.setattr(
-        data_portability_service,
+        v1_contract,
         "OWNERSHIP_REGISTRY",
         {
-            **data_portability_service.OWNERSHIP_REGISTRY,
+            **v1_contract.OWNERSHIP_REGISTRY,
             table.name: OwnershipSpec(
                 OwnershipClass.SUBJECT_DATA,
                 subject=TargetColumn.REQUIRED,
@@ -204,7 +204,7 @@ async def test_full_backup_rebinds_subject_and_nulls_other_private_plumbing(
             )
         )
 
-        snapshot = await data_portability_service.export_full(db_session)
+        snapshot = await v1_export.export_full(db_session)
         exported = snapshot[table.name][0]
         encoded = json.dumps(snapshot)
 
@@ -358,7 +358,7 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
     )
     await db_session.flush()
 
-    snapshot = await data_portability_service.export_full(db_session)
+    snapshot = await v1_export.export_full(db_session)
 
     assert snapshot["weight_logs"][0]["_vitals_subject_bound"] is True
     assert "subject_id" not in snapshot["weight_logs"][0]
@@ -519,14 +519,14 @@ async def test_v1_export_and_import_fail_closed_with_multiple_subjects(db_sessio
     await db_session.flush()
     weight_id = weight.id
 
-    with pytest.raises(data_portability_service.PortabilityError):
-        await data_portability_service.export_full(db_session)
+    with pytest.raises(v1_contract.PortabilityError):
+        await v1_export.export_full(db_session)
 
     payload = {
         "metadata": {"version": "1.0", "kind": "full_backup"},
         "weight_logs": [],
     }
-    with pytest.raises(data_portability_service.PortabilityError):
+    with pytest.raises(v1_contract.PortabilityError):
         await portability_v1.import_full(db_session, payload)
 
     preserved = await db_session.get(WeightLog, weight_id)
@@ -554,7 +554,7 @@ async def test_v1_import_rejects_non_boolean_subject_marker_before_mutation(
         "weight_logs": [{"_vitals_subject_bound": marker}],
     }
 
-    with pytest.raises(data_portability_service.PortabilityError):
+    with pytest.raises(v1_contract.PortabilityError):
         await portability_v1.import_full(db_session, payload)
 
     assert await db_session.get(WeightLog, weight_id) is not None
@@ -579,7 +579,7 @@ async def test_v1_import_without_local_subject_rejects_true_marker_before_mutati
         "weight_logs": [{"_vitals_subject_bound": True}],
     }
 
-    with pytest.raises(data_portability_service.PortabilityError):
+    with pytest.raises(v1_contract.PortabilityError):
         await portability_v1.import_full(db_session, payload)
 
     assert await db_session.get(WeightLog, weight_id) is not None
@@ -598,7 +598,7 @@ async def test_v1_zero_subject_roundtrip_keeps_legacy_rows_unbound(db_session):
     )
     await db_session.flush()
 
-    snapshot = await data_portability_service.export_full(db_session)
+    snapshot = await v1_export.export_full(db_session)
 
     assert snapshot["weight_logs"][0]["_vitals_subject_bound"] is False
     await portability_v1.import_full(db_session, snapshot)
@@ -614,7 +614,7 @@ async def test_subject_probe_treats_missing_identity_schema_as_legacy():
     try:
         async with session_factory() as session:
             assert (
-                await data_portability_service._single_local_subject_id(session)
+                await v1_contract._single_local_subject_id(session)
                 is None
             )
     finally:

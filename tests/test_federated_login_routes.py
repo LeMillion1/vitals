@@ -100,7 +100,7 @@ class Provider:
 def federated(monkeypatch):
     """Configure OIDC, and route the provider's endpoints to the fake."""
 
-    import web.auth
+    import web.authentication.federated
     for name, value in (
         ("VITALS_OIDC_ISSUER", ISSUER),
         ("VITALS_OIDC_CLIENT_ID", CLIENT_ID),
@@ -110,7 +110,12 @@ def federated(monkeypatch):
         ("VITALS_PUBLIC_URL", "https://vitals.example.test"),
     ):
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr(web.auth, "_provider_cache", None, raising=False)
+    monkeypatch.setattr(
+        web.authentication.federated,
+        "_provider_cache",
+        None,
+        raising=False,
+    )
 
     provider = Provider()
     transport = httpx.MockTransport(provider.handler)

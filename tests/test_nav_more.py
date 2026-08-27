@@ -8,8 +8,17 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from vitals.enums import Source
+from vitals.enums import (
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    Source,
+    UserStatus,
+)
 from vitals.models.garmin import DOMAIN as GARMIN_DOMAIN, GarminDaily
+from vitals.models.hevy import DOMAIN as HEVY_DOMAIN, HevyWorkout
+from vitals.models.identity import HealthSubject, User
+from vitals.models.tenancy import IntegrationConnection
 from vitals.models.weight import DOMAIN as WEIGHT_DOMAIN, WeightLog
 from vitals.services import nav_status_service
 from vitals.utils.timeutils import today_local
@@ -117,6 +126,51 @@ async def test_a_domain_with_nothing_logged_yet_gets_no_row(db_session, owner_wr
     assert await nav_status_service.rail_stats(
         db_session, subject_id=owner_write.subject_id
     ) == []
+
+
+async def test_workout_status_does_not_read_another_subject(
+    db_session, owner_write, owned_by_legacy_subject
+):
+    other_owner = User(
+        username="nav-hevy-other",
+        normalized_username="nav-hevy-other",
+        password_hash="$synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(other_owner)
+    await db_session.flush()
+    other_subject = HealthSubject(owner_user_id=other_owner.id, timezone="UTC")
+    db_session.add(other_subject)
+    await db_session.flush()
+    other_connection = IntegrationConnection(
+        subject_id=other_subject.id,
+        provider=IntegrationProvider.HEVY.value,
+        connection_type=IntegrationConnectionType.ACCOUNT.value,
+        external_account_discriminator="nav-hevy-other",
+        credential_ref="test:nav-hevy-other",
+        status=IntegrationConnectionStatus.ACTIVE.value,
+    )
+    db_session.add(other_connection)
+    await db_session.flush()
+    db_session.add(
+        HevyWorkout(
+            subject_id=other_subject.id,
+            integration_connection_id=other_connection.id,
+            date=today_local(),
+            domain=HEVY_DOMAIN,
+            source=Source.HEVY_API.value,
+            external_id="nav-other-workout",
+            title="Other subject workout",
+        )
+    )
+    await db_session.flush()
+
+    rows = await nav_status_service.rail_stats(
+        db_session,
+        {"hevy": True},
+        subject_id=owner_write.subject_id,
+    )
+    assert all(row.key != "workouts" for row in rows)
 
 
 async def test_a_disabled_module_gets_no_row(db_session, owner_write, owned_by_legacy_subject, *, garmin_connection_id):

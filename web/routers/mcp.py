@@ -24,4621 +24,621 @@ Response conventions (a stable contract the model can rely on):
 """
 from __future__ import annotations
 
-import contextvars
-import functools
-import importlib
-import json
-import logging
-import traceback
-import uuid
-from datetime import date as date_type, timedelta
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional
-
-from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.provider import AccessToken
-from mcp.server.auth.settings import AuthSettings
-from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
-from mcp.shared.exceptions import MCPError
-from mcp_types import CallToolResult, TextContent
-from pydantic import ValidationError
-from sqlalchemy import func, select
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import selectinload
-
-from vitals.config import load_config
-from vitals.access import AccessScope, PolicyAction, PolicyResourceType
-from vitals.enums import (
-    AIInvocationSource,
-    AIInvocationStatus,
-    Domain,
-    IntegrationProvider,
-    MilestoneStatus,
-    Source,
-)
-from vitals.models import (
-    Annotation,
-    BodyMeasurement,
-    BodyScan,
-    DosePhase,
-    GarminActivity,
-    GarminDaily,
-    GarminIntraday,
-    GeneticVariant,
-    HevyExercise,
-    HevyWorkout,
-    HrtCycle,
-    HrtDose,
-    HrtSideEffect,
-    Injection,
-    LabResult,
-    MealLog,
-    Milestone,
-    NoiseMarker,
-    SideEffect,
-    SkincareLog,
-    SkincareObservation,
-    Supplement,
-    WeightLog,
-    WeeklyDigest,
-)
-from vitals.services import modules_service
-from vitals.services.conflicts import engine
-from vitals.services.conflicts.engine import ConflictBlocked
-from vitals.services.data_portability_service import GENERIC_OUTPUT_SUPPRESSED_COLUMNS
-from vitals.services.genetics import variants as variant_records
-from vitals.services.legacy_ownership import (
-    LegacyOwnershipContext,
-    resolve_legacy_ownership_context,
-    resolve_subject_ownership_context,
-)
-from vitals.persistence.rls import bind_session_subject
-from vitals.utils.timeutils import now_local, today_local
 from web.config import get_web_config
 from web.deps import get_redis_client, get_session_factory
+from web.mcp.access import (
+    PROMPT_ACCESS,  # noqa: F401 - transitional compatibility re-export
+    RECORD_DOMAIN_KEYS as _RECORD_DOMAIN_KEYS,  # noqa: F401 - compat export
+    RESOURCE_ACCESS,  # noqa: F401 - transitional compatibility re-export
+    TOOL_ACCESS,  # noqa: F401 - transitional compatibility re-export
+)
+from web.mcp.arguments import (
+    McpArgumentError,  # noqa: F401 - transitional compatibility re-export
+    _parse_date,
+    _parse_time,
+)
+from web.mcp.conflicts import (
+    auxiliary_weight_write as _mcp_v1_aux_weight_write,
+    composition_scope as _mcp_v1_composition_scope,
+    conflict_scope as _mcp_v1_conflict_scope,
+    conflict_write_context as _mcp_v1_conflict_write_context,
+    weight_write as _mcp_v1_weight_write,
+)
+from web.mcp.errors import (
+    McpActorUnresolved,  # noqa: F401 - compatibility exception identity
+)
+from web.mcp.identity import (
+    ANONYMOUS_TOKEN,  # noqa: F401 - compatibility identity sentinel
+    MCP_ACTOR as _MCP_ACTOR,  # noqa: F401 - compatibility request-state seam
+    current_actor as _current_actor,  # noqa: F401 - compatibility identity seam
+    current_grant_binding as _current_grant_binding,  # noqa: F401 - compat seam
+)
+from web.mcp.ownership import (
+    actor_username as _mcp_actor_username,
+    legacy_alert_owner as _mcp_v1_legacy_alert_owner,
+    legacy_owner as _mcp_v1_legacy_owner,
+)
+from web.mcp.record_catalog import DELETE_TARGETS, NOTE_MODELS
+from web.mcp.resources import ResourceDependencies, register_resources
+from web.mcp.modules import module_enabled as _subject_module_enabled
+from web.mcp.modules import module_gate as _module_gate
+from web.mcp.serialization import (
+    _ROW_NOISE,  # noqa: F401 - transitional compatibility re-export
+    _conflict_payload,
+    serialize_row,
+    serialize_written,
+)
+from web.mcp.server import (
+    MCP_SERVER_VERSION,  # noqa: F401 - compatibility server contract
+    TOOL_MODULES,
+    ConnectorTokenVerifier,
+    VitalsMCPServer,  # noqa: F401 - compatibility server type
+    build_server,
+    described_for_a_model as _described_for_a_model,  # noqa: F401 - compat
+)
+from web.mcp.tools.alerts import AlertToolDependencies, register_alert_tools
+from web.mcp.tools.conflicts import ConflictToolDependencies, register_conflict_tools
+from web.mcp.tools.hrt import HrtToolDependencies, register_hrt_tools
+from web.mcp.tools.genetics import GeneticsToolDependencies, register_genetics_tools
+from web.mcp.tools.glp1 import (
+    Glp1ToolDependencies,
+    register_glp1_injection_tools,
+    register_glp1_maintenance_tools,
+    register_glp1_read_tools,
+)
+from web.mcp.tools.labs import LabsToolDependencies, register_labs_tools
+from web.mcp.tools.records import (
+    RecordToolDependencies,
+    register_delete_tools,
+    register_note_tools,
+)
+from web.mcp.tools.digest import (
+    DigestToolDependencies,
+    register_digest_read_tools,
+    register_digest_tools,
+)
+from web.mcp.tools.milestones import (
+    MilestoneToolDependencies,
+    register_milestone_tools,
+)
+from web.mcp.tools.module_settings import (
+    ModuleSettingsToolDependencies,
+    register_module_settings_tools,
+)
+from web.mcp.tools.proactive import ProactiveToolDependencies, register_proactive_tools
+from web.mcp.tools.providers import (
+    INTRADAY_POINT_CAP as _DEFAULT_INTRADAY_POINT_CAP,
+    SYNC_DAILY_LIMIT as _DEFAULT_SYNC_DAILY_LIMIT,
+    ProviderToolDependencies,
+    fold_sleep_detail,
+    register_garmin_read_tools,
+    register_garmin_sync_tools,
+    register_hevy_read_tools,
+    register_hevy_sync_tools,
+)
+from web.mcp.tools.reporting import (
+    ReportingToolDependencies,
+    register_reporting_tools,
+    register_trend_tools,
+)
+from web.mcp.tools.skincare import (
+    SkincareToolDependencies,
+    register_skincare_observation_tools,
+    register_skincare_read_tools,
+    register_skincare_routine_tools,
+)
+from web.mcp.tools.supplements import (
+    SupplementsToolDependencies,
+    register_supplements_conflict_tools,
+    register_supplements_read_tools,
+    register_supplements_write_tools,
+)
+from web.mcp.tools.body_composition import (
+    BodyCompositionToolDependencies,
+    register_body_composition_tools,
+    serialize_scan as _serialize_scan,  # noqa: F401 - compatibility export
+)
+from web.mcp.tools.weight import (
+    WeightToolDependencies,
+    register_measurement_update_tools,
+    register_measurement_tools,
+    register_noise_tools,
+    register_weight_read_tools,
+    register_weight_write_tools,
+)
+from web.mcp.tools.nutrition import (
+    NutritionToolDependencies,
+    register_nutrition_tools,
+)
+from web.mcp.tools.profile import ProfileToolDependencies, register_profile_tool
+from web.mcp.tools.timeline import TimelineToolDependencies, register_timeline_tools
+from web.mcp.transport import build_transport as _build_mcp_transport
 
-logger = logging.getLogger(__name__)
+class _ConnectorTokenVerifier(ConnectorTokenVerifier):
+    """Compatibility constructor using this adapter's patchable factory seam."""
 
-class _ConnectorTokenVerifier:
-    """The SDK's authentication seam, holding the identity check this had.
-
-    ``MCPAuthMiddleware`` used to do this as raw ASGI: read the Bearer header,
-    validate the signature, check the client id. The SDK asks for the same
-    answer through a protocol, and gives it somewhere to live — an
-    ``AccessToken`` carries the subject, the scopes and the claims, and
-    ``get_access_token()`` hands it to a tool. That is the shape PR-10 asks for
-    ("stable user ``sub``, subject, audience, scopes"), and it is where the
-    identity seam belongs rather than in a contextvar this module set itself.
-    """
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        from itsdangerous import BadSignature, SignatureExpired
-
-        from vitals.services.authentication import mcp_tokens
-        from web.auth import _get_mcp_serializer
-
-        cfg = get_web_config()
-        try:
-            payload, signed_at = _get_mcp_serializer().loads(
-                token, max_age=_TOKEN_MAX_AGE, return_timestamp=True
-            )
-        except (SignatureExpired, BadSignature):
-            return None
-        if not isinstance(payload, dict):
-            return None
-
-        # The signature says the token is ours and unaltered. Everything a
-        # signature *cannot* say — which resource it was minted for, whether the
-        # account still exists, whether somebody has since taken it back — is
-        # asked of the database, on every request, because each of those can
-        # become false while a valid signature stays valid.
-        async with get_session_factory()() as session:
-            verified = await mcp_tokens.verify(
-                session,
-                payload=payload,
-                token=token,
-                expected_client_id=cfg.mcp_client_id,
-                expected_audience=mcp_tokens.audience_for(cfg.public_url),
-                expected_issuer=cfg.public_url,
-                signed_at=signed_at,
-            )
-            if verified is None:
-                return None
-            await session.commit()
-
-        named = verified.username or None
-        return AccessToken(
-            token=token,
-            client_id=verified.client_id,
-            scopes=sorted(
-                f"{scope.resource_type.value}:{scope.resource_key}:{scope.action.value}"
-                for scope in verified.scopes
-            ),
-            subject=named,
-            claims={
-                "username": named,
-                "sub": str(verified.user_id),
-                "health_subject": str(verified.subject_id),
-                "relationship": (
-                    str(verified.relationship_id)
-                    if verified.relationship_id is not None
-                    else None
-                ),
-                "consent_grant": (
-                    str(verified.consent_grant_id)
-                    if verified.consent_grant_id is not None
-                    else None
-                ),
-                "consent_version": verified.consent_version,
-                "jti": str(verified.jti),
-            }
-            if named
-            else {},
-        )
-
-
-#: One year, matched to what ``/oauth/token`` advertises in ``expires_in``.
-#: Enforced on every request rather than trusted from the payload.
-_TOKEN_MAX_AGE = 31536000
-
-
-def _described_for_a_model(tool):
-    """Send the model what the tool does, not why it is written that way.
-
-    The SDK derives a tool's description from its docstring, whole. These
-    docstrings are also the place this codebase records *decisions* — why a
-    field moved out of ``.env``, which refusal a caller should expect — and none
-    of that helps a model choose a tool. It is read by something that pays for
-    every token of it, on every listing, and it is internal engineering history
-    sent to a third party.
-
-    So the first paragraph goes out and the rest stays home. Written this way
-    on purpose: a rule at the boundary, rather than sixty ``description=``
-    arguments that would drift from the docstrings beside them, or docstrings
-    trimmed until they stopped explaining anything to the next person who reads
-    the code.
-    """
-
-    description = (tool.description or "").strip()
-    if not description:
-        return tool
-    summary = description.split("\n\n", 1)[0].strip()
-    if summary == description:
-        return tool
-    return tool.model_copy(update={"description": summary})
-
-
-class VitalsMCPServer(MCPServer):
-    """The server, with a switched-off module's tools left out of the listing.
-
-    Writes and ownership-sensitive reads already refuse a disabled module.
-    Hiding its tools as well saves the conversation budget and avoids inviting
-    the model into a domain the owner does not track.
-
-    In ``list_tools`` rather than in middleware, which is where the equivalent
-    FastMCP hook lived. A ``ServerMiddleware`` only sees the wire, so the
-    listing an in-process caller got and the listing a connector got would be
-    two different answers computed in two places — the exact shape this branch
-    keeps finding defects in. One method, both paths.
-
-    Resolved per call rather than latched at import, so a toggle in Settings
-    takes effect on the next request — and under the stateless transport there
-    is no reconnect to wait for. Authorization is projected first and never
-    depends on module-state availability. If that state cannot be read, only
-    grant-authorized tools outside optional modules are listed: core work stays
-    usable without advertising a domain that may be disabled.
-    """
-
-    async def list_tools(self, *args, **kwargs):
-        tools = [_described_for_a_model(t) for t in await super().list_tools(*args, **kwargs)]
-        try:
-            tools = [tool for tool in tools if _tool_listing_allowed(tool.name)]
-        except McpActorUnresolved:
-            logger.warning("mcp: connector grant unavailable; listing no tools")
-            return []
-        try:
-            session_factory = get_session_factory()
-            async with session_factory() as session:
-                ownership = await _mcp_v1_legacy_owner(session)
-                enabled = await modules_service.get_enabled_modules(
-                    session,
-                    subject_id=ownership.subject_id,
-                )
-        except Exception:
-            logger.warning(
-                "mcp: module state unavailable; listing grant-authorized core tools only",
-                exc_info=True,
-            )
-            return [tool for tool in tools if tool.name not in TOOL_MODULES]
-        return [
-            tool
-            for tool in tools
-            if enabled.get(TOOL_MODULES.get(tool.name, ""), True)
-        ]
-
-    async def call_tool(self, name, arguments, context=None):
-        tool = self._tool_manager.get_tool(name)
-        if tool is None:
-            raise ToolError(f"Unknown tool: {name}")
-        try:
-            allowed = _tool_allowed(name, arguments)
-        except McpActorUnresolved as exc:
-            return _visible_tool_failure(name, exc, output_schema=tool.output_schema)
-        if not allowed:
-            # Same answer as an absent tool. A denied direct invocation must not
-            # reveal that another role or a wider connector can see it.
-            raise ToolError(f"Unknown tool: {name}")
-        try:
-            return await super().call_tool(name, arguments, context)
-        except MCPError:
-            # Protocol failures already carry a JSON-RPC code/message/data
-            # object. Do not turn that standard channel into a tool result.
-            raise
-        except Exception as exc:
-            return _visible_tool_failure(name, exc, output_schema=tool.output_schema)
-
-    async def list_resources(self, *args, **kwargs):
-        resources = await super().list_resources(*args, **kwargs)
-        return [
-            resource
-            for resource in resources
-            if _surface_allowed(RESOURCE_ACCESS.get(str(resource.uri)))
-        ]
-
-    async def read_resource(self, uri, context=None):
-        if not _surface_allowed(RESOURCE_ACCESS.get(str(uri))):
-            raise ToolError(f"Unknown resource: {uri}")
-        return await super().read_resource(uri, context)
-
-    async def list_prompts(self, *args, **kwargs):
-        prompts = await super().list_prompts(*args, **kwargs)
-        return [
-            prompt
-            for prompt in prompts
-            if _surface_allowed(PROMPT_ACCESS.get(prompt.name))
-        ]
-
-    async def get_prompt(self, name, arguments=None, context=None):
-        if not _surface_allowed(PROMPT_ACCESS.get(name)):
-            raise ToolError(f"Unknown prompt: {name}")
-        return await super().get_prompt(name, arguments, context)
+    def __init__(self):
+        super().__init__(session_factory_provider=lambda: get_session_factory())
 
 
 def _build_server() -> VitalsMCPServer:
-    cfg = get_web_config()
-    return VitalsMCPServer(
-        name="Vitals",
-        version=MCP_SERVER_VERSION,
-        token_verifier=_ConnectorTokenVerifier(),
-        auth=AuthSettings(
-            issuer_url=cfg.public_url,
-            resource_server_url=f"{cfg.public_url}/mcp",
-        ),
-    )
+    return build_server(session_factory_provider=lambda: get_session_factory())
 
-
-#: Advertised in ``server/discover`` and in every result's ``_meta``.
-MCP_SERVER_VERSION = "2.0.0"
 
 mcp = _build_server()
 
-
-# Columns every row carries and no tool ever accepts back: bookkeeping the model
-# cannot act on. Dropped from serialized rows along with every ``None`` value —
-# at a hundred rows per read the key names alone outweigh the data. ``id`` and
-# ``date`` stay (edits and deletes address rows by id); ``source`` stays (weight
-# priority and provenance are answers in their own right).
-_ROW_NOISE = (
-    frozenset(
-        {
-            "domain",
-            "created_at",
-            "updated_at",
-            "raw_payload_id",
-            "raw_id",
-            "ai_invocation_id",
-            "weight_log_id",
-        }
-    )
-    | GENERIC_OUTPUT_SUPPRESSED_COLUMNS
-)
-
-
-def serialize_row(row) -> dict:
-    """Helper to convert any SQLAlchemy model instance into a JSON-serializable dict.
-
-    Omits bookkeeping columns (``_ROW_NOISE``) and unset fields: an absent key and
-    a ``null`` one read the same to the model, and the null costs tokens per row.
-    """
-    if row is None:
-        return {}
-    d = {}
-    for column in row.__table__.columns:
-        if column.name in _ROW_NOISE:
-            continue
-        val = getattr(row, column.name)
-        if val is None:
-            continue
-        d[column.name] = val.isoformat() if hasattr(val, "isoformat") else val
-    return d
-
-
-async def serialize_written(session, row) -> dict:
-    """Serialize a row that was just written. After an UPDATE flush, server-side
-    ``onupdate``/``server_default`` columns (e.g. ``updated_at``) are *expired*;
-    reading them in the sync ``serialize_row`` would trigger a lazy SELECT outside
-    the async greenlet and fail with ``greenlet_spawn has not been called``. An
-    explicit ``await session.refresh`` reloads them inside the async context first.
-    """
-    if row is None:
-        return {}
-    await session.refresh(row)
-    return serialize_row(row)
-
-
-def _conflict_payload(exc: ConflictBlocked) -> dict:
-    """Structured result for a write blocked by a hard conflict rule.
-
-    The HTML UI gets a 409 + violations and renders "Save anyway (Override)".
-    A tool call has no HTTP status the model can act on, so we return the same
-    violation list as a plain dict instead of letting the exception escape as an
-    opaque 500 — the model can inspect the block and retry the call with
-    ``override=True`` (the MCP equivalent of the override button)."""
-    return {
-        "blocked": True,
-        "message": str(exc),
-        "violations": [v.to_dict() for v in exc.violations],
-        "hint": "Retry the same call with override=True to save anyway.",
-    }
-
-
-class McpArgumentError(ValueError):
-    """A reviewed argument error whose message contains no supplied value."""
-
-
-def _parse_date(value: Optional[str], default=None, *, field: str):
-    """Parse a ``YYYY-MM-DD`` tool argument, falling back to ``default`` when omitted.
-
-    A model writes dates the way a person says them ("вчера", "01.07.2026"), and
-    the stdlib answers with "Invalid isoformat string: ..." — which names neither
-    the argument nor the shape expected, so the model can't fix its own call.
-    """
-    if value is None:
-        return default
-    try:
-        return date_type.fromisoformat(value)
-    except (ValueError, TypeError):
-        raise McpArgumentError(f"{field} must be a YYYY-MM-DD date") from None
-
-
-def _parse_time(value: Optional[str], *, field: str):
-    """Same as ``_parse_date`` for an ``HH:MM`` argument."""
-    from datetime import time as time_type
-
-    if value is None:
-        return None
-    try:
-        return time_type.fromisoformat(value)
-    except (ValueError, TypeError):
-        raise McpArgumentError(f"{field} must be an HH:MM time") from None
-
-
-async def _merged(session, model, record_id: int, **fields) -> Optional[dict]:
-    """Fill a partial tool edit in from the stored row: a field left ``None`` keeps
-    its current value. Keys are column names on ``model``; ``None`` if the row is gone.
-
-    The update services replace every field they are handed, because the web forms
-    post the whole form and clearing an input there has to clear the column. A tool
-    call carries only what the conversation mentioned, so the same call would blank
-    everything the model didn't repeat — a rename would cost the meal its calories.
-    """
-    row = await session.get(model, record_id)
-    if row is None:
-        return None
-    return {k: (getattr(row, k) if v is None else v) for k, v in fields.items()}
+# Compatibility catalogs for direct callers and frozen cross-surface tests.
+_DELETE_TARGETS = DELETE_TARGETS
+_NOTE_MODELS = NOTE_MODELS
 
 
 async def _module_enabled(session, key: str) -> bool:
-    """True when an optional module is on (write tools honour the toggle)."""
-    from vitals.services import modules_service
-
-    ownership = await _mcp_v1_legacy_owner(session)
-    state = await modules_service.get_enabled_modules(
-        session,
-        subject_id=ownership.subject_id,
+    return await _subject_module_enabled(
+        session, key, owner_resolver=_mcp_v1_legacy_owner
     )
-    return bool(state.get(key))
-
-
-#: Who the connector is acting as, for the duration of one MCP request.
-#:
-#: Set by :class:`MCPAuthMiddleware` from the access token, which has carried the
-#: authorizing account's username since OAuth was built and — until now — threw
-#: it away. Every tool below resolved the ``.env`` owner instead, so the answer
-#: to "whose record is this" did not depend on whose token asked. On a
-#: single-user installation those are the same person. On a shared one, a token
-#: any signed-in account can obtain through the ordinary consent screen read and
-#: wrote somebody else's record.
-#:
-#: A ``ContextVar`` rather than an argument because the alternative is threading
-#: a parameter through sixty tool signatures and a decorator; the token is
-#: request state, and this is the shape request state takes in an ASGI app.
-#: Three states, and the middle one is the point.
-#:
-#: ``None`` — no request at all: a direct in-process call, the scheduler, a
-#: test. Resolves the ``.env`` owner by name, exactly as before, which is not a
-#: guess: ``.env`` names an account and the resolver returns *that account's*
-#: record.
-#:
-#: :data:`ANONYMOUS_TOKEN` — a request arrived with a credential that does not
-#: say who it is for. Old tokens are like this. Honoured only while the
-#: installation holds one subject; refused once there is a choice.
-#:
-#: A username — the account that stood at the consent screen.
-_MCP_ACTOR: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "vitals_mcp_actor", default=None
-)
-
-#: A token that authenticated and named nobody.
-ANONYMOUS_TOKEN = "\x00anonymous-connector-token"
-
-
-class McpActorUnresolved(RuntimeError):
-    """A token that cannot say whose record it is for, where that matters."""
-
-
-def _visible_tool_failure(
-    name: str,
-    exc: Exception,
-    *,
-    output_schema: dict | None,
-) -> CallToolResult:
-    """Return a safe diagnostic that clients cannot replace with generic copy.
-
-    The SDK normally sends escaped tool exceptions as ``isError=true``. Some
-    connector clients render every result in that channel as only "Error
-    occurred during tool execution", discarding the useful reason. Vitals uses
-    its existing application-level ``{"error": ...}`` contract here instead.
-
-    Raw exception strings are never copied into the response or log: database
-    drivers and validators can echo SQL parameters or user input containing
-    health data. The stable code explains the failure class; the opaque id
-    correlates it with one payload-free server log entry.
-    """
-
-    chain: list[BaseException] = []
-    cause: BaseException | None = exc
-    seen: set[int] = set()
-    while cause is not None and id(cause) not in seen:
-        seen.add(id(cause))
-        chain.append(cause)
-        cause = cause.__cause__
-
-    classified = next(
-        (
-            item
-            for item in chain
-            if isinstance(item, McpActorUnresolved | PermissionError)
-        ),
-        None,
-    )
-    if classified is not None:
-        code = "access_denied"
-        message = "The connector is not authorized for this operation."
-    elif classified := next(
-        (item for item in chain if isinstance(item, SQLAlchemyError)), None
-    ):
-        code = "database_error"
-        message = "The database could not complete the operation."
-    elif classified := next(
-        (item for item in chain if isinstance(item, ConnectionError | TimeoutError)),
-        None,
-    ):
-        code = "dependency_unavailable"
-        message = "A required service is temporarily unavailable."
-    elif classified := next(
-        (item for item in chain if isinstance(item, McpArgumentError)),
-        None,
-    ):
-        code = "invalid_request"
-        message = str(classified)
-    elif classified := next(
-        (item for item in chain if isinstance(item, ValidationError)), None
-    ):
-        code = "invalid_request"
-        message = "The tool could not validate its arguments."
-    else:
-        classified = chain[-1]
-        code = "internal_error"
-        message = "The tool failed unexpectedly."
-
-    error_id = uuid.uuid4().hex
-    frames = [
-        frame
-        for item in chain
-        for frame in traceback.extract_tb(item.__traceback__)
-    ]
-    application_frames = [
-        frame for frame in frames if "site-packages" not in Path(frame.filename).parts
-    ]
-    if application_frames or frames:
-        frame = (application_frames or frames)[-1]
-        location = f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
-    else:
-        location = "unavailable"
-
-    sqlstate = "none"
-    constraint = "none"
-    database_error = next(
-        (item for item in chain if isinstance(item, SQLAlchemyError)), None
-    )
-    if database_error is not None:
-        original = getattr(database_error, "orig", None)
-        raw_sqlstate = getattr(original, "sqlstate", None) or getattr(
-            original, "pgcode", None
-        )
-        if (
-            isinstance(raw_sqlstate, str)
-            and len(raw_sqlstate) == 5
-            and all(
-                character.isdigit() or "A" <= character <= "Z"
-                for character in raw_sqlstate
-            )
-        ):
-            sqlstate = raw_sqlstate
-        raw_constraint = getattr(
-            getattr(original, "diag", None), "constraint_name", None
-        )
-        if (
-            isinstance(raw_constraint, str)
-            and 0 < len(raw_constraint) <= 128
-            and all(character.isalnum() or character == "_" for character in raw_constraint)
-        ):
-            constraint = raw_constraint
-    logger.error(
-        "mcp: tool execution failed error_id=%s tool=%s code=%s "
-        "exception=%s location=%s sqlstate=%s constraint=%s",
-        error_id,
-        name,
-        code,
-        type(classified).__name__,
-        location,
-        sqlstate,
-        constraint,
-    )
-    payload = {
-        "error": message,
-        "code": code,
-        "error_id": error_id,
-        # A transport or database failure after COMMIT has an unknown outcome.
-        # Never invite an automatic retry that could duplicate a health write.
-        "retryable": False,
-    }
-    structured_content: dict | None = payload
-    if output_schema is not None:
-        result_schema = output_schema.get("properties", {}).get("result", {})
-        structured_content = (
-            {"result": [payload]} if result_schema.get("type") == "array" else None
-        )
-    return CallToolResult(
-        content=[TextContent(type="text", text=json.dumps(payload, sort_keys=True))],
-        structured_content=structured_content,
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class _McpGrantBinding:
-    """The already-verified credential boundary exposed by the MCP SDK."""
-
-    user_id: uuid.UUID
-    subject_id: uuid.UUID
-    scopes: frozenset[AccessScope]
-
-
-def _current_grant_binding() -> _McpGrantBinding | None:
-    """Return the request's patient and capabilities, or no request at all.
-
-    A present but malformed SDK token is an error, never the same state as an
-    in-process call. The verifier is the component that creates these claims;
-    parsing them again here prevents a future alternate verifier from turning a
-    partial identity into unrestricted compatibility behavior.
-    """
-
-    try:
-        token = get_access_token()
-    except Exception:  # pragma: no cover - no request context at all
-        return None
-    if token is None:
-        return None
-    claims = token.claims or {}
-    try:
-        user_id = uuid.UUID(str(claims["sub"]))
-        subject_id = uuid.UUID(str(claims["health_subject"]))
-        scopes = frozenset(
-            AccessScope(
-                resource_type=PolicyResourceType(resource_type),
-                resource_key=resource_key,
-                action=PolicyAction(action),
-            )
-            for value in token.scopes
-            for resource_type, resource_key, action in [value.split(":", 2)]
-        )
-    except (KeyError, TypeError, ValueError, AttributeError):
-        raise McpActorUnresolved(
-            "this connector token has no valid subject-scoped grant"
-        ) from None
-    if not scopes:
-        raise McpActorUnresolved("this connector token grants no capabilities")
-    return _McpGrantBinding(
-        user_id=user_id,
-        subject_id=subject_id,
-        scopes=scopes,
-    )
-
-
-def _current_actor() -> str | None:
-    """Who this request authenticated as, or ``None`` if there is no request.
-
-    The SDK's ``get_access_token()`` is the source now: its ``AccessToken``
-    carries the subject the token verifier put there. The contextvar remains as
-    an override for direct in-process callers and tests — nothing in a request
-    path sets it, and a request always has the access token to answer from.
-
-    A token that authenticated and named nobody comes back as
-    :data:`ANONYMOUS_TOKEN` rather than as ``None``: those two mean different
-    things and conflating them is what let an old credential keep the reach of
-    the ``.env`` owner.
-    """
-
-    override = _MCP_ACTOR.get()
-    if override is not None:
-        return override
-    try:
-        token = get_access_token()
-    except Exception:  # pragma: no cover - no request context at all
-        return None
-    if token is None:
-        return None
-    named = token.subject or (token.claims or {}).get("username")
-    return named if isinstance(named, str) and named else ANONYMOUS_TOKEN
-
-
-async def _require_live_account(session, username: str) -> None:
-    """A token names an account; this is where that account has to still exist.
-
-    ``resolve_legacy_ownership_context`` matches the name and does not read
-    ``status``, so without this a suspended person's connector would keep
-    working for the rest of the token's year. The check is here rather than in
-    the middleware because here there is a session — one the caller already
-    opened, and one a test can substitute.
-    """
-
-    from vitals.enums import UserStatus
-    from vitals.models.identity import User
-    from vitals.services.identity_service import normalize_username
-
-    async def _alive(active_session) -> bool:
-        normalized = normalize_username(username).lookup_key
-        return (
-            await active_session.scalar(
-                select(User.id)
-                .where(
-                    User.normalized_username == normalized,
-                    User.status == UserStatus.ACTIVE.value,
-                )
-                .limit(1)
-            )
-        ) is not None
-
-    if session is None:
-        async with get_session_factory()() as opened:
-            live = await _alive(opened)
-    else:
-        live = await _alive(session)
-    if not live:
-        raise McpActorUnresolved(
-            "this connector token names an account that is no longer active"
-        )
-
-
-async def _mcp_actor_username(session=None) -> str:
-    """The account this request is acting as.
-
-    The token's identity when there is one. When there is not — a legacy token
-    minted before this, or a direct in-process call — the ``.env`` owner, but
-    *only* while the installation holds exactly one subject. That is the same
-    fail-closed rule the rest of this migration uses, and it is the whole safety
-    property here: a credential that cannot say whose record it means is
-    honoured only where there is no choice to make.
-    """
-
-    from vitals.enums import UserStatus
-    from vitals.models.identity import HealthSubject, User
-
-    async def _configured_or_single_owner(active_session) -> str:
-        config = get_web_config()
-        if not config.oidc_enabled:
-            # Password mode retains its exact legacy behavior: the environment
-            # credential names the installation owner.
-            return config.auth_username
-        records = tuple(
-            (
-                await active_session.execute(
-                    select(User.username, User.status)
-                    .select_from(HealthSubject)
-                    .join(User, User.id == HealthSubject.owner_user_id)
-                    .limit(2)
-                )
-            ).all()
-        )
-        if len(records) != 1 or records[0].status != UserStatus.ACTIVE.value:
-            raise McpActorUnresolved(
-                "this OIDC installation does not have exactly one active record "
-                "owner for an unattributed legacy connector; reconnect it to mint "
-                "a subject-bound token"
-            )
-        return records[0].username
-
-    actor = _current_actor()
-    if actor is not None and actor != ANONYMOUS_TOKEN:
-        await _require_live_account(session, actor)
-        return actor
-    if actor is None:
-        # No request: a direct call, a scheduled job, a test. The transitional
-        # environment name remains authoritative when present; after OIDC
-        # retirement the exact-one active owner graph is the only safe fallback.
-        if session is None:
-            async with get_session_factory()() as opened:
-                return await _configured_or_single_owner(opened)
-        return await _configured_or_single_owner(session)
-    if session is None:
-        # The two sync tools hold a factory rather than a session. Counting
-        # subjects is a read of its own and must not join whatever transaction
-        # the caller is about to start.
-        async with get_session_factory()() as counting:
-            subject_ids = tuple(
-                await counting.scalars(select(HealthSubject.id).limit(2))
-            )
-    else:
-        subject_ids = tuple(
-            await session.scalars(select(HealthSubject.id).limit(2))
-        )
-    if len(subject_ids) > 1:
-        raise McpActorUnresolved(
-            "this connector token does not say whose record it is for, and this "
-            "installation holds more than one. Reconnect the connector to mint a "
-            "token that names its record."
-        )
-    if session is None:
-        async with get_session_factory()() as opened:
-            return await _configured_or_single_owner(opened)
-    return await _configured_or_single_owner(session)
-
-
-async def _mcp_v1_legacy_owner(session):
-    """Resolve the configured single owner for one legacy MCP v1 operation.
-
-    The current connector token authenticates the installation, not a selected
-    subject. Mapping it to the configured owner is attribution plus a fail-closed
-    single-subject compatibility gate; it is not MCP v2 subject authorization.
-    """
-    binding = _current_grant_binding()
-    if binding is None:
-        return await resolve_legacy_ownership_context(
-            session,
-            actor_username=await _mcp_actor_username(session),
-        )
-
-    ownership = await resolve_subject_ownership_context(
-        session,
-        subject_id=binding.subject_id,
-    )
-    from vitals.services.access_resolution import resolve_access_context
-
-    access = await resolve_access_context(
-        session,
-        user_id=binding.user_id,
-        subject_id=binding.subject_id,
-    )
-    return LegacyOwnershipContext(
-        subject_id=ownership.subject_id,
-        owner_user_id=ownership.owner_user_id,
-        actor_user_id=binding.user_id,
-        connection_ids=ownership.connection_ids,
-        access=access,
-    )
-
-
-async def _mcp_v1_legacy_alert_owner(session):
-    """Resolve every current provider root needed by the alert aggregate."""
-
-    binding = _current_grant_binding()
-    if binding is None:
-        return await resolve_legacy_ownership_context(
-            session,
-            actor_username=await _mcp_actor_username(session),
-            required_connections=tuple(IntegrationProvider),
-        )
-    ownership = await resolve_subject_ownership_context(
-        session,
-        subject_id=binding.subject_id,
-        required_connections=tuple(IntegrationProvider),
-    )
-    return LegacyOwnershipContext(
-        subject_id=ownership.subject_id,
-        owner_user_id=ownership.owner_user_id,
-        actor_user_id=binding.user_id,
-        connection_ids=ownership.connection_ids,
-        access=None,
-    )
-
-
-async def _mcp_v1_conflict_scope(session) -> engine.ConflictScope:
-    """Authenticate and bind an MCP conflict read under governance lock."""
-
-    binding = _current_grant_binding()
-    if binding is not None:
-        await bind_session_subject(session, binding.subject_id)
-        return engine.ConflictScope(
-            subject_id=binding.subject_id,
-            evaluation_date=today_local(),
-        )
-
-    return await engine.resolve_legacy_conflict_scope(
-        session,
-        actor_username=await _mcp_actor_username(session),
-        evaluation_date=today_local(),
-    )
-
-
-async def _mcp_v1_composition_scope(session) -> engine.ConflictScope:
-    """Bind a legacy whole-lake read and reject corrupt Milestone roots.
-
-    The v1 connector still has no selected subject.  The governance-locked
-    exact-one proof prevents cross-subject composition, while the scoped
-    Milestone read makes partial legacy rows fail before a raw compatibility
-    aggregate can serialize or send them to an LLM.
-    """
-
-    from vitals.services import digest_service, milestones_service
-
-    scope = await _mcp_v1_conflict_scope(session)
-    await milestones_service.list_milestones(
-        session,
-        subject_id=scope.subject_id,
-    )
-    # Whole-lake compatibility tools still query globally, so validate every
-    # WeeklyDigest root before export/overview can serialize or count it.
-    await digest_service.prepare_digest_owner(
-        session,
-        actor_username=await _mcp_actor_username(session),
-    )
-    return scope
-
-
-async def _mcp_v1_conflict_write_context(
-    session,
-    *,
-    evaluation_date: date_type | None = None,
-) -> engine.ConflictWriteContext:
-    """Authenticate the configured owner for a scoped MCP v1 conflict write."""
-
-    binding = _current_grant_binding()
-    if binding is not None:
-        from vitals.ownership import WriteIdentity
-
-        await bind_session_subject(session, binding.subject_id)
-        return engine.ConflictWriteContext(
-            identity=WriteIdentity(
-                subject_id=binding.subject_id,
-                actor_user_id=binding.user_id,
-            ),
-            evaluation_date=evaluation_date or today_local(),
-        )
-    return await engine.resolve_legacy_conflict_write_context(
-        session,
-        actor_username=await _mcp_actor_username(session),
-        evaluation_date=evaluation_date or today_local(),
-    )
-
-
-async def _mcp_v1_weight_write(
-    session,
-    *,
-    evaluation_date: date_type | None = None,
-):
-    """Prepare Weight plus its distinct Garmin destination outbox."""
-
-    from vitals.services import garmin_weight_service, weight_service
-
-    conflict_context = await _mcp_v1_conflict_write_context(
-        session,
-        evaluation_date=evaluation_date,
-    )
-    export_context = await garmin_weight_service.resolve_optional_legacy_export_context(
-        session,
-        actor_username=await _mcp_actor_username(session),
-    )
-    prepared = await weight_service.prepare_weight_write(
-        session,
-        context=conflict_context,
-        garmin_weight_export_context=export_context,
-    )
-    return conflict_context, prepared
-
-
-async def _mcp_v1_aux_weight_write(
-    session,
-    *,
-    evaluation_date: date_type | None = None,
-):
-    """Prepare a BodyMeasurement/NoiseMarker write without the outbox advisory."""
-
-    conflict_context = await _mcp_v1_conflict_write_context(
-        session,
-        evaluation_date=evaluation_date,
-    )
-    prepared = await engine.prepare_scoped_write(
-        session,
-        context=conflict_context,
-    )
-    return conflict_context, prepared
-
-
-# tool name → the optional module it belongs to. Writes register themselves through
-# ``gated``; the reads of those same domains are listed below. Used only to hide a
-# switched-off module's tools from ``tools/list`` — the surface is 69 tools and
-# their schemas are re-sent with every message of every conversation, so a domain
-# the owner does not track is pure weight. Reads are classified separately below;
-# ownership-sensitive reads may also use this decorator to reject direct calls.
-TOOL_MODULES: dict[str, str] = {}
 
 
 def gated(module_key: str):
-    """Refuse a write when its optional module is switched off.
-
-    Turning a module off in settings is the owner saying "I don't track this" —
-    the web routes honour it (``require_module``), and until now the tool surface
-    honoured it on three writes out of forty, so a conversation could refill a
-    domain the owner had just emptied out of the UI. One decorator per write tool
-    of an optional domain; ``tests/test_mcp_module_gate.py`` holds the full list,
-    so a new tool has to be classified rather than quietly ungated."""
-    def decorator(fn):
-        TOOL_MODULES[fn.__name__] = module_key
-
-        @functools.wraps(fn)
-        async def wrapper(*args, **kwargs):
-            session_factory = get_session_factory()
-            async with session_factory() as session:
-                if not await _module_enabled(session, module_key):
-                    return {"error": f"module '{module_key}' is disabled"}
-            return await fn(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
+    return _module_gate(
+        module_key,
+        session_factory_provider=lambda: get_session_factory(),
+        owner_resolver=_mcp_v1_legacy_owner,
+    )
 
 
 # ── Tool Definitions ─────────────────────────────────────────────────────────
 
-@mcp.tool()
-async def get_user_profile() -> dict:
-    """Returns the user's physical profile, active goals, and program overview.
-
-    Every field here used to come from ``.env``, which describes the
-    installation rather than a person — so this tool answered with the owner's
-    body no matter whose record the caller was scoped to. It reads the subject's
-    own row now, and the timezone comes from ``health_subjects`` for the same
-    reason: a profile assembled from process-wide values is a profile about
-    nobody.
-    """
-    from vitals.services import health_profile_service
-    from vitals.models.identity import HealthSubject
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        profile = await health_profile_service.get_profile(
-            session, subject_id=scope.subject_id
-        )
-        timezone = await session.scalar(
-            select(HealthSubject.timezone).where(
-                HealthSubject.id == scope.subject_id
-            )
-        )
-    return {
-        "height_cm": profile.height_cm,
-        "sex": profile.sex,
-        "age": profile.age,
-        "timezone": str(timezone or load_config().timezone),
-        "goals": list(profile.goals),
-        "program": profile.program,
-    }
-
-
-@mcp.tool()
-async def get_weight_logs(
-    start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
-) -> dict:
-    """Retrieves active weight logs, body measurements, and noise markers for a
-    date range (YYYY-MM-DD). Weights/measurements default to the most recent 100."""
-    from vitals.services import weight_service
-
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        # Weight logs — the "active weight" invariant (superseded filter, source
-        # priority) lives in weight_service; call it instead of re-encoding the
-        # rule here, then apply this tool's newest-first, most-recent-`limit`
-        # contract on top (the service returns all matching rows, ascending).
-        weights = await weight_service.list_active_weights(
-            session,
-            start=start,
-            end=end,
-            subject_id=scope.subject_id,
-        )
-        weights = sorted(weights, key=lambda w: w.date, reverse=True)[:limit]
-
-        measurements = await weight_service.list_body_measurements(
-            session,
-            subject_id=scope.subject_id,
-            start=start,
-            end=end,
-        )
-        measurements = sorted(
-            measurements, key=lambda row: row.date, reverse=True
-        )[:limit]
-
-        noise = await weight_service.list_noise_markers(
-            session,
-            subject_id=scope.subject_id,
-            start=start,
-            end=end,
-        )
-        noise = sorted(noise, key=lambda row: row.start_date, reverse=True)
-
-        return {
-            "weights": [serialize_row(w) for w in weights],
-            "measurements": [serialize_row(m) for m in measurements],
-            "noise_markers": [serialize_row(n) for n in noise],
-        }
-
-
-@mcp.tool()
-@gated("glp1")
-async def get_glp1_logs(
-    start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
-) -> dict:
-    """Retrieves GLP-1 injection logs, active dosage phases, and recorded side
-    effects. Injections/side effects default to the most recent 100."""
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        from vitals.services import glp1_service
-
-        scope = await _mcp_v1_conflict_scope(session)
-        scope_kwargs = {"subject_id": scope.subject_id}
-        injections = await glp1_service.list_injections(
-            session,
-            start=start,
-            end=end,
-            limit=limit,
-            **scope_kwargs,
-        )
-        phases = sorted(
-            await glp1_service.list_dose_phases(session, **scope_kwargs),
-            key=lambda phase: (phase.start_date, phase.id),
-            reverse=True,
-        )
-        effects = await glp1_service.list_side_effects(
-            session,
-            start=start,
-            end=end,
-            limit=limit,
-            **scope_kwargs,
-        )
-
-        return {
-            "injections": [serialize_row(i) for i in injections],
-            "dose_phases": [serialize_row(p) for p in phases],
-            "side_effects": [serialize_row(s) for s in effects],
-        }
-
-
-# Ceiling on intraday points in one get_garmin_metrics response (~5 days of a
-# single series at Garmin's 3-minute cadence). The table is the densest in the
-# project — a year is ~350k rows — so an unbounded read would blow the context.
-INTRADAY_POINT_CAP = 5000
-
-# The two per-night timelines on a daily row: a hypnogram is ~30 intervals and the
-# breathing spans a handful more, so together they are ~70% of the row's JSON and
-# ride along on every read of the last hundred nights. Replaced by a breadcrumb
-# unless asked for — hiding the data outright would read as "there are no sleep
-# stages" and the model would stop asking.
-_SLEEP_DETAIL_COLUMNS = ("sleep_stages", "breathing_events")
-
-
-def _fold_sleep_detail(row: dict) -> dict:
-    """Swap each present sleep-detail column for a count + how to get the real thing."""
-    for name in _SLEEP_DETAIL_COLUMNS:
-        value = row.get(name)
-        if value:
-            row[name] = f"{len(value)} entries — call again with sleep_detail=True"
-    return row
-
-
-@mcp.tool()
-async def get_garmin_metrics(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    limit: int = 100,
-    intraday: bool = False,
-    sleep_detail: bool = False,
-) -> dict:
-    """Retrieves daily Garmin recovery/sleep scores and recorded activity sessions.
-    Each series defaults to the most recent 100 rows.
-
-    Set ``intraday=True`` to also get the curves behind the daily summaries, as
-    ``intraday: {series_type: [{ts, value}]}``. Two families of series:
-
-      * the whole day — ``stress``, ``body_battery``, ``heart_rate`` (a sample
-        every ~2–3 minutes, so ~480 points per series per day);
-      * the night — ``sleep_hr``, ``sleep_spo2``, ``sleep_respiration``,
-        ``sleep_stress``, ``sleep_bb``, ``sleep_hrv``, ``sleep_movement``
-        (~2000 points across the seven).
-
-    A night's samples are dated to the daily row they belong to (the morning of
-    waking), including the ones recorded the previous evening, so one night reads
-    as one date.
-
-    Off by default because it is orders of magnitude more data than the daily
-    rows: use it to answer *when* something happened (a stress spike, a Body
-    Battery drain, an SpO2 dip and which sleep stage it fell in), always with a
-    narrow start_date/end_date window. The response caps at 5000 points and sets
-    ``intraday_truncated`` to true when the window held more than that.
-
-    The night's *stage* timeline is not a series — it's ``sleep_stages`` on the
-    daily row (``[{start, end, stage}]``, stage being deep/light/rem/awake), next
-    to ``breathing_events``. Both are folded to a count by default and returned in
-    full with ``sleep_detail=True`` — a separate switch from ``intraday`` so that
-    reading one night's hypnogram doesn't drag every curve along with it. Ask for
-    it with a narrow window when the question is about the shape of a night.
-    """
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        # Daily metrics
-        d_stmt = select(GarminDaily).where(
-            GarminDaily.subject_id == scope.subject_id
-        )
-        if start:
-            d_stmt = d_stmt.where(GarminDaily.date >= start)
-        if end:
-            d_stmt = d_stmt.where(GarminDaily.date <= end)
-        d_stmt = d_stmt.order_by(GarminDaily.date.desc()).limit(limit)
-        daily = (await session.execute(d_stmt)).scalars().all()
-
-        # Activities
-        a_stmt = select(GarminActivity).where(
-            GarminActivity.subject_id == scope.subject_id
-        )
-        if start:
-            a_stmt = a_stmt.where(GarminActivity.date >= start)
-        if end:
-            a_stmt = a_stmt.where(GarminActivity.date <= end)
-        a_stmt = a_stmt.order_by(GarminActivity.date.desc(), GarminActivity.start_time.desc()).limit(limit)
-        activities = (await session.execute(a_stmt)).scalars().all()
-
-        rows = [serialize_row(d) for d in daily]
-        if not sleep_detail:
-            rows = [_fold_sleep_detail(r) for r in rows]
-        result = {
-            "daily_recovery": rows,
-            "activities": [serialize_row(a) for a in activities],
-        }
-
-        if intraday:
-            # Grouped per series and trimmed to {ts, value} rather than run through
-            # serialize_row: at thousands of rows the per-row id/domain/source/
-            # timestamps would dwarf the actual curve. Fetch one over the cap to
-            # tell "exactly full" from "truncated".
-            i_stmt = select(GarminIntraday).where(
-                GarminIntraday.subject_id == scope.subject_id
-            )
-            if start:
-                i_stmt = i_stmt.where(GarminIntraday.date >= start)
-            if end:
-                i_stmt = i_stmt.where(GarminIntraday.date <= end)
-            i_stmt = i_stmt.order_by(GarminIntraday.ts).limit(INTRADAY_POINT_CAP + 1)
-            points = (await session.execute(i_stmt)).scalars().all()
-            result["intraday_truncated"] = len(points) > INTRADAY_POINT_CAP
-            series: dict[str, list[dict]] = {}
-            for p in points[:INTRADAY_POINT_CAP]:
-                series.setdefault(p.series_type, []).append(
-                    {"ts": p.ts.isoformat(), "value": p.value}
-                )
-            result["intraday"] = series
-
-        return result
-
-
-@mcp.tool()
-async def get_hevy_workouts(
-    start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
-) -> list[dict]:
-    """Retrieves Hevy strength training workouts, including exercises, sets,
-    weights, and reps. Defaults to the most recent 100 workouts."""
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        stmt = select(HevyWorkout).where(
-            HevyWorkout.subject_id == scope.subject_id
-        )
-        if start:
-            stmt = stmt.where(HevyWorkout.date >= start)
-        if end:
-            stmt = stmt.where(HevyWorkout.date <= end)
-        stmt = stmt.options(selectinload(HevyWorkout.exercises).selectinload(HevyExercise.sets))
-        stmt = stmt.order_by(HevyWorkout.date.desc()).limit(limit)
-        workouts = (await session.execute(stmt)).scalars().all()
-
-        serialized = []
-        for w in workouts:
-            w_dict = serialize_row(w)
-            w_dict["exercises"] = []
-            for e in w.exercises:
-                e_dict = serialize_row(e)
-                e_dict["sets"] = [serialize_row(s) for s in e.sets]
-                w_dict["exercises"].append(e_dict)
-            serialized.append(w_dict)
-        return serialized
-
-
-@mcp.tool()
-async def get_supplements_catalog() -> list[dict]:
-    """Retrieves the active supplement catalog, including dosages and evidence tiers."""
-    from vitals.services import supplements_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
-        supps = await supplements_service.list_supplements(
-            session,
-            subject_id=ownership.subject_id,
-        )
-        return [serialize_row(s) for s in supps]
-
-
-@mcp.tool()
-@gated("skincare")
-async def get_skincare_logs(
-    start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
-) -> dict:
-    """Retrieves skincare routine application logs and skin status observations.
-    Each series defaults to the most recent 100 rows."""
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        from vitals.services import skincare_service
-
-        logs = await skincare_service.list_logs(
-            session,
-            subject_id=scope.subject_id,
-            start=start,
-            end=end,
-            limit=limit,
-        )
-        observations = await skincare_service.list_observations(
-            session,
-            subject_id=scope.subject_id,
-            start=start,
-            end=end,
-            limit=limit,
-        )
-
-        return {
-            "logs": [serialize_row(row) for row in logs],
-            "observations": [serialize_row(o) for o in observations],
-        }
-
-
-@mcp.tool()
-@gated("genetics")
-async def get_genetics_snps(
-    gene: Optional[str] = None, rsid: Optional[str] = None, limit: int = 100
-) -> list[dict]:
-    """Retrieves digitized SNPs (genetic variants) with a description of their effect.
-    Filter by ``gene`` ("MTHFR") or ``rsid`` ("rs1801133") — both match regardless of
-    case. Unfiltered it returns the first ``limit`` variants in (gene, rsid) order;
-    a whole-genome import is far larger than that, so ask for the marker you mean.
-    READ tool."""
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        variants = await variant_records.list_variants(
-            session,
-            subject_id=scope.subject_id,
-            gene=gene,
-            rsid=rsid,
-            limit=limit,
-        )
-        return [serialize_row(v) for v in variants]
-
-
-@mcp.tool()
-@gated("genetics")
-async def upsert_genetic_variant(
-    gene: str,
-    rsid: str,
-    genotype: Optional[str] = None,
-    marker: Optional[str] = None,
-    impact: Optional[str] = None,
-    impact_domain: Optional[str] = None,
-    interpretation: Optional[str] = None,
-    action_notes: Optional[str] = None,
-    clear_fields: Optional[list[str]] = None,
-) -> dict:
-    """Adds or updates one genetic variant, keyed by ``rsid`` — restating a known
-    rsid edits that row instead of duplicating it. ``marker`` is the slug the
-    conflict rules match on (e.g. "mthfr_c677t_tt"); without one the variant is
-    reference-only. Fields left out keep their stored value. To explicitly clear
-    an optional value, name it in ``clear_fields`` (for example
-    ``["action_notes"]``). WRITE tool."""
-    patch_fields = {
-        "genotype": genotype,
-        "marker": marker,
-        "impact": impact,
-        "impact_domain": impact_domain,
-        "interpretation": interpretation,
-        "action_notes": action_notes,
-    }
-    clear = set(clear_fields or ())
-    unknown = clear.difference(patch_fields)
-    if unknown:
-        return {
-            "error": "clear_fields contains unknown fields: "
-            + ", ".join(sorted(unknown))
-        }
-    overlapping = sorted(name for name in clear if patch_fields[name] is not None)
-    if overlapping:
-        return {
-            "error": "fields cannot be set and cleared together: "
-            + ", ".join(overlapping)
-        }
-    for name, value in tuple(patch_fields.items()):
-        if name in clear:
-            patch_fields[name] = None
-        elif value is None:
-            patch_fields[name] = variant_records.PATCH_UNSET
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        context = await _mcp_v1_conflict_write_context(session)
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=context,
-        )
-        try:
-            row = await variant_records.upsert_by_rsid(
-                session,
-                gene=gene,
-                rsid=rsid,
-                **patch_fields,
-                source=Source.MCP.value,
-                identity=context.identity,
-                prepared_conflict_write=prepared,
-            )
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-async def get_active_alerts() -> list[dict]:
-    """Returns currently active warning alerts and conflict notifications."""
-    from vitals.services import legacy_subject_alerts
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_alert_owner(session)
-        alerts = await legacy_subject_alerts.list_active(
-            session,
-            ownership=ownership,
-        )
-        return [serialize_row(a) for a in alerts]
-
-
-@mcp.tool()
-async def resolve_alert(alert_id: int) -> dict:
-    """Marks one alert resolved — it disappears from ``get_active_alerts`` and
-    from the dashboard. Use it once the thing the alert is about has actually been
-    dealt with in the conversation, so the discussion and the closing are the same
-    step instead of leaving the owner a button to press afterwards. WRITE tool."""
-    from vitals.services import legacy_subject_alerts
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_alert_owner(session)
-        row = await legacy_subject_alerts.resolve(
-            session,
-            alert_id,
-            ownership=ownership,
-        )
-        if row is None:
-            return {"error": f"Alert {alert_id} not found"}
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-async def override_alert(alert_id: int) -> dict:
-    """Marks a blocking alert overridden — "noted, doing it anyway". The alert
-    stays active and visible; only the block it represents stops being treated as
-    unanswered. For resolving it instead, use ``resolve_alert``. WRITE tool."""
-    from vitals.services import legacy_subject_alerts
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_alert_owner(session)
-        row = await legacy_subject_alerts.override(
-            session,
-            alert_id,
-            ownership=ownership,
-        )
-        if row is None:
-            return {"error": f"Alert {alert_id} not found"}
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-async def get_weekly_digests(limit: int = 5) -> list[dict]:
-    """Retrieves historical Claude-generated weekly summaries for continuity."""
-    from vitals.services import digest_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        owner = await digest_service.prepare_digest_owner(
-            session,
-            actor_username=await _mcp_actor_username(session),
-        )
-        # Through the service, so this stays weekly-only: the same table now also
-        # holds the daily briefs.
-        digests = await digest_service.list_digests(
-            session,
-            limit=limit,
-            prepared_owner=owner,
-        )
-        return [serialize_row(d) for d in digests]
-
-
-@mcp.tool()
-async def check_supplement_conflicts(supplement_name: str) -> list[dict]:
-    """Evaluates a proposed supplement (by free-text name) against the curated
-    conflict-rule catalog — active supplements, genetics, skincare routine,
-    labs, and GLP-1 state. The name is normalized to the same stable ``key``
-    the catalog matches rules on (e.g. "Железо" -> "iron"), so this works
-    regardless of spelling/language. Read-only — never writes, never blocks."""
-    from vitals.services.conflicts import catalog
-
-    session_factory = get_session_factory()
-    key = catalog.normalize_ingredient(supplement_name)
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        try:
-            violations = await engine.evaluate_scoped(
-                session,
-                scope=scope,
-                domain=Domain.SUPPLEMENTS,
-                proposed_state={
-                    "key": key,
-                    "name": supplement_name,
-                    "active": True,
-                },
-            )
-        except engine.ConflictResolverUnavailable as exc:
-            return [{"error": str(exc)}]
-        return [v.to_dict() for v in violations]
-
-
-_VALID_CONFLICT_DOMAINS = {d.value for d in Domain}
-
-
-@mcp.tool()
-async def list_conflict_rules(
-    domain: Optional[str] = None, category: Optional[str] = None
-) -> list[dict]:
-    """Lists the curated cross-domain conflict rules (vitals/data/conflict_rules.yaml),
-    optionally filtered by ``domain`` (matches either side of the rule) and/or
-    ``category`` (absorption, pharmacogenomics, dermatology, lab_safety, glp1,
-    contraindication). Only ``active`` rules are meaningful for evaluation, but
-    inactive ones are included too so a caller can see the full catalog."""
-    from vitals.services.conflicts import activation
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        rows = await engine.load_scoped_rules(
-            session,
-            scope=scope,
-            domain=domain,
-            active_only=False,
-        )
-        activation_state = await activation.read_activation_state(
-            session,
-            subject_id=scope.subject_id,
-            legacy_bridge=scope.legacy_bridge,
-        )
-        rule_activation = activation.effective_rule_activation(
-            rows,
-            activation_state,
-        )
-        if category:
-            rows = [row for row in rows if row.category == category]
-        payloads = []
-        for row in rows:
-            payload = serialize_row(row)
-            payload["active"] = rule_activation[row.id]
-            payloads.append(payload)
-        return payloads
-
-
-@mcp.tool()
-async def check_conflicts(domain: str, payload: dict) -> list[dict]:
-    """Evaluates an arbitrary proposed state against the active conflict rules
-    for ``domain`` (one of: weight, glp1, supplements, genetics, skincare,
-    labs, nutrition, workouts, garmin, milestones, system, body_comp). E.g.
-    ``check_conflicts("labs", {"marker": "Калий", "value": 5.5})`` or
-    ``check_conflicts("supplements", {"key": "iron", "active": True})``.
-    Read-only — never writes, never blocks; returns the violations that would
-    fire if this state were saved."""
-    if domain not in _VALID_CONFLICT_DOMAINS:
-        return [{"error": f"Unknown domain '{domain}'. Use one of: {', '.join(sorted(_VALID_CONFLICT_DOMAINS))}"}]
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        try:
-            violations = await engine.evaluate_scoped(
-                session,
-                scope=scope,
-                domain=domain,
-                proposed_state=payload,
-            )
-        except engine.ConflictResolverUnavailable as exc:
-            return [{"error": str(exc)}]
-        return [v.to_dict() for v in violations]
+get_user_profile = register_profile_tool(
+    mcp,
+    ProfileToolDependencies(
+        get_session_factory=lambda: get_session_factory(),
+        conflict_scope=_mcp_v1_conflict_scope,
+    ),
+)
+
+
+_weight_tool_dependencies = WeightToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    parse_date=_parse_date,
+    conflict_scope=_mcp_v1_conflict_scope,
+    weight_write=lambda *args, **kwargs: _mcp_v1_weight_write(*args, **kwargs),
+    auxiliary_weight_write=lambda *args, **kwargs: _mcp_v1_aux_weight_write(
+        *args,
+        **kwargs,
+    ),
+    conflict_payload=_conflict_payload,
+    serialize_row=serialize_row,
+    serialize_written=serialize_written,
+)
+_weight_read_tools = register_weight_read_tools(mcp, _weight_tool_dependencies)
+get_weight_logs = _weight_read_tools.get_weight_logs
+
+
+_glp1_tool_dependencies = Glp1ToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    parse_date=_parse_date,
+    conflict_scope=_mcp_v1_conflict_scope,
+    conflict_write_context=_mcp_v1_conflict_write_context,
+    conflict_payload=_conflict_payload,
+    serialize_row=serialize_row,
+    serialize_written=serialize_written,
+    gated=gated,
+)
+_glp1_read_tools = register_glp1_read_tools(mcp, _glp1_tool_dependencies)
+get_glp1_logs = _glp1_read_tools.get_glp1_logs
+
+
+INTRADAY_POINT_CAP = _DEFAULT_INTRADAY_POINT_CAP
+_fold_sleep_detail = fold_sleep_detail
+
+_provider_tool_dependencies = ProviderToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    get_redis_client=lambda: get_redis_client(),
+    parse_date=_parse_date,
+    conflict_scope=_mcp_v1_conflict_scope,
+    actor_username=_mcp_actor_username,
+    serialize_row=serialize_row,
+    gated=gated,
+    intraday_point_cap=lambda: INTRADAY_POINT_CAP,
+    sync_daily_limit=lambda: SYNC_DAILY_LIMIT,
+)
+_garmin_read_tools = register_garmin_read_tools(
+    mcp,
+    _provider_tool_dependencies,
+)
+get_garmin_metrics = _garmin_read_tools.get_garmin_metrics
+
+_hevy_read_tools = register_hevy_read_tools(
+    mcp,
+    _provider_tool_dependencies,
+)
+get_hevy_workouts = _hevy_read_tools.get_hevy_workouts
+
+
+_supplements_tool_dependencies = SupplementsToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    legacy_owner=_mcp_v1_legacy_owner,
+    conflict_scope=_mcp_v1_conflict_scope,
+    conflict_write_context=_mcp_v1_conflict_write_context,
+    conflict_payload=_conflict_payload,
+    serialize_row=serialize_row,
+    serialize_written=serialize_written,
+    gated=gated,
+)
+_supplements_read_tools = register_supplements_read_tools(
+    mcp,
+    _supplements_tool_dependencies,
+)
+get_supplements_catalog = _supplements_read_tools.get_supplements_catalog
+
+_skincare_tool_dependencies = SkincareToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    parse_date=_parse_date,
+    conflict_scope=_mcp_v1_conflict_scope,
+    conflict_write_context=_mcp_v1_conflict_write_context,
+    conflict_payload=_conflict_payload,
+    serialize_row=serialize_row,
+    serialize_written=serialize_written,
+    gated=gated,
+)
+_skincare_read_tools = register_skincare_read_tools(
+    mcp,
+    _skincare_tool_dependencies,
+)
+get_skincare_logs = _skincare_read_tools.get_skincare_logs
+
+_genetics_tool_dependencies = GeneticsToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    conflict_scope=_mcp_v1_conflict_scope,
+    conflict_write_context=_mcp_v1_conflict_write_context,
+    serialize_row=serialize_row,
+    serialize_written=serialize_written,
+    gated=gated,
+)
+_genetics_tools = register_genetics_tools(mcp, _genetics_tool_dependencies)
+get_genetics_snps = _genetics_tools.get_genetics_snps
+upsert_genetic_variant = _genetics_tools.upsert_genetic_variant
+_alert_tool_dependencies = AlertToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    legacy_alert_owner=_mcp_v1_legacy_alert_owner,
+    serialize_row=serialize_row,
+    serialize_written=serialize_written,
+)
+_alert_tools = register_alert_tools(mcp, _alert_tool_dependencies)
+get_active_alerts = _alert_tools.get_active_alerts
+resolve_alert = _alert_tools.resolve_alert
+override_alert = _alert_tools.override_alert
+_digest_tool_dependencies = DigestToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    actor_username=_mcp_actor_username,
+    serialize_row=serialize_row,
+    serialize_written=serialize_written,
+)
+_digest_read_tools = register_digest_read_tools(
+    mcp,
+    _digest_tool_dependencies,
+)
+get_weekly_digests = _digest_read_tools.get_weekly_digests
+
+
+_supplements_conflict_tools = register_supplements_conflict_tools(
+    mcp,
+    _supplements_tool_dependencies,
+)
+check_supplement_conflicts = (
+    _supplements_conflict_tools.check_supplement_conflicts
+)
+
+
+_conflict_tool_dependencies = ConflictToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    conflict_scope=_mcp_v1_conflict_scope,
+    serialize_row=serialize_row,
+)
+_conflict_tools = register_conflict_tools(mcp, _conflict_tool_dependencies)
+list_conflict_rules = _conflict_tools.list_conflict_rules
+check_conflicts = _conflict_tools.check_conflicts
 
 
 # ── Nutrition tools ──────────────────────────────────────────────────────────
-
-@mcp.tool()
-@gated("nutrition")
-async def log_meal(
-    name: str,
-    calories: Optional[float] = None,
-    protein_g: Optional[float] = None,
-    fat_g: Optional[float] = None,
-    carbs_g: Optional[float] = None,
-    eaten_at: Optional[str] = None,
-    note: Optional[str] = None,
-    on_date: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Records a meal or snack with optional macros (KCAL, protein, fat, carbs).
-
-    This is a WRITE tool — the meal is saved to the database immediately.
-    Defaults: on_date = today, eaten_at = current time. If a hard conflict rule
-    blocks the save, returns ``{"blocked": true, "violations": [...]}`` instead
-    of saving; call again with ``override=True`` to save anyway.
-    """
-    from vitals.services import nutrition_service
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-    parsed_time = _parse_time(eaten_at, field="eaten_at")
-
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date,
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        try:
-            row = await nutrition_service.log_meal(
-                session,
-                on_date=parsed_date,
-                name=name,
-                eaten_at=parsed_time,
-                calories=calories,
-                protein_g=protein_g,
-                fat_g=fat_g,
-                carbs_g=carbs_g,
-                note=note,
-                source=Source.MCP.value,
-                override=override,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-@gated("nutrition")
-async def get_nutrition_summary(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-) -> dict:
-    """Returns a nutrition summary with total KCAL/protein/fat/carbs, meal counts,
-    per-day breakdown, and goal tracking. Defaults to today if no dates given."""
-    from vitals.services import nutrition_service
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    today = today_local()
-
-    start = _parse_date(start_date, today, field="start_date")
-    end = _parse_date(end_date, today, field="end_date")
-
-    if start == end:
-        async with session_factory() as session:
-            scope = await _mcp_v1_conflict_scope(session)
-            return await nutrition_service.daily_summary(
-                session,
-                start,
-                subject_id=scope.subject_id,
-            )
-    else:
-        async with session_factory() as session:
-            scope = await _mcp_v1_conflict_scope(session)
-            return await nutrition_service.nutrition_summary(
-                session,
-                start,
-                end,
-                subject_id=scope.subject_id,
-            )
-
-
-# ── Meal CRUD tools ─────────────────────────────────────────────────────────
-
-@mcp.tool()
-@gated("nutrition")
-async def update_meal(
-    meal_id: int,
-    name: Optional[str] = None,
-    calories: Optional[float] = None,
-    protein_g: Optional[float] = None,
-    fat_g: Optional[float] = None,
-    carbs_g: Optional[float] = None,
-    eaten_at: Optional[str] = None,
-    note: Optional[str] = None,
-    on_date: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Updates an existing meal by ID. Returns the updated meal or an error.
-
-    Only the fields you pass are changed — anything left out keeps its stored
-    value, including ``on_date``, which stays the meal's own date rather than
-    moving the meal to today. WRITE tool — changes are saved immediately.
-    """
-    from vitals.services import nutrition_service
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, field="on_date")
-    parsed_time = _parse_time(eaten_at, field="eaten_at")
-
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date or today_local(),
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        current = await nutrition_service.get_meal_for_update(
-            session,
-            meal_id,
-            identity=conflict_context.identity,
-            prepared_conflict_write=prepared,
-        )
-        if current is None:
-            return {"error": f"Meal {meal_id} not found"}
-        final_date = current.date if parsed_date is None else parsed_date
-        if conflict_context.evaluation_date != final_date:
-            conflict_context = engine.ConflictWriteContext(
-                identity=conflict_context.identity,
-                evaluation_date=final_date,
-                legacy_bridge=conflict_context.legacy_bridge,
-            )
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-        merged = {
-            "name": current.name if name is None else name,
-            "eaten_at": current.eaten_at if eaten_at is None else parsed_time,
-            "calories": current.calories if calories is None else calories,
-            "protein_g": current.protein_g if protein_g is None else protein_g,
-            "fat_g": current.fat_g if fat_g is None else fat_g,
-            "carbs_g": current.carbs_g if carbs_g is None else carbs_g,
-            "note": current.note if note is None else note,
-        }
-        try:
-            row = await nutrition_service.update_meal(
-                session,
-                meal_id,
-                on_date=final_date,
-                override=override,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-                **merged,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-@gated("nutrition")
-async def search_meals(
-    query: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    limit: int = 50,
-) -> list[dict]:
-    """Searches meals by name substring and/or date range. Returns matching meals
-    ordered by date descending."""
-    from vitals.services import nutrition_service
-
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        rows = await nutrition_service.list_meals(
-            session,
-            start=start,
-            end=end,
-            subject_id=scope.subject_id,
-            name_query=query,
-            limit=limit,
-        )
-        return [serialize_row(r) for r in rows]
+_nutrition_tools = register_nutrition_tools(
+    mcp,
+    NutritionToolDependencies(
+        get_session_factory=lambda: get_session_factory(),
+        parse_date=_parse_date,
+        parse_time=_parse_time,
+        conflict_scope=_mcp_v1_conflict_scope,
+        conflict_write_context=_mcp_v1_conflict_write_context,
+        conflict_payload=_conflict_payload,
+        serialize_row=serialize_row,
+        serialize_written=serialize_written,
+        gated=gated,
+    ),
+)
+log_meal = _nutrition_tools.log_meal
+get_nutrition_summary = _nutrition_tools.get_nutrition_summary
+update_meal = _nutrition_tools.update_meal
+search_meals = _nutrition_tools.search_meals
 
 
 # ── Weight tools ────────────────────────────────────────────────────────────
 
-@mcp.tool()
-async def log_weight(
-    weight_kg: float,
-    on_date: Optional[str] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Records a manual weight entry (kg). One active weight per date — manual
-    entries override Garmin imports. WRITE tool — saved immediately. If a hard
-    conflict rule blocks the save, returns ``{"blocked": true, ...}``; call again
-    with ``override=True`` to save anyway."""
-    from vitals.services import weight_service
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-
-    async with session_factory() as session:
-        try:
-            conflict_context, prepared = await _mcp_v1_weight_write(
-                session,
-                evaluation_date=parsed_date,
-            )
-            row = await weight_service.log_weight(
-                session,
-                on_date=parsed_date,
-                weight_kg=weight_kg,
-                note=note,
-                source=Source.MCP.value,
-                override=override,
-                identity=conflict_context.identity,
-                prepared_weight_write=prepared,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        await session.commit()
-        return await serialize_written(session, row)
+_weight_write_tools = register_weight_write_tools(mcp, _weight_tool_dependencies)
+log_weight = _weight_write_tools.log_weight
 
 
 # ── GLP-1 tools ─────────────────────────────────────────────────────────────
 
-@mcp.tool()
-@gated("glp1")
-async def log_glp1(
-    drug: str,
-    dose_mg: float,
-    on_date: Optional[str] = None,
-    site: Optional[str] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Records a GLP-1 injection (drug name, dose in mg, optional injection site).
-    WRITE tool — saved immediately. If a hard conflict rule blocks the save,
-    returns ``{"blocked": true, ...}``; call again with ``override=True`` to save
-    anyway."""
-    from vitals.services import glp1_service
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date,
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        try:
-            row = await glp1_service.log_injection(
-                session, on_date=parsed_date, drug=drug, dose_mg=dose_mg,
-                site=site, note=note, source=Source.MCP.value, override=override,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        except ValueError as e:
-            # An LLM bypasses the HTML form, so bad input (dose_mg<=0, garbage site)
-            # comes back as a clean error instead of an opaque DB failure.
-            return {"error": str(e)}
-        await session.commit()
-        return await serialize_written(session, row)
+_glp1_injection_tools = register_glp1_injection_tools(
+    mcp,
+    _glp1_tool_dependencies,
+)
+log_glp1 = _glp1_injection_tools.log_glp1
 
 
 # ── HRT / TRT tools ─────────────────────────────────────────────────────────
 
-@mcp.tool()
-@gated("hrt")
-async def get_hrt_logs(
-    start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
-) -> dict:
-    """Retrieves HRT/TRT dose administrations, side effects, and the active cycle
-    with its per-compound plan. Doses/side effects default to the most recent 100.
-    READ tool."""
-    from vitals.services.hrt import cycles, records
-
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        scope_kwargs = {"subject_id": scope.subject_id}
-        doses = await records.list_doses(
-            session,
-            start=start,
-            end=end,
-            limit=limit,
-            **scope_kwargs,
-        )
-        effects = await records.list_side_effects(
-            session,
-            start=start,
-            end=end,
-            limit=limit,
-            **scope_kwargs,
-        )
-        active = await cycles.active_cycle(session, **scope_kwargs)
-        active_cycle = None
-        if active is not None:
-            active_cycle = serialize_row(active)
-            active_cycle["items"] = [serialize_row(it) for it in active.items]
-
-        return {
-            "doses": [serialize_row(d) for d in doses],
-            "side_effects": [serialize_row(e) for e in effects],
-            "active_cycle": active_cycle,
-        }
-
-
-@mcp.tool()
-@gated("hrt")
-async def log_hrt_dose(
-    compound_key: str,
-    dose: Optional[float] = None,
-    unit: Optional[str] = None,
-    volume_ml: Optional[float] = None,
-    concentration_mg_ml: Optional[float] = None,
-    on_date: Optional[str] = None,
-    brand: Optional[str] = None,
-    lab: Optional[str] = None,
-    batch: Optional[str] = None,
-    site: Optional[str] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Records an HRT/TRT administration. ``compound_key`` is a catalog slug (e.g.
-    'testosterone_enanthate'). Give either ``dose`` (in ``unit`` — mg/iu/mcg) or a
-    ``volume_ml`` with ``concentration_mg_ml`` (or the catalog concentration) to
-    compute mg. Grey-market ``brand``/``lab``/``batch`` are optional. WRITE tool —
-    on a hard block returns ``{"blocked": true, ...}``; retry with
-    ``override=True``."""
-    from vitals.services.hrt import records
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date,
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        try:
-            row = await records.log_dose(
-                session, compound_key=compound_key, on_date=parsed_date, dose=dose,
-                unit=unit, volume_ml=volume_ml, concentration_mg_ml=concentration_mg_ml,
-                brand=brand, lab=lab, batch=batch, site=site, note=note, override=override,
-                source=Source.MCP.value,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-@gated("hrt")
-async def add_hrt_cycle(
-    kind: str,
-    start_date: Optional[str] = None,
-    name: Optional[str] = None,
-    end_date: Optional[str] = None,
-    note: Optional[str] = None,
-) -> dict:
-    """Starts an HRT cycle (``kind``: course | pct — put nuance like TRT/blast/
-    cruise in ``name``). An open-ended cycle closes the previous open one. WRITE
-    tool. Add compounds with ``add_hrt_cycle_item``."""
-    from vitals.services.hrt import cycles
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, today_local(), field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=start,
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        try:
-            cycle = await cycles.add_cycle(
-                session, kind=kind, start_date=start, name=name, end_date=end, note=note,
-                source=Source.MCP.value,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        await session.commit()
-        return await serialize_written(session, cycle)
-
-
-@mcp.tool()
-@gated("hrt")
-async def add_hrt_cycle_item(
-    cycle_id: int,
-    compound_key: str,
-    schedule: Optional[list] = None,
-    dose: Optional[float] = None,
-    interval_days: Optional[float] = None,
-    duration_days: Optional[int] = None,
-    start_offset_days: Optional[int] = None,
-    unit: Optional[str] = None,
-    note: Optional[str] = None,
-) -> dict:
-    """Adds a compound plan to a cycle. Pass a full ``schedule`` (a list of
-    segments — flat ``{dose, interval_days, duration_days}`` or a linear ramp
-    ``{dose_start, dose_end, step, step_every_days, interval_days, duration_days}``)
-    for titration/ramps, or the simple ``dose``+``interval_days`` for one flat
-    segment. ``start_offset_days`` delays the compound's grid relative to the
-    cycle start (week 5 → 28) for staggered courses. WRITE tool."""
-    from vitals.services.hrt import cycles
-
-    if not schedule:
-        if dose is None or interval_days is None:
-            return {"error": "provide schedule, or both dose and interval_days"}
-        segment: dict = {"dose": dose, "interval_days": interval_days}
-        if duration_days:
-            segment["duration_days"] = int(duration_days)
-        schedule = [segment]
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=today_local(),
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        try:
-            item = await cycles.add_cycle_item(
-                session, cycle_id, compound_key=compound_key, schedule=schedule,
-                unit=unit, start_offset_days=int(start_offset_days or 0), note=note,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        if item is None:
-            return {"error": f"cycle {cycle_id} not found"}
-        await session.commit()
-        return await serialize_written(session, item)
-
-
-@mcp.tool()
-@gated("hrt")
-async def update_hrt_dose(
-    dose_id: int,
-    compound_key: Optional[str] = None,
-    dose: Optional[float] = None,
-    unit: Optional[str] = None,
-    volume_ml: Optional[float] = None,
-    concentration_mg_ml: Optional[float] = None,
-    on_date: Optional[str] = None,
-    brand: Optional[str] = None,
-    lab: Optional[str] = None,
-    batch: Optional[str] = None,
-    site: Optional[str] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Updates a recorded HRT/TRT administration by ID. Only the fields you pass are
-    changed; everything left out keeps its stored value, including the dose's own
-    date. A new ``volume_ml`` or ``concentration_mg_ml`` without a ``dose`` recomputes
-    the mg. WRITE tool — on a hard block returns ``{"blocked": true, ...}``; retry
-    with ``override=True``."""
-    from vitals.services.hrt import records
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, field="on_date")
-
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date or today_local(),
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        current = await records.get_dose_for_update(
-            session,
-            dose_id,
-            identity=conflict_context.identity,
-            prepared_conflict_write=prepared,
-        )
-        if current is None:
-            return {"error": f"HRT dose {dose_id} not found"}
-        final_date = current.date if parsed_date is None else parsed_date
-        if conflict_context.evaluation_date != final_date:
-            conflict_context = engine.ConflictWriteContext(
-                identity=conflict_context.identity,
-                evaluation_date=final_date,
-                legacy_bridge=conflict_context.legacy_bridge,
-            )
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-        merged = {
-            "compound_key": (
-                current.compound_key if compound_key is None else compound_key
-            ),
-            "dose": current.dose if dose is None else dose,
-            "unit": current.unit if unit is None else unit,
-            "volume_ml": current.volume_ml if volume_ml is None else volume_ml,
-            "concentration_mg_ml": (
-                current.concentration_mg_ml
-                if concentration_mg_ml is None
-                else concentration_mg_ml
-            ),
-            "brand": current.brand if brand is None else brand,
-            "lab": current.lab if lab is None else lab,
-            "batch": current.batch if batch is None else batch,
-            "site": current.site if site is None else site,
-            "note": current.note if note is None else note,
-        }
-        # A new volume or concentration is a request to recompute the mg, and an
-        # explicit dose wins over both — so carrying the stored one forward here
-        # would silently ignore what the call actually changed.
-        if dose is None and (volume_ml is not None or concentration_mg_ml is not None):
-            merged["dose"] = None
-        try:
-            row = await records.update_dose(
-                session,
-                dose_id,
-                on_date=final_date,
-                override=override,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-                **merged,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-@gated("hrt")
-async def log_hrt_side_effect(
-    effect_type: str,
-    severity: int,
-    on_date: Optional[str] = None,
-    note: Optional[str] = None,
-) -> dict:
-    """Records an HRT/TRT side effect (e.g. "акне", "отёки") with a severity 1–5 for
-    a date (default today). Distinct from ``log_side_effect``, which belongs to
-    GLP-1. WRITE tool — saved immediately."""
-    from vitals.services.hrt import records
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date,
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        try:
-            row = await records.log_side_effect(
-                session, on_date=parsed_date, effect_type=effect_type,
-                severity=severity, note=note,
-                source=Source.MCP.value,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-@gated("hrt")
-async def close_hrt_cycle(cycle_id: int, end_date: Optional[str] = None) -> dict:
-    """Closes an HRT cycle by giving it an end date (default today). WRITE tool."""
-    from vitals.services.hrt import cycles
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    end = _parse_date(end_date, today_local(), field="end_date")
-
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=end,
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        try:
-            cycle = await cycles.close_cycle(
-                session,
-                cycle_id,
-                end_date=end,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        if cycle is None:
-            return {"error": f"cycle {cycle_id} not found"}
-        await session.commit()
-        return await serialize_written(session, cycle)
-
-
-@mcp.tool()
-@gated("hrt")
-async def get_hrt_cycles() -> dict:
-    """Lists all HRT cycles (newest first) with their per-compound plans. READ tool."""
-    from vitals.services.hrt import cycles as cycle_records
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        cycles = await cycle_records.list_cycles(
-            session,
-            subject_id=scope.subject_id,
-        )
-        out = []
-        for c in cycles:
-            row = serialize_row(c)
-            row["items"] = [serialize_row(it) for it in c.items]
-            out.append(row)
-        return {"cycles": out}
+_hrt_tool_dependencies = HrtToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    parse_date=_parse_date,
+    conflict_scope=_mcp_v1_conflict_scope,
+    conflict_write_context=_mcp_v1_conflict_write_context,
+    conflict_payload=_conflict_payload,
+    serialize_row=serialize_row,
+    serialize_written=serialize_written,
+    gated=gated,
+)
+_hrt_tools = register_hrt_tools(mcp, _hrt_tool_dependencies)
+get_hrt_logs = _hrt_tools.get_hrt_logs
+log_hrt_dose = _hrt_tools.log_hrt_dose
+add_hrt_cycle = _hrt_tools.add_hrt_cycle
+add_hrt_cycle_item = _hrt_tools.add_hrt_cycle_item
+update_hrt_dose = _hrt_tools.update_hrt_dose
+log_hrt_side_effect = _hrt_tools.log_hrt_side_effect
+close_hrt_cycle = _hrt_tools.close_hrt_cycle
+get_hrt_cycles = _hrt_tools.get_hrt_cycles
 
 
 # ── Skincare tools ──────────────────────────────────────────────────────────
 
-@mcp.tool()
-@gated("skincare")
-async def log_skincare(
-    on_date: Optional[str] = None,
-    retinoid: bool = False,
-    azelaic: bool = False,
-    peel: bool = False,
-    niacinamide_spf: bool = False,
-    moisturizer: bool = False,
-    vitamin_c: bool = False,
-    benzoyl_peroxide: bool = False,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Records or updates the daily skincare routine checklist (one per day, upsert).
-    Boolean flags indicate which products were applied. WRITE tool — saved
-    immediately. If a hard conflict rule blocks the save, returns
-    ``{"blocked": true, ...}``; call again with ``override=True`` to save anyway."""
-    from vitals.services import skincare_service
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date,
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        try:
-            row = await skincare_service.upsert_log(
-                session, on_date=parsed_date, retinoid=retinoid, azelaic=azelaic,
-                peel=peel, niacinamide_spf=niacinamide_spf, moisturizer=moisturizer,
-                vitamin_c=vitamin_c, benzoyl_peroxide=benzoyl_peroxide,
-                note=note, source=Source.MCP.value, override=override,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        await session.commit()
-        return await serialize_written(session, row)
+_skincare_routine_tools = register_skincare_routine_tools(
+    mcp,
+    _skincare_tool_dependencies,
+)
+log_skincare = _skincare_routine_tools.log_skincare
 
 
 # ── Body measurement tools ──────────────────────────────────────────────────
 
-@mcp.tool()
-async def log_measurement(
-    on_date: Optional[str] = None,
-    neck_cm: Optional[float] = None,
-    waist_cm: Optional[float] = None,
-    hips_cm: Optional[float] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Records body circumference measurements (neck, waist, hips in cm). Upserts
-    per date. Auto-computes Navy body-fat % and LBM if weight exists for the date.
-    WRITE tool — saved immediately. If a hard conflict rule blocks the save,
-    returns ``{"blocked": true, ...}``; call again with ``override=True``."""
-    from vitals.services import weight_service
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-
-    async with session_factory() as session:
-        conflict_context, prepared = await _mcp_v1_aux_weight_write(
-            session,
-            evaluation_date=parsed_date,
-        )
-        try:
-            row = await weight_service.upsert_body_measurement(
-                session, on_date=parsed_date, neck_cm=neck_cm, waist_cm=waist_cm,
-                hips_cm=hips_cm, note=note, source=Source.MCP.value,
-                override=override, identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-async def get_measurements(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    limit: int = 100,
-) -> list[dict]:
-    """Retrieves body measurements (neck, waist, hips, body-fat %, LBM) for a date
-    range. Defaults to the most recent 100 rows."""
-    from vitals.services import weight_service
-
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        rows = await weight_service.list_body_measurements(
-            session,
-            subject_id=scope.subject_id,
-            start=start,
-            end=end,
-        )
-        rows = sorted(rows, key=lambda row: row.date, reverse=True)[:limit]
-        return [serialize_row(r) for r in rows]
+_measurement_tools = register_measurement_tools(mcp, _weight_tool_dependencies)
+log_measurement = _measurement_tools.log_measurement
+get_measurements = _measurement_tools.get_measurements
 
 
 # ── Notes tools ─────────────────────────────────────────────────────────────
 
-# Domains whose per-row ``note`` field the note tools can read/write, mapped to
-# their model. Single source of truth for both log_note and get_notes so the two
-# never drift out of sync.
-_NOTE_MODELS = {
-    "weight": WeightLog,
-    "nutrition": MealLog,
-    "glp1": Injection,
-    "skincare": SkincareLog,
-    "measurement": BodyMeasurement,
-    "body_comp": BodyScan,
-    "labs": LabResult,
-}
-
-
-@mcp.tool()
-async def log_note(
-    domain: str,
-    record_id: int,
-    note: str,
-) -> dict:
-    """Adds or updates the note field on any domain record by its ID.
-    Supported domains: weight, nutrition, glp1, skincare, measurement, body_comp, labs.
-    WRITE tool — saved immediately."""
-    model = _NOTE_MODELS.get(domain)
-    if model is None:
-        return {"error": f"Unknown domain '{domain}'. Use: {', '.join(_NOTE_MODELS)}"}
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        if domain == "weight":
-            from vitals.services import weight_service
-
-            conflict_context, prepared = await _mcp_v1_weight_write(session)
-            row = await weight_service.update_weight_note(
-                session,
-                record_id,
-                note=note,
-                identity=conflict_context.identity,
-                prepared_weight_write=prepared,
-            )
-            if row is None:
-                return {"error": f"{domain} record {record_id} not found"}
-            await session.commit()
-            return await serialize_written(session, row)
-        if domain == "measurement":
-            from vitals.services import weight_service
-
-            conflict_context, prepared = await _mcp_v1_aux_weight_write(session)
-            row = await weight_service.update_body_measurement_note(
-                session,
-                record_id,
-                note=note,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-            if row is None:
-                return {"error": f"{domain} record {record_id} not found"}
-            await session.commit()
-            return await serialize_written(session, row)
-        if domain == "body_comp":
-            if not await _module_enabled(session, "body_comp"):
-                return {"error": "module 'body_comp' is disabled"}
-            from vitals.services.body_scan import scans
-
-            conflict_context, prepared = await _mcp_v1_weight_write(session)
-            row = await scans.update_scan_note(
-                session,
-                record_id,
-                note=note,
-                identity=conflict_context.identity,
-                prepared_weight_write=prepared,
-            )
-            if row is None:
-                return {"error": f"{domain} record {record_id} not found"}
-            await session.commit()
-            return await serialize_written(session, row)
-        if domain == "nutrition":
-            if not await _module_enabled(session, "nutrition"):
-                return {"error": "module 'nutrition' is disabled"}
-            from vitals.services import nutrition_service
-
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-            row = await nutrition_service.update_meal_note(
-                session,
-                record_id,
-                note=note,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-            if row is None:
-                return {"error": f"{domain} record {record_id} not found"}
-            await session.commit()
-            return await serialize_written(session, row)
-        if domain == "skincare":
-            if not await _module_enabled(session, "skincare"):
-                return {"error": "module 'skincare' is disabled"}
-            from vitals.services import skincare_service
-
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-            row = await skincare_service.update_log_note(
-                session,
-                record_id,
-                note=note,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-            if row is None:
-                return {"error": f"{domain} record {record_id} not found"}
-            await session.commit()
-            return await serialize_written(session, row)
-        if domain == "glp1":
-            if not await _module_enabled(session, "glp1"):
-                return {"error": "module 'glp1' is disabled"}
-            from vitals.services import glp1_service
-
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-            row = await glp1_service.update_injection_note(
-                session,
-                record_id,
-                note=note,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-            if row is None:
-                return {"error": f"{domain} record {record_id} not found"}
-            await session.commit()
-            return await serialize_written(session, row)
-        if domain == "labs":
-            from vitals.services import labs_service
-
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-            row = await labs_service.update_result_note(
-                session,
-                record_id,
-                note=note,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-            if row is None:
-                return {"error": f"{domain} record {record_id} not found"}
-            await session.commit()
-            return await serialize_written(session, row)
-        row = await session.get(model, record_id)
-        if row is None:
-            return {"error": f"{domain} record {record_id} not found"}
-        row.note = note
-        await session.flush()
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-async def get_notes(
-    domain: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    limit: int = 50,
-) -> list[dict]:
-    """Retrieves records that have non-empty notes, optionally filtered by domain
-    and date range. Returns records from: weight, nutrition, glp1, skincare,
-    measurement, body_comp, labs."""
-    if domain and domain not in _NOTE_MODELS:
-        return [{"error": f"Unknown domain '{domain}'. Use: {', '.join(_NOTE_MODELS)}"}]
-
-    targets = (
-        {domain: _NOTE_MODELS[domain]}
-        if domain
-        else dict(_NOTE_MODELS)
-    )
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    results = []
-    async with session_factory() as session:
-        weight_scope = None
-        measurement_scope = None
-        nutrition_scope = None
-        skincare_scope = None
-        glp1_scope = None
-        labs_scope = None
-        body_comp_scope = None
-        if "weight" in targets:
-            weight_scope = await _mcp_v1_conflict_scope(session)
-        if "measurement" in targets:
-            measurement_scope = weight_scope or await _mcp_v1_conflict_scope(session)
-        if "nutrition" in targets:
-            if not await _module_enabled(session, "nutrition"):
-                if domain == "nutrition":
-                    return [{"error": "module 'nutrition' is disabled"}]
-                targets.pop("nutrition")
-            else:
-                nutrition_scope = await _mcp_v1_conflict_scope(session)
-        if "skincare" in targets:
-            if not await _module_enabled(session, "skincare"):
-                if domain == "skincare":
-                    return [{"error": "module 'skincare' is disabled"}]
-                targets.pop("skincare")
-            else:
-                skincare_scope = await _mcp_v1_conflict_scope(session)
-        if "glp1" in targets:
-            if not await _module_enabled(session, "glp1"):
-                if domain == "glp1":
-                    return [{"error": "module 'glp1' is disabled"}]
-                targets.pop("glp1")
-            else:
-                glp1_scope = await _mcp_v1_conflict_scope(session)
-        if "labs" in targets:
-            labs_scope = await _mcp_v1_conflict_scope(session)
-        if "body_comp" in targets:
-            if not await _module_enabled(session, "body_comp"):
-                if domain == "body_comp":
-                    return [{"error": "module 'body_comp' is disabled"}]
-                targets.pop("body_comp")
-            else:
-                body_comp_scope = await _mcp_v1_conflict_scope(session)
-        for d_name, model in targets.items():
-            if d_name == "weight":
-                assert weight_scope is not None
-                from vitals.services import weight_service
-
-                rows = await weight_service.list_weight_notes(
-                    session,
-                    subject_id=weight_scope.subject_id,
-                    start=start,
-                    end=end,
-                    limit=limit,
-                )
-                for row in rows:
-                    entry = serialize_row(row)
-                    entry["_domain"] = d_name
-                    results.append(entry)
-                continue
-            if d_name == "nutrition":
-                assert nutrition_scope is not None
-                from vitals.services import nutrition_service
-
-                rows = await nutrition_service.list_meals(
-                    session,
-                    start=start,
-                    end=end,
-                    subject_id=nutrition_scope.subject_id,
-                    has_note=True,
-                    limit=limit,
-                )
-                for row in rows:
-                    entry = serialize_row(row)
-                    entry["_domain"] = d_name
-                    results.append(entry)
-                continue
-            if d_name == "measurement":
-                assert measurement_scope is not None
-                from vitals.services import weight_service
-
-                rows = await weight_service.list_body_measurements(
-                    session,
-                    subject_id=measurement_scope.subject_id,
-                    start=start,
-                    end=end,
-                    has_note=True,
-                )
-                for row in rows:
-                    entry = serialize_row(row)
-                    entry["_domain"] = d_name
-                    results.append(entry)
-                continue
-            if d_name == "skincare":
-                assert skincare_scope is not None
-                from vitals.services import skincare_service
-
-                rows = await skincare_service.list_logs(
-                    session,
-                    subject_id=skincare_scope.subject_id,
-                    start=start,
-                    end=end,
-                    has_note=True,
-                    limit=limit,
-                )
-                for row in rows:
-                    entry = serialize_row(row)
-                    entry["_domain"] = d_name
-                    results.append(entry)
-                continue
-            if d_name == "glp1":
-                assert glp1_scope is not None
-                from vitals.services import glp1_service
-
-                rows = await glp1_service.list_injections(
-                    session,
-                    subject_id=glp1_scope.subject_id,
-                    start=start,
-                    end=end,
-                    has_note=True,
-                    limit=limit,
-                )
-                for row in rows:
-                    entry = serialize_row(row)
-                    entry["_domain"] = d_name
-                    results.append(entry)
-                continue
-            if d_name == "labs":
-                assert labs_scope is not None
-                from vitals.services import labs_service
-
-                rows = await labs_service.list_results(
-                    session,
-                    subject_id=labs_scope.subject_id,
-                    start=start,
-                    end=end,
-                    has_note=True,
-                    limit=limit,
-                )
-                for row in rows:
-                    entry = serialize_row(row)
-                    entry["_domain"] = d_name
-                    results.append(entry)
-                continue
-            if d_name == "body_comp":
-                assert body_comp_scope is not None
-                from vitals.services.body_scan import scans
-
-                rows = await scans.list_scans(
-                    session,
-                    subject_id=body_comp_scope.subject_id,
-                    start=start,
-                    end=end,
-                )
-                for row in (r for r in rows if r.note):
-                    entry = serialize_row(row)
-                    entry["_domain"] = d_name
-                    results.append(entry)
-                continue
-            stmt = select(model).where(model.note.isnot(None), model.note != "")
-            if start:
-                stmt = stmt.where(model.date >= start)
-            if end:
-                stmt = stmt.where(model.date <= end)
-            stmt = stmt.order_by(model.date.desc()).limit(limit)
-            rows = (await session.execute(stmt)).scalars().all()
-            for r in rows:
-                entry = serialize_row(r)
-                entry["_domain"] = d_name
-                results.append(entry)
-
-    results.sort(key=lambda x: x.get("date", ""), reverse=True)
-    return results[:limit]
+_record_tool_dependencies = RecordToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    parse_date=_parse_date,
+    module_enabled=_module_enabled,
+    conflict_scope=_mcp_v1_conflict_scope,
+    conflict_write_context=_mcp_v1_conflict_write_context,
+    weight_write=lambda *args, **kwargs: _mcp_v1_weight_write(*args, **kwargs),
+    auxiliary_weight_write=lambda *args, **kwargs: _mcp_v1_aux_weight_write(
+        *args,
+        **kwargs,
+    ),
+    legacy_owner=_mcp_v1_legacy_owner,
+    serialize_row=serialize_row,
+    serialize_written=serialize_written,
+)
+_note_tools = register_note_tools(mcp, _record_tool_dependencies)
+log_note = _note_tools.log_note
+get_notes = _note_tools.get_notes
 
 
 # ── Deletion (one tool, every domain) ─────────────────────────────────────────
 
-# domain → (module key gating the write, service module, delete function).
-# Every delete service happens to share one signature — ``(session, id) -> bool`` —
-# which is what lets a single tool stand in for the eighteen near-identical ones
-# that used to live here, each differing only in the noun it echoed back. The tool
-# list is re-read at the top of every conversation, so a fifth of it was spent
-# spelling out delete_meal / delete_glp1 / delete_hrt_cycle_item.
-_DELETE_TARGETS: dict[str, tuple[Optional[str], str, str]] = {
-    "weight": (None, "weight_service", "delete_weight_log"),
-    "measurement": (None, "weight_service", "delete_body_measurement"),
-    "noise_marker": (None, "weight_service", "delete_noise_marker"),
-    "labs": (None, "labs_service", "delete_result"),
-    "milestones": (None, "milestones_service", "delete_milestone"),
-    "nutrition": ("nutrition", "nutrition_service", "delete_meal"),
-    "glp1": ("glp1", "glp1_service", "delete_injection"),
-    "glp1_side_effect": ("glp1", "glp1_service", "delete_side_effect"),
-    "glp1_dose_phase": ("glp1", "glp1_service", "delete_dose_phase"),
-    "hrt_dose": ("hrt", "hrt.records", "delete_dose"),
-    "hrt_side_effect": ("hrt", "hrt.records", "delete_side_effect"),
-    "hrt_cycle": ("hrt", "hrt.cycles", "delete_cycle"),
-    "hrt_cycle_item": ("hrt", "hrt.cycles", "delete_cycle_item"),
-    "body_comp": ("body_comp", "body_scan.scans", "delete_scan"),
-    "timeline": ("timeline", "timeline_service", "delete_annotation"),
-    "skincare_observation": ("skincare", "skincare_service", "delete_observation"),
-    "supplements": ("supplements", "supplements_service", "delete_supplement"),
-    "genetics": ("genetics", "genetics.variants", "delete_variant"),
-}
-
-
-@mcp.tool()
-async def delete_record(domain: str, record_id: int) -> dict:
-    """Deletes one record from any domain by its ID. WRITE tool — immediate.
-
-    ``domain`` is one of: weight, measurement (body tape), noise_marker, labs (one
-    result), milestones (a goal card), nutrition (a meal), glp1 (an injection),
-    glp1_side_effect, glp1_dose_phase, hrt_dose, hrt_side_effect, hrt_cycle
-    (with its compound plans), hrt_cycle_item (one plan, cycle kept), body_comp
-    (a scan with its metrics), timeline (a manual event), skincare_observation,
-    supplements (a catalog entry), genetics (a variant).
-
-    Deleting a weight log reactivates the next-highest-priority log for that date.
-    Returns ``{"deleted": false, ...}`` when nothing has that id."""
-    target = _DELETE_TARGETS.get(domain)
-    if target is None:
-        return {"error": f"Unknown domain '{domain}'. Use: {', '.join(_DELETE_TARGETS)}"}
-    module_key, service_name, fn_name = target
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        if module_key and not await _module_enabled(session, module_key):
-            return {"error": f"module '{module_key}' is disabled"}
-        service = importlib.import_module(f"vitals.services.{service_name}")
-        owned_kwargs = {}
-        if domain == "weight":
-
-            conflict_context, prepared = await _mcp_v1_weight_write(session)
-            owned_kwargs = {
-                "identity": conflict_context.identity,
-                "prepared_weight_write": prepared,
-            }
-        elif domain in {"measurement", "noise_marker"}:
-            conflict_context, prepared = await _mcp_v1_aux_weight_write(session)
-            owned_kwargs = {
-                "identity": conflict_context.identity,
-                "prepared_conflict_write": prepared,
-            }
-        elif domain == "body_comp":
-            conflict_context, prepared = await _mcp_v1_weight_write(session)
-            owned_kwargs = {
-                "subject_id": conflict_context.identity.subject_id,
-                "identity": conflict_context.identity,
-                "prepared_weight_write": prepared,
-            }
-        elif domain == "milestones":
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-            owned_kwargs = {
-                "identity": conflict_context.identity,
-                "prepared_conflict_write": prepared,
-            }
-        elif domain == "supplements":
-            ownership = await _mcp_v1_legacy_owner(session)
-            owned_kwargs = {"identity": ownership.owner_action()}
-        elif domain == "timeline":
-            ownership = await _mcp_v1_legacy_owner(session)
-            owned_kwargs = {
-                "identity": ownership.owner_action(),
-            }
-        elif domain == "nutrition":
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-            owned_kwargs = {
-                "identity": conflict_context.identity,
-                "prepared_conflict_write": prepared,
-            }
-        elif domain == "labs":
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-            owned_kwargs = {
-                "subject_id": conflict_context.identity.subject_id,
-                "identity": conflict_context.identity,
-                "prepared_conflict_write": prepared,
-            }
-        elif domain == "genetics":
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-            owned_kwargs = {
-                "identity": conflict_context.identity,
-                "prepared_conflict_write": prepared,
-            }
-        elif domain == "skincare_observation":
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-            owned_kwargs = {
-                "identity": conflict_context.identity,
-                "prepared_conflict_write": prepared,
-            }
-        elif domain in {"glp1", "glp1_side_effect", "glp1_dose_phase"}:
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-            owned_kwargs = {
-                "identity": conflict_context.identity,
-                "prepared_conflict_write": prepared,
-            }
-        elif domain in {
-            "hrt_dose",
-            "hrt_side_effect",
-            "hrt_cycle",
-            "hrt_cycle_item",
-        }:
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-            owned_kwargs = {
-                "identity": conflict_context.identity,
-                "prepared_conflict_write": prepared,
-            }
-        ok = await getattr(service, fn_name)(session, record_id, **owned_kwargs)
-        if domain == "body_comp" and ok:
-            await service.refresh_alerts(
-                session,
-                subject_id=conflict_context.identity.subject_id,
-                identity=conflict_context.identity,
-                prepared_weight_write=prepared,
-            )
-        await session.commit()
-        return {"deleted": ok, "domain": domain, "record_id": record_id}
+_delete_tools = register_delete_tools(mcp, _record_tool_dependencies)
+delete_record = _delete_tools.delete_record
 
 
 # ── Body composition tools (InBody / МедАсс — optional module) ────────────────
-def _serialize_scan(scan: BodyScan) -> dict:
-    """A scan plus its metrics nested (relationship must be loaded already)."""
-    d = serialize_row(scan)
-    d["metrics"] = [serialize_row(m) for m in scan.metrics]
-    return d
-
-
-@mcp.tool()
-async def get_body_scans(
-    start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
-) -> list[dict]:
-    """Retrieves body-composition scans (InBody / МедАсс) with every parsed metric
-    (skeletal muscle, body water, visceral fat, segmental analysis, phase angle…).
-    Defaults to the most recent 100 scans."""
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        from vitals.services.body_scan import scans
-
-        if not await _module_enabled(session, "body_comp"):
-            return [{"error": "module 'body_comp' is disabled"}]
-        scope = await _mcp_v1_conflict_scope(session)
-        scan_rows = await scans.list_scans(
-            session,
-            start=start,
-            end=end,
-            subject_id=scope.subject_id,
-        )
-        return [_serialize_scan(s) for s in scan_rows[:limit]]
-
-
-@mcp.tool()
-async def get_body_scan(scan_id: int) -> dict:
-    """Retrieves a single body-composition scan with its full metric sheet."""
-    from vitals.services.body_scan import scans
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        if not await _module_enabled(session, "body_comp"):
-            return {"error": "module 'body_comp' is disabled"}
-        scope = await _mcp_v1_conflict_scope(session)
-        scan = await scans.get_scan(
-            session,
-            scan_id,
-            subject_id=scope.subject_id,
-        )
-        if scan is None:
-            return {"error": f"Body scan {scan_id} not found"}
-        return _serialize_scan(scan)
-
-
-@mcp.tool()
-async def get_body_metric_history(
-    metric_key: str,
-    segment: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-) -> list[dict]:
-    """Time series for one body-composition metric (e.g. ``skeletal_muscle_mass``,
-    ``phase_angle``, ``visceral_fat_area``), optionally for a single body segment."""
-    from vitals.services.body_scan import scans
-
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-    async with session_factory() as session:
-        if not await _module_enabled(session, "body_comp"):
-            return [{"error": "module 'body_comp' is disabled"}]
-        scope = await _mcp_v1_conflict_scope(session)
-        return await scans.metric_history(
-            session,
-            metric_key,
-            segment=segment,
-            start=start,
-            end=end,
-            subject_id=scope.subject_id,
-        )
-
-
-@mcp.tool()
-@gated("body_comp")
-async def log_body_scan(
-    metrics: list[dict],
-    on_date: Optional[str] = None,
-    device: Optional[str] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Records a body-composition scan from structured metrics (no photo needed).
-
-    Each metric is ``{"label" or "metric_key": str, "value": number, "unit": str?,
-    "ref_low": number?, "ref_high": number?, "segment": str?}``. The scan's weight /
-    body-fat% / LBM are bridged into the weight domain. WRITE tool — saved
-    immediately. No-op with an error if the body_comp module is disabled. If a hard
-    conflict rule blocks the save, returns ``{"blocked": true, ...}``; call again
-    with ``override=True``."""
-    from vitals.services.body_scan import scans
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-
-    async with session_factory() as session:
-        extracted = {
-            "date": parsed_date.isoformat(),
-            "device": device,
-            "note": note,
-            "metrics": metrics,
-            "override": override,
-        }
-        try:
-            conflict_context, prepared_weight_write = await _mcp_v1_weight_write(
-                session,
-                evaluation_date=parsed_date,
-            )
-            from vitals.services import raw_payload_service
-
-            raw = await raw_payload_service.upsert_owned_raw_payload(
-                session,
-                identity=conflict_context.identity,
-                integration_connection_id=None,
-                file_asset_id=None,
-                domain=Domain.BODY_COMPOSITION.value,
-                source=Source.MCP.value,
-                external_id=f"mcp:{uuid.uuid4().hex}",
-                payload=extracted,
-            )
-            scan = await scans.ingest_structured_scan(
-                session,
-                extracted,
-                raw_payload=raw,
-                identity=conflict_context.identity,
-                prepared_weight_write=prepared_weight_write,
-                override=override,
-            )
-            await scans.refresh_alerts(
-                session,
-                subject_id=conflict_context.identity.subject_id,
-                on_date=parsed_date,
-                identity=conflict_context.identity,
-                prepared_weight_write=prepared_weight_write,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        await session.commit()
-        full = await scans.get_scan(
-            session,
-            scan.id,
-            subject_id=conflict_context.identity.subject_id,
-        )
-        return _serialize_scan(full) if full else {"scan_id": scan.id}
+_body_composition_tool_dependencies = BodyCompositionToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    parse_date=_parse_date,
+    module_enabled=_module_enabled,
+    conflict_scope=_mcp_v1_conflict_scope,
+    weight_write=lambda *args, **kwargs: _mcp_v1_weight_write(*args, **kwargs),
+    conflict_payload=_conflict_payload,
+    gated=gated,
+)
+_body_composition_tools = register_body_composition_tools(
+    mcp,
+    _body_composition_tool_dependencies,
+)
+get_body_scans = _body_composition_tools.get_body_scans
+get_body_scan = _body_composition_tools.get_body_scan
+get_body_metric_history = _body_composition_tools.get_body_metric_history
+log_body_scan = _body_composition_tools.log_body_scan
 
 
 # ── Labs tools ──────────────────────────────────────────────────────────────
-@mcp.tool()
-async def get_lab_results(
-    marker: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    limit: int = 100,
-) -> list[dict]:
-    """Retrieves lab results (biomarker, value, unit, reference range, computed
-    out-of-range flag), optionally filtered by marker name and/or date range
-    (YYYY-MM-DD). Defaults to the most recent 100 rows across all markers."""
-    from vitals.services import labs_service
-
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        results = await labs_service.list_results(
-            session,
-            marker=marker,
-            start=start,
-            end=end,
-            limit=limit,
-            subject_id=scope.subject_id,
-        )
-        return [serialize_row(r) for r in results]
-
-
-@mcp.tool()
-async def log_lab_result(
-    marker: str,
-    value: float,
-    on_date: Optional[str] = None,
-    unit: Optional[str] = None,
-    ref_low: Optional[float] = None,
-    ref_high: Optional[float] = None,
-    lab_name: Optional[str] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Records a single lab marker value (one biomarker from a blood/urine test).
-    The out-of-range flag is computed automatically; a range left out here falls
-    back to the marker's catalog range if one is already on file. WRITE tool —
-    saved immediately. Defaults: on_date = today. A hard conflict rule (e.g. a
-    hyperkalemic potassium result while a potassium supplement is active) returns
-    ``{"blocked": true, ...}``; retry with ``override=True`` to save anyway."""
-    from vitals.services import labs_service
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date,
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        try:
-            from vitals.services import raw_payload_service
-
-            raw = await raw_payload_service.upsert_owned_raw_payload(
-                session,
-                identity=conflict_context.identity,
-                integration_connection_id=None,
-                file_asset_id=None,
-                domain=Domain.LABS.value,
-                source=Source.MCP.value,
-                external_id=f"mcp:{uuid.uuid4().hex}",
-                payload={
-                    "date": parsed_date.isoformat(),
-                    "marker": marker,
-                    "value": value,
-                    "unit": unit,
-                    "ref_low": ref_low,
-                    "ref_high": ref_high,
-                    "lab_name": lab_name,
-                    "note": note,
-                    "override": override,
-                },
-            )
-            row = await labs_service.add_result(
-                session,
-                on_date=parsed_date,
-                marker=marker,
-                value=value,
-                unit=unit,
-                ref_low=ref_low,
-                ref_high=ref_high,
-                lab_name=lab_name,
-                note=note,
-                source=Source.MCP.value,
-                raw_payload_id=raw.id,
-                override=override,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-            raw.processed_at = now_local()
-            await session.flush()
-            await labs_service.refresh_alerts(
-                session,
-                subject_id=conflict_context.identity.subject_id,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-async def update_lab_result(
-    result_id: int,
-    value: Optional[float] = None,
-    marker: Optional[str] = None,
-    on_date: Optional[str] = None,
-    unit: Optional[str] = None,
-    ref_low: Optional[float] = None,
-    ref_high: Optional[float] = None,
-    lab_name: Optional[str] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Corrects an existing lab result by ID — a mistyped value, a range read off
-    the wrong column. Only the fields you pass are changed; the out-of-range flag
-    is recomputed and the alerts derived from it refreshed. Use this instead of
-    delete + re-add: a measurement is never thrown away here. WRITE tool."""
-    from vitals.services import labs_service
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, field="on_date")
-
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date or today_local(),
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        current = await labs_service.get_result_for_update(
-            session,
-            result_id,
-            identity=conflict_context.identity,
-            prepared_conflict_write=prepared,
-        )
-        if current is None:
-            return {"error": f"Lab result {result_id} not found"}
-        final_date = parsed_date or current.date
-        if final_date != conflict_context.evaluation_date:
-            conflict_context = await _mcp_v1_conflict_write_context(
-                session,
-                evaluation_date=final_date,
-            )
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-        try:
-            row = await labs_service.update_result(
-                session,
-                result_id,
-                on_date=parsed_date,
-                marker=marker,
-                value=value,
-                unit=unit,
-                ref_low=ref_low,
-                ref_high=ref_high,
-                lab_name=lab_name,
-                note=note,
-                override=override,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        if row is None:
-            return {"error": f"Lab result {result_id} not found"}
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-async def log_lab_results(
-    results: list[dict],
-    on_date: Optional[str] = None,
-    lab_name: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Records every marker from one lab report at once (e.g. a full blood panel
-    read from a photo/PDF shared in the conversation) — the natural way to push a
-    whole report in one call instead of calling log_lab_result per marker.
-
-    Each item in ``results`` is ``{"marker": str, "value": number, "unit": str?,
-    "ref_low": number?, "ref_high": number?}``. Identical (date, marker, value)
-    rows are deduped, so retrying a call is safe. The verbatim payload is kept in
-    raw_payloads, same as a document uploaded through the web UI. WRITE tool —
-    saved immediately. Defaults: on_date = today. A hard conflict rule on any
-    marker in the panel returns ``{"blocked": true, ...}`` and saves nothing;
-    retry with ``override=True`` to save the whole panel anyway."""
-    from vitals.services import labs_service
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-
-    async with session_factory() as session:
-        extracted = {
-            "date": parsed_date.isoformat(),
-            "lab_name": lab_name,
-            "results": results,
-        }
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date,
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        from vitals.services import raw_payload_service
-
-        raw = await raw_payload_service.upsert_owned_raw_payload(
-            session,
-            identity=conflict_context.identity,
-            integration_connection_id=None,
-            file_asset_id=None,
-            domain=Domain.LABS.value,
-            source=Source.MCP.value,
-            external_id=f"mcp:{uuid.uuid4().hex}",
-            payload=extracted,
-        )
-        try:
-            summary = await labs_service.ingest_structured_results(
-                session,
-                extracted,
-                raw_payload=raw,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-                override=override,
-            )
-            await labs_service.refresh_alerts(
-                session,
-                subject_id=conflict_context.identity.subject_id,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        await session.commit()
-        return {
-            "created": summary["created"],
-            "skipped": summary["skipped"],
-            "results": [await serialize_written(session, r) for r in summary["results"]],
-        }
-
+_labs_tool_dependencies = LabsToolDependencies(
+    # Keep the router's direct-test monkeypatch seam dynamic.
+    get_session_factory=lambda: get_session_factory(),
+    parse_date=_parse_date,
+    conflict_scope=_mcp_v1_conflict_scope,
+    conflict_write_context=_mcp_v1_conflict_write_context,
+    conflict_payload=_conflict_payload,
+    serialize_row=serialize_row,
+    serialize_written=serialize_written,
+)
+_labs_tools = register_labs_tools(
+    mcp,
+    _labs_tool_dependencies,
+)
+get_lab_results = _labs_tools.get_lab_results
+log_lab_result = _labs_tools.log_lab_result
+update_lab_result = _labs_tools.update_lab_result
+log_lab_results = _labs_tools.log_lab_results
 
 # ── Timeline tools ───────────────────────────────────────────────────────────
-@mcp.tool()
-async def get_timeline(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    domain: Optional[str] = None,
-    limit: int = 100,
-) -> list[dict]:
-    """Retrieves the cross-domain event feed — manual annotations (trips,
-    illness, protocol changes) plus derived events (GLP-1 dose changes, lab
-    draws, BIA scans, achieved milestones, noisy weight periods), newest first.
-    Optionally filtered by date range (YYYY-MM-DD) and/or domain (weight, glp1,
-    garmin, workouts, labs, nutrition, skincare, supplements, genetics,
-    body_comp, or "timeline" for global flags)."""
-    from vitals.services import timeline_service
-
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-    domains = [domain] if domain else None
-
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        events = await timeline_service.list_events(
-            session,
-            subject_id=scope.subject_id,
-            domains=domains,
-            start=start,
-            end=end,
-            limit=limit,
-        )
-        return [e.to_dict() for e in events]
-
-
-@mcp.tool()
-@gated("timeline")
-async def log_event(
-    title: str,
-    on_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    kind: str = "note",
-    domain: str = "timeline",
-    note: Optional[str] = None,
-) -> dict:
-    """Records a manual Timeline annotation — a flag shown on every chart and
-    in the event feed (a trip, an illness, a protocol change, a free-form
-    note). ``kind`` is one of: life_event, illness, travel, protocol_change,
-    note. ``domain`` scopes the flag to one chart (weight, glp1, ...) or
-    "timeline" (default) to show it on every chart. ``end_date`` makes it a
-    range (e.g. a week-long trip); omit it for a single-day event. WRITE tool —
-    saved immediately. No-op with an error if the timeline module is disabled."""
-    from vitals.services import timeline_service
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-    parsed_end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
-        row = await timeline_service.create_annotation(
-            session,
-            title=title,
-            on_date=parsed_date,
-            end_date=parsed_end,
-            kind=kind,
-            domain=domain,
-            note=note,
-            source=Source.MCP.value,
-            identity=ownership.owner_action(),
-        )
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-@gated("timeline")
-async def update_event(
-    event_id: int,
-    title: Optional[str] = None,
-    on_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    kind: Optional[str] = None,
-    domain: Optional[str] = None,
-    note: Optional[str] = None,
-) -> dict:
-    """Updates a manual Timeline annotation by ID — the ``id`` of a row from
-    ``get_timeline`` whose source is manual (derived events are computed and
-    cannot be edited). Only the fields you pass are changed; everything left out
-    keeps its stored value, including the event's own date. WRITE tool."""
-    from vitals.services import timeline_service
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, field="on_date")
-    parsed_end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
-        current = await timeline_service.get_annotation(
-            session,
-            event_id,
-            subject_id=ownership.subject_id,
-        )
-        if current is None:
-            return {"error": f"Event {event_id} not found"}
-        merged = {
-            "title": current.title if title is None else title,
-            "date": current.date if parsed_date is None else parsed_date,
-            "end_date": current.end_date if parsed_end is None else parsed_end,
-            "kind": current.kind if kind is None else kind,
-            "domain": current.domain if domain is None else domain,
-            "note": current.note if note is None else note,
-        }
-        row = await timeline_service.update_annotation(
-            session,
-            event_id,
-            on_date=merged.pop("date"),
-            identity=ownership.owner_action(),
-            **merged,
-        )
-        await session.commit()
-        return await serialize_written(session, row)
+_timeline_tools = register_timeline_tools(
+    mcp,
+    TimelineToolDependencies(
+        get_session_factory=lambda: get_session_factory(),
+        parse_date=_parse_date,
+        conflict_scope=_mcp_v1_conflict_scope,
+        legacy_owner=_mcp_v1_legacy_owner,
+        serialize_written=serialize_written,
+        gated=gated,
+    ),
+)
+get_timeline = _timeline_tools.get_timeline
+log_event = _timeline_tools.log_event
+update_event = _timeline_tools.update_event
 
 
 # ── Cross-domain + whole-lake tools ──────────────────────────────────────────
-@mcp.tool()
-async def get_full_snapshot(
-    on_date: Optional[str] = None,
-    period_days: int = 7,
-) -> dict:
-    """Returns context-v2 for a closed period (1..90 days): profile, coverage,
-    weight/body composition, GLP-1/HRT plans and facts, every lab result in the
-    period, Garmin recovery and activities, Hevy, nutrition, skincare,
-    timeline and active goals. Every dated fact is bounded by the effective
-    period end. When ``on_date`` is today the closed period ends yesterday."""
-    from vitals.services import digest_service
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, field="on_date")
-    async with session_factory() as session:
-        scope = await _mcp_v1_composition_scope(session)
-        try:
-            return await digest_service.assemble_context(
-                session,
-                subject_id=scope.subject_id,
-                on_date=parsed_date,
-                period_days=period_days,
-            )
-        except ValueError as exc:
-            return {"error": str(exc)}
-
-
-EXPORT_DEFAULT_DAYS = 90
-
-
-@mcp.tool()
-async def export_everything(
-    domains: Optional[list[str]] = None, since: Optional[str] = None
-) -> dict:
-    """Returns the health history as one compact, secret-free, LLM-ready export
-    grouped by domain (weight, measurements, body scans, GLP-1, HRT, labs, Garmin,
-    workouts, nutrition, skincare, supplements, genetics,
-    milestones, timeline). This is the way to read long-term history in a single
-    call rather than paging each domain's newest-100 read tool. Read-only.
-
-    Defaults to the **last 90 days**: the whole lake is years of daily Garmin rows
-    with per-minute sleep and would fill the conversation before the question is
-    asked. Widen deliberately — ``since="2020-01-01"`` (any early date) for the
-    entire history, and/or ``domains=["biomarkers", "weight_history"]`` to pull a
-    couple of areas in full instead of everything. Unknown domain names are
-    rejected with the list of valid ones."""
-    from vitals.services import data_portability_service
-    from vitals.utils.timeutils import today_local
-
-    default_since = today_local() - timedelta(days=EXPORT_DEFAULT_DAYS)
-    cutoff = _parse_date(since, default_since, field="since")
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        scope = await _mcp_v1_composition_scope(session)
-        try:
-            return await data_portability_service.export_llm(
-                session,
-                subject_id=scope.subject_id,
-                domains=domains,
-                since=cutoff,
-            )
-        except ValueError as e:
-            return {"error": str(e)}
-
-
-@mcp.tool()
-async def get_data_overview() -> dict:
-    """Returns a per-domain map of what data exists: row count, earliest and latest
-    date, and last-updated timestamp for each domain. Call this first to orient —
-    it tells you the real date coverage and density before you query a domain, so
-    you don't page blindly through empty or out-of-range windows. Read-only."""
-    # Dated log/metric tables: report count + min/max of their date column.
-    dated = [
-        ("weight", WeightLog, WeightLog.date),
-        ("measurements", BodyMeasurement, BodyMeasurement.date),
-        ("body_scans", BodyScan, BodyScan.date),
-        ("glp1_injections", Injection, Injection.date),
-        ("side_effects", SideEffect, SideEffect.date),
-        ("garmin_daily", GarminDaily, GarminDaily.date),
-        ("garmin_activities", GarminActivity, GarminActivity.date),
-        ("garmin_intraday", GarminIntraday, GarminIntraday.date),
-        ("workouts", HevyWorkout, HevyWorkout.date),
-        ("labs", LabResult, LabResult.date),
-        ("nutrition", MealLog, MealLog.date),
-        ("skincare_logs", SkincareLog, SkincareLog.date),
-        ("skincare_observations", SkincareObservation, SkincareObservation.date),
-        ("weekly_digests", WeeklyDigest, WeeklyDigest.date),
-        ("timeline", Annotation, Annotation.date),
-        ("noise_markers", NoiseMarker, NoiseMarker.start_date),
-        ("hrt_doses", HrtDose, HrtDose.date),
-        ("hrt_side_effects", HrtSideEffect, HrtSideEffect.date),
-        ("hrt_cycles", HrtCycle, HrtCycle.start_date),
-    ]
-    # Config/catalog tables have no per-day date — report count only.
-    count_only = [
-        ("supplements", Supplement),
-        ("genetics", GeneticVariant),
-        ("milestones", Milestone),
-        ("dose_phases", DosePhase),
-    ]
-
-    session_factory = get_session_factory()
-    overview: dict = {}
-    async with session_factory() as session:
-        scope = await _mcp_v1_composition_scope(session)
-        for name, model, date_col in dated:
-            cols = [func.count(), func.min(date_col), func.max(date_col)]
-            updated_col = getattr(model, "updated_at", None)
-            if updated_col is not None:
-                cols.append(func.max(updated_col))
-            # Filtered by the subject this call resolved. It used to resolve one
-            # and count over every row in the table, which is a smaller
-            # disclosure than the export beside it and the same kind: how many
-            # lab results somebody else has, and when the earliest was taken.
-            row = (
-                await session.execute(
-                    select(*cols).where(model.subject_id == scope.subject_id)
-                )
-            ).one()
-            entry = {
-                "count": row[0],
-                "earliest": row[1].isoformat() if row[1] else None,
-                "latest": row[2].isoformat() if row[2] else None,
-            }
-            if updated_col is not None:
-                entry["last_updated"] = row[3].isoformat() if row[3] else None
-            overview[name] = entry
-
-        for name, model in count_only:
-            # RLS is defence in depth, not the application query plan. SQLite
-            # is the fast path and has no row policies; an unscoped count here
-            # disclosed how many supplements, variants, goals and dose phases
-            # every other record held.
-            count = (
-                await session.execute(
-                    select(func.count())
-                    .select_from(model)
-                    .where(model.subject_id == scope.subject_id)
-                )
-            ).scalar_one()
-            overview[name] = {"count": count}
-
-    return overview
+_reporting_tool_dependencies = ReportingToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    parse_date=_parse_date,
+    composition_scope=_mcp_v1_composition_scope,
+    conflict_scope=_mcp_v1_conflict_scope,
+)
+_reporting_tools = register_reporting_tools(
+    mcp,
+    _reporting_tool_dependencies,
+)
+get_full_snapshot = _reporting_tools.get_full_snapshot
+export_everything = _reporting_tools.export_everything
+get_data_overview = _reporting_tools.get_data_overview
 
 
 # ── Milestones / goals tools ──────────────────────────────────────────────────
-_MILESTONE_STATUSES = {s.value for s in MilestoneStatus}
-
-
-@mcp.tool()
-async def get_milestones(status: Optional[str] = None) -> list[dict]:
-    """Returns goal cards with live progress (current value, remaining, days left)
-    computed for weight/body-comp goals. Optionally filtered by ``status`` (active,
-    achieved, missed, paused). Read-only."""
-    from vitals.services import milestones_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        scope = await _mcp_v1_conflict_scope(session)
-        rows = await milestones_service.list_milestones(
-            session,
-            status=status,
-            subject_id=scope.subject_id,
-        )
-        return [
-            await milestones_service.progress(
-                session,
-                milestone,
-                subject_id=scope.subject_id,
-            )
-            for milestone in rows
-        ]
-
-
-@mcp.tool()
-async def create_milestone(
-    name: str,
-    domain: str = Domain.WEIGHT.value,
-    target_value: Optional[float] = None,
-    target_unit: Optional[str] = None,
-    deadline: Optional[str] = None,
-    note: Optional[str] = None,
-) -> dict:
-    """Creates a goal card (e.g. "reach 85 kg by 2026-12-31"). ``domain`` is the
-    related health area (weight, glp1, labs, body_comp, ...); ``deadline`` is
-    YYYY-MM-DD. WRITE tool — saved immediately."""
-    from vitals.services import milestones_service
-
-    session_factory = get_session_factory()
-    parsed_deadline = _parse_date(deadline, field="deadline")
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(session)
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        row = await milestones_service.create_milestone(
-            session, name=name, domain=domain, target_value=target_value,
-            target_unit=target_unit, deadline=parsed_deadline, note=note,
-            identity=conflict_context.identity,
-            prepared_conflict_write=prepared,
-        )
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-async def update_milestone(
-    milestone_id: int,
-    name: Optional[str] = None,
-    domain: Optional[str] = None,
-    target_value: Optional[float] = None,
-    target_unit: Optional[str] = None,
-    deadline: Optional[str] = None,
-    status: Optional[str] = None,
-    note: Optional[str] = None,
-    clear_fields: Optional[list[str]] = None,
-) -> dict:
-    """Updates a goal card by ID. Only the fields you pass are changed. Use
-    ``status`` to mark a goal achieved/missed/paused/active. To remove an
-    optional value, name it in ``clear_fields`` (target_value, target_unit,
-    deadline, or note). WRITE tool."""
-    from vitals.services import milestones_service
-
-    nullable_fields = {"target_value", "target_unit", "deadline", "note"}
-    clear = set(clear_fields or ())
-    unknown = clear.difference(nullable_fields)
-    if unknown:
-        return {
-            "error": "clear_fields contains unknown fields: "
-            + ", ".join(sorted(unknown))
-        }
-    supplied = {
-        "target_value": target_value,
-        "target_unit": target_unit,
-        "deadline": deadline,
-        "note": note,
-    }
-    overlapping = sorted(field for field in clear if supplied[field] is not None)
-    if overlapping:
-        return {
-            "error": "fields cannot be set and cleared together: "
-            + ", ".join(overlapping)
-        }
-    if status is not None and status not in _MILESTONE_STATUSES:
-        return {"error": f"Unknown status '{status}'. Use: {', '.join(sorted(_MILESTONE_STATUSES))}"}
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(session)
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        kwargs: dict = {}
-        if name is not None:
-            kwargs["name"] = name
-        if domain is not None:
-            kwargs["domain"] = domain
-        if target_value is not None:
-            kwargs["target_value"] = target_value
-        if target_unit is not None:
-            kwargs["target_unit"] = target_unit
-        if deadline is not None:
-            kwargs["deadline"] = _parse_date(deadline, field="deadline")
-        if status is not None:
-            kwargs["status"] = status
-        if note is not None:
-            kwargs["note"] = note
-        for field in clear:
-            kwargs[field] = None
-        row = await milestones_service.update_milestone(
-            session,
-            milestone_id,
-            identity=conflict_context.identity,
-            prepared_conflict_write=prepared,
-            **kwargs,
-        )
-        if row is None:
-            return {"error": f"Milestone {milestone_id} not found"}
-        await session.commit()
-        return await serialize_written(session, row)
+_milestone_tool_dependencies = MilestoneToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    parse_date=_parse_date,
+    conflict_scope=_mcp_v1_conflict_scope,
+    conflict_write_context=_mcp_v1_conflict_write_context,
+    serialize_written=serialize_written,
+)
+_milestone_tools = register_milestone_tools(
+    mcp,
+    _milestone_tool_dependencies,
+)
+get_milestones = _milestone_tools.get_milestones
+create_milestone = _milestone_tools.create_milestone
+update_milestone = _milestone_tools.update_milestone
 
 
 # ── GLP-1 write completeness (edit/delete injection, side effects, phases) ────
-@mcp.tool()
-@gated("glp1")
-async def update_glp1(
-    injection_id: int,
-    drug: Optional[str] = None,
-    dose_mg: Optional[float] = None,
-    on_date: Optional[str] = None,
-    site: Optional[str] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Edits an existing GLP-1 injection by ID. Only the fields you pass are
-    changed; ``on_date`` left out keeps the injection's own date. Runs the same
-    conflict gate as a fresh log — on a hard block returns ``{"blocked": true,
-    ...}``; retry with ``override=True``. WRITE tool."""
-    from vitals.services import glp1_service
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, field="on_date")
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date or today_local(),
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        current = await glp1_service.get_injection_for_update(
-            session,
-            injection_id,
-            identity=conflict_context.identity,
-            prepared_conflict_write=prepared,
-        )
-        if current is None:
-            return {"error": f"Injection {injection_id} not found"}
-        final_date = current.date if parsed_date is None else parsed_date
-        if conflict_context.evaluation_date != final_date:
-            conflict_context = engine.ConflictWriteContext(
-                identity=conflict_context.identity,
-                evaluation_date=final_date,
-                legacy_bridge=conflict_context.legacy_bridge,
-            )
-            prepared = await engine.prepare_scoped_write(
-                session,
-                context=conflict_context,
-            )
-        merged = {
-            "drug": current.drug if drug is None else drug,
-            "dose_mg": current.dose_mg if dose_mg is None else dose_mg,
-            "site": current.site if site is None else site,
-            "note": current.note if note is None else note,
-        }
-        try:
-            row = await glp1_service.update_injection(
-                session,
-                injection_id,
-                on_date=final_date,
-                override=override,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-                **merged,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        except ValueError as e:
-            return {"error": str(e)}
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-@gated("glp1")
-async def log_side_effect(
-    effect_type: str,
-    severity: int,
-    on_date: Optional[str] = None,
-    note: Optional[str] = None,
-) -> dict:
-    """Records a GLP-1 side effect (e.g. "nausea") with a severity 1–5 for a date
-    (default today). WRITE tool — saved immediately."""
-    from vitals.services import glp1_service
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date,
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        row = await glp1_service.log_side_effect(
-            session, on_date=parsed_date, effect_type=effect_type,
-            severity=severity, note=note, source=Source.MCP.value,
-            identity=conflict_context.identity,
-            prepared_conflict_write=prepared,
-        )
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-@gated("glp1")
-async def add_dose_phase(
-    start_date: str,
-    drug: str,
-    dose_mg: float,
-    end_date: Optional[str] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Adds a GLP-1 dose phase (a period on a given drug + dose, overlaid on the
-    weight chart). Open-ended phases are bounded at adjacent phase starts so only
-    the newest one remains current. WRITE tool."""
-    from vitals.services import glp1_service
-
-    session_factory = get_session_factory()
-    parsed_start = _parse_date(start_date, field="start_date")
-    parsed_end = _parse_date(end_date, field="end_date")
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_start,
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        try:
-            row = await glp1_service.add_dose_phase(
-                session,
-                start_date=parsed_start,
-                drug=drug,
-                dose_mg=dose_mg,
-                end_date=parsed_end,
-                note=note,
-                source=Source.MCP.value,
-                override=override,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as exc:
-            await session.rollback()
-            return _conflict_payload(exc)
-        except ValueError as exc:
-            return {"error": str(exc)}
-        await session.commit()
-        return await serialize_written(session, row)
+_glp1_maintenance_tools = register_glp1_maintenance_tools(
+    mcp,
+    _glp1_tool_dependencies,
+)
+update_glp1 = _glp1_maintenance_tools.update_glp1
+log_side_effect = _glp1_maintenance_tools.log_side_effect
+add_dose_phase = _glp1_maintenance_tools.add_dose_phase
 
 
 # ── Skincare observations ─────────────────────────────────────────────────────
-@mcp.tool()
-@gated("skincare")
-async def log_skincare_observation(
-    on_date: Optional[str] = None,
-    inflammation: Optional[int] = None,
-    pih: Optional[int] = None,
-    zone: Optional[str] = None,
-    note: Optional[str] = None,
-) -> dict:
-    """Records a skin-status observation — inflammation and PIH (post-inflammatory
-    hyperpigmentation) scores, an optional face ``zone``, and a note. Distinct from
-    the daily routine checklist (log_skincare). WRITE tool — saved immediately."""
-    from vitals.services import skincare_service
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(
-            session,
-            evaluation_date=parsed_date,
-        )
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        row = await skincare_service.add_observation(
-            session, on_date=parsed_date, inflammation=inflammation,
-            pih=pih, zone=zone, note=note, source=Source.MCP.value,
-            identity=conflict_context.identity,
-            prepared_conflict_write=prepared,
-        )
-        await session.commit()
-        return await serialize_written(session, row)
+_skincare_observation_tools = register_skincare_observation_tools(
+    mcp,
+    _skincare_tool_dependencies,
+)
+log_skincare_observation = (
+    _skincare_observation_tools.log_skincare_observation
+)
 
 
 # ── Supplements catalog CRUD ──────────────────────────────────────────────────
-@mcp.tool()
-@gated("supplements")
-async def add_supplement(
-    name: str,
-    key: Optional[str] = None,
-    dose: Optional[str] = None,
-    timing: Optional[str] = None,
-    evidence: Optional[str] = None,
-    active: bool = True,
-    contraindications: Optional[str] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Adds a supplement to the catalog (reference, not a daily log). ``key`` is the
-    stable conflict-matching slug — omit it and it's derived from ``name`` (RU/EN
-    aware). ``evidence`` is tier A/B/C. Activating a contraindicated supplement can
-    hard-block → ``{"blocked": true, ...}``; retry with ``override=True``. WRITE tool."""
-    from vitals.services import supplements_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(session)
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        try:
-            row = await supplements_service.add_supplement(
-                session, name=name, key=key, dose=dose, timing=timing,
-                evidence=evidence, active=active,
-                contraindications=contraindications, note=note, override=override,
-                source=Source.MCP.value,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as e:
-            return _conflict_payload(e)
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-@gated("supplements")
-async def update_supplement(
-    supplement_id: int,
-    name: Optional[str] = None,
-    key: Optional[str] = None,
-    dose: Optional[str] = None,
-    timing: Optional[str] = None,
-    evidence: Optional[str] = None,
-    active: Optional[bool] = None,
-    contraindications: Optional[str] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Updates a catalog supplement by ID. Only the fields you pass are changed —
-    a rename does not clear the dose or switch a paused supplement back on; use
-    ``set_supplement_active`` (or pass ``active``) for that. Same conflict gate as
-    add — a hard block returns ``{"blocked": true, ...}``; retry with
-    ``override=True``. WRITE tool."""
-    from vitals.services import supplements_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(session)
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        current = await supplements_service.get_supplement_for_update(
-            session,
-            supplement_id,
-            identity=conflict_context.identity,
-            prepared_conflict_write=prepared,
-        )
-        if current is None:
-            return {"error": f"Supplement {supplement_id} not found"}
-        merged = {
-            "name": current.name if name is None else name,
-            "key": current.key if key is None else key,
-            "dose": current.dose if dose is None else dose,
-            "timing": current.timing if timing is None else timing,
-            "evidence": current.evidence if evidence is None else evidence,
-            "active": current.active if active is None else active,
-            "contraindications": (
-                current.contraindications
-                if contraindications is None
-                else contraindications
-            ),
-            "note": current.note if note is None else note,
-        }
-        try:
-            row = await supplements_service.update_supplement(
-                session, supplement_id, override=override, **merged,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as e:
-            return _conflict_payload(e)
-        await session.commit()
-        return await serialize_written(session, row)
-
-
-@mcp.tool()
-@gated("supplements")
-async def set_supplement_active(
-    supplement_id: int, active: bool, override: bool = False
-) -> dict:
-    """Toggles a supplement's active flag. Activating a contraindicated one runs the
-    conflict check → ``{"blocked": true, ...}`` unless ``override=True``. WRITE tool."""
-    from vitals.services import supplements_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        conflict_context = await _mcp_v1_conflict_write_context(session)
-        prepared = await engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        try:
-            row = await supplements_service.set_active(
-                session,
-                supplement_id,
-                active,
-                override=override,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as e:
-            return _conflict_payload(e)
-        if row is None:
-            return {"error": f"Supplement {supplement_id} not found"}
-        await session.commit()
-        return await serialize_written(session, row)
+_supplements_write_tools = register_supplements_write_tools(
+    mcp,
+    _supplements_tool_dependencies,
+)
+add_supplement = _supplements_write_tools.add_supplement
+update_supplement = _supplements_write_tools.update_supplement
+set_supplement_active = _supplements_write_tools.set_supplement_active
 
 
 # ── Body measurement edit/delete + noise markers ──────────────────────────────
-@mcp.tool()
-async def update_measurement(
-    measurement_id: int,
-    on_date: str,
-    neck_cm: Optional[float] = None,
-    waist_cm: Optional[float] = None,
-    hips_cm: Optional[float] = None,
-    note: Optional[str] = None,
-    override: bool = False,
-) -> dict:
-    """Edits a body-measurement row by ID (recomputes Navy body-fat % / LBM). On a
-    hard block returns ``{"blocked": true, ...}``; retry with ``override=True``.
-    WRITE tool."""
-    from vitals.services import weight_service
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, field="on_date")
-    async with session_factory() as session:
-        conflict_context, prepared = await _mcp_v1_aux_weight_write(
-            session,
-            evaluation_date=parsed_date,
-        )
-        try:
-            row = await weight_service.update_body_measurement(
-                session, measurement_id, on_date=parsed_date, neck_cm=neck_cm,
-                waist_cm=waist_cm, hips_cm=hips_cm, note=note, override=override,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ConflictBlocked as e:
-            await session.rollback()
-            return _conflict_payload(e)
-        except ValueError as e:
-            await session.rollback()
-            return {"error": str(e)}
-        if row is None:
-            return {"error": f"Measurement {measurement_id} not found"}
-        await session.commit()
-        return await serialize_written(session, row)
+_measurement_update_tools = register_measurement_update_tools(
+    mcp,
+    _weight_tool_dependencies,
+)
+update_measurement = _measurement_update_tools.update_measurement
 
 
-@mcp.tool()
-async def add_noise_marker(
-    start_date: str,
-    reason: str,
-    end_date: Optional[str] = None,
-    direction: Optional[str] = None,
-) -> dict:
-    """Marks a date range as noisy so it's excluded from the weight moving average
-    and trend (e.g. "sick week", "creatine loading"). ``direction`` is up (scale
-    inflated), down (scale deflated), or neutral. Omit ``end_date`` for an open
-    period. WRITE tool — the weight trend recomputes without this range."""
-    from vitals.services import weight_service
-
-    session_factory = get_session_factory()
-    parsed_start = _parse_date(start_date, field="start_date")
-    parsed_end = _parse_date(end_date, field="end_date")
-    async with session_factory() as session:
-        conflict_context, prepared = await _mcp_v1_aux_weight_write(
-            session,
-            evaluation_date=today_local(),
-        )
-        try:
-            row = await weight_service.add_noise_marker(
-                session, start_date=parsed_start, end_date=parsed_end,
-                reason=reason, direction=direction, source=Source.MCP.value,
-                identity=conflict_context.identity,
-                prepared_conflict_write=prepared,
-            )
-        except ValueError as exc:
-            await session.rollback()
-            return {"error": str(exc)}
-        await session.commit()
-        return await serialize_written(session, row)
+_noise_tools = register_noise_tools(mcp, _weight_tool_dependencies)
+add_noise_marker = _noise_tools.add_noise_marker
 
 
 # ── Modules (optional-domain toggles) ─────────────────────────────────────────
-@mcp.tool()
-async def get_modules() -> dict:
-    """Returns which optional domains are enabled, plus which module keys are core
-    (always-on, locked) vs optional (toggleable). Check this before calling a
-    module-gated write tool (log_body_scan, log_event) so you know if it's on."""
-    from vitals.services import modules_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
-        enabled = await modules_service.get_enabled_modules(
-            session,
-            subject_id=ownership.subject_id,
-        )
-    return {
-        "enabled": enabled,
-        "core": sorted(modules_service.CORE_KEYS),
-        "optional": sorted(modules_service.OPTIONAL_KEYS),
-    }
-
-
-@mcp.tool()
-async def set_module(key: str, enabled: bool) -> dict:
-    """Enables or disables an optional module (e.g. body_comp, timeline, glp1,
-    nutrition). Core modules are locked and return an error. WRITE tool — returns
-    the new enabled-module map."""
-    from vitals.services import modules_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
-        try:
-            state = await modules_service.set_module_enabled(
-                session,
-                key=key,
-                enabled=enabled,
-                subject_id=ownership.subject_id,
-            )
-        except modules_service.ModuleToggleError as e:
-            return {"error": str(e)}
-        await session.commit()
-        await modules_service.prime_cache(
-            get_redis_client(),
-            state,
-            subject_id=ownership.subject_id,
-        )
-        return {"enabled": state}
+_module_settings_tool_dependencies = ModuleSettingsToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    legacy_owner=_mcp_v1_legacy_owner,
+    get_redis_client=lambda: get_redis_client(),
+)
+_module_settings_tools = register_module_settings_tools(
+    mcp,
+    _module_settings_tool_dependencies,
+)
+get_modules = _module_settings_tools.get_modules
+set_module = _module_settings_tools.set_module
 
 
 # ── Weekly digest generation ──────────────────────────────────────────────────
-@mcp.tool()
-async def generate_digest_now(period_days: int = 7) -> dict:
-    """Generates a fresh weekly AI digest right now (assembles the cross-domain
-    context, asks the configured LLM for the narrative, saves it) and returns it.
-    Errors cleanly if platform AI is unavailable. WRITE tool."""
-    from vitals.services import (
-        ai_gateway_service,
-        digest_service,
-        milestones_service,
-    )
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        prepared = None
-
-        async def release_reservation() -> None:
-            await session.rollback()
-            if prepared is None or not prepared.dispatchable:
-                return
-            if await digest_service.release_prepared_digest(session, prepared):
-                await session.commit()
-            else:
-                await session.rollback()
-
-        try:
-            prepared = await digest_service.prepare_digest(
-                session,
-                actor_username=await _mcp_actor_username(session),
-                invocation_source=AIInvocationSource.MCP,
-                period_days=period_days,
-            )
-            await session.commit()
-            if prepared.existing_artifact_id is not None:
-                owner = await digest_service.prepare_digest_owner(
-                    session,
-                    actor_username=await _mcp_actor_username(session),
-                )
-                row = await digest_service.existing_digest_for_prepared(
-                    session,
-                    prepared,
-                    prepared_owner=owner,
-                )
-                if row is None:
-                    return {"error": "digest provenance is unavailable"}
-                return await serialize_written(session, row)
-            if not prepared.dispatchable:
-                if prepared.reservation_status is AIInvocationStatus.DISPATCHING:
-                    return {
-                        "error": "digest generation is already pending",
-                        "code": "dispatching",
-                    }
-                return {
-                    "error": "digest generation attempt failed",
-                    "code": prepared.reservation_status.value,
-                }
-            lease = await digest_service.start_digest_dispatch(session, prepared)
-            await session.commit()
-            completion = await digest_service.render_digest(prepared, lease)
-            row = await digest_service.persist_digest(
-                session,
-                prepared,
-                completion,
-            )
-            await session.commit()
-            if row is None:
-                return {
-                    "error": "AI provider did not produce a digest",
-                    "code": (
-                        completion.error_code.value
-                        if completion.error_code is not None
-                        else "invalid_response"
-                    ),
-                }
-            return await serialize_written(session, row)
-        except ai_gateway_service.AIQuotaExceededError:
-            await session.rollback()
-            return {"error": "AI quota is unavailable", "code": "quota_exceeded"}
-        except ai_gateway_service.AIGatewayConfigurationError:
-            await release_reservation()
-            return {
-                "error": "platform AI is not configured",
-                "code": "provider_unconfigured",
-            }
-        except (
-            ai_gateway_service.AIGatewayAuthorizationError,
-            digest_service.DigestOwnershipError,
-            milestones_service.MilestoneOwnershipError,
-        ):
-            await release_reservation()
-            raise
-        except ai_gateway_service.AIInvocationStateError:
-            await session.rollback()
-            return {"error": "digest generation is already pending"}
-        except ValueError:
-            await session.rollback()
-            return {"error": "invalid digest request"}
+_digest_tools = register_digest_tools(mcp, _digest_tool_dependencies)
+generate_digest_now = _digest_tools.generate_digest_now
 
 
 # ── Trend analytics ───────────────────────────────────────────────────────────
-@mcp.tool()
-async def get_trend(
-    metric_key: str,
-    param: Optional[str] = None,
-    target: Optional[float] = None,
-    rolling_window_days: int = 7,
-    exclude_noise: bool = True,
-) -> dict:
-    """Computes the trend for one metric instead of returning raw rows: linear slope
-    (per day and per week), the latest rolling-mean value, and — if ``target`` is
-    given — the projected date the trend reaches it. For weight metrics, noise-marked
-    ranges are excluded (``exclude_noise``).
-
-    ``metric_key`` is a registry key such as ``weight.weight_kg``,
-    ``weight.body_fat_pct``, ``garmin.hrv_avg``, ``nutrition.calories``, or a
-    parametrized one: ``labs.marker`` (``param`` = marker name),
-    ``hevy.working_weight`` (``param`` = exercise id), ``body_comp.metric``
-    (``param`` = ``metric_key`` or ``metric_key:segment``). Read-only."""
-    from vitals.services import chart_data_service, weight_service
-    from vitals.analytics import exclude_ranges
-    from vitals.analytics.regression import fit_trend, project_date_for_value
-    from vitals.analytics.rolling import rolling_mean_by_date
-    from vitals.analytics.chart_registry import get as get_metric
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        try:
-            field = get_metric(metric_key)
-        except KeyError:
-            return {"error": f"Unknown metric '{metric_key}'"}
-        try:
-            trend_scope = await _mcp_v1_conflict_scope(session)
-            raw = await chart_data_service.series_for(
-                session,
-                subject_id=trend_scope.subject_id,
-                metric_key=metric_key,
-                param=param,
-            )
-        except ValueError as e:
-            return {"error": str(e)}
-
-        points = [(date_type.fromisoformat(p["date"]), float(p["value"])) for p in raw]
-
-        noise_applied = False
-        if exclude_noise and field.domain == "weight":
-            scope = await _mcp_v1_conflict_scope(session)
-            markers = await weight_service.list_noise_markers(
-                session,
-                subject_id=scope.subject_id,
-            )
-            ranges = [(m.start_date, m.end_date) for m in markers]
-            if ranges:
-                points = exclude_ranges(points, ranges)
-                noise_applied = True
-
-        points = sorted(points, key=lambda p: p[0])
-        if not points:
-            return {"metric_key": metric_key, "param": param, "unit": field.unit, "points": 0}
-
-        trend = fit_trend(points)
-        rolling = rolling_mean_by_date(points, window_days=rolling_window_days)
-        result: dict = {
-            "metric_key": metric_key,
-            "param": param,
-            "unit": field.unit,
-            "points": len(points),
-            "first": {"date": points[0][0].isoformat(), "value": points[0][1]},
-            "last": {"date": points[-1][0].isoformat(), "value": points[-1][1]},
-            "rolling_mean": {
-                "window_days": rolling_window_days,
-                "last": {"date": rolling[-1][0].isoformat(), "value": rolling[-1][1]},
-            },
-            "trend": None if trend is None else {
-                "slope_per_day": round(trend.slope_per_day, 5),
-                "slope_per_week": round(trend.slope_per_week, 4),
-                "n": trend.n,
-            },
-            "noise_excluded": noise_applied,
-        }
-        if target is not None:
-            crossing = project_date_for_value(points, target)
-            result["projection"] = {
-                "target": target,
-                "date": crossing.isoformat() if crossing else None,
-            }
-        return result
+_trend_tools = register_trend_tools(mcp, _reporting_tool_dependencies)
+get_trend = _trend_tools.get_trend
 
 
-@mcp.tool()
-async def get_proactive_state(limit: int = 10) -> dict:
-    """Retrieves the state of the proactive layer: its settings (brief time, daily
-    message budget, which nudge categories are allowed) and the last messages it
-    actually sent. Read this before explaining why something did or didn't arrive.
-    READ tool — the settings are read-only here; retiming or muting the layer is
-    done in Settings, by the owner."""
-    from vitals.services.proactive import channels, delivery, prefs
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ownership = await channels.resolve_legacy_channel_ownership(
-            session,
-            actor_username=await _mcp_actor_username(session),
-        )
-        preference_scope = await prefs.resolve_legacy_preferences_scope(
-            session,
-            actor_username=await _mcp_actor_username(session),
-        )
-        sent = list(
-            reversed(
-                await delivery.recent_sent(
-                    session,
-                    limit=limit,
-                    ownership=ownership,
-                )
-            )
-        )
-        return {
-            # The proactive layer had a master switch on the signals module.
-            # That module is gone and nothing replaced it as a switch, so the
-            # layer is on and its own preferences decide what it sends.
-            "enabled": True,
-            "prefs": (
-                await prefs.get_preferences_bundle(
-                    session,
-                    scope=preference_scope,
-                    actor_username=await _mcp_actor_username(session),
-                )
-            ).as_flat_dict(),
-            "recent_notifications": [serialize_row(n) for n in sent],
-        }
+_proactive_tool_dependencies = ProactiveToolDependencies(
+    get_session_factory=lambda: get_session_factory(),
+    actor_username=_mcp_actor_username,
+    serialize_row=serialize_row,
+)
+_proactive_tools = register_proactive_tools(
+    mcp,
+    _proactive_tool_dependencies,
+)
+get_proactive_state = _proactive_tools.get_proactive_state
 
 
 # ── Sync tools (pull from Garmin / Hevy on demand) ────────────────────────────
-# A sync is an outbound call to someone else's API — Garmin's in particular
-# throttles logins — and the scheduler already polls both several times a day.
-# These exist for the gap case ("the last two days are empty"), so three calls a
-# day each is plenty. Counter is per calendar day, in Redis; fail-open like
-# web/ratelimit.py — a counter must never be the reason a sync can't run.
-SYNC_DAILY_LIMIT = 3
+SYNC_DAILY_LIMIT = _DEFAULT_SYNC_DAILY_LIMIT
 
+_garmin_sync_tools = register_garmin_sync_tools(
+    mcp,
+    _provider_tool_dependencies,
+)
+sync_garmin = _garmin_sync_tools.sync_garmin
 
-async def _spend_sync_quota(bucket: str, limit: int = SYNC_DAILY_LIMIT) -> Optional[dict]:
-    """Count one call against today's quota. Returns an error dict once it's spent."""
-    key = f"mcp:sync_quota:{bucket}:{today_local().isoformat()}"
-    try:
-        redis = get_redis_client()
-        used = await redis.incr(key)
-        if used == 1:
-            await redis.expire(key, 86400)
-    except Exception:
-        logger.warning("sync quota backend unavailable for %s; allowing", bucket, exc_info=True)
-        return None
-    if used > limit:
-        return {
-            "error": f"{bucket} has already run {limit} times today, which is the daily "
-                     "cap for on-demand syncs. The scheduled sync keeps running regardless; "
-                     "the quota resets at midnight."
-        }
-    return None
-
-
-@mcp.tool()
-async def sync_garmin(days: int = 2) -> dict:
-    """Pulls fresh Garmin data now — daily metrics plus activities for the last
-    ``days`` (default 2: yesterday and today; up to 30 to fill a longer gap).
-
-    Use it when the data looks stale or a day is missing, not before every read:
-    the scheduler already polls several times a day. Capped at 3 calls a day.
-    Returns ``{days, activities, error}``; an auth/MFA/throttle failure comes back
-    as ``error`` (and raises an alert) rather than as an exception."""
-    from vitals.services import garmin_service
-
-    spent = await _spend_sync_quota("sync_garmin")
-    if spent:
-        return spent
-
-    summary = await garmin_service.sync_now_for_actor(
-        get_session_factory(),
-        get_redis_client(),
-        days=max(1, min(int(days), 30)),
-        actor_username=await _mcp_actor_username(),
-    )
-    if summary is None:
-        return {"error": "Garmin is not configured — no credentials in settings"}
-    return summary
-
-
-@mcp.tool()
-@gated("hevy")
-async def sync_hevy() -> dict:
-    """Pulls the latest Hevy workouts now. Same rules as ``sync_garmin``: for a gap
-    in the data, not for routine reads (the scheduler syncs every 6 hours), capped
-    at 3 calls a day. Returns ``{fetched, created, updated, skipped}``."""
-    from vitals.integrations.hevy_client import HevyAPIError, HevyNotConfigured
-    from vitals.services import hevy_service
-
-    spent = await _spend_sync_quota("sync_hevy")
-    if spent:
-        return spent
-
-    try:
-        summary = await hevy_service.sync_now_for_actor(
-            get_session_factory(),
-            get_redis_client(),
-            actor_username=await _mcp_actor_username(),
-        )
-    except (HevyNotConfigured, HevyAPIError) as e:
-        return {"error": f"Hevy sync failed: {e}"}
-    if summary is None:
-        return {"error": "Hevy is not configured — no API key in settings"}
-    return summary
+_hevy_sync_tools = register_hevy_sync_tools(
+    mcp,
+    _provider_tool_dependencies,
+)
+sync_hevy = _hevy_sync_tools.sync_hevy
 
 
 # ── Resources & prompts ───────────────────────────────────────────────────────
-@mcp.resource("vitals://profile")
-async def profile_resource() -> dict:
-    """The user's physical profile, goals, and program — attachable as lightweight
-    context without spending a tool call."""
-    return await get_user_profile()
-
-
-@mcp.resource("vitals://digest/latest")
-async def latest_digest_resource() -> dict:
-    """The most recent weekly AI digest (narrative + date) for conversation
-    continuity."""
-    from vitals.services import digest_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        owner = await digest_service.prepare_digest_owner(
-            session,
-            actor_username=await _mcp_actor_username(session),
-        )
-        row = await digest_service.latest_digest(
-            session,
-            prepared_owner=owner,
-        )
-        if row is None:
-            return {"error": "No digests yet"}
-        return {"date": row.date.isoformat(), "content": row.content, "model": row.model}
-
-
-@mcp.prompt()
-async def weekly_review() -> str:
-    """A ready-made prompt that drives a full cross-domain weekly review."""
-    return (
-        "Review my last 7 days across every domain. First call get_full_snapshot "
-        "for the aligned cross-domain picture (weight trend, GLP-1 state, recent "
-        "labs, activity/recovery, workouts, nutrition, skincare, goals). Then pull "
-        "get_trend for weight and any lab marker that looks off. Summarize what "
-        "changed, call out cross-domain correlations (e.g. sleep vs training load, "
-        "dose changes vs side effects), surface anything from get_active_alerts, and "
-        "give at most three concrete, non-alarmist suggestions. This is decision "
-        "support, not medical advice."
-    )
+_resources = register_resources(
+    mcp,
+    ResourceDependencies(
+        get_session_factory=lambda: get_session_factory(),
+        actor_username=_mcp_actor_username,
+        get_user_profile=lambda: get_user_profile(),
+    ),
+)
+profile_resource = _resources.profile_resource
+latest_digest_resource = _resources.latest_digest_resource
+weekly_review = _resources.weekly_review
 
 
 # The read side of the same map (the writes registered themselves via ``gated``).
@@ -4661,371 +661,7 @@ TOOL_MODULES.update({
 })
 
 
-def _scope(
-    resource_type: PolicyResourceType,
-    resource_key: str,
-    action: PolicyAction,
-) -> AccessScope:
-    return AccessScope(resource_type, resource_key, action)
-
-
-def _domain_scope(resource_key: str, action: PolicyAction) -> AccessScope:
-    return _scope(PolicyResourceType.DOMAIN, resource_key, action)
-
-
-_RECORD_DOMAIN_KEYS = tuple(
-    domain.value for domain in Domain if domain is not Domain.SYSTEM
-)
-_ALL_DOMAIN_LIST = tuple(
-    _domain_scope(domain, PolicyAction.LIST) for domain in _RECORD_DOMAIN_KEYS
-)
-_NOTE_DOMAIN_KEYS = (
-    "weight",
-    "nutrition",
-    "glp1",
-    "skincare",
-    "weight",  # body measurements live in the weight domain
-    "body_comp",
-    "labs",
-)
-
-
-def _fixed_domain(
-    domain: str,
-    *,
-    reads: tuple[str, ...] = (),
-    creates: tuple[str, ...] = (),
-    updates: tuple[str, ...] = (),
-) -> dict[str, tuple[AccessScope, ...]]:
-    return {
-        **{name: (_domain_scope(domain, PolicyAction.LIST),) for name in reads},
-        **{name: (_domain_scope(domain, PolicyAction.CREATE),) for name in creates},
-        **{name: (_domain_scope(domain, PolicyAction.UPDATE),) for name in updates},
-    }
-
-
-# Every tool has an authorization classification. The contract test compares
-# this catalog to the SDK registry, so a new tool cannot accidentally inherit an
-# unrestricted default. Dynamic tools are present here with an empty marker and
-# are resolved by ``_required_tool_scopes`` below.
-TOOL_ACCESS: dict[str, tuple[AccessScope, ...]] = {
-    **_fixed_domain(
-        "weight",
-        reads=("get_weight_logs", "get_measurements"),
-        creates=("log_weight", "log_measurement", "add_noise_marker"),
-        updates=("update_measurement",),
-    ),
-    **_fixed_domain(
-        "body_comp",
-        reads=("get_body_scans", "get_body_scan", "get_body_metric_history"),
-        creates=("log_body_scan",),
-    ),
-    **_fixed_domain(
-        "glp1",
-        reads=("get_glp1_logs",),
-        creates=("log_glp1", "log_side_effect", "add_dose_phase"),
-        updates=("update_glp1",),
-    ),
-    **_fixed_domain(
-        "supplements",
-        reads=("get_supplements_catalog",),
-        creates=("add_supplement",),
-        updates=("update_supplement", "set_supplement_active"),
-    ),
-    **_fixed_domain(
-        "genetics",
-        reads=("get_genetics_snps",),
-        creates=("upsert_genetic_variant",),
-    ),
-    **_fixed_domain(
-        "skincare",
-        reads=("get_skincare_logs",),
-        creates=("log_skincare", "log_skincare_observation"),
-    ),
-    **_fixed_domain("workouts", reads=("get_hevy_workouts",)),
-    **_fixed_domain("garmin", reads=("get_garmin_metrics",)),
-    **_fixed_domain(
-        "labs",
-        reads=("get_lab_results",),
-        creates=("log_lab_result", "log_lab_results"),
-        updates=("update_lab_result",),
-    ),
-    **_fixed_domain(
-        "nutrition",
-        reads=("get_nutrition_summary", "search_meals"),
-        creates=("log_meal",),
-        updates=("update_meal",),
-    ),
-    **_fixed_domain(
-        "hrt",
-        reads=("get_hrt_logs", "get_hrt_cycles"),
-        creates=(
-            "log_hrt_dose",
-            "log_hrt_side_effect",
-            "add_hrt_cycle",
-            "add_hrt_cycle_item",
-        ),
-        updates=("update_hrt_dose", "close_hrt_cycle"),
-    ),
-    **_fixed_domain(
-        "milestones",
-        reads=("get_milestones",),
-        creates=("create_milestone",),
-        updates=("update_milestone",),
-    ),
-    **_fixed_domain(
-        "timeline",
-        reads=("get_timeline",),
-        creates=("log_event",),
-        updates=("update_event",),
-    ),
-    "get_user_profile": (
-        _scope(PolicyResourceType.ARTIFACT, "health_profile", PolicyAction.READ),
-    ),
-    "get_active_alerts": (
-        _scope(PolicyResourceType.ARTIFACT, "safety_alert", PolicyAction.READ),
-    ),
-    "resolve_alert": (
-        _scope(PolicyResourceType.ARTIFACT, "safety_alert", PolicyAction.UPDATE),
-    ),
-    "override_alert": (
-        _scope(PolicyResourceType.ARTIFACT, "safety_alert", PolicyAction.UPDATE),
-    ),
-    "get_weekly_digests": (
-        _scope(PolicyResourceType.ARTIFACT, "weekly_digest", PolicyAction.LIST),
-    ),
-    "check_supplement_conflicts": (
-        _scope(PolicyResourceType.OPERATION, "conflict.check", PolicyAction.READ),
-    ),
-    "list_conflict_rules": (
-        _scope(PolicyResourceType.OPERATION, "conflict.check", PolicyAction.READ),
-    ),
-    "get_full_snapshot": _ALL_DOMAIN_LIST,
-    "get_data_overview": _ALL_DOMAIN_LIST,
-    "export_everything": (
-        _scope(PolicyResourceType.OPERATION, "record.export", PolicyAction.EXPORT),
-    ),
-    "get_modules": (
-        _scope(PolicyResourceType.OPERATION, "modules", PolicyAction.READ),
-    ),
-    "set_module": (
-        _scope(PolicyResourceType.OPERATION, "modules", PolicyAction.UPDATE),
-    ),
-    "generate_digest_now": (
-        _scope(PolicyResourceType.ARTIFACT, "weekly_digest", PolicyAction.CREATE),
-        *_ALL_DOMAIN_LIST,
-    ),
-    "get_proactive_state": (
-        _scope(PolicyResourceType.OPERATION, "proactive", PolicyAction.READ),
-    ),
-    "sync_garmin": (
-        _scope(PolicyResourceType.OPERATION, "garmin.sync", PolicyAction.SYNC),
-    ),
-    "sync_hevy": (
-        _scope(PolicyResourceType.OPERATION, "hevy.sync", PolicyAction.SYNC),
-    ),
-    # Argument-dependent tools. Empty means "classified dynamically", never
-    # "no permission required".
-    "check_conflicts": (),
-    "delete_record": (),
-    "get_notes": (),
-    "get_trend": (),
-    "log_note": (),
-}
-
-
-_ARGUMENT_DOMAIN_ALIASES = {
-    "measurement": "weight",
-    "measurements": "weight",
-    "noise_marker": "weight",
-    "body_scans": "body_comp",
-    "glp1_injection": "glp1",
-    "glp1_side_effect": "glp1",
-    "glp1_dose_phase": "glp1",
-    "hrt_dose": "hrt",
-    "hrt_side_effect": "hrt",
-    "hrt_cycle": "hrt",
-    "hrt_cycle_item": "hrt",
-    "skincare_observation": "skincare",
-    "hevy": "workouts",
-}
-
-
-def _argument_domain(value: object) -> str | None:
-    if not isinstance(value, str) or not value:
-        return None
-    key = value.split(".", 1)[0]
-    key = _ARGUMENT_DOMAIN_ALIASES.get(key, key)
-    return key if key in _RECORD_DOMAIN_KEYS else None
-
-
-def _required_tool_scopes(
-    name: str, arguments: dict[str, object]
-) -> tuple[AccessScope, ...] | None:
-    fixed = TOOL_ACCESS.get(name)
-    if fixed is None:
-        return None
-    if fixed:
-        return fixed
-    if name == "delete_record":
-        domain = _argument_domain(arguments.get("domain"))
-        return (_domain_scope(domain, PolicyAction.DELETE),) if domain else None
-    if name == "log_note":
-        domain = _argument_domain(arguments.get("domain"))
-        return (_domain_scope(domain, PolicyAction.UPDATE),) if domain else None
-    if name == "get_notes":
-        supplied = arguments.get("domain")
-        if supplied is None:
-            return tuple(
-                _domain_scope(domain, PolicyAction.LIST)
-                for domain in dict.fromkeys(_NOTE_DOMAIN_KEYS)
-            )
-        domain = _argument_domain(supplied)
-        return (_domain_scope(domain, PolicyAction.LIST),) if domain else None
-    if name == "check_conflicts":
-        domain = _argument_domain(arguments.get("domain"))
-        if domain is None:
-            return None
-        return (
-            _scope(PolicyResourceType.OPERATION, "conflict.check", PolicyAction.READ),
-            _domain_scope(domain, PolicyAction.READ),
-        )
-    if name == "get_trend":
-        domain = _argument_domain(arguments.get("metric_key"))
-        return (_domain_scope(domain, PolicyAction.READ),) if domain else None
-    return None
-
-
-def _surface_allowed(required: tuple[AccessScope, ...] | None) -> bool:
-    binding = _current_grant_binding()
-    if binding is None:
-        return True
-    return required is not None and set(required).issubset(binding.scopes)
-
-
-def _tool_allowed(name: str, arguments: dict[str, object]) -> bool:
-    return _surface_allowed(_required_tool_scopes(name, arguments))
-
-
-def _tool_listing_allowed(name: str) -> bool:
-    binding = _current_grant_binding()
-    if binding is None:
-        return True
-    fixed = TOOL_ACCESS.get(name)
-    if fixed is None:
-        return False
-    if fixed:
-        return set(fixed).issubset(binding.scopes)
-    if name == "delete_record":
-        action = PolicyAction.DELETE
-    elif name == "log_note":
-        action = PolicyAction.UPDATE
-    elif name in {"get_notes", "get_trend"}:
-        action = PolicyAction.LIST if name == "get_notes" else PolicyAction.READ
-    elif name == "check_conflicts":
-        operation = _scope(
-            PolicyResourceType.OPERATION, "conflict.check", PolicyAction.READ
-        )
-        return operation in binding.scopes and any(
-            scope.resource_type is PolicyResourceType.DOMAIN
-            and scope.action is PolicyAction.READ
-            for scope in binding.scopes
-        )
-    else:
-        return False
-    return any(
-        scope.resource_type is PolicyResourceType.DOMAIN and scope.action is action
-        for scope in binding.scopes
-    )
-
-
-RESOURCE_ACCESS = {
-    "vitals://profile": (
-        _scope(PolicyResourceType.ARTIFACT, "health_profile", PolicyAction.READ),
-    ),
-    "vitals://digest/latest": (
-        _scope(PolicyResourceType.ARTIFACT, "weekly_digest", PolicyAction.READ),
-    ),
-}
-
-PROMPT_ACCESS = {"weekly_review": _ALL_DOMAIN_LIST}
-
-
-# Kept as documentation of where this used to live. The filter is in
-# ``VitalsMCPServer.list_tools`` now — see the class for why.
-
-
-def _www_authenticate(scope) -> bytes:
-    """The 401 challenge, pointing at this resource's metadata (RFC 9728 §5.1).
-
-    A bare ``Bearer`` leaves a fresh client guessing where tokens come from; the
-    ``resource_metadata`` link is how it finds the authorization server. Built from
-    the request's own host so it stays right behind the reverse proxy (uvicorn runs
-    with --forwarded-allow-ips, so the scheme is the external one)."""
-    from web.routers.oauth import PROTECTED_RESOURCE_PATH
-
-    host = dict(scope.get("headers", [])).get(b"host", b"").decode("utf-8", "ignore")
-    if not host:
-        return b"Bearer"
-    url = f"{scope.get('scheme', 'https')}://{host}{PROTECTED_RESOURCE_PATH}"
-    return f'Bearer resource_metadata="{url}"'.encode("utf-8")
-
-
-# ``MCPAuthMiddleware`` stood here: an ASGI wrapper that read the Bearer header,
-# validated the signature and the client id, and pushed the identity into a
-# contextvar. All three answers now come from the SDK — ``_ConnectorTokenVerifier``
-# above is asked for them, and ``get_access_token()`` hands the result to a tool.
-# Keeping the wrapper as well would put two authorities on the same door, and the
-# one that drifts is always the copy.
-
-
 def get_mcp_app() -> tuple[object, object]:
-    """The streamable-HTTP application, and the lifespan a mount will not run.
+    """Return the stateless MCP app and its mount-owned lifespan."""
 
-    Returns ``(app, lifespan)``. ``app.mount()`` does not run a sub-app's
-    lifespan, so the caller enters it explicitly — see web/main.py.
-
-    ``stateless_http=True`` is the ``2026-07-28`` contract rather than a tuning
-    knob: a request carries everything it needs, there is no ``Mcp-Session-Id``
-    to hold, and no handshake whose completion could be mistaken for
-    authorization. Bearer validation happens inside the SDK now, through the
-    token verifier the server was built with, so there is no ASGI wrapper left
-    to keep in step with it.
-
-    ``path="/"`` so mounting on ``/mcp`` lands the endpoint on ``/mcp/`` rather
-    than ``/mcp/mcp``.
-    """
-
-    from urllib.parse import urlparse
-
-    from mcp.server.transport_security import TransportSecuritySettings
-
-    # DNS-rebinding protection, configured rather than defaulted. The SDK
-    # validates ``Host`` against an allowlist, and its default is the loopback
-    # address it was told to bind — which is not the name a client uses once
-    # this sits behind a proxy. The public URL is the name, so it is the
-    # allowlist; the loopback pair stays for a local run and for health checks
-    # that reach the container directly.
-    public = urlparse(get_web_config().public_url)
-    hosts = {public.netloc}
-    # Loopback on any port. Not a hole: a rebinding attack needs a *name* whose
-    # resolution an attacker can change, and a literal address has none — while
-    # pinning a port here would mean a developer's ``PORT=8010`` looked like an
-    # attack. ``localhost`` is a name, so it keeps its ports.
-    hosts.update({"127.0.0.1:*", "127.0.0.1", "[::1]:*", "localhost:8000",
-                  "localhost:8010", "localhost"})
-    hosts.discard("")
-
-    app = mcp.streamable_http_app(
-        streamable_http_path="/",
-        stateless_http=True,
-        transport_security=TransportSecuritySettings(
-            allowed_hosts=sorted(hosts),
-            allowed_origins=sorted(
-                f"{scheme}://{host}"
-                for scheme in ("http", "https")
-                for host in hosts
-            ),
-        ),
-    )
-    return app, app.router.lifespan_context
+    return _build_mcp_transport(mcp, public_url=get_web_config().public_url)

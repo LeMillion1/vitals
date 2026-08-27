@@ -31,7 +31,8 @@ async def load_worker_settings(
         LegacyOwnershipError,
         NoPersonalRecordError,
     )
-    from vitals.services.proactive import prefs
+    from vitals.services.proactive.preferences import contracts as preference_contracts
+    from vitals.services.proactive.preferences import queries as preference_queries
 
     async with session_factory() as session:
         try:
@@ -39,18 +40,18 @@ async def load_worker_settings(
             # exactly one subject before it can bind to one. Declare the bounded
             # installation-level lookup explicitly under the runtime RLS role.
             await enter_platform_scope(session)
-            scope = await prefs.resolve_legacy_preferences_scope(
+            scope = await preference_queries.resolve_legacy_preferences_scope(
                 session,
                 actor_username=None,
             )
-            bundle = await prefs.get_exact_one_preferences_bundle(
+            bundle = await preference_queries.get_exact_one_preferences_bundle(
                 session,
                 scope=scope,
             )
         except (
             LegacyOwnershipError,
             NoPersonalRecordError,
-            prefs.LegacyProactivePreferencesBridgeClosedError,
+            preference_contracts.LegacyProactivePreferencesBridgeClosedError,
         ):
             await session.rollback()
             logger.info(

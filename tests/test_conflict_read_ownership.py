@@ -6,6 +6,8 @@ preferences, and the later schema cutover belong to separate stages.
 """
 from __future__ import annotations
 
+from vitals.services.genetics import contracts as genetics_contracts
+
 import asyncio
 import inspect
 import uuid
@@ -27,7 +29,6 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.skincare import SkincareLog
 from vitals.models.supplements import Supplement
 from vitals.services.conflicts import activation, catalog, engine, registrations
-from vitals.services.genetics import variants
 from vitals.services.legacy_ownership import (
     LegacyOwnerResolutionError,
     LegacySubjectResolutionError,
@@ -594,7 +595,7 @@ async def test_legacy_adapter_accepts_only_fully_unowned_facts(
     engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
     if fact_domain == Domain.GENETICS.value:
-        with pytest.raises(variants.GeneticsOwnershipError, match="partial"):
+        with pytest.raises(genetics_contracts.GeneticsOwnershipError, match="partial"):
             await engine.evaluate_legacy_single_subject(
                 db_session,
                 domain=PROBE_DOMAIN,

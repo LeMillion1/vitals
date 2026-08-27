@@ -313,10 +313,10 @@ async def test_a_member_cannot_see_or_trigger_restart_as_the_sole_owner(
 
 
 async def test_restart_requires_a_recent_login(auth_client, monkeypatch):
-    from web import auth
+    from web.authentication import tokens
 
     monkeypatch.setattr(
-        auth,
+        tokens,
         "session_issued_at",
         lambda _token: datetime.now(UTC) - timedelta(hours=1),
     )
@@ -338,7 +338,7 @@ async def test_the_bootstrap_platform_admin_can_restore(
     import io
     import json
 
-    from vitals.services.data_portability_service import (
+    from vitals.services.portability.v1_contract import (
         BACKUP_VERSION,
         KIND_FULL,
     )
@@ -371,7 +371,7 @@ async def test_shared_installation_restore_is_409_before_any_mutation(
     import json
 
     from vitals.models.app_settings import AppSetting
-    from vitals.services.data_portability_service import BACKUP_VERSION, KIND_FULL
+    from vitals.services.portability.v1_contract import BACKUP_VERSION, KIND_FULL
 
     await _subject_with_owner(db_session, "restore-second-record")
     marker = AppSetting(key="multi_subject_restore_guard", value="kept")

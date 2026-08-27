@@ -13,6 +13,17 @@ have been written from.
 """
 from __future__ import annotations
 
+from vitals.services.alerts import legacy as alerts_service_legacy
+from vitals.services.alerts import validation as alerts_service_validation
+
+from vitals.services.milestones import progress as milestone_progress
+from vitals.services.timeline import events as timeline_events
+
+from vitals.services.nutrition import analytics as nutrition_analytics
+from vitals.services.nutrition import queries as nutrition_queries
+
+from vitals.services.digest import queries as digest_queries
+
 import uuid
 from datetime import timedelta
 from typing import Any, Optional, Sequence
@@ -116,27 +127,21 @@ async def build(
     prepared_digest_owner=None,
 ) -> dict:
     """Everything ``today/index.html`` renders, as one plain dict."""
-    from vitals.services import (
-        alerts_service,
-        digest_service,
-        garmin_service,
-        nutrition_service,
-        timeline_service,
-        weight_service,
-    )
-    from vitals.services.proactive import brief
+    from vitals.services.garmin import queries as garmin_queries
+    from vitals.services.proactive.brief import context as brief_context
+    from vitals.services.weight import analytics as weight_analytics
 
     em = enabled_modules or {}
     today = today_local()
 
-    ctx = await brief.build_context(
+    ctx = await brief_context.build_context(
         session,
         subject_id=subject_id,
     )
     weight = ctx.get("weight") or {}
     garmin = ctx.get("garmin") or {}
     baseline = garmin.get("baseline") or {}
-    series = await weight_service.chart_series(
+    series = await weight_analytics.chart_series(
         session,
         subject_id=subject_id,
     )
@@ -158,7 +163,7 @@ async def build(
 
     calories = None
     if em.get("nutrition"):
-        summary = await nutrition_service.daily_summary(
+        summary = await nutrition_analytics.daily_summary(
             session, today, subject_id=subject_id
         )
         calories = summary["totals"]["calories"]
@@ -187,7 +192,11 @@ async def build(
     if ma7 is not None and weekly_delta is not None:
         changes.append(_change("weight", "weight", "/weight", ma7, ma7 - weekly_delta))
 
-    daily = await garmin_service.list_daily(session, limit=14)
+    daily = await garmin_queries.list_daily(
+        session,
+        subject_id=subject_id,
+        limit=14,
+    )
     this_week = [r for r in daily if 0 <= (today - r.date).days < 7]
     last_week = [r for r in daily if 7 <= (today - r.date).days < 14]
     for key in _RECOVERY_KEYS:
@@ -196,10 +205,10 @@ async def build(
             changes.append(_change(key, "garmin", "/garmin", now, before))
 
     if em.get("nutrition"):
-        this_cal = await nutrition_service.nutrition_summary(
+        this_cal = await nutrition_analytics.nutrition_summary(
             session, today - timedelta(days=6), today, subject_id=subject_id
         )
-        last_cal = await nutrition_service.nutrition_summary(
+        last_cal = await nutrition_analytics.nutrition_summary(
             session,
             today - timedelta(days=13),
             today - timedelta(days=7),
@@ -222,7 +231,7 @@ async def build(
     # ── The day's feed ───────────────────────────────────────────────────────
     feed: list[dict] = []
     if em.get("timeline"):
-        for e in await timeline_service.list_events(
+        for e in await timeline_events.list_events(
             session, start=today, end=today, subject_id=subject_id
         ):
             feed.append({
@@ -232,7 +241,7 @@ async def build(
                 "detail": e.detail or "",
             })
     if em.get("nutrition"):
-        for m in await nutrition_service.list_meals_for_date(
+        for m in await nutrition_queries.list_meals_for_date(
             session, today, subject_id=subject_id
         ):
             feed.append({
@@ -243,7 +252,7 @@ async def build(
             })
 
     # ── The narrative ────────────────────────────────────────────────────────
-    digest = await digest_service.latest_digest(
+    digest = await digest_queries.latest_digest(
         session,
         kind=DigestKind.DAILY_BRIEF.value,
         prepared_owner=prepared_digest_owner,
@@ -273,8 +282,8 @@ async def build(
     # ── Needs attention ──────────────────────────────────────────────────────
     attention = [
         {"severity": a.severity, "message": a.message}
-        for a in await alerts_service.list_active(session, subject_id=subject_id)
-        if not alerts_service.is_platform_alert_key(a.alert_key)
+        for a in await alerts_service_legacy.list_active(session, subject_id=subject_id)
+        if not alerts_service_validation.is_platform_alert_key(a.alert_key)
     ]
     advice = garmin.get("advice")
     if advice:
@@ -372,16 +381,16 @@ async def _goal(
 ) -> Optional[dict]:
     """The first weight goal, as distance covered rather than distance left.
 
-    ``milestones_service.progress`` knows the target and where he is now but has
+    ``milestone_progress.progress`` knows the target and where he is now but has
     no notion of where he started, and a bar needs all three — so the starting
     point is the first logged weight, which is also what "пройдено 11.2 из 17.5"
     means to the owner.
     """
-    from vitals.services import milestones_service
+
 
     raw = series.get("raw") or []
     start = raw[0]["weight_kg"] if raw else None
-    for card in await milestones_service.dashboard_cards(
+    for card in await milestone_progress.dashboard_cards(
         session,
         subject_id=subject_id,
     ):

@@ -11,6 +11,9 @@ heartbeat each tick. Job functions have the signature
 """
 from __future__ import annotations
 
+from vitals.services.alerts import contracts as alerts_service_contracts
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
 import logging
 import uuid
 from collections.abc import Iterable
@@ -290,7 +293,6 @@ async def _record_job_outcome(
 
     from vitals.enums import Domain, Severity
     from vitals.i18n import t
-    from vitals.services import alerts_service
 
     _require_failure_family(spec.id, spec.failure_family)
     if spec.failure_family is not JobFailureFamily.PLATFORM:
@@ -299,26 +301,26 @@ async def _record_job_outcome(
     alert_key = f"{JOB_FAILED_KEY_PREFIX}:{spec.id}"
     try:
         async with session_factory() as session:
-            context = alerts_service.PlatformAlertContext(
-                namespace=alerts_service.PlatformAlertNamespace.SCHEDULER_JOB_FAILURE,
+            context = alerts_service_contracts.PlatformAlertContext(
+                namespace=alerts_service_contracts.PlatformAlertNamespace.SCHEDULER_JOB_FAILURE,
                 actor_user_id=None,
             )
             if error is None:
-                await alerts_service.resolve_scoped_by_key(
+                await alerts_service_lifecycle.resolve_scoped_by_key(
                     session,
                     context=context,
                     alert_key=alert_key,
-                    legacy_bridge=alerts_service.LegacyAlertBridge.REJECT,
+                    legacy_bridge=alerts_service_contracts.LegacyAlertBridge.REJECT,
                 )
             else:
-                await alerts_service.raise_scoped_alert(
+                await alerts_service_lifecycle.raise_scoped_alert(
                     session,
                     context=context,
                     domain=Domain.SYSTEM,
                     severity=Severity.WARN,
                     message=t("alert.job_failed", job=spec.id, error=error),
                     alert_key=alert_key,
-                    legacy_bridge=alerts_service.LegacyAlertBridge.REJECT,
+                    legacy_bridge=alerts_service_contracts.LegacyAlertBridge.REJECT,
                 )
             await session.commit()
     except Exception:
@@ -344,7 +346,6 @@ async def record_subject_job_outcome(
 
     from vitals.enums import Domain, IntegrationProvider, Severity
     from vitals.i18n import t
-    from vitals.services import alerts_service
     from vitals.services.legacy_ownership import resolve_subject_ownership_context
 
     # The reviewed registry rather than a live ``JobSpec``: the family is a
@@ -373,26 +374,26 @@ async def record_subject_job_outcome(
                 required_connections=((provider,) if provider is not None else ()),
             )
             if provider is None:
-                context: alerts_service.AlertContext = (
-                    alerts_service.HealthAlertContext(ownership.system_action())
+                context: alerts_service_contracts.AlertContext = (
+                    alerts_service_contracts.HealthAlertContext(ownership.system_action())
                 )
             else:
-                context = alerts_service.ProviderAlertContext(
+                context = alerts_service_contracts.ProviderAlertContext(
                     identity=ownership.system_action(),
                     provider=provider,
                     integration_connection_id=ownership.connection_id(provider),
                 )
-            legacy_bridge = alerts_service.LegacyAlertBridge.FULLY_UNOWNED
+            legacy_bridge = alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED
 
             if error is None:
-                await alerts_service.resolve_scoped_by_key(
+                await alerts_service_lifecycle.resolve_scoped_by_key(
                     session,
                     context=context,
                     alert_key=alert_key,
                     legacy_bridge=legacy_bridge,
                 )
             else:
-                await alerts_service.raise_scoped_alert(
+                await alerts_service_lifecycle.raise_scoped_alert(
                     session,
                     context=context,
                     domain=Domain.SYSTEM,

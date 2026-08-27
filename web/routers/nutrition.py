@@ -1,6 +1,14 @@
 """Nutrition domain: meal logging with macro tracking."""
 from __future__ import annotations
 
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
+from vitals.services.alerts import contracts as alerts_service_contracts
+
+from vitals.services.nutrition import analytics as nutrition_analytics
+from vitals.services.nutrition import queries as nutrition_queries
+from vitals.services.nutrition import writes as nutrition_writes
+
 from datetime import date as date_type, time as time_type, timedelta
 from typing import Optional
 
@@ -9,7 +17,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain
-from vitals.services import alerts_service, nutrition_service
 from vitals.services.conflicts import engine
 from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
@@ -49,29 +56,29 @@ async def nutrition_dashboard(
     )
     # This resolver proves there is exactly one subject, which is the only
     # state where pre-backfill NULL-subject rows may be shown safely.
-    day_meals = await nutrition_service.list_meals_for_date(
+    day_meals = await nutrition_queries.list_meals_for_date(
         db,
         selected_date,
         subject_id=conflict_context.identity.subject_id,
     )
-    summary = await nutrition_service.daily_summary(
+    summary = await nutrition_analytics.daily_summary(
         db,
         selected_date,
         subject_id=conflict_context.identity.subject_id,
     )
-    history = await nutrition_service.list_meals(
+    history = await nutrition_queries.list_meals(
         db,
         start=None,
         end=None,
         subject_id=conflict_context.identity.subject_id,
     )
-    alerts = await alerts_service.list_active_scoped(
+    alerts = await alerts_service_lifecycle.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(conflict_context.identity),
+        context=alerts_service_contracts.HealthAlertContext(conflict_context.identity),
         domain=Domain.NUTRITION,
-        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        legacy_bridge=alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED,
     )
-    goals = await nutrition_service.get_goals(
+    goals = await nutrition_analytics.get_goals(
         db, subject_id=conflict_context.identity.subject_id
     )
 
@@ -93,7 +100,7 @@ async def nutrition_dashboard(
             "next_date": (selected_date + timedelta(days=1)).isoformat(),
             "calories_pct": _pct(summary["totals"]["calories"], goals["calories_max"]),
             "protein_pct": _pct(summary["totals"]["protein_g"], goals["protein_target_g"]),
-            "macro_split": nutrition_service.macro_energy_shares(summary["totals"]),
+            "macro_split": nutrition_analytics.macro_energy_shares(summary["totals"]),
         },
     )
 
@@ -129,7 +136,7 @@ async def add_meal(
             context=conflict_context,
         )
         if id is not None:
-            await nutrition_service.update_meal(
+            await nutrition_writes.update_meal(
                 db, id,
                 on_date=on_date,
                 name=name,
@@ -144,7 +151,7 @@ async def add_meal(
                 prepared_conflict_write=prepared,
             )
         else:
-            await nutrition_service.log_meal(
+            await nutrition_writes.log_meal(
                 db,
                 on_date=on_date,
                 name=name,
@@ -183,7 +190,7 @@ async def delete_meal(
         db,
         context=conflict_context,
     )
-    await nutrition_service.delete_meal(
+    await nutrition_writes.delete_meal(
         db,
         id,
         identity=conflict_context.identity,

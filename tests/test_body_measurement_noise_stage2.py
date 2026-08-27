@@ -20,7 +20,7 @@ from vitals.models.system_alert import SystemAlert
 from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, NoiseMarker, WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import weight_service
+from vitals.services import weight as weight_domain
 from vitals.services.conflicts import engine
 
 
@@ -92,7 +92,7 @@ async def test_scoped_measurement_crud_preserves_identity_and_origin(
     legacy_owner_roots,
 ):
     identity = _identity(legacy_owner_roots)
-    row = await weight_service.upsert_body_measurement(
+    row = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=MEASUREMENT_DATE,
         neck_cm=39,
@@ -110,7 +110,7 @@ async def test_scoped_measurement_crud_preserves_identity_and_origin(
         Source.MCP.value,
     )
 
-    noted = await weight_service.update_body_measurement_note(
+    noted = await weight_domain.measurements.update_body_measurement_note(
         db_session,
         row.id,
         note="note only",
@@ -120,7 +120,7 @@ async def test_scoped_measurement_crud_preserves_identity_and_origin(
     assert noted is row and row.note == "note only"
     assert (row.subject_id, row.actor_user_id, row.source) == provenance
 
-    moved = await weight_service.update_body_measurement(
+    moved = await weight_domain.measurements.update_body_measurement(
         db_session,
         row.id,
         on_date=MOVED_DATE,
@@ -141,7 +141,7 @@ async def test_scoped_measurement_crud_preserves_identity_and_origin(
     )
     assert (moved.subject_id, moved.actor_user_id, moved.source) == provenance
 
-    assert await weight_service.delete_body_measurement(
+    assert await weight_domain.measurements.delete_body_measurement(
         db_session,
         moved.id,
         identity=identity,
@@ -151,7 +151,7 @@ async def test_scoped_measurement_crud_preserves_identity_and_origin(
             on_date=MOVED_DATE,
         ),
     ) is True
-    assert await weight_service.list_body_measurements(
+    assert await weight_domain.measurements.list_body_measurements(
         db_session,
         subject_id=identity.subject_id,
     ) == []
@@ -184,11 +184,11 @@ async def test_measurement_rows_without_a_subject_are_out_of_every_scope(
     db_session.add_all([legacy, partial])
     await db_session.commit()
 
-    assert await weight_service.list_body_measurements(
+    assert await weight_domain.measurements.list_body_measurements(
         db_session,
         subject_id=identity.subject_id,
     ) == []
-    assert await weight_service.update_body_measurement(
+    assert await weight_domain.measurements.update_body_measurement(
         db_session,
         partial.id,
         on_date=MOVED_DATE,
@@ -202,7 +202,7 @@ async def test_measurement_rows_without_a_subject_are_out_of_every_scope(
         ),
     ) is None
 
-    adopted = await weight_service.update_body_measurement(
+    adopted = await weight_domain.measurements.update_body_measurement(
         db_session,
         legacy.id,
         on_date=MEASUREMENT_DATE,
@@ -248,14 +248,14 @@ async def test_measurement_and_noise_foreign_ids_are_non_enumerating(
     db_session.add_all([foreign_measurement, foreign_noise])
     await db_session.commit()
 
-    owned_measurement = await weight_service.upsert_body_measurement(
+    owned_measurement = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=MEASUREMENT_DATE,
         waist_cm=85,
         identity=identity,
         prepared_conflict_write=await _prepared(db_session, identity),
     )
-    owned_noise = await weight_service.add_noise_marker(
+    owned_noise = await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=MEASUREMENT_DATE,
         reason="owned",
@@ -273,15 +273,15 @@ async def test_measurement_and_noise_foreign_ids_are_non_enumerating(
         owned_noise.source,
     ) == (identity.subject_id, identity.actor_user_id, Source.MANUAL.value)
 
-    assert [row.id for row in await weight_service.list_body_measurements(
+    assert [row.id for row in await weight_domain.measurements.list_body_measurements(
         db_session,
         subject_id=identity.subject_id,
     )] == [owned_measurement.id]
-    assert [row.id for row in await weight_service.list_noise_markers(
+    assert [row.id for row in await weight_domain.noise.list_noise_markers(
         db_session,
         subject_id=identity.subject_id,
     )] == [owned_noise.id]
-    assert await weight_service.update_body_measurement_note(
+    assert await weight_domain.measurements.update_body_measurement_note(
         db_session,
         foreign_measurement.id,
         note="must not write",
@@ -292,7 +292,7 @@ async def test_measurement_and_noise_foreign_ids_are_non_enumerating(
             on_date=MOVED_DATE,
         ),
     ) is None
-    assert await weight_service.delete_noise_marker(
+    assert await weight_domain.noise.delete_noise_marker(
         db_session,
         foreign_noise.id,
         identity=identity,
@@ -326,19 +326,19 @@ async def test_partial_root_noise_marker_is_out_of_scope_everywhere(
     db_session.add(partial)
     await db_session.commit()
 
-    assert await weight_service.list_noise_markers(
+    assert await weight_domain.noise.list_noise_markers(
         db_session,
         subject_id=identity.subject_id,
     ) == []
 
     prepared = await _prepared(db_session, identity, legacy=True)
-    assert await weight_service.refresh_noise_alert(
+    assert await weight_domain.alerts.refresh_noise_alert(
         db_session,
         on_date=MEASUREMENT_DATE,
         identity=identity,
         prepared_conflict_write=prepared,
     ) is None
-    assert await weight_service.delete_noise_marker(
+    assert await weight_domain.noise.delete_noise_marker(
         db_session,
         partial.id,
         identity=identity,
@@ -367,7 +367,7 @@ async def test_two_subjects_measure_on_the_same_date(
 
     # A measurement date is unique inside one record, not across the
     # installation, so the other subject's row is neither read nor changed.
-    mine = await weight_service.upsert_body_measurement(
+    mine = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=MEASUREMENT_DATE,
         waist_cm=85,
@@ -409,13 +409,13 @@ async def test_measurement_block_is_write_free_and_override_is_attributed(
 
     engine.register_domain_resolver(
         Domain.WEIGHT.value,
-        weight_service.resolve_active_scoped,
+        weight_domain.queries.resolve_active_scoped,
     )
     engine.register_domain_resolver(Domain.LABS.value, labs)
     prepared = await _prepared(db_session, identity)
 
     with pytest.raises(engine.ConflictBlocked):
-        await weight_service.upsert_body_measurement(
+        await weight_domain.measurements.upsert_body_measurement(
             db_session,
             on_date=MEASUREMENT_DATE,
             waist_cm=85,
@@ -427,7 +427,7 @@ async def test_measurement_block_is_write_free_and_override_is_attributed(
         select(func.count()).select_from(BodyMeasurement)
     ) == 0
 
-    saved = await weight_service.upsert_body_measurement(
+    saved = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=MEASUREMENT_DATE,
         waist_cm=85,
@@ -449,7 +449,7 @@ async def test_noise_refresh_writes_actorless_scoped_alert_and_resolves_stale_st
 ):
     owner = _identity(legacy_owner_roots)
     system = _identity(legacy_owner_roots, system=True)
-    marker = await weight_service.add_noise_marker(
+    marker = await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=MEASUREMENT_DATE,
         reason="synthetic water shift",
@@ -460,7 +460,7 @@ async def test_noise_refresh_writes_actorless_scoped_alert_and_resolves_stale_st
     )
     await db_session.commit()
 
-    alert = await weight_service.refresh_noise_alert(
+    alert = await weight_domain.alerts.refresh_noise_alert(
         db_session,
         on_date=MEASUREMENT_DATE,
         identity=system,
@@ -479,12 +479,12 @@ async def test_noise_refresh_writes_actorless_scoped_alert_and_resolves_stale_st
         None,
         None,
         None,
-        weight_service.NOISE_ALERT_KEY,
+        weight_domain.alerts.NOISE_ALERT_KEY,
         None,
     )
     await db_session.commit()
 
-    assert await weight_service.delete_noise_marker(
+    assert await weight_domain.noise.delete_noise_marker(
         db_session,
         marker.id,
         identity=owner,
@@ -494,7 +494,7 @@ async def test_noise_refresh_writes_actorless_scoped_alert_and_resolves_stale_st
     assert alert.resolved_at is not None
     assert alert.resolved_by_user_id is None
     await db_session.commit()
-    stale = await weight_service.refresh_noise_alert(
+    stale = await weight_domain.alerts.refresh_noise_alert(
         db_session,
         on_date=MEASUREMENT_DATE,
         identity=system,
@@ -604,7 +604,7 @@ async def test_chart_series_composes_only_the_selected_subject_direct_page_data(
     )
     await db_session.commit()
 
-    series = await weight_service.chart_series(
+    series = await weight_domain.analytics.chart_series(
         db_session,
         subject_id=identity.subject_id,
         include_bia=False,
@@ -641,7 +641,7 @@ async def test_scoped_measurement_validation_is_write_free(
 ):
     identity = _identity(legacy_owner_roots)
     with pytest.raises(ValueError):
-        await weight_service.upsert_body_measurement(
+        await weight_domain.measurements.upsert_body_measurement(
             db_session,
             on_date=MEASUREMENT_DATE,
             identity=identity,
@@ -668,7 +668,7 @@ async def test_scoped_noise_validation_is_write_free(
 ):
     identity = _identity(legacy_owner_roots)
     with pytest.raises(ValueError):
-        await weight_service.add_noise_marker(
+        await weight_domain.noise.add_noise_marker(
             db_session,
             start_date=MEASUREMENT_DATE,
             identity=identity,
@@ -687,7 +687,7 @@ async def test_wrong_identity_and_committed_capability_are_rejected_before_write
     wrong = WriteIdentity(identity.subject_id, uuid.uuid4())
 
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await weight_service.upsert_body_measurement(
+        await weight_domain.measurements.upsert_body_measurement(
             db_session,
             on_date=MEASUREMENT_DATE,
             waist_cm=85,
@@ -696,7 +696,7 @@ async def test_wrong_identity_and_committed_capability_are_rejected_before_write
         )
     await db_session.commit()
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await weight_service.add_noise_marker(
+        await weight_domain.noise.add_noise_marker(
             db_session,
             start_date=MEASUREMENT_DATE,
             reason="stale token",
@@ -762,19 +762,19 @@ async def test_web_and_mcp_writes_are_scoped_and_keep_surface_provenance(
 
         return wrapped
 
-    for service_name in (
-        "upsert_body_measurement",
-        "update_body_measurement",
-        "update_body_measurement_note",
-        "add_noise_marker",
-        "delete_noise_marker",
+    for service, service_name in (
+        (weight_domain.measurements, "upsert_body_measurement"),
+        (weight_domain.measurements, "update_body_measurement"),
+        (weight_domain.measurements, "update_body_measurement_note"),
+        (weight_domain.noise, "add_noise_marker"),
+        (weight_domain.noise, "delete_noise_marker"),
     ):
         monkeypatch.setattr(
-            weight_service,
+            service,
             service_name,
             capture_scoped_call(
                 service_name,
-                getattr(weight_service, service_name),
+                getattr(service, service_name),
             ),
         )
 
@@ -912,7 +912,7 @@ async def test_postgres_concurrent_first_measurement_upserts_serialize(
 
     session_a = factory()
     prepared_a = await _prepared(session_a, identity)
-    await weight_service.upsert_body_measurement(
+    await weight_domain.measurements.upsert_body_measurement(
         session_a,
         on_date=MEASUREMENT_DATE,
         waist_cm=86,
@@ -924,7 +924,7 @@ async def test_postgres_concurrent_first_measurement_upserts_serialize(
     async def writer_b() -> None:
         async with factory() as session_b:
             prepared_b = await _prepared(session_b, identity)
-            await weight_service.upsert_body_measurement(
+            await weight_domain.measurements.upsert_body_measurement(
                 session_b,
                 on_date=MEASUREMENT_DATE,
                 waist_cm=85,
@@ -959,8 +959,10 @@ async def test_postgres_concurrent_first_measurement_upserts_serialize(
 
 
 _STRICT_ROUTER_SURFACES = {
-    "web/routers/weight.py": {
+    "web/routers/weight_routes/common.py": {
         "_section_context": {"list_body_measurements", "list_noise_markers"},
+    },
+    "web/routers/weight_routes/records.py": {
         "log_measurement_entry": {
             "upsert_body_measurement",
             "update_body_measurement",
@@ -969,7 +971,7 @@ _STRICT_ROUTER_SURFACES = {
         "delete_measurement_entry": {"delete_body_measurement"},
         "delete_noise_marker_entry": {"delete_noise_marker"},
     },
-    "web/routers/mcp.py": {
+    "web/mcp/tools/weight.py": {
         "get_weight_logs": {"list_body_measurements", "list_noise_markers"},
         "log_measurement": {"upsert_body_measurement"},
         "get_measurements": {"list_body_measurements"},
@@ -986,7 +988,7 @@ _DEFERRED_MCP_COMPOSITION_SURFACES = frozenset(
 
 
 def _function_node(tree: ast.AST, name: str) -> ast.AsyncFunctionDef:
-    for node in tree.body:
+    for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
             return node
     raise AssertionError(f"missing async router surface {name}")
@@ -1059,26 +1061,30 @@ def test_direct_body_measurement_noise_router_surfaces_use_only_service_api():
             }
             assert required_service_calls <= callees
 
-    mcp_tree = trees["web/routers/mcp.py"]
+    records_path = repo_root / "web/mcp/tools/records.py"
+    records_tree = ast.parse(
+        records_path.read_text(encoding="utf-8"),
+        filename=str(records_path),
+    )
     measurement_note = _branch_for_literal(
-        _function_node(mcp_tree, "log_note"),
+        _function_node(records_tree, "log_note"),
         variable="domain",
         literal="measurement",
     )
     measurement_notes_read = _branch_for_literal(
-        _function_node(mcp_tree, "get_notes"),
-        variable="d_name",
+        _function_node(records_tree, "get_notes"),
+        variable="domain_name",
         literal="measurement",
     )
     measurement_delete = _branch_for_literal(
-        _function_node(mcp_tree, "delete_record"),
+        _function_node(records_tree, "delete_record"),
         variable="domain",
         literal="measurement",
     )
     for branch, required_call in (
         (measurement_note, "update_body_measurement_note"),
         (measurement_notes_read, "list_body_measurements"),
-        (measurement_delete, "_mcp_v1_aux_weight_write"),
+        (measurement_delete, "auxiliary_weight_write"),
     ):
         assert _direct_db_violations(branch) == []
         assert required_call in {
@@ -1087,16 +1093,21 @@ def test_direct_body_measurement_noise_router_surfaces_use_only_service_api():
             if isinstance(call, ast.Call)
         }
 
+    catalog_path = repo_root / "web/mcp/record_catalog.py"
+    catalog_tree = ast.parse(
+        catalog_path.read_text(encoding="utf-8"),
+        filename=str(catalog_path),
+    )
     delete_targets = next(
         node.value
-        for node in mcp_tree.body
+        for node in catalog_tree.body
         if isinstance(node, ast.AnnAssign)
         and isinstance(node.target, ast.Name)
-        and node.target.id == "_DELETE_TARGETS"
+        and node.target.id == "DELETE_TARGETS"
     )
     targets = ast.literal_eval(delete_targets)
     assert targets["measurement"][2] == "delete_body_measurement"
     assert targets["noise_marker"][2] == "delete_noise_marker"
     assert _DEFERRED_MCP_COMPOSITION_SURFACES.isdisjoint(
-        _STRICT_ROUTER_SURFACES["web/routers/mcp.py"]
+        _STRICT_ROUTER_SURFACES["web/mcp/tools/weight.py"]
     )

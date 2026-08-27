@@ -15,19 +15,22 @@ from sqlalchemy import inspect, select
 from vitals.enums import Domain, Source
 from vitals.models.labs import LabMarker, LabResult
 from vitals.models.system_alert import SystemAlert
-from vitals.services import data_portability_service, labs_service
+from vitals.services.portability import v1_contract
+import vitals.services.labs.alerts as lab_alerts
+import vitals.services.labs.markers as lab_markers
+import vitals.services.labs.results as lab_results
 
 
 def test_marker_key_normalizes_only_safe_identity_variants():
-    assert labs_service.normalize_marker_key("TSH") == "tsh"
-    assert labs_service.normalize_marker_key("  tＳh\n") == "tsh"
-    assert labs_service.normalize_marker_key("Фёрритин") == "ферритин"
+    assert lab_markers.normalize_marker_key("TSH") == "tsh"
+    assert lab_markers.normalize_marker_key("  tＳh\n") == "tsh"
+    assert lab_markers.normalize_marker_key("Фёрритин") == "ферритин"
     assert (
-        labs_service.normalize_marker_key("тиреотропный гормон (ттг)")
-        == labs_service.normalize_marker_key("ТТГ")
+        lab_markers.normalize_marker_key("тиреотропный гормон (ттг)")
+        == lab_markers.normalize_marker_key("ТТГ")
     )
-    assert labs_service.normalize_marker_key("Free T4") != (
-        labs_service.normalize_marker_key("Free-T4")
+    assert lab_markers.normalize_marker_key("Free T4") != (
+        lab_markers.normalize_marker_key("Free-T4")
     )
 
 
@@ -36,7 +39,7 @@ def test_migration_aliases_are_frozen_from_the_runtime_identity_map():
         "migrations.versions.0077_canonical_lab_marker_keys"
     )
 
-    assert migration._ALIASES == labs_service.MARKER_ALIASES
+    assert migration._ALIASES == lab_markers.MARKER_ALIASES
 
 
 def test_v1_results_only_archive_uses_lowest_id_display_for_the_marker_key():
@@ -47,7 +50,7 @@ def test_v1_results_only_archive_uses_lowest_id_display_for_the_marker_key():
         ]
     }
 
-    upgraded = data_portability_service._upgrade_lab_marker_identity(payload)
+    upgraded = v1_contract._upgrade_lab_marker_identity(payload)
 
     assert [row["marker"] for row in upgraded["lab_results"]] == ["TSH", "TSH"]
     assert [row["marker_original"] for row in upgraded["lab_results"]] == [
@@ -66,7 +69,7 @@ async def test_case_variants_share_one_catalog_history_and_display(
     db_session,
     owner_write,
 ):
-    first = await labs_service.add_result(
+    first = await lab_results.add_result(
         db_session,
         on_date=date(2026, 8, 1),
         marker="TSH",
@@ -74,7 +77,7 @@ async def test_case_variants_share_one_catalog_history_and_display(
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 8, 1)),
     )
-    second = await labs_service.add_result(
+    second = await lab_results.add_result(
         db_session,
         on_date=date(2026, 8, 2),
         marker=" tSh  ",
@@ -103,13 +106,13 @@ async def test_case_variants_share_one_catalog_history_and_display(
         )
     )
     assert [(row.name, row.normalized_name) for row in markers] == [("TSH", "tsh")]
-    history = await labs_service.marker_history(
+    history = await lab_results.marker_history(
         db_session,
         "tsh",
         subject_id=owner_write.subject_id,
     )
     assert [point["value"] for point in history] == [4.1, 3.2]
-    latest = await labs_service.latest_per_marker(
+    latest = await lab_results.latest_per_marker(
         db_session,
         subject_id=owner_write.subject_id,
     )
@@ -155,7 +158,7 @@ async def test_dashboard_resolves_a_results_only_alias_without_catalog(
 
 async def test_defer_alias_resolves_the_canonical_retest_alert(db_session, owner_write):
     measured = date(2026, 1, 1)
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=measured,
         marker="TSH",
@@ -163,7 +166,7 @@ async def test_defer_alias_resolves_the_canonical_retest_alert(db_session, owner
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(measured),
     )
-    marker = await labs_service.get_marker(
+    marker = await lab_markers.get_marker(
         db_session, "TSH", subject_id=owner_write.subject_id
     )
     assert marker is not None
@@ -171,7 +174,7 @@ async def test_defer_alias_resolves_the_canonical_retest_alert(db_session, owner
     await db_session.commit()
     later = date(2026, 3, 1)
     prepared = await owner_write.write(later)
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         on_date=later,
         subject_id=owner_write.subject_id,
@@ -181,12 +184,12 @@ async def test_defer_alias_resolves_the_canonical_retest_alert(db_session, owner
     assert await db_session.scalar(
         select(SystemAlert.id).where(
             SystemAlert.subject_id == owner_write.subject_id,
-            SystemAlert.alert_key == labs_service.RETEST_DUE_KEY,
+            SystemAlert.alert_key == lab_alerts.RETEST_DUE_KEY,
             SystemAlert.resolved_at.is_(None),
         )
     ) is not None
 
-    await labs_service.defer_retest(
+    await lab_alerts.defer_retest(
         db_session,
         "tSh",
         until=date(2026, 4, 1),
@@ -197,7 +200,7 @@ async def test_defer_alias_resolves_the_canonical_retest_alert(db_session, owner
     assert await db_session.scalar(
         select(SystemAlert.id).where(
             SystemAlert.subject_id == owner_write.subject_id,
-            SystemAlert.alert_key == labs_service.RETEST_DUE_KEY,
+            SystemAlert.alert_key == lab_alerts.RETEST_DUE_KEY,
             SystemAlert.resolved_at.is_(None),
         )
     ) is None

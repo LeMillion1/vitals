@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from vitals.services.supplements import writes as supplement_writes
+
 from tests.job_runner import run_job_for_every_subject
 
 import asyncio
@@ -30,9 +32,13 @@ from vitals.models.labs import LabMarker, LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import file_asset_service, garmin_service, hevy_service, labs_service, raw_payload_service, supplements_service
+from vitals.services import file_asset_service, raw_payload_service
 from vitals.services.conflicts import engine, registrations
-from vitals.services.body_scan import scans
+from vitals.services.garmin import raw_payloads as garmin_raw_payloads
+from vitals.services.body_scan.scans import reparse as body_scan_reparse
+from vitals.services.hevy import raw_payloads as hevy_raw_payloads
+from vitals.services.labs import ingestion as labs_ingestion
+from vitals.services.labs import results as labs_results
 
 
 RESULT_DATE = date(2026, 8, 19)
@@ -167,7 +173,7 @@ async def test_mcp_update_preserves_omitted_date_and_provenance_and_structures_b
             active=True,
         )
     )
-    await supplements_service.add_supplement(
+    await supplement_writes.add_supplement(
         db_session,
         name="Synthetic potassium",
         key="potassium",
@@ -269,7 +275,7 @@ async def test_lab_upload_releases_preflight_transaction_before_llm(
         raise RuntimeError("synthetic stop before persistence")
 
     monkeypatch.setattr(
-        labs_service,
+        labs_ingestion,
         "extract_from_file_with_usage",
         extraction_probe,
     )
@@ -322,7 +328,7 @@ async def test_lab_upload_ignores_inactive_historical_subject_openrouter(
         )
 
     monkeypatch.setattr(
-        labs_service,
+        labs_ingestion,
         "extract_from_file_with_usage",
         extraction_probe,
     )
@@ -359,8 +365,8 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
     from vitals.scheduler import scheduler as scheduler_module
     from vitals.services.conflicts import catalog as conflict_catalog
     from vitals.services.hrt import catalog, reminders
-    from vitals.services.proactive import prefs
-    from web import main as web_main
+    from vitals.services.proactive.preferences import legacy as preference_legacy
+    from web import app_lifecycle
 
     async def no_op(*args, **kwargs):
         del args, kwargs
@@ -399,18 +405,18 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
 
     scheduler_probe = SchedulerProbe()
     monkeypatch.setattr(
-        web_main,
+        app_lifecycle,
         "load_process_mode",
         lambda: ProcessMode(process_mode),
     )
-    monkeypatch.setattr(web_main, "get_session_factory", lambda: session_factory)
+    monkeypatch.setattr(app_lifecycle, "get_session_factory", lambda: session_factory)
     monkeypatch.setattr(
-        web_main,
+        app_lifecycle,
         "get_redis_client",
         lambda: (_ for _ in ()).throw(RuntimeError("synthetic no redis")),
     )
     monkeypatch.setattr(jobs_module, "register_all_jobs", lambda settings: None)
-    monkeypatch.setattr(prefs, "get_prefs", get_prefs_probe)
+    monkeypatch.setattr(preference_legacy, "get_prefs", get_prefs_probe)
     monkeypatch.setattr(conflict_catalog, "sync_catalog", no_op)
     monkeypatch.setattr(catalog, "sync_catalog", no_op)
     monkeypatch.setattr(reminders, "seed_hormone_panel", seed_probe)
@@ -421,7 +427,7 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
     )
     app = SimpleNamespace(state=SimpleNamespace(mcp_lifespan=None))
 
-    async with web_main.lifespan(app):
+    async with app_lifecycle.lifespan(app):
         assert scheduler_probe.started is scheduler_started
         assert (app.state.scheduler is scheduler_probe) is scheduler_started
 
@@ -461,10 +467,10 @@ async def test_nightly_labs_sweep_receives_system_identity_and_live_capability(
         calls.append((identity, identity.subject_id, context.legacy_bridge))
         return 0
 
-    monkeypatch.setattr(garmin_service, "reparse_owned_pending", no_op)
-    monkeypatch.setattr(hevy_service, "reparse_owned_pending", no_op)
-    monkeypatch.setattr(scans, "reparse_owned_pending", no_op)
-    monkeypatch.setattr(labs_service, "reparse_owned_pending", labs_probe)
+    monkeypatch.setattr(garmin_raw_payloads, "reparse_owned_pending", no_op)
+    monkeypatch.setattr(hevy_raw_payloads, "reparse_owned_pending", no_op)
+    monkeypatch.setattr(body_scan_reparse, "reparse_owned_pending", no_op)
+    monkeypatch.setattr(labs_ingestion, "reparse_owned_pending", labs_probe)
 
     await run_job_for_every_subject(raw_payload_service.sweep_pending_job, session_factory)
 
@@ -491,7 +497,7 @@ async def test_more_labs_read_uses_resolved_exact_subject_scope(
         calls.append(subject_id)
         return []
 
-    monkeypatch.setattr(labs_service, "latest_per_marker", latest_probe)
+    monkeypatch.setattr(more_router, "latest_per_marker", latest_probe)
     monkeypatch.setattr(
         more_router.templates,
         "TemplateResponse",
@@ -576,7 +582,7 @@ async def test_owned_raw_replay_savepoint_isolates_partial_row_failure(
     first_id, second_id = first.id, second.id
     await db_session.commit()
 
-    original_ingest = labs_service.ingest_extracted
+    original_ingest = labs_ingestion.ingest_extracted
 
     async def flaky_ingest(session, extracted, **kwargs):
         candidate = kwargs["existing_raw_payload"]
@@ -597,14 +603,14 @@ async def test_owned_raw_replay_savepoint_isolates_partial_row_failure(
             raise RuntimeError("synthetic failure after partial write")
         return await original_ingest(session, extracted, **kwargs)
 
-    monkeypatch.setattr(labs_service, "ingest_extracted", flaky_ingest)
+    monkeypatch.setattr(labs_ingestion, "ingest_extracted", flaky_ingest)
     system = _identity(legacy_owner_roots, system=True)
     prepared = await _prepared(
         db_session,
         _context(system, on_date=BOUNDARY_DATE),
     )
 
-    assert await labs_service.reparse_owned_pending(
+    assert await labs_ingestion.reparse_owned_pending(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
@@ -668,7 +674,7 @@ async def test_owned_raw_replay_scans_past_full_malformed_head_batch(
         db_session,
         _context(system, on_date=BOUNDARY_DATE),
     )
-    done = await labs_service.reparse_owned_pending(
+    done = await labs_ingestion.reparse_owned_pending(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
@@ -724,7 +730,7 @@ async def test_stage3a_parser_history_replays_without_becoming_live_upload(
         engine.ConflictRawOwnershipError,
         match="no file root",
     ):
-        await labs_service.add_result(
+        await labs_results.add_result(
             db_session,
             on_date=RESULT_DATE,
             marker="Must not normalize live",
@@ -740,7 +746,7 @@ async def test_stage3a_parser_history_replays_without_becoming_live_upload(
         db_session,
         _context(system, on_date=BOUNDARY_DATE, legacy=True),
     )
-    assert await labs_service.reparse_owned_pending(
+    assert await labs_ingestion.reparse_owned_pending(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
@@ -787,7 +793,7 @@ async def test_postgres_concurrent_first_marker_writes_serialize_on_subject_root
 
     session_a = factory()
     prepared_a = await _prepared(session_a, context)
-    await labs_service.add_result(
+    await labs_results.add_result(
         session_a,
         on_date=RESULT_DATE,
         marker="Concurrent marker",
@@ -799,7 +805,7 @@ async def test_postgres_concurrent_first_marker_writes_serialize_on_subject_root
     async def write_b() -> None:
         async with factory() as session_b:
             prepared_b = await _prepared(session_b, context)
-            await labs_service.add_result(
+            await labs_results.add_result(
                 session_b,
                 on_date=RESULT_DATE,
                 marker="Concurrent marker",

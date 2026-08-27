@@ -1,6 +1,14 @@
 """Endpoints for the GLP-1 protocol: injections, dose phases, side effects."""
 from __future__ import annotations
 
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
+from vitals.services.alerts import contracts as alerts_service_contracts
+
+from vitals.services.glp1 import plateau as glp1_plateau
+from vitals.services.glp1 import queries as glp1_queries
+from vitals.services.glp1 import writes as glp1_writes
+
 from datetime import date as date_type
 from typing import Optional
 
@@ -9,7 +17,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, Drug, InjectionSite, Source
-from vitals.services import alerts_service, glp1_service
 from vitals.services.conflicts import engine
 from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
@@ -57,29 +64,29 @@ async def glp1_dashboard(
         username=username,
         evaluation_date=today,
     )
-    await glp1_service.refresh_plateau_alert(
+    await glp1_plateau.refresh_plateau_alert(
         db,
         identity=context.identity,
         prepared_conflict_write=prepared,
     )
 
     scope_kwargs = {"subject_id": context.identity.subject_id}
-    injections = await glp1_service.list_injections(db, **scope_kwargs)
-    phases = await glp1_service.list_dose_phases(db, **scope_kwargs)
-    side_effects = await glp1_service.list_side_effects(db, **scope_kwargs)
-    alerts = await alerts_service.list_active_scoped(
+    injections = await glp1_queries.list_injections(db, **scope_kwargs)
+    phases = await glp1_queries.list_dose_phases(db, **scope_kwargs)
+    side_effects = await glp1_queries.list_side_effects(db, **scope_kwargs)
+    alerts = await alerts_service_lifecycle.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(context.identity),
+        context=alerts_service_contracts.HealthAlertContext(context.identity),
         domain=Domain.GLP1,
-        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        legacy_bridge=alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED,
     )
 
-    active_phase = await glp1_service.active_dose_phase(
+    active_phase = await glp1_queries.active_dose_phase(
         db,
         on_date=today,
         **scope_kwargs,
     )
-    last_inj = await glp1_service.last_injection(db, **scope_kwargs)
+    last_inj = await glp1_queries.last_injection(db, **scope_kwargs)
     await db.commit()
 
     return templates.TemplateResponse(
@@ -93,7 +100,7 @@ async def glp1_dashboard(
             "alerts": alerts,
             "active_phase": active_phase,
             "last_injection": last_inj,
-            "site_counts": glp1_service.site_frequency(injections),
+            "site_counts": glp1_queries.site_frequency(injections),
             "drugs": [d.value for d in Drug],
             "sites": [s.value for s in InjectionSite],
             "today": today.isoformat(),
@@ -123,14 +130,14 @@ async def add_injection(
     )
     try:
         if id is not None:
-            await glp1_service.update_injection(
+            await glp1_writes.update_injection(
                 db, id, on_date=on_date, drug=drug, dose_mg=dose_mg,
                 site=site, note=note, override=override,
                 identity=context.identity,
                 prepared_conflict_write=prepared,
             )
         else:
-            await glp1_service.log_injection(
+            await glp1_writes.log_injection(
                 db,
                 on_date=on_date,
                 drug=drug,
@@ -172,7 +179,7 @@ async def add_phase(
         evaluation_date=start,
     )
     try:
-        await glp1_service.add_dose_phase(
+        await glp1_writes.add_dose_phase(
             db,
             start_date=start,
             end_date=end,
@@ -210,7 +217,7 @@ async def add_side_effect(
         username=username,
         evaluation_date=on_date,
     )
-    await glp1_service.log_side_effect(
+    await glp1_writes.log_side_effect(
         db,
         on_date=on_date,
         effect_type=effect_type,
@@ -236,7 +243,7 @@ async def delete_injection(
         username=username,
         evaluation_date=today_local(),
     )
-    await glp1_service.delete_injection(
+    await glp1_writes.delete_injection(
         db,
         id,
         identity=context.identity,
@@ -258,7 +265,7 @@ async def delete_phase(
         username=username,
         evaluation_date=today_local(),
     )
-    await glp1_service.delete_dose_phase(
+    await glp1_writes.delete_dose_phase(
         db,
         id,
         identity=context.identity,
@@ -280,7 +287,7 @@ async def delete_side_effect(
         username=username,
         evaluation_date=today_local(),
     )
-    await glp1_service.delete_side_effect(
+    await glp1_writes.delete_side_effect(
         db,
         id,
         identity=context.identity,

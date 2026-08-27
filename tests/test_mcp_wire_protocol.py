@@ -136,12 +136,13 @@ async def test_module_state_failure_is_fail_closed_on_the_wire(
     from vitals.services.authentication import mcp_tokens
     from web.auth import _get_mcp_serializer
     from web.config import get_web_config
+    from web.mcp import server as mcp_server
 
     async def unavailable(*_args, **_kwargs):
         raise RuntimeError("synthetic module-state outage")
 
     monkeypatch.setattr(
-        mcp_router.modules_service,
+        mcp_server.modules_service,
         "get_enabled_modules",
         unavailable,
     )
@@ -370,10 +371,12 @@ async def test_an_unresolvable_grant_returns_a_visible_access_reason(
 ):
     """Authorization resolution failures must not fall back to generic copy."""
 
+    from web.mcp import server as mcp_server
+
     def fail_binding():
         raise mcp_router.McpActorUnresolved("unsafe identity detail")
 
-    monkeypatch.setattr(mcp_router, "_current_grant_binding", fail_binding)
+    monkeypatch.setattr(mcp_server.identity, "current_grant_binding", fail_binding)
 
     async with _serving(endpoint) as app:
         async with _connect(app, _token()) as streams:

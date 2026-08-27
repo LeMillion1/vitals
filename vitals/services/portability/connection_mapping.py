@@ -81,6 +81,15 @@ class ConnectionBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class ConnectionCandidate:
+    """Safe installation-local choice shown during import inspection."""
+
+    id: uuid.UUID
+    provider: str
+    connection_type: str
+
+
+@dataclass(frozen=True, slots=True)
 class CanonicalConnectionMapping(Mapping[str, uuid.UUID]):
     """Immutable, ref-sorted import mapping and its canonical SHA-256 digest."""
 
@@ -303,13 +312,50 @@ async def resolve_connection_mapping(
     )
 
 
+async def list_usable_connection_candidates(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> tuple[ConnectionCandidate, ...]:
+    """List usable connection roots without exposing credential metadata."""
+
+    subject_id = _require_uuid(subject_id, field="subject id")
+    rows = await session.execute(
+        select(
+            IntegrationConnection.id,
+            IntegrationConnection.provider,
+            IntegrationConnection.connection_type,
+        )
+        .where(
+            IntegrationConnection.subject_id == subject_id,
+            IntegrationConnection.status.in_(_USABLE_STATUSES),
+        )
+        .order_by(
+            IntegrationConnection.provider,
+            IntegrationConnection.connection_type,
+            IntegrationConnection.created_at,
+            IntegrationConnection.id,
+        )
+    )
+    return tuple(
+        ConnectionCandidate(
+            id=row.id,
+            provider=row.provider,
+            connection_type=row.connection_type,
+        )
+        for row in rows
+    )
+
+
 __all__ = [
     "ArchiveConnectionDescriptor",
     "CanonicalConnectionMapping",
     "ConnectionBinding",
+    "ConnectionCandidate",
     "ConnectionDescriptorLike",
     "ConnectionMappingError",
     "FORMAT_NAME",
     "FORMAT_VERSION",
+    "list_usable_connection_candidates",
     "resolve_connection_mapping",
 ]

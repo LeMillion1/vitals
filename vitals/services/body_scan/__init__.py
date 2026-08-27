@@ -1,5 +1,5 @@
-"""Body-composition scan persistence and document parsing workflows.
+"""Body-composition scan persistence and document parsing packages.
 
-Import the concrete concept needed by the caller: ``scans`` for normalized scan
-records and ``ai`` for the platform-funded document parsing lifecycle.
+Both ``scans`` and ``ai`` expose concrete leaves only; neither package restores
+the removed flat service API.
 """

@@ -16,7 +16,18 @@ from vitals.enums import Domain, UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.models.share import SharedReport
 from vitals.models.weight import WeightLog
-from vitals.services import identity_service, share_service
+from vitals.services import identity_service
+from vitals.services.share import jobs, ownership, public_access, queries, reports, snapshot
+
+share_service = SimpleNamespace(
+    **{
+        name: value
+        for module in (jobs, ownership, public_access, queries, reports, snapshot)
+        for name, value in vars(module).items()
+        if not name.startswith("_")
+    },
+    _validate_report_roots=snapshot._validate_report_roots,
+)
 from vitals.operations.ownership.shared_report import (
     SharedReportHistoricalBridgeState,
     SharedReportOwnershipBackfillStateError,
@@ -558,15 +569,15 @@ async def test_an_unowned_report_fails_before_the_global_snapshot_reader(
     await _add_fully_unowned_report(db_session)
     await db_session.commit()
 
-    from vitals.services import digest_service
-    from vitals.services.share_service import SharePreparedOwnerError
+    from vitals.services.digest.projection import assembly as digest_projection
+    from vitals.services.share.ownership import SharePreparedOwnerError
     from web.routers import share as share_router
 
     async def forbidden(*args, **kwargs):
         del args, kwargs
         pytest.fail("global snapshot reader ran after exact-one proof failed")
 
-    monkeypatch.setattr(digest_service, "assemble_context", forbidden)
+    monkeypatch.setattr(digest_projection, "assemble_context", forbidden)
     with pytest.raises(SharePreparedOwnerError, match="exactly one"):
         await share_router.create(
             request=SimpleNamespace(
@@ -754,7 +765,10 @@ async def test_purge_fully_null_expired_snapshot_for_suspended_owner(
 
 
 def test_production_owner_lifecycle_has_no_bare_session_get() -> None:
-    service_source = inspect.getsource(share_service)
+    service_source = "\n".join(
+        inspect.getsource(module)
+        for module in (jobs, ownership, public_access, queries, reports, snapshot)
+    )
     assert "session.get(SharedReport" not in service_source
     for function in (
         share_service.build_snapshot,

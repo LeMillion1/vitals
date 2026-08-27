@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from vitals.services.timeline import events as timeline_events
+
 import asyncio
 import contextlib
 import hashlib
@@ -27,7 +29,7 @@ from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.tenancy import FileAsset
 from vitals.models.weight import ProgressPhoto
 from vitals.ownership import WriteIdentity
-from vitals.services import file_asset_service, timeline_service, weight_service
+from vitals.services import file_asset_service, weight as weight_domain
 from vitals.services.conflicts import engine
 from vitals.utils.timeutils import now_local
 
@@ -126,7 +128,7 @@ async def _owned_photo(
     note: str | None = None,
 ) -> tuple[FileAsset, ProgressPhoto]:
     asset = await _asset(session, identity, suffix)
-    photo = await weight_service.add_progress_photo(
+    photo = await weight_domain.photos.add_progress_photo(
         session,
         on_date=on_date,
         note=note,
@@ -236,7 +238,7 @@ async def test_create_stamps_exact_s_a_f_and_derives_the_key(
     identity = _identity(legacy_owner_roots)
     asset = await _asset(db_session, identity, "exact")
 
-    photo = await weight_service.add_progress_photo(
+    photo = await weight_domain.photos.add_progress_photo(
         db_session,
         on_date=PHOTO_DATE,
         note="synthetic exact graph",
@@ -262,10 +264,10 @@ async def test_create_stamps_exact_s_a_f_and_derives_the_key(
     )
 
     with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
+        weight_domain.contracts.ProgressPhotoOwnershipError,
         match="file key conflicts",
     ):
-        await weight_service.add_progress_photo(
+        await weight_domain.photos.add_progress_photo(
             db_session,
             on_date=PHOTO_DATE,
             file_key="uploads/client-substitution.png",
@@ -283,10 +285,10 @@ async def test_one_file_asset_cannot_back_two_progress_photo_facts(
     asset, first = await _owned_photo(db_session, identity, "exclusive")
 
     with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
+        weight_domain.contracts.ProgressPhotoOwnershipError,
         match="already has a fact",
     ):
-        await weight_service.add_progress_photo(
+        await weight_domain.photos.add_progress_photo(
             db_session,
             on_date=OTHER_DATE,
             identity=identity,
@@ -317,10 +319,10 @@ async def test_create_rejects_active_non_owner_actor_even_with_matching_asset(
     asset = await _asset(db_session, forged_identity, "non-owner-actor")
 
     with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
+        weight_domain.contracts.ProgressPhotoOwnershipError,
         match="owner",
     ):
-        await weight_service.add_progress_photo(
+        await weight_domain.photos.add_progress_photo(
             db_session,
             on_date=PHOTO_DATE,
             identity=forged_identity,
@@ -381,8 +383,8 @@ async def test_exact_s_a_f_graph_rejects_partial_and_cross_root_rows(
         asset.uploaded_by_user_id = foreign_user.id
     await db_session.commit()
 
-    with pytest.raises(weight_service.ProgressPhotoOwnershipError):
-        await weight_service.list_progress_photos(
+    with pytest.raises(weight_domain.contracts.ProgressPhotoOwnershipError):
+        await weight_domain.photos.list_progress_photos(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -409,7 +411,7 @@ async def test_a_photo_with_partial_roots_is_out_of_every_scope(
     db_session.add(partial)
     await db_session.commit()
 
-    assert await weight_service.list_progress_photos(
+    assert await weight_domain.photos.list_progress_photos(
         db_session,
         subject_id=identity.subject_id,
     ) == []
@@ -436,13 +438,13 @@ async def test_fully_null_legacy_photo_is_invisible_and_undeletable(
     db_session.add(legacy)
     await db_session.commit()
 
-    assert await weight_service.list_progress_photos(
+    assert await weight_domain.photos.list_progress_photos(
         db_session,
         subject_id=identity.subject_id,
     ) == []
 
     for legacy_bridge in (False, True):
-        assert await weight_service.delete_progress_photo(
+        assert await weight_domain.photos.delete_progress_photo(
             db_session,
             legacy.id,
             identity=identity,
@@ -477,7 +479,7 @@ async def test_completed_stage3h_bridge_exposes_actorless_migrated_history(
     )
     await db_session.commit()
 
-    visible = await weight_service.list_progress_photos(
+    visible = await weight_domain.photos.list_progress_photos(
         db_session,
         subject_id=identity.subject_id,
     )
@@ -485,7 +487,7 @@ async def test_completed_stage3h_bridge_exposes_actorless_migrated_history(
     assert photo.actor_user_id is None
     assert asset.uploaded_by_user_id is None
 
-    events = await timeline_service.list_events(
+    events = await timeline_events.list_events(
         db_session,
         subject_id=identity.subject_id,
         start=PHOTO_DATE,
@@ -526,7 +528,7 @@ async def test_running_stage3h_bridge_accepts_processed_and_preserves_legacy_row
     )
     await db_session.commit()
 
-    visible = await weight_service.list_progress_photos(
+    visible = await weight_domain.photos.list_progress_photos(
         db_session,
         subject_id=identity.subject_id,
     )
@@ -542,10 +544,10 @@ async def test_running_stage3h_bridge_accepts_processed_and_preserves_legacy_row
     await db_session.commit()
     assert tail.id > unprocessed.id
     with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
+        weight_domain.contracts.ProgressPhotoOwnershipError,
         match="actor",
     ):
-        await weight_service.list_progress_photos(
+        await weight_domain.photos.list_progress_photos(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -563,8 +565,8 @@ async def test_actorless_owned_photo_requires_a_valid_processed_checkpoint(
     )
     await db_session.commit()
 
-    with pytest.raises(weight_service.ProgressPhotoOwnershipError, match="actor"):
-        await weight_service.list_progress_photos(
+    with pytest.raises(weight_domain.contracts.ProgressPhotoOwnershipError, match="actor"):
+        await weight_domain.photos.list_progress_photos(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -583,8 +585,8 @@ async def test_actorless_owned_photo_requires_a_valid_processed_checkpoint(
     blocked.ownership_checksum_after = _EMPTY_SHA256
     db_session.add(blocked)
     await db_session.commit()
-    with pytest.raises(weight_service.ProgressPhotoOwnershipError, match="actor"):
-        await weight_service.list_progress_photos(
+    with pytest.raises(weight_domain.contracts.ProgressPhotoOwnershipError, match="actor"):
+        await weight_domain.photos.list_progress_photos(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -619,7 +621,7 @@ async def test_a_malicious_file_name_never_reaches_the_page_at_all(
         size_bytes=1,
         content_sha256="9" * 64,
     )
-    photo = await weight_service.add_progress_photo(
+    photo = await weight_domain.photos.add_progress_photo(
         db_session,
         on_date=PHOTO_DATE,
         file_key=file_key,
@@ -674,13 +676,13 @@ async def test_owner_can_delete_migrated_history_without_rewriting_provenance(
     await db_session.commit()
     assert photo.actor_user_id is None and asset.uploaded_by_user_id is None
 
-    receipt = await weight_service.delete_progress_photo(
+    receipt = await weight_domain.photos.delete_progress_photo(
         db_session,
         photo.id,
         identity=identity,
         prepared_conflict_write=await _prepared(db_session, identity),
     )
-    assert receipt == weight_service.ProgressPhotoDeletion(photo.file_key, asset.id)
+    assert receipt == weight_domain.contracts.ProgressPhotoDeletion(photo.file_key, asset.id)
     assert asset.uploaded_by_user_id is None
     assert asset.status == FileAssetStatus.DELETED.value
 
@@ -707,8 +709,8 @@ async def test_completed_migrated_bridge_rejects_nonnull_asset_uploader(
         )
     )
     await db_session.commit()
-    with pytest.raises(weight_service.ProgressPhotoOwnershipError):
-        await weight_service.list_progress_photos(
+    with pytest.raises(weight_domain.contracts.ProgressPhotoOwnershipError):
+        await weight_domain.photos.list_progress_photos(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -744,10 +746,10 @@ async def test_completed_migrated_bridge_requires_root_level_safe_image_key(
     await db_session.commit()
 
     with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
+        weight_domain.contracts.ProgressPhotoOwnershipError,
         match="unsafe file key",
     ):
-        await weight_service.list_progress_photos(
+        await weight_domain.photos.list_progress_photos(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -799,7 +801,7 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
     if shadow_state == "valid_live":
         # A live asset this subject owns is a legitimate destination; the write
         # succeeds and the shadowed legacy row below is what stays unreachable.
-        await weight_service.add_progress_photo(
+        await weight_domain.photos.add_progress_photo(
             db_session,
             on_date=PHOTO_DATE,
             file_key=file_key,
@@ -812,10 +814,10 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
         return
     else:
         with pytest.raises(
-            weight_service.ProgressPhotoOwnershipError,
+            weight_domain.contracts.ProgressPhotoOwnershipError,
             match="file asset is not authoritative in subject scope",
         ):
-            await weight_service.add_progress_photo(
+            await weight_domain.photos.add_progress_photo(
                 db_session,
                 on_date=PHOTO_DATE,
                 file_key=file_key,
@@ -846,7 +848,7 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
         asset.purged_at,
     )
 
-    assert await weight_service.list_progress_photos(
+    assert await weight_domain.photos.list_progress_photos(
         db_session,
         subject_id=identity.subject_id,
     ) == []
@@ -855,14 +857,14 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
     assert response.status_code == 404
     assert contents not in response.content
 
-    assert await weight_service.delete_progress_photo(
+    assert await weight_domain.photos.delete_progress_photo(
         db_session,
         legacy_id,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     ) is None
 
-    assert await weight_service.delete_progress_photo(
+    assert await weight_domain.photos.delete_progress_photo(
         db_session,
         legacy_id,
         identity=identity,
@@ -935,7 +937,7 @@ async def test_nested_photo_key_is_owned_like_any_other(
         size_bytes=1,
         content_sha256="e" * 64,
     )
-    photo = await weight_service.add_progress_photo(
+    photo = await weight_domain.photos.add_progress_photo(
         db_session,
         on_date=PHOTO_DATE,
         file_key=file_key,
@@ -944,7 +946,7 @@ async def test_nested_photo_key_is_owned_like_any_other(
         prepared_conflict_write=await owner_write.write(PHOTO_DATE),
     )
 
-    visible = await weight_service.list_progress_photos(
+    visible = await weight_domain.photos.list_progress_photos(
         db_session,
         subject_id=identity.subject_id,
     )
@@ -966,7 +968,7 @@ async def test_prepared_capability_is_required_and_checked_before_file_resolutio
     wrong = await _prepared(db_session, foreign)
 
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await weight_service.add_progress_photo(
+        await weight_domain.photos.add_progress_photo(
             db_session,
             on_date=PHOTO_DATE,
             identity=identity,
@@ -974,7 +976,7 @@ async def test_prepared_capability_is_required_and_checked_before_file_resolutio
             prepared_conflict_write=wrong,
         )
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await weight_service.add_progress_photo(
+        await weight_domain.photos.add_progress_photo(
             db_session,
             on_date=PHOTO_DATE,
             identity=identity,
@@ -982,7 +984,7 @@ async def test_prepared_capability_is_required_and_checked_before_file_resolutio
             prepared_conflict_write=wrong,
         )
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await weight_service.delete_progress_photo(
+        await weight_domain.photos.delete_progress_photo(
             db_session,
             999_999,
             identity=identity,
@@ -1014,10 +1016,10 @@ async def test_delete_requires_subject_owner_actor_for_exact_and_legacy_rows(
 
     forged = WriteIdentity(owner.subject_id, foreign_user.id)
     with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
+        weight_domain.contracts.ProgressPhotoOwnershipError,
         match="owner",
     ):
-        await weight_service.delete_progress_photo(
+        await weight_domain.photos.delete_progress_photo(
             db_session,
             exact.id,
             identity=forged,
@@ -1026,20 +1028,20 @@ async def test_delete_requires_subject_owner_actor_for_exact_and_legacy_rows(
 
     system = WriteIdentity(owner.subject_id, None)
     with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
+        weight_domain.contracts.ProgressPhotoOwnershipError,
         match="owner",
     ):
-        await weight_service.delete_progress_photo(
+        await weight_domain.photos.delete_progress_photo(
             db_session,
             exact.id,
             identity=system,
             prepared_conflict_write=await _prepared(db_session, system),
         )
     with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
+        weight_domain.contracts.ProgressPhotoOwnershipError,
         match="owner",
     ):
-        await weight_service.delete_progress_photo(
+        await weight_domain.photos.delete_progress_photo(
             db_session,
             legacy.id,
             identity=system,
@@ -1066,14 +1068,14 @@ async def test_delete_returns_frozen_receipt_and_retires_asset_atomically(
     asset_id, photo_id, file_key = asset.id, photo.id, photo.file_key
     await db_session.commit()
 
-    receipt = await weight_service.delete_progress_photo(
+    receipt = await weight_domain.photos.delete_progress_photo(
         db_session,
         photo_id,
         identity=identity,
         prepared_conflict_write=await _prepared(db_session, identity),
     )
 
-    assert receipt == weight_service.ProgressPhotoDeletion(file_key, asset_id)
+    assert receipt == weight_domain.contracts.ProgressPhotoDeletion(file_key, asset_id)
     with pytest.raises((FrozenInstanceError, AttributeError)):
         receipt.file_key = "uploads/mutated.png"  # type: ignore[misc]
     assert await db_session.get(ProgressPhoto, photo_id) is None
@@ -1112,7 +1114,7 @@ async def test_delete_failure_rolls_back_fact_and_file_lifecycle_together(
         fail_after_lifecycle,
     )
     with pytest.raises(RuntimeError, match="synthetic failure"):
-        await weight_service.delete_progress_photo(
+        await weight_domain.photos.delete_progress_photo(
             db_session,
             photo_id,
             identity=identity,
@@ -1148,7 +1150,7 @@ async def test_timeline_uses_validated_ranged_marker_projection(
     )
     await db_session.commit()
 
-    events = await timeline_service.list_events(
+    events = await timeline_events.list_events(
         db_session,
         subject_id=identity.subject_id,
         start=PHOTO_DATE,
@@ -1163,8 +1165,8 @@ async def test_timeline_uses_validated_ranged_marker_projection(
 
     inside.actor_user_id = None
     await db_session.commit()
-    with pytest.raises(weight_service.ProgressPhotoOwnershipError):
-        await timeline_service.list_events(
+    with pytest.raises(weight_domain.contracts.ProgressPhotoOwnershipError):
+        await timeline_events.list_events(
             db_session,
             subject_id=identity.subject_id,
             start=PHOTO_DATE,
@@ -1218,7 +1220,7 @@ async def test_the_asset_is_the_download_authority_not_the_fact_that_points_at_i
             size_bytes=len(contents),
             content_sha256=hashlib.sha256(contents).hexdigest(),
         )
-        photo = await weight_service.add_progress_photo(
+        photo = await weight_domain.photos.add_progress_photo(
             db_session,
             on_date=PHOTO_DATE,
             identity=identity,
@@ -1235,8 +1237,8 @@ async def test_the_asset_is_the_download_authority_not_the_fact_that_points_at_i
         # The fact above the asset is broken; the listing refuses it.
         photo.actor_user_id = None
         await db_session.commit()
-        with pytest.raises(weight_service.ProgressPhotoOwnershipError):
-            await weight_service.list_progress_photos(
+        with pytest.raises(weight_domain.contracts.ProgressPhotoOwnershipError):
+            await weight_domain.photos.list_progress_photos(
                 db_session,
                 subject_id=identity.subject_id,
             )
@@ -1373,7 +1375,7 @@ async def test_what_withdraws_a_download_and_what_only_looks_like_it_should(
         size_bytes=len(contents),
         content_sha256=hashlib.sha256(contents).hexdigest(),
     )
-    photo = await weight_service.add_progress_photo(
+    photo = await weight_domain.photos.add_progress_photo(
         db_session,
         on_date=PHOTO_DATE,
         identity=identity,
@@ -1433,10 +1435,10 @@ async def test_what_withdraws_a_download_and_what_only_looks_like_it_should(
         # Deleting is where two rows pointing at one file is still a real
         # problem: removing the bytes for one silently empties the other.
         with pytest.raises(
-            weight_service.ProgressPhotoOwnershipError,
+            weight_domain.contracts.ProgressPhotoOwnershipError,
             match="aliases document file metadata",
         ):
-            await weight_service.delete_progress_photo(
+            await weight_domain.photos.delete_progress_photo(
                 db_session,
                 photo.id,
                 identity=identity,
@@ -1470,10 +1472,10 @@ async def test_legacy_prefixed_photo_create_and_delete_reject_document_disk_alia
         content_sha256="f" * 64,
     )
     with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
+        weight_domain.contracts.ProgressPhotoOwnershipError,
         match="file asset is not authoritative in subject scope",
     ):
-        await weight_service.add_progress_photo(
+        await weight_domain.photos.add_progress_photo(
             db_session,
             on_date=PHOTO_DATE,
             file_key=file_key,
@@ -1493,7 +1495,7 @@ async def test_legacy_prefixed_photo_create_and_delete_reject_document_disk_alia
     db_session.add(photo)
     await db_session.commit()
 
-    assert await weight_service.delete_progress_photo(
+    assert await weight_domain.photos.delete_progress_photo(
         db_session,
         photo.id,
         identity=owner_write.identity,
@@ -1501,7 +1503,7 @@ async def test_legacy_prefixed_photo_create_and_delete_reject_document_disk_alia
     ) is None
     # The compatibility bridge that could reach this row is gone, so the second
     # delete path is the same as the first: it simply finds nothing.
-    assert await weight_service.delete_progress_photo(
+    assert await weight_domain.photos.delete_progress_photo(
         db_session,
         photo.id,
         identity=identity,
@@ -1534,7 +1536,7 @@ async def test_postgres_concurrent_same_file_creates_leave_one_fact(
 
     session_a = factory()
     prepared_a = await _prepared(session_a, identity)
-    await weight_service.add_progress_photo(
+    await weight_domain.photos.add_progress_photo(
         session_a,
         on_date=PHOTO_DATE,
         identity=identity,
@@ -1546,7 +1548,7 @@ async def test_postgres_concurrent_same_file_creates_leave_one_fact(
         async with factory() as session_b:
             try:
                 prepared_b = await _prepared(session_b, identity)
-                await weight_service.add_progress_photo(
+                await weight_domain.photos.add_progress_photo(
                     session_b,
                     on_date=PHOTO_DATE,
                     identity=identity,
@@ -1554,7 +1556,7 @@ async def test_postgres_concurrent_same_file_creates_leave_one_fact(
                     prepared_conflict_write=prepared_b,
                 )
                 await session_b.commit()
-            except weight_service.ProgressPhotoOwnershipError:
+            except weight_domain.contracts.ProgressPhotoOwnershipError:
                 await session_b.rollback()
                 return "rejected"
         return "created"

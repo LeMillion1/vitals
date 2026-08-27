@@ -18,18 +18,32 @@ diff, and one of ``999.9`` is not.
 
 from __future__ import annotations
 
+from vitals.services.digest.projection import assembly as digest_projection
+from vitals.services.digest import window as digest_window
+from vitals.services.digest import prompt as digest_prompt
+
 from datetime import date, timedelta
 
 import pytest
 
-from vitals.enums import Domain, Source, UserStatus
+from vitals.enums import (
+    Domain,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    Source,
+    UserStatus,
+)
+from vitals.models.hevy import HevyExercise, HevySet, HevyWorkout
 from vitals.models.identity import HealthSubject, User
 from vitals.models.labs import LabResult
 from vitals.models.nutrition import MealLog
 from vitals.models.supplements import Supplement
 from vitals.models.timeline import Annotation
+from vitals.models.tenancy import IntegrationConnection
 from vitals.models.weight import BodyMeasurement, WeightLog
-from vitals.services import digest_service, modules_service
+from vitals.services import modules_service
+from vitals.services.portability import llm_projection
 
 pytestmark = pytest.mark.usefixtures("all_modules_on", "owned_by_legacy_subject")
 
@@ -42,6 +56,8 @@ SENTINELS = (
     "SENTINEL-MARKER-DO-NOT-LEAK",
     "SENTINEL-SUPPLEMENT-DO-NOT-LEAK",
     "SENTINEL-NOTE-DO-NOT-LEAK",
+    "SENTINEL-WORKOUT-DO-NOT-LEAK",
+    "SENTINEL-EXERCISE-DO-NOT-LEAK",
     "999.9",
     "888.8",
     "77777",
@@ -64,6 +80,47 @@ async def _second_person(session) -> HealthSubject:
     )
     session.add(subject)
     await session.flush()
+
+    hevy_connection = IntegrationConnection(
+        subject_id=subject.id,
+        provider=IntegrationProvider.HEVY.value,
+        connection_type=IntegrationConnectionType.ACCOUNT.value,
+        external_account_discriminator="llm-isolation-hevy-other",
+        credential_ref="test:llm-isolation-hevy-other",
+        status=IntegrationConnectionStatus.ACTIVE.value,
+    )
+    session.add(hevy_connection)
+    await session.flush()
+    workout = HevyWorkout(
+        subject_id=subject.id,
+        integration_connection_id=hevy_connection.id,
+        domain=Domain.WORKOUTS.value,
+        source=Source.HEVY_API.value,
+        date=DAY,
+        external_id="llm-isolation-hevy-other",
+        title="SENTINEL-WORKOUT-DO-NOT-LEAK",
+    )
+    session.add(workout)
+    await session.flush()
+    exercise = HevyExercise(
+        workout_id=workout.id,
+        subject_id=subject.id,
+        integration_connection_id=hevy_connection.id,
+        exercise_index=0,
+        title="SENTINEL-EXERCISE-DO-NOT-LEAK",
+    )
+    session.add(exercise)
+    await session.flush()
+    session.add(
+        HevySet(
+            exercise_id=exercise.id,
+            subject_id=subject.id,
+            integration_connection_id=hevy_connection.id,
+            set_index=0,
+            weight_kg=999.9,
+            reps=1,
+        )
+    )
 
     session.add_all(
         [
@@ -123,7 +180,7 @@ def _leaks(haystack: str) -> list[str]:
 
 
 async def _compose_for(session, subject_id, **kwargs):
-    return await digest_service.assemble_context(
+    return await digest_projection.assemble_context(
         session,
         subject_id=subject_id,
         on_date=DAY,
@@ -131,7 +188,7 @@ async def _compose_for(session, subject_id, **kwargs):
         # The closed weekly window, which is the report an external model
         # actually receives. ``daily_brief`` is a one-day mode and would make
         # "bounded to a week" a claim about a different thing.
-        mode=kwargs.pop("mode", digest_service.REPORT_MODE_CLOSED),
+        mode=kwargs.pop("mode", digest_window.REPORT_MODE_CLOSED),
         **kwargs,
     )
 
@@ -162,8 +219,19 @@ async def test_the_context_carries_nothing_of_anybody_else(
     await db_session.commit()
 
     context = await _compose_for(db_session, legacy_owner_roots.subject_id)
-    found = _leaks(digest_service.build_prompt(context))
+    found = _leaks(digest_prompt.build_prompt(context))
     assert not found, f"another person's data reached the model: {found}"
+
+
+async def test_hevy_latest_date_is_subject_scoped(
+    db_session, legacy_owner_roots
+):
+    await _second_person(db_session)
+    await db_session.commit()
+
+    context = await _compose_for(db_session, legacy_owner_roots.subject_id)
+
+    assert context["hevy"]["last_workout"] is None
 
 
 async def test_the_prompt_carries_nothing_of_anybody_else(
@@ -180,7 +248,7 @@ async def test_the_prompt_carries_nothing_of_anybody_else(
 
     context = await _compose_for(db_session, legacy_owner_roots.subject_id)
     for language in ("ru", "en"):
-        prompt = digest_service.build_prompt(context, lang=language)
+        prompt = digest_prompt.build_prompt(context, lang=language)
         found = _leaks(prompt)
         assert not found, f"the {language} prompt carries somebody else's: {found}"
 
@@ -198,7 +266,7 @@ async def test_composing_for_the_other_person_returns_theirs(
     await db_session.commit()
 
     context = await _compose_for(db_session, other.id)
-    prompt = digest_service.build_prompt(context)
+    prompt = digest_prompt.build_prompt(context)
     assert _leaks(prompt), (
         "composing for the second person returned none of their data — the "
         "isolation tests above are passing on an empty context"
@@ -264,7 +332,7 @@ async def test_a_disabled_module_contributes_nothing_to_the_prompt(
         legacy_owner_roots.subject_id,
         enabled_modules=everything_on,
     )
-    assert _leaks(digest_service.build_prompt(with_them)), (
+    assert _leaks(digest_prompt.build_prompt(with_them)), (
         "the sentinels are not in the report even with every module on — this "
         "test would pass without proving anything"
     )
@@ -275,7 +343,7 @@ async def test_a_disabled_module_contributes_nothing_to_the_prompt(
         legacy_owner_roots.subject_id,
         enabled_modules=switched_off,
     )
-    found = _leaks(digest_service.build_prompt(without_them))
+    found = _leaks(digest_prompt.build_prompt(without_them))
     assert not found, f"a switched-off module still reached the model: {found}"
 
 
@@ -308,7 +376,7 @@ async def test_the_window_bounds_what_leaves(db_session, legacy_owner_roots):
     await db_session.commit()
 
     context = await _compose_for(db_session, legacy_owner_roots.subject_id)
-    prompt = digest_service.build_prompt(context)
+    prompt = digest_prompt.build_prompt(context)
     assert "SENTINEL-NOTE-DO-NOT-LEAK" not in prompt, (
         "a note from more than a year before the window reached the model"
     )
@@ -340,7 +408,7 @@ async def test_the_context_says_nothing_about_who_this_is(
     owner = await db_session.get(User, legacy_owner_roots.user_id)
     await db_session.commit()
 
-    prompt = digest_service.build_prompt(
+    prompt = digest_prompt.build_prompt(
         await _compose_for(db_session, legacy_owner_roots.subject_id)
     )
 
@@ -374,8 +442,6 @@ async def test_the_llm_export_carries_one_persons_lake_and_no_others(
     download in the browser.
     """
 
-    from vitals.services import data_portability_service
-
     other = await _second_person(db_session)
     db_session.add(
         WeightLog(
@@ -388,14 +454,14 @@ async def test_the_llm_export_carries_one_persons_lake_and_no_others(
     )
     await db_session.commit()
 
-    mine = await data_portability_service.export_llm(
+    mine = await llm_projection.export_llm(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
     found = _leaks(str(mine))
     assert not found, f"the export carries another person's record: {found}"
 
     # The mirror, so this cannot pass by exporting nothing at all.
-    theirs = await data_portability_service.export_llm(
+    theirs = await llm_projection.export_llm(
         db_session, subject_id=other.id
     )
     assert _leaks(str(theirs)), (
@@ -415,9 +481,9 @@ async def test_the_export_refuses_to_run_without_a_subject(
     parameter would have hidden forever.
     """
 
-    from vitals.services import data_portability_service
+    from vitals.services.portability import llm_projection
 
     for absent in (None, "not-a-uuid"):
-        with pytest.raises(data_portability_service.PortabilityError):
-            await data_portability_service.export_llm(db_session, subject_id=absent)
+        with pytest.raises(llm_projection.PortabilityError):
+            await llm_projection.export_llm(db_session, subject_id=absent)
     del legacy_owner_roots

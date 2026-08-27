@@ -6,7 +6,7 @@ table; nothing schedules an evening block any more, and the settings card kept
 offering a time field for it.
 
 Removing the field from the code is not enough on its own, and that is what this
-test is really about. ``prefs._strict_object`` compares a stored policy's key set
+test is really about. The preference codec compares a stored policy's key set
 against ``_SUBJECT_FIELDS`` with ``!=`` — deliberately, because a preference row
 that has drifted from the code is worth failing on rather than silently ignoring.
 So an installation that had ever saved its proactive settings would come back up

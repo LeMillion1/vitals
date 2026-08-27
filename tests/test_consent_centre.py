@@ -31,7 +31,7 @@ from vitals.models.professional import ProfessionalInvitation, ProfessionalNote
 
 def test_policy_actions_collapse_to_one_visible_record_section():
     from vitals.access import PolicyAction, PolicyResourceType
-    from web.routers.consents import _shared_domains
+    from vitals.services.care.consent_centre import shared_domains
 
     rows = {
         (PolicyResourceType.DOMAIN.value, "labs", action.value)
@@ -42,12 +42,12 @@ def test_policy_actions_collapse_to_one_visible_record_section():
         )
     }
 
-    assert _shared_domains(rows) == ["labs"]
+    assert shared_domains(rows) == ["labs"]
 
     historical_disabled = rows | {
         (PolicyResourceType.DOMAIN.value, "skincare", PolicyAction.READ.value)
     }
-    assert _shared_domains(
+    assert shared_domains(
         historical_disabled,
         visible_domains=(Domain.LABS,),
     ) == ["labs"]

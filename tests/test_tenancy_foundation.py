@@ -49,10 +49,8 @@ from vitals.models.scoped_settings import (
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.operations.ownership.portability_v1 import import_full
 from vitals.ownership import OWNERSHIP_REGISTRY
-from vitals.services.data_portability_service import (
-    _EXCLUDED_TABLES,
-    export_full,
-)
+from vitals.services.portability.v1_contract import _EXCLUDED_TABLES
+from vitals.services.portability.v1_export import export_full
 
 
 FOUNDATION_MODELS = (

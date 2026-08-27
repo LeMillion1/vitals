@@ -4,6 +4,9 @@ other domain, are the data behind the flags drawn on the weight chart and
 custom charts)."""
 from __future__ import annotations
 
+from vitals.services.timeline import annotations as timeline_annotations
+from vitals.services.timeline import events as timeline_events
+
 from datetime import date as date_type
 from typing import Optional
 
@@ -12,7 +15,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import AnnotationKind, Domain
-from vitals.services import timeline_service
+
 from vitals.services.conflicts import engine
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
@@ -50,7 +53,7 @@ async def timeline_feed(
         actor_username=username,
         evaluation_date=today_local(),
     )
-    events = await timeline_service.list_events(
+    events = await timeline_events.list_events(
         db,
         subject_id=scope.subject_id,
     )
@@ -88,7 +91,7 @@ async def create_annotation_entry(
     on_date = date_type.fromisoformat(date)
     end = date_type.fromisoformat(end_date) if end_date else None
 
-    await timeline_service.create_annotation(
+    await timeline_annotations.create_annotation(
         db,
         title=title.strip(),
         on_date=on_date,
@@ -118,7 +121,7 @@ async def delete_annotation_entry(
         db,
         actor_username=username,
     )
-    await timeline_service.delete_annotation(
+    await timeline_annotations.delete_annotation(
         db,
         annotation_id,
         identity=ownership.owner_action(),

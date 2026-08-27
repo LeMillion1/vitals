@@ -2,12 +2,15 @@
 and the MCP tools."""
 from __future__ import annotations
 
+from vitals.services.alerts import legacy as alerts_service_legacy
+
 from datetime import timedelta
 
 import pytest
 
 from vitals.enums import Domain
-from vitals.services import alerts_service, labs_service
+import vitals.services.labs.markers as lab_markers
+import vitals.services.labs.results as lab_results
 from vitals.services.conflicts import catalog as conflict_catalog
 from vitals.services.conflicts import engine, registrations
 from vitals.services.hrt import catalog, cycles, reminders, records
@@ -37,7 +40,7 @@ async def test_seed_hormone_panel_idempotent(db_session, owner_write):
     )
     await db_session.commit()
     assert r2["created"] == 0
-    alt = await labs_service.get_marker(
+    alt = await lab_markers.get_marker(
         db_session,
         "АЛТ",
         subject_id=owner_write.subject_id,
@@ -63,7 +66,7 @@ async def test_labs_due_raised_on_cycle_without_bloodwork(db_session, owner_writ
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
+    alerts = await alerts_service_legacy.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     assert any(a.alert_key == reminders.LABS_DUE_KEY for a in alerts)
 
 
@@ -85,7 +88,7 @@ async def test_labs_due_cleared_by_recent_panel_result(db_session, owner_write):
     )
     await db_session.commit()
     # A fresh panel result clears it.
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=today_local(),
         marker="Тестостерон общий",
@@ -99,7 +102,7 @@ async def test_labs_due_cleared_by_recent_panel_result(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
+    alerts = await alerts_service_legacy.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     assert not any(a.alert_key == reminders.LABS_DUE_KEY for a in alerts)
 
 
@@ -115,7 +118,7 @@ async def test_labs_due_absent_without_active_cycle(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
+    alerts = await alerts_service_legacy.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     assert not any(a.alert_key == reminders.LABS_DUE_KEY for a in alerts)
 
 
@@ -141,7 +144,7 @@ async def test_injection_due_raised_when_shot_missed(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
+    alerts = await alerts_service_legacy.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     due = [a for a in alerts if a.alert_key == reminders.INJECTION_DUE_KEY]
     assert due and due[0].entity_ref == "testosterone_enanthate"
 
@@ -179,7 +182,7 @@ async def test_injection_due_cleared_after_logging(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
+    alerts = await alerts_service_legacy.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     assert not any(a.alert_key == reminders.INJECTION_DUE_KEY for a in alerts)
 
 
@@ -194,7 +197,7 @@ async def test_oral_17aa_high_alt_fires_soft_warn(db_session, owner_write):
     await conflict_catalog.sync_catalog(db_session)
     await _register_hrt_labs_resolvers()
     # High ALT on the panel.
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=today_local(),
         marker="АЛТ",
@@ -222,7 +225,7 @@ async def test_testosterone_high_hematocrit_fires(db_session, owner_write):
     await catalog.sync_catalog(db_session)
     await conflict_catalog.sync_catalog(db_session)
     await _register_hrt_labs_resolvers()
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=today_local(),
         marker="Гематокрит",
@@ -249,7 +252,7 @@ async def test_no_conflict_when_labs_normal(db_session, owner_write):
     await catalog.sync_catalog(db_session)
     await conflict_catalog.sync_catalog(db_session)
     await _register_hrt_labs_resolvers()
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=today_local(),
         marker="АЛТ",
@@ -359,7 +362,7 @@ async def test_injection_due_not_raised_before_item_offset(db_session, owner_wri
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
+    alerts = await alerts_service_legacy.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     assert not any(
         a.alert_key == reminders.INJECTION_DUE_KEY
         and a.entity_ref == "stanozolol_oral"

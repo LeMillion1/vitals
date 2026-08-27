@@ -6,6 +6,20 @@ down with it turns the one proactive feature into nothing; and a brief that keep
 arriving with "нет данных", or that carries the hormone protocol into Telegram,
 is a product decision reversed by accident.
 """
+
+from vitals.services.alerts import contracts as alerts_service_contracts
+from vitals.services.alerts import legacy as alerts_service_legacy
+
+from vitals.services.supplements import writes as supplement_writes
+
+from vitals.services.proactive.delivery import contracts as delivery_contracts
+from vitals.services.proactive.delivery import queries as delivery_queries
+from vitals.services.proactive.delivery import preparation as delivery_preparation
+from vitals.services.proactive.delivery import dispatch as delivery_dispatch
+
+from vitals.services.glp1 import writes as glp1_writes
+from vitals.services.digest.projection import assembly as digest_projection
+
 import uuid
 from datetime import date, datetime, timedelta
 
@@ -28,13 +42,17 @@ from vitals.models.proactive import Notification
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.services import (
-    alerts_service,
-    digest_service,
-    garmin_service,
-    weight_service,
+    weight as weight_domain,
 )
+from vitals.services.garmin import ingestion as garmin_ingestion
+from vitals.services.garmin import jobs as garmin_jobs
+from vitals.services.garmin import queries as garmin_queries
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
-from vitals.services.proactive import brief, channels, compose, delivery
+from vitals.services.proactive import channels, compose
+from vitals.services.proactive.brief import context as brief_context
+from vitals.services.proactive.brief import contracts as brief_contracts
+from vitals.services.proactive.brief import jobs as brief_jobs
+from vitals.services.proactive.brief import prompt as brief_prompt
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
@@ -137,7 +155,7 @@ async def _durably_send(
     legacy_dedupe_key=None,
 ):
     bound = await channels.build_legacy_bound_notifier(session, ownership)
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         session,
         bound,
         text=text,
@@ -148,24 +166,24 @@ async def _durably_send(
     )
     await session.commit()
     assert prepared is not None
-    lease = await delivery.start_delivery_dispatch(
+    lease = await delivery_dispatch.start_delivery_dispatch(
         session,
         prepared,
         notifier_resolver=channels.resolve_legacy_bound_notifier,
     )
     await session.commit()
     assert lease is not None
-    completion = await delivery.dispatch_delivery(lease)
-    journal = await delivery.finalize_delivery(session, completion)
+    completion = await delivery_dispatch.dispatch_delivery(lease)
+    journal = await delivery_dispatch.finalize_delivery(session, completion)
     await session.commit()
     assert journal is not None
     return journal
 
 
 async def _seed_day(db_session, owner_write, *, on_date=DAY, weight_kg=88.0, garmin_owned_scope):
-    await garmin_service.ingest_owned_daily(db_session, on_date, GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    await garmin_ingestion.ingest_owned_daily(db_session, on_date, GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     if weight_kg is not None:
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=on_date,
             weight_kg=weight_kg,
@@ -199,8 +217,8 @@ async def test_brief_rejects_inactive_llm_connection_before_network(
     await db_session.flush()
     llm = FakeLLM()
 
-    with pytest.raises(brief.BriefOwnershipError, match="phased gateway"):
-        await brief.generate_brief(
+    with pytest.raises(brief_contracts.BriefOwnershipError, match="phased gateway"):
+        await brief_jobs.generate_brief(
             db_session,
             llm,
             on_date=DAY,
@@ -220,14 +238,14 @@ async def test_header_numbers_match_the_database(garmin_owned_scope, db_session,
         owner_write,
     garmin_owned_scope=garmin_owned_scope)
 
-    ctx = await brief.build_context(
+    ctx = await brief_context.build_context(
         db_session,
         on_date=DAY,
         subject_id=legacy_owner_roots.subject_id,
     )
     header = compose.render(compose.header_blocks(ctx))
 
-    stored = await garmin_service.latest_daily(
+    stored = await garmin_queries.latest_daily(
         db_session, before_or_on=DAY, subject_id=legacy_owner_roots.subject_id
     )
     assert f"Сон {stored.sleep_score}" in header
@@ -244,14 +262,14 @@ async def test_noisy_weight_never_prints_a_bare_trend(db_session, legacy_owner_r
     the one header number that can mislead while being technically correct."""
     for i in range(8):
         day = DAY - timedelta(days=7 - i)
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=day,
             weight_kg=90.0 - i * 0.2,
             identity=owner_write.identity,
             prepared_weight_write=await owner_write.weight_write(day),
         )
-    await weight_service.add_noise_marker(
+    await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=DAY - timedelta(days=3),
         reason="загрузка креатином",
@@ -259,10 +277,10 @@ async def test_noisy_weight_never_prints_a_bare_trend(db_session, legacy_owner_r
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(DAY - timedelta(days=3)),
     )
-    await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    await garmin_ingestion.ingest_owned_daily(db_session, DAY, GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
-    ctx = await brief.build_context(
+    ctx = await brief_context.build_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         on_date=DAY)
@@ -278,7 +296,7 @@ async def test_the_header_carries_his_own_norm_only_when_today_is_off_it(db_sess
     only when it says something, so the parenthesis stays worth reading."""
     for i in range(1, 11):  # ten days of a steady sleep score of 85, RHR 52
         day = DAY - timedelta(days=i)
-        await garmin_service.ingest_owned_daily(db_session, day, {
+        await garmin_ingestion.ingest_owned_daily(db_session, day, {
             "summary": {"restingHeartRate": 52, "bodyBatteryHighestValue": 84},
             "sleep": {"dailySleepDTO": {"sleepScores": {"overall": {"value": 85}}}},
             "hrv": {"hrvSummary": {"lastNightAvg": 61}},
@@ -288,7 +306,7 @@ async def test_the_header_carries_his_own_norm_only_when_today_is_off_it(db_sess
         owner_write,
     garmin_owned_scope=garmin_owned_scope)  # today: sleep 80, RHR 52 — same as every other day
 
-    ctx = await brief.build_context(
+    ctx = await brief_context.build_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         on_date=DAY)
@@ -306,13 +324,13 @@ async def test_no_norm_until_there_is_enough_history(db_session, legacy_owner_ro
     """Two nights is not a baseline. Left unguarded the model gets a "norm" made
     of noise and calls a просадка against it — the invented comparison this whole
     block exists to stop."""
-    await garmin_service.ingest_owned_daily(db_session, DAY - timedelta(days=1), GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    await garmin_ingestion.ingest_owned_daily(db_session, DAY - timedelta(days=1), GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await _seed_day(
         db_session,
         owner_write,
     garmin_owned_scope=garmin_owned_scope)
 
-    ctx = await brief.build_context(
+    ctx = await brief_context.build_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         on_date=DAY)
@@ -330,7 +348,7 @@ async def test_brief_survives_a_dead_model(garmin_owned_scope, db_session, legac
         owner_write,
     garmin_owned_scope=garmin_owned_scope)
 
-    ctx = await brief.build_context(
+    ctx = await brief_context.build_context(
         db_session,
         on_date=DAY,
         subject_id=legacy_owner_roots.subject_id,
@@ -346,9 +364,9 @@ async def test_brief_survives_a_dead_model(garmin_owned_scope, db_session, legac
 async def test_protocol_never_reaches_the_brief(garmin_owned_scope, db_session, legacy_owner_roots, owner_write):
     """No doses, no compounds, no injection schedule, no supplements — not in
     the stored context and not in the prompt. The weekly digest still sees it all."""
-    from vitals.services import glp1_service, supplements_service
 
-    await glp1_service.add_dose_phase(
+
+    await glp1_writes.add_dose_phase(
         db_session,
         start_date=DAY - timedelta(days=30),
         drug="semaglutide",
@@ -356,7 +374,7 @@ async def test_protocol_never_reaches_the_brief(garmin_owned_scope, db_session, 
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(DAY - timedelta(days=30)),
     )
-    await supplements_service.add_supplement(
+    await supplement_writes.add_supplement(
         db_session, name="Ашваганда", key="ashwagandha", active=True,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write()
@@ -366,7 +384,7 @@ async def test_protocol_never_reaches_the_brief(garmin_owned_scope, db_session, 
         owner_write,
     garmin_owned_scope=garmin_owned_scope)
 
-    ctx = await brief.build_context(
+    ctx = await brief_context.build_context(
         db_session,
         on_date=DAY,
         subject_id=legacy_owner_roots.subject_id,
@@ -374,12 +392,12 @@ async def test_protocol_never_reaches_the_brief(garmin_owned_scope, db_session, 
 
     for key in compose.PROTOCOL_KEYS:
         assert key not in ctx
-    prompt = brief.build_prompt(ctx)
+    prompt = brief_prompt.build_prompt(ctx)
     assert "semaglutide" not in prompt
     assert "Ашваганда" not in prompt
 
     # …and the weekly digest is untouched by any of this.
-    full = await digest_service.assemble_context(
+    full = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY)
     assert full["glp1"]["drug"] == "semaglutide"
@@ -431,8 +449,8 @@ async def test_a_running_night_never_reaches_the_brief(db_session, legacy_owner_
     resting HR 68 off a night still in progress, called recovery wrecked and told
     him to skip the gym — then stored all of it, where the weekly digest reads it
     back as what that morning actually was."""
-    await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_MID_NIGHT, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
-    await weight_service.log_weight(
+    await garmin_ingestion.ingest_owned_daily(db_session, DAY, GARMIN_MID_NIGHT, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=DAY,
         weight_kg=88.0,
@@ -441,7 +459,7 @@ async def test_a_running_night_never_reaches_the_brief(db_session, legacy_owner_
     )
     await db_session.commit()
 
-    ctx = await brief.build_context(
+    ctx = await brief_context.build_context(
         db_session,
         on_date=DAY,
         subject_id=legacy_owner_roots.subject_id,
@@ -465,12 +483,19 @@ async def test_a_scored_night_is_untouched(garmin_owned_scope, db_session, legac
         owner_write,
     garmin_owned_scope=garmin_owned_scope)
 
-    ctx = await brief.build_context(
+    ctx = await brief_context.build_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         on_date=DAY)
     assert compose.night_pending(ctx, on_date=DAY) is False
-    assert await brief.night_scored(db_session, DAY) is True
+    assert (
+        await brief_jobs.night_scored(
+            db_session,
+            DAY,
+            subject_id=legacy_owner_roots.subject_id,
+        )
+        is True
+    )
 
 
 async def test_job_waits_for_the_night_instead_of_briefing_over_it(
@@ -482,10 +507,10 @@ async def test_job_waits_for_the_night_instead_of_briefing_over_it(
     notifier = FakeNotifier()
     llm = FakeLLM()
     _patch_job(monkeypatch, notifier, llm)
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
-    monkeypatch.setattr(brief, "now_local", lambda: datetime(2026, 7, 26, 11, 0))
-    await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_MID_NIGHT, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
-    await weight_service.log_weight(
+    monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
+    monkeypatch.setattr(brief_jobs, "now_local", lambda: datetime(2026, 7, 26, 11, 0))
+    await garmin_ingestion.ingest_owned_daily(db_session, DAY, GARMIN_MID_NIGHT, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=DAY,
         weight_kg=88.0,
@@ -494,7 +519,7 @@ async def test_job_waits_for_the_night_instead_of_briefing_over_it(
     )
     await db_session.commit()
 
-    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
+    await brief_jobs.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert notifier.sent == []
     assert (await db_session.execute(select(WeeklyDigest))).scalars().all() == []
@@ -502,10 +527,10 @@ async def test_job_waits_for_the_night_instead_of_briefing_over_it(
     assert llm.calls == []
 
     # He wakes up, the watch closes the night, the next fire an hour later sends.
-    await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    await garmin_ingestion.ingest_owned_daily(db_session, DAY, GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
-    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
+    await brief_jobs.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert len(notifier.sent) == 1
     assert "Сон 80" in notifier.sent[0]["text"]
@@ -518,12 +543,14 @@ async def test_job_stops_waiting_at_the_end_of_the_window(
     minus the numbers the night never produced."""
     notifier = FakeNotifier()
     _patch_job(monkeypatch, notifier, FakeLLM())
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
     monkeypatch.setattr(
-        brief, "now_local", lambda: datetime(2026, 7, 26, brief.last_attempt_hour(11), 0)
+        brief_jobs,
+        "now_local",
+        lambda: datetime(2026, 7, 26, brief_jobs.last_attempt_hour(11), 0),
     )
-    await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_MID_NIGHT, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
-    await weight_service.log_weight(
+    await garmin_ingestion.ingest_owned_daily(db_session, DAY, GARMIN_MID_NIGHT, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=DAY,
         weight_kg=88.0,
@@ -532,7 +559,7 @@ async def test_job_stops_waiting_at_the_end_of_the_window(
     )
     await db_session.commit()
 
-    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
+    await brief_jobs.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert len(notifier.sent) == 1
     assert compose.LINE_NIGHT_PENDING in notifier.sent[0]["text"]
@@ -548,10 +575,10 @@ async def test_job_stops_waiting_at_the_end_of_the_window(
     ],
 )
 async def test_empty_day_builds_nothing(db_session, raw, when, legacy_owner_roots, *, garmin_owned_scope):
-    await garmin_service.ingest_owned_daily(db_session, DAY, raw, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    await garmin_ingestion.ingest_owned_daily(db_session, DAY, raw, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
-    ctx = await brief.build_context(
+    ctx = await brief_context.build_context(
         db_session,
         on_date=when,
         subject_id=legacy_owner_roots.subject_id,
@@ -565,7 +592,7 @@ async def test_a_weight_from_months_ago_does_not_keep_the_brief_talking(db_sessi
     """The other edge: ``latest_kg`` is the newest weigh-in *ever*, so counting it
     without a date would mean one trip to the scale in March buys a brief every
     morning after — including mornings where nothing at all happened."""
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=DAY - timedelta(days=90),
         weight_kg=88.0,
@@ -574,7 +601,7 @@ async def test_a_weight_from_months_ago_does_not_keep_the_brief_talking(db_sessi
     )
     await db_session.commit()
 
-    ctx = await brief.build_context(
+    ctx = await brief_context.build_context(
         db_session,
         on_date=DAY,
         subject_id=legacy_owner_roots.subject_id,
@@ -589,14 +616,14 @@ async def test_job_stays_quiet_on_an_empty_day_and_says_so_in_the_web(
     has to be visible somewhere, so it becomes a passive info alert."""
     notifier = FakeNotifier()
     _patch_job(monkeypatch, notifier, FakeLLM())
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
 
-    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
+    await brief_jobs.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert notifier.sent == []
     assert (await db_session.execute(select(WeeklyDigest))).scalars().all() == []
     alert = (await db_session.execute(select(SystemAlert))).scalars().one()
-    assert alert.alert_key == brief.EMPTY_DAY_ALERT_KEY
+    assert alert.alert_key == brief_contracts.EMPTY_DAY_ALERT_KEY
     assert alert.severity == Severity.INFO.value
     ownership = await _telegram_ownership(db_session)
     assert alert.subject_id == ownership.subject_id
@@ -612,26 +639,26 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
     and APScheduler misfires both replay a job."""
     notifier = FakeNotifier()
     _patch_job(monkeypatch, notifier, FakeLLM())
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
 
     # An earlier empty morning left its alert behind.
-    await alerts_service.raise_alert(
+    await alerts_service_legacy.raise_alert(
         db_session, domain=Domain.SYSTEM.value, severity=Severity.INFO.value,
-        message="stale", alert_key=brief.EMPTY_DAY_ALERT_KEY,
+        message="stale", alert_key=brief_contracts.EMPTY_DAY_ALERT_KEY,
     )
     await _seed_day(
         db_session,
         owner_write,
     garmin_owned_scope=garmin_owned_scope)
 
-    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
-    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
+    await brief_jobs.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
+    await brief_jobs.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert len(notifier.sent) == 1
     assert "Сон 80" in notifier.sent[0]["text"]
     journal = (await db_session.execute(select(Notification))).scalars().all()
-    assert [n.category for n in journal] == [delivery.CATEGORY_BRIEF]
-    assert journal[0].dedupe_key == delivery.make_delivery_idempotency_key(
+    assert [n.category for n in journal] == [delivery_contracts.CATEGORY_BRIEF]
+    assert journal[0].dedupe_key == delivery_contracts.make_delivery_idempotency_key(
         "brief",
         DAY,
     )
@@ -685,14 +712,14 @@ async def test_brief_network_awaits_have_no_open_database_transaction(
     async def transaction_checking_sync(*args, **kwargs):
         assert not db_session.in_transaction()
 
-    monkeypatch.setattr(garmin_service, "sync_job", transaction_checking_sync)
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(garmin_jobs, "sync_job", transaction_checking_sync)
+    monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
     await _seed_day(
         db_session,
         owner_write,
     garmin_owned_scope=garmin_owned_scope)
 
-    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
+    await brief_jobs.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert len(notifier.sent) == 1
 
@@ -709,17 +736,17 @@ async def test_already_sent_replay_clears_stale_alert_without_network(
         sent,
         ownership=ownership,
         text="already delivered",
-        category=delivery.CATEGORY_BRIEF,
-        idempotency_key=delivery.make_delivery_idempotency_key("brief", DAY),
-        legacy_dedupe_key=brief.dedupe_key(DAY),
+        category=delivery_contracts.CATEGORY_BRIEF,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key("brief", DAY),
+        legacy_dedupe_key=brief_jobs.dedupe_key(DAY),
     )
     assert notification is not None
-    stale = await alerts_service.raise_alert(
+    stale = await alerts_service_legacy.raise_alert(
         db_session,
         domain=Domain.SYSTEM.value,
         severity=Severity.INFO.value,
         message="stale",
-        alert_key=brief.EMPTY_DAY_ALERT_KEY,
+        alert_key=brief_contracts.EMPTY_DAY_ALERT_KEY,
     )
     await db_session.commit()
 
@@ -735,10 +762,10 @@ async def test_already_sent_replay_clears_stale_alert_without_network(
         raise AssertionError("already-sent recovery must not call Garmin")
 
     _patch_job(monkeypatch, NoNetworkNotifier(), NoNetworkLLM())
-    monkeypatch.setattr(garmin_service, "sync_job", no_garmin)
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(garmin_jobs, "sync_job", no_garmin)
+    monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
 
-    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
+    await brief_jobs.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert stale.resolved_at is not None
     assert stale.subject_id == ownership.subject_id
@@ -751,14 +778,14 @@ async def test_empty_alert_clear_adopts_only_the_matching_fully_unowned_row(
     legacy_owner_roots,
 ):
     ownership = await _telegram_ownership(db_session)
-    legacy_brief = await alerts_service.raise_alert(
+    legacy_brief = await alerts_service_legacy.raise_alert(
         db_session,
         domain=Domain.SYSTEM.value,
         severity=Severity.INFO.value,
         message="legacy brief",
-        alert_key=brief.EMPTY_DAY_ALERT_KEY,
+        alert_key=brief_contracts.EMPTY_DAY_ALERT_KEY,
     )
-    other = await alerts_service.raise_alert(
+    other = await alerts_service_legacy.raise_alert(
         db_session,
         domain=Domain.WEIGHT.value,
         severity=Severity.INFO.value,
@@ -767,7 +794,7 @@ async def test_empty_alert_clear_adopts_only_the_matching_fully_unowned_row(
     )
     await db_session.commit()
 
-    resolved = await brief._reconcile_empty_day_alert(
+    resolved = await brief_jobs._reconcile_empty_day_alert(
         db_session,
         identity=ownership.system_action(),
         empty=False,
@@ -801,14 +828,14 @@ async def test_empty_alert_bridge_rejects_partial_ownership(
         domain=Domain.SYSTEM.value,
         severity=Severity.INFO.value,
         message="partial",
-        alert_key=brief.EMPTY_DAY_ALERT_KEY,
+        alert_key=brief_contracts.EMPTY_DAY_ALERT_KEY,
         entity_ref="",
     )
     db_session.add(partial)
     await db_session.commit()
 
-    with pytest.raises(alerts_service.AlertScopeConflictError):
-        await brief._reconcile_empty_day_alert(
+    with pytest.raises(alerts_service_contracts.AlertScopeConflictError):
+        await brief_jobs._reconcile_empty_day_alert(
             db_session,
             identity=ownership.system_action(),
             empty=False,
@@ -851,7 +878,7 @@ async def test_the_empty_day_alert_is_written_for_its_own_subject(
     ownership = await _telegram_ownership(db_session)
     await _second_person(db_session)
 
-    row = await brief._reconcile_empty_day_alert(
+    row = await brief_jobs._reconcile_empty_day_alert(
         db_session,
         identity=ownership.system_action(),
         empty=True,
@@ -871,15 +898,15 @@ async def test_an_unowned_alert_still_stops_the_empty_day_write(
             domain=Domain.SYSTEM.value,
             severity=Severity.INFO.value,
             message="orphaned",
-            alert_key=brief.EMPTY_DAY_ALERT_KEY,
+            alert_key=brief_contracts.EMPTY_DAY_ALERT_KEY,
             entity_ref="",
         )
     )
     await db_session.commit()
     await _second_person(db_session)
 
-    with pytest.raises(alerts_service.AlertLegacyBridgeError):
-        await brief._reconcile_empty_day_alert(
+    with pytest.raises(alerts_service_contracts.AlertLegacyBridgeError):
+        await brief_jobs._reconcile_empty_day_alert(
             db_session,
             identity=ownership.system_action(),
             empty=True,
@@ -891,8 +918,8 @@ async def test_empty_alert_reconciliation_rejects_actor_attribution(
 ):
     ownership = await _telegram_ownership(db_session)
 
-    with pytest.raises(brief.BriefOwnershipError, match="actorless"):
-        await brief._reconcile_empty_day_alert(
+    with pytest.raises(brief_contracts.BriefOwnershipError, match="actorless"):
+        await brief_jobs._reconcile_empty_day_alert(
             db_session,
             identity=ownership.owner_action(),
             empty=True,
@@ -911,18 +938,18 @@ async def test_job_sends_the_brief_even_when_garmin_sync_explodes(
     brief goes out on whatever is already in the lake."""
     notifier = FakeNotifier()
     _patch_job(monkeypatch, notifier, FakeLLM())
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
 
     async def _boom(*a, **kw):
         raise RuntimeError("garmin said no")
 
-    monkeypatch.setattr(garmin_service, "sync_job", _boom)
+    monkeypatch.setattr(garmin_jobs, "sync_job", _boom)
     await _seed_day(
         db_session,
         owner_write,
     garmin_owned_scope=garmin_owned_scope)
 
-    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
+    await brief_jobs.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
     assert len(notifier.sent) == 1
 
 
@@ -933,7 +960,7 @@ def _patch_job(monkeypatch, notifier, llm):
     async def _no_sync(*a, **kw):
         return None
 
-    monkeypatch.setattr(garmin_service, "sync_job", _no_sync)
+    monkeypatch.setattr(garmin_jobs, "sync_job", _no_sync)
     _patch_bound_delivery(monkeypatch, notifier)
     monkeypatch.setattr(llm_client, "LLMClient", lambda *a, **kw: llm)
 
@@ -945,7 +972,7 @@ async def test_build_button_shows_the_brief_and_sends_nothing(
 ):
     from web.routers import reports as reports_router
 
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
     monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
     await _seed_day(
         db_session,
@@ -996,7 +1023,7 @@ async def test_build_button_does_not_require_a_delivery_channel(
     await db_session.delete(telegram)
     await db_session.commit()
 
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
     monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
     await _seed_day(
         db_session,
@@ -1026,7 +1053,7 @@ async def test_test_send_goes_out_off_budget(
 
     notifier = FakeNotifier()
     _patch_bound_delivery(monkeypatch, notifier)
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
     monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
     await _seed_day(
         db_session,
@@ -1034,22 +1061,22 @@ async def test_test_send_goes_out_off_budget(
     garmin_owned_scope=garmin_owned_scope)
 
     # Today's budget, fully spent (dated *now*, which is what the budget counts).
-    for i in range(delivery.DAILY_BUDGET):
+    for i in range(delivery_contracts.DAILY_BUDGET):
         db_session.add(
             Notification(
                 # A dedupe_key demands the whole root: subject, recipient, channel.
                 subject_id=owner_write.subject_id,
                 recipient_user_id=legacy_owner_roots.user_id,
                 integration_connection_id=telegram_connection_id,
-                sent_at=now_local(), category=delivery.CATEGORY_BRIEF,
+                sent_at=now_local(), category=delivery_contracts.CATEGORY_BRIEF,
                 channel="telegram", dedupe_key=f"spent:{i}",
             )
         )
     await db_session.commit()
     ownership = await _telegram_ownership(db_session)
     assert (
-        await delivery.sent_today(db_session, ownership=ownership)
-        >= delivery.DAILY_BUDGET
+        await delivery_queries.sent_today(db_session, ownership=ownership)
+        >= delivery_contracts.DAILY_BUDGET
     )
     await db_session.commit()
 
@@ -1071,7 +1098,7 @@ async def test_test_send_is_not_duplicated_by_a_second_tap(garmin_owned_scope, a
 
     notifier = FakeNotifier()
     _patch_bound_delivery(monkeypatch, notifier)
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
     monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
     await _seed_day(
         db_session,
@@ -1086,7 +1113,7 @@ async def test_test_send_is_not_duplicated_by_a_second_tap(garmin_owned_scope, a
     assert r2.headers["location"] == "/reports?brief=sent"
     assert len(notifier.sent) == 1
     journal = (await db_session.execute(select(Notification))).scalars().all()
-    assert [n.category for n in journal] == [delivery.CATEGORY_TEST]
+    assert [n.category for n in journal] == [delivery_contracts.CATEGORY_TEST]
     digest = (await db_session.execute(select(WeeklyDigest))).scalars().one()
     ownership = await _telegram_ownership(db_session)
     assert (
@@ -1115,12 +1142,12 @@ async def test_test_send_reports_an_existing_pending_claim_without_network(
     request_token = "test_token_pending_1234567890"
     ownership = await _telegram_ownership(db_session)
     bound = await channels.build_legacy_bound_notifier(db_session, ownership)
-    prepared = await delivery.prepare_delivery_intent(
+    prepared = await delivery_preparation.prepare_delivery_intent(
         db_session,
         bound,
         text="reserved test payload",
-        category=delivery.CATEGORY_TEST,
-        idempotency_key=delivery.make_delivery_idempotency_key(
+        category=delivery_contracts.CATEGORY_TEST,
+        idempotency_key=delivery_contracts.make_delivery_idempotency_key(
             "brief-test",
             DAY,
             request_token,
@@ -1154,7 +1181,7 @@ async def test_test_send_without_a_channel_says_so(garmin_owned_scope, auth_clie
         "build_legacy_bound_notifier",
         no_bound_channel,
     )
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
     monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
     await _seed_day(
         db_session,

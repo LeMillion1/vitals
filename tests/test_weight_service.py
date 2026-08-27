@@ -2,6 +2,8 @@
 noise alerts, and chart-series assembly."""
 from __future__ import annotations
 
+from vitals.services.alerts import legacy as alerts_service_legacy
+
 from datetime import UTC, date, datetime
 
 import pytest
@@ -11,7 +13,7 @@ from sqlalchemy import func, select
 from vitals.enums import Source
 from vitals.models.weight import WeightLog
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
-from vitals.services import alerts_service, weight_service
+from vitals.services import weight as weight_domain
 from vitals.services.conflicts import engine
 from vitals.utils.timeutils import today_local
 
@@ -58,7 +60,7 @@ async def _garmin_weight(db_session, owner_write, value: float, *, on_date):
         external_id=f"garmin:weight:{on_date.isoformat()}",
         payload={"date": on_date.isoformat(), "weight_kg": value},
     )
-    return await weight_service.log_weight(
+    return await weight_domain.writes.log_weight(
         db_session,
         on_date=on_date,
         weight_kg=value,
@@ -71,7 +73,7 @@ async def _garmin_weight(db_session, owner_write, value: float, *, on_date):
 
 
 async def test_log_weight_creates_active_row(db_session, owner_write):
-    w = await weight_service.log_weight(
+    w = await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 6, 1),
         weight_kg=88.0,
@@ -80,7 +82,7 @@ async def test_log_weight_creates_active_row(db_session, owner_write):
     )
     await db_session.commit()
     assert w.superseded is False
-    active = await weight_service.get_active_weight(
+    active = await weight_domain.logs.get_active_weight(
         db_session,
         date(2026, 6, 1),
         subject_id=owner_write.subject_id,
@@ -127,7 +129,7 @@ async def test_historical_rawless_garmin_weight_uses_reviewed_checkpoint(
     )
     await db_session.commit()
 
-    rows = await weight_service.list_active_weights(
+    rows = await weight_domain.logs.list_active_weights(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
     )
@@ -143,7 +145,7 @@ async def test_manual_supersedes_garmin_same_date(db_session, owner_write):
         89.5,
         on_date=d,
     )
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=88.0,
@@ -153,7 +155,7 @@ async def test_manual_supersedes_garmin_same_date(db_session, owner_write):
     )
     await db_session.commit()
 
-    active = await weight_service.get_active_weight(
+    active = await weight_domain.logs.get_active_weight(
         db_session,
         d,
         subject_id=owner_write.subject_id,
@@ -161,7 +163,7 @@ async def test_manual_supersedes_garmin_same_date(db_session, owner_write):
     assert active.source == Source.MANUAL.value
     assert active.weight_kg == 88.0
     # Both rows are kept (data lake); exactly one is active.
-    all_rows = (await weight_service.list_active_weights(
+    all_rows = (await weight_domain.logs.list_active_weights(
         db_session,
         subject_id=owner_write.subject_id,
     ))
@@ -170,7 +172,7 @@ async def test_manual_supersedes_garmin_same_date(db_session, owner_write):
 
 async def test_garmin_does_not_override_existing_manual(db_session, owner_write):
     d = date(2026, 6, 3)
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=88.0,
@@ -186,7 +188,7 @@ async def test_garmin_does_not_override_existing_manual(db_session, owner_write)
     )
     await db_session.commit()
 
-    active = await weight_service.get_active_weight(
+    active = await weight_domain.logs.get_active_weight(
         db_session,
         d,
         subject_id=owner_write.subject_id,
@@ -197,7 +199,7 @@ async def test_garmin_does_not_override_existing_manual(db_session, owner_write)
 
 async def test_repeated_garmin_import_under_manual_weight_is_deduplicated(db_session, owner_write):
     d = date(2026, 6, 3)
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=84.0,
@@ -222,21 +224,21 @@ async def test_repeated_garmin_import_under_manual_weight_is_deduplicated(db_ses
 
 async def test_inbound_dedupe_does_not_swallow_a_manual_reentry(db_session, owner_write):
     d = date(2026, 6, 3)
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=85.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(d),
     )
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=84.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(d),
     )
-    newest = await weight_service.log_weight(
+    newest = await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=85.0,
@@ -244,7 +246,7 @@ async def test_inbound_dedupe_does_not_swallow_a_manual_reentry(db_session, owne
         prepared_weight_write=await owner_write.weight_write(d),
     )
 
-    active = await weight_service.get_active_weight(
+    active = await weight_domain.logs.get_active_weight(
         db_session,
         d,
         subject_id=owner_write.subject_id,
@@ -268,14 +270,14 @@ async def test_same_source_reentry_supersedes_not_overwrites(db_session, owner_w
     from vitals.models.weight import WeightLog
 
     d = date(2026, 6, 4)
-    a = await weight_service.log_weight(
+    a = await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=88.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(d),
     )
-    b = await weight_service.log_weight(
+    b = await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=87.5,
@@ -289,7 +291,7 @@ async def test_same_source_reentry_supersedes_not_overwrites(db_session, owner_w
     assert b.superseded is False and b.weight_kg == 87.5
 
     # Exactly one active row, and it holds the new value.
-    active = await weight_service.get_active_weight(
+    active = await weight_domain.logs.get_active_weight(
         db_session,
         d,
         subject_id=owner_write.subject_id,
@@ -346,14 +348,14 @@ async def test_repeated_identical_import_does_not_pile_up_rows(db_session, owner
 
 async def test_body_measurement_computes_navy_and_lbm(db_session, owner_write):
     d = date(2026, 6, 5)
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=88.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(d),
     )
-    m = await weight_service.upsert_body_measurement(
+    m = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=d,
         neck_cm=38,
@@ -368,14 +370,14 @@ async def test_body_measurement_computes_navy_and_lbm(db_session, owner_write):
 
 async def test_lbm_recomputed_when_weight_changes(db_session, owner_write):
     d = date(2026, 6, 6)
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=90.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(d),
     )
-    m = await weight_service.upsert_body_measurement(
+    m = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=d,
         neck_cm=38,
@@ -385,7 +387,7 @@ async def test_lbm_recomputed_when_weight_changes(db_session, owner_write):
     )
     lbm_before = m.lbm_kg
     # New weight for the same date → LBM should follow.
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=85.0,
@@ -399,7 +401,7 @@ async def test_lbm_recomputed_when_weight_changes(db_session, owner_write):
 
 async def test_measurement_without_weight_has_null_lbm(db_session, owner_write):
     d = date(2026, 6, 7)
-    m = await weight_service.upsert_body_measurement(
+    m = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=d,
         neck_cm=38,
@@ -414,14 +416,14 @@ async def test_measurement_without_weight_has_null_lbm(db_session, owner_write):
 
 async def test_partial_measurement_update_preserves_other_fields(db_session, owner_write):
     d = date(2026, 6, 8)
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=88.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(d),
     )
-    first = await weight_service.upsert_body_measurement(
+    first = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=d,
         neck_cm=38,
@@ -435,7 +437,7 @@ async def test_partial_measurement_update_preserves_other_fields(db_session, own
 
     # A partial call (e.g. MCP log_measurement given just one field) must merge
     # onto the existing row, not blank the fields it didn't mention.
-    second = await weight_service.upsert_body_measurement(
+    second = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=d,
         waist_cm=86,
@@ -452,7 +454,7 @@ async def test_partial_measurement_update_preserves_other_fields(db_session, own
 
 async def test_noise_alert_raise_and_resolve(db_session, owner_write):
     # Active marker covering "today" → info alert raised.
-    await weight_service.add_noise_marker(
+    await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=date(2026, 6, 1),
         end_date=date(2026, 6, 30),
@@ -460,27 +462,27 @@ async def test_noise_alert_raise_and_resolve(db_session, owner_write):
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
     )
-    await weight_service.refresh_noise_alert(
+    await weight_domain.alerts.refresh_noise_alert(
         db_session,
         on_date=date(2026, 6, 10),
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 10)),
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="weight", subject_id=owner_write.subject_id)
-    assert any(a.alert_key == weight_service.NOISE_ALERT_KEY for a in active)
+    active = await alerts_service_legacy.list_active(db_session, domain="weight", subject_id=owner_write.subject_id)
+    assert any(a.alert_key == weight_domain.alerts.NOISE_ALERT_KEY for a in active)
     assert active[0].severity == "info"
 
     # A day outside the range → the alert resolves.
-    await weight_service.refresh_noise_alert(
+    await weight_domain.alerts.refresh_noise_alert(
         db_session,
         on_date=date(2026, 7, 10),
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 7, 10)),
     )
     await db_session.commit()
-    active2 = await alerts_service.list_active(db_session, domain="weight", subject_id=owner_write.subject_id)
-    assert not any(a.alert_key == weight_service.NOISE_ALERT_KEY for a in active2)
+    active2 = await alerts_service_legacy.list_active(db_session, domain="weight", subject_id=owner_write.subject_id)
+    assert not any(a.alert_key == weight_domain.alerts.NOISE_ALERT_KEY for a in active2)
 
 
 async def test_dismissed_noise_alert_returns_after_local_midnight(db_session, owner_write):
@@ -491,7 +493,7 @@ async def test_dismissed_noise_alert_returns_after_local_midnight(db_session, ow
     that local day and let it back at 00:30 the next one — if the comparison ever
     slipped to UTC, the second half of every evening would silently un-dismiss.
     """
-    await weight_service.add_noise_marker(
+    await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=date(2026, 6, 1),
         reason="creatine loading",
@@ -501,16 +503,16 @@ async def test_dismissed_noise_alert_returns_after_local_midnight(db_session, ow
 
     with freeze_time("2026-06-10 20:30:00"):  # 23:30 local (UTC+3 in June)
         assert today_local() == date(2026, 6, 10)
-        alert = await weight_service.refresh_noise_alert(
+        alert = await weight_domain.alerts.refresh_noise_alert(
             db_session,
             identity=owner_write.identity,
             prepared_conflict_write=await owner_write.write(today_local()),
         )
         assert alert is not None
-        await alerts_service.resolve_alert(db_session, alert.id, subject_id=owner_write.subject_id)
+        await alerts_service_legacy.resolve_alert(db_session, alert.id, subject_id=owner_write.subject_id)
         await db_session.commit()
         # Same local day → stays dismissed.
-        assert await weight_service.refresh_noise_alert(
+        assert await weight_domain.alerts.refresh_noise_alert(
             db_session,
             identity=owner_write.identity,
             prepared_conflict_write=await owner_write.write(today_local()),
@@ -518,7 +520,7 @@ async def test_dismissed_noise_alert_returns_after_local_midnight(db_session, ow
 
     with freeze_time("2026-06-10 21:30:00"):  # 00:30 local — next local day
         assert today_local() == date(2026, 6, 11)
-        again = await weight_service.refresh_noise_alert(
+        again = await weight_domain.alerts.refresh_noise_alert(
             db_session,
             identity=owner_write.identity,
             prepared_conflict_write=await owner_write.write(today_local()),
@@ -535,7 +537,7 @@ async def test_chart_series_excludes_noise_from_trend(db_session, owner_write):
     from datetime import timedelta
 
     for i in range(11):
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=base + timedelta(days=i),
             weight_kg=100.0 - i,
@@ -543,14 +545,14 @@ async def test_chart_series_excludes_noise_from_trend(db_session, owner_write):
             prepared_weight_write=await owner_write.weight_write(base + timedelta(days=i)),
         )
     # Spike day (water weight) we mark as noise — overwrites 06-06 in place.
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=base + timedelta(days=5),
         weight_kg=120.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(base + timedelta(days=5)),
     )
-    await weight_service.add_noise_marker(
+    await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=base + timedelta(days=5),
         end_date=base + timedelta(days=5),
@@ -560,7 +562,7 @@ async def test_chart_series_excludes_noise_from_trend(db_session, owner_write):
     )
     await db_session.commit()
 
-    series = await weight_service.chart_series(
+    series = await weight_domain.analytics.chart_series(
         db_session,
         goal_kg=85.0,
         subject_id=owner_write.subject_id,
@@ -592,7 +594,7 @@ async def test_chart_series_weekly_delta_is_last_7_days_not_lifetime_slope(db_se
 
     base = date(2026, 6, 1)
     for i in range(10):                       # 06-01..06-10: 100 → 91
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=base + timedelta(days=i),
             weight_kg=100.0 - i,
@@ -600,7 +602,7 @@ async def test_chart_series_weekly_delta_is_last_7_days_not_lifetime_slope(db_se
             prepared_weight_write=await owner_write.weight_write(base + timedelta(days=i)),
         )
     for i in range(10, 24):                   # 06-11..06-24: flat at 90
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=base + timedelta(days=i),
             weight_kg=90.0,
@@ -609,7 +611,7 @@ async def test_chart_series_weekly_delta_is_last_7_days_not_lifetime_slope(db_se
         )
     await db_session.commit()
 
-    series = await weight_service.chart_series(
+    series = await weight_domain.analytics.chart_series(
         db_session,
         subject_id=owner_write.subject_id,
     )
@@ -654,7 +656,7 @@ async def test_delete_weight_log_reactivates_superseded(db_session, owner_write)
         on_date=d,
     )
     # 2. Manual weight log (supersedes Garmin)
-    w_manual = await weight_service.log_weight(
+    w_manual = await weight_domain.writes.log_weight(
         db_session,
         on_date=d,
         weight_kg=88.0,
@@ -664,7 +666,7 @@ async def test_delete_weight_log_reactivates_superseded(db_session, owner_write)
     )
     await db_session.commit()
 
-    active = await weight_service.get_active_weight(
+    active = await weight_domain.logs.get_active_weight(
         db_session,
         d,
         subject_id=owner_write.subject_id,
@@ -673,7 +675,7 @@ async def test_delete_weight_log_reactivates_superseded(db_session, owner_write)
     assert w_garmin.superseded is True
 
     # 3. Delete manual log -> Garmin log becomes active again
-    deleted = await weight_service.delete_weight_log(
+    deleted = await weight_domain.writes.delete_weight_log(
         db_session,
         w_manual.id,
         identity=owner_write.identity,
@@ -682,7 +684,7 @@ async def test_delete_weight_log_reactivates_superseded(db_session, owner_write)
     await db_session.commit()
     assert deleted is True
 
-    active2 = await weight_service.get_active_weight(
+    active2 = await weight_domain.logs.get_active_weight(
         db_session,
         d,
         subject_id=owner_write.subject_id,
@@ -693,7 +695,7 @@ async def test_delete_weight_log_reactivates_superseded(db_session, owner_write)
 
 async def test_delete_body_measurement(db_session, owner_write):
     d = date(2026, 6, 5)
-    m = await weight_service.upsert_body_measurement(
+    m = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=d,
         neck_cm=38,
@@ -703,13 +705,13 @@ async def test_delete_body_measurement(db_session, owner_write):
     )
     await db_session.commit()
 
-    measurements = await weight_service.list_body_measurements(
+    measurements = await weight_domain.measurements.list_body_measurements(
         db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(measurements) == 1
 
-    deleted = await weight_service.delete_body_measurement(
+    deleted = await weight_domain.measurements.delete_body_measurement(
         db_session,
         m.id,
         identity=owner_write.identity,
@@ -718,7 +720,7 @@ async def test_delete_body_measurement(db_session, owner_write):
     await db_session.commit()
     assert deleted is True
 
-    measurements2 = await weight_service.list_body_measurements(
+    measurements2 = await weight_domain.measurements.list_body_measurements(
         db_session,
         subject_id=owner_write.subject_id,
     )
@@ -726,7 +728,7 @@ async def test_delete_body_measurement(db_session, owner_write):
 
 
 async def test_delete_noise_marker(db_session, owner_write):
-    m = await weight_service.add_noise_marker(
+    m = await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=date(2026, 6, 1),
         end_date=date(2026, 6, 10),
@@ -736,13 +738,13 @@ async def test_delete_noise_marker(db_session, owner_write):
     )
     await db_session.commit()
 
-    markers = await weight_service.list_noise_markers(
+    markers = await weight_domain.noise.list_noise_markers(
         db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(markers) == 1
 
-    deleted = await weight_service.delete_noise_marker(
+    deleted = await weight_domain.noise.delete_noise_marker(
         db_session,
         m.id,
         identity=owner_write.identity,
@@ -751,7 +753,7 @@ async def test_delete_noise_marker(db_session, owner_write):
     await db_session.commit()
     assert deleted is True
 
-    markers2 = await weight_service.list_noise_markers(
+    markers2 = await weight_domain.noise.list_noise_markers(
         db_session,
         subject_id=owner_write.subject_id,
     )
@@ -772,7 +774,7 @@ async def test_delete_progress_photo(db_session, owner_write):
         size_bytes=11,
         content_sha256="7" * 64,
     )
-    p = await weight_service.add_progress_photo(
+    p = await weight_domain.photos.add_progress_photo(
         db_session,
         on_date=date(2026, 6, 1),
         file_key="uploads/test_photo.jpg",
@@ -783,25 +785,25 @@ async def test_delete_progress_photo(db_session, owner_write):
     )
     await db_session.commit()
 
-    photos = await weight_service.list_progress_photos(
+    photos = await weight_domain.photos.list_progress_photos(
         db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(photos) == 1
 
-    deletion = await weight_service.delete_progress_photo(
+    deletion = await weight_domain.photos.delete_progress_photo(
         db_session,
         p.id,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    assert deletion == weight_service.ProgressPhotoDeletion(
+    assert deletion == weight_domain.contracts.ProgressPhotoDeletion(
         file_key="uploads/test_photo.jpg",
         file_asset_id=asset.id,
     )
 
-    photos2 = await weight_service.list_progress_photos(
+    photos2 = await weight_domain.photos.list_progress_photos(
         db_session,
         subject_id=owner_write.subject_id,
     )
@@ -815,7 +817,7 @@ async def test_delete_progress_photo(db_session, owner_write):
 @pytest.mark.parametrize("bad_kg", [0, -5, 900, float("nan")])
 async def test_log_weight_rejects_implausible_weight(db_session, bad_kg, owner_write):
     with pytest.raises(ValueError):
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=date(2026, 6, 20),
             weight_kg=bad_kg,
@@ -825,7 +827,7 @@ async def test_log_weight_rejects_implausible_weight(db_session, bad_kg, owner_w
 
 
 async def test_update_weight_log_rejects_implausible_weight(db_session, owner_write):
-    row = await weight_service.log_weight(
+    row = await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 6, 21),
         weight_kg=88.0,
@@ -834,7 +836,7 @@ async def test_update_weight_log_rejects_implausible_weight(db_session, owner_wr
     )
     await db_session.commit()
     with pytest.raises(ValueError):
-        await weight_service.update_weight_log(
+        await weight_domain.writes.update_weight_log(
             db_session,
             row.id,
             on_date=date(2026, 6, 21),
@@ -853,7 +855,7 @@ async def test_editing_superseded_weight_does_not_change_lbm(db_session, owner_w
         90.0,
         on_date=on_date,
     )
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=on_date,
         weight_kg=80.0,
@@ -861,7 +863,7 @@ async def test_editing_superseded_weight_does_not_change_lbm(db_session, owner_w
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(on_date),
     )
-    measurement = await weight_service.upsert_body_measurement(
+    measurement = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=on_date,
         neck_cm=39.0,
@@ -872,7 +874,7 @@ async def test_editing_superseded_weight_does_not_change_lbm(db_session, owner_w
     await db_session.commit()
     lbm_before = measurement.lbm_kg
 
-    edited = await weight_service.update_weight_log(
+    edited = await weight_domain.writes.update_weight_log(
         db_session,
         inactive.id,
         on_date=on_date,
@@ -882,7 +884,7 @@ async def test_editing_superseded_weight_does_not_change_lbm(db_session, owner_w
     )
     await db_session.flush()
 
-    active = await weight_service.get_active_weight(
+    active = await weight_domain.logs.get_active_weight(
         db_session,
         on_date,
         subject_id=owner_write.subject_id,
@@ -897,7 +899,7 @@ async def test_blocked_weight_date_move_keeps_original_row(db_session, monkeypat
     """A router may commit after rendering 409; the move must still be atomic."""
     original_date = date(2026, 6, 25)
     target_date = date(2026, 6, 26)
-    original = await weight_service.log_weight(
+    original = await weight_domain.writes.log_weight(
         db_session,
         on_date=original_date,
         weight_kg=81.0,
@@ -913,10 +915,10 @@ async def test_blocked_weight_date_move_keeps_original_row(db_session, monkeypat
     # The scoped writer is the only one left, so the block has to come from the
     # prepared enforcement rather than the legacy singleton one.
     monkeypatch.setattr(
-        weight_service.engine, "enforce_prepared", block
+        weight_domain.writes.engine, "enforce_prepared", block
     )
     with pytest.raises(engine.ConflictBlocked):
-        await weight_service.update_weight_log(
+        await weight_domain.writes.update_weight_log(
             db_session,
             original_id,
             on_date=target_date,
@@ -932,7 +934,7 @@ async def test_blocked_weight_date_move_keeps_original_row(db_session, monkeypat
     assert preserved is not None
     assert preserved.date == original_date
     assert preserved.weight_kg == 81.0
-    assert await weight_service.get_active_weight(
+    assert await weight_domain.logs.get_active_weight(
         db_session,
         target_date,
         subject_id=owner_write.subject_id,
@@ -947,7 +949,7 @@ async def test_upsert_measurement_rejects_implausible_circumference(
     db_session, field, value, owner_write
 ):
     with pytest.raises(ValueError):
-        await weight_service.upsert_body_measurement(
+        await weight_domain.measurements.upsert_body_measurement(
             db_session,
             on_date=date(2026, 6, 22),
             **{field: value},
@@ -958,7 +960,7 @@ async def test_upsert_measurement_rejects_implausible_circumference(
 
 async def test_plausible_measurement_still_saves(db_session, owner_write):
     """The bounds must not get in the way of a normal entry."""
-    row = await weight_service.upsert_body_measurement(
+    row = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=date(2026, 6, 23),
         neck_cm=39.0,
@@ -976,14 +978,14 @@ async def test_update_measurement_date_change_keeps_untouched_fields(db_session,
     didn't repeat: the row was deleted first, so the partial merge on the new date
     had nothing left to merge with. The MCP edit tool passes one field at a time,
     so this quietly destroyed neck/hips and the derived body-fat % / LBM."""
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 7, 2),
         weight_kg=88.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(date(2026, 7, 2)),
     )
-    row = await weight_service.upsert_body_measurement(
+    row = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=date(2026, 7, 1),
         neck_cm=39.0,
@@ -997,7 +999,7 @@ async def test_update_measurement_date_change_keeps_untouched_fields(db_session,
     assert row.body_fat_pct is not None
 
     # Only the date and the waist change — neck/hips/note must survive.
-    moved = await weight_service.update_body_measurement(
+    moved = await weight_domain.measurements.update_body_measurement(
         db_session,
         row.id,
         on_date=date(2026, 7, 2),
@@ -1017,7 +1019,7 @@ async def test_update_measurement_date_change_keeps_untouched_fields(db_session,
     assert moved.body_fat_pct is not None
     assert moved.lbm_kg is not None
 
-    rows = await weight_service.list_body_measurements(
+    rows = await weight_domain.measurements.list_body_measurements(
         db_session,
         subject_id=owner_write.subject_id,
     )
@@ -1028,14 +1030,14 @@ async def test_update_measurement_date_change_keeps_untouched_fields(db_session,
 async def test_update_measurement_non_partial_clears_blanked_fields(db_session, owner_write):
     """The HTML edit form posts every field it renders, so an empty one is the
     owner deleting a value. Under the partial merge it silently came back."""
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 7, 5),
         weight_kg=88.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(date(2026, 7, 5)),
     )
-    row = await weight_service.upsert_body_measurement(
+    row = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=date(2026, 7, 5),
         neck_cm=39.0,
@@ -1047,7 +1049,7 @@ async def test_update_measurement_non_partial_clears_blanked_fields(db_session, 
     await db_session.commit()
     assert row.body_fat_pct is not None and row.lbm_kg is not None
 
-    edited = await weight_service.update_body_measurement(
+    edited = await weight_domain.measurements.update_body_measurement(
         db_session,
         row.id,
         on_date=date(2026, 7, 5),
@@ -1069,7 +1071,7 @@ async def test_update_measurement_non_partial_clears_blanked_fields(db_session, 
 
 async def test_update_measurement_non_partial_clears_across_a_date_change(db_session, owner_write):
     """Same rule when the edit also moves the row: nothing is carried over."""
-    row = await weight_service.upsert_body_measurement(
+    row = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=date(2026, 7, 6),
         neck_cm=39.0,
@@ -1080,7 +1082,7 @@ async def test_update_measurement_non_partial_clears_across_a_date_change(db_ses
     )
     await db_session.commit()
 
-    moved = await weight_service.update_body_measurement(
+    moved = await weight_domain.measurements.update_body_measurement(
         db_session,
         row.id,
         on_date=date(2026, 7, 7),
@@ -1096,7 +1098,7 @@ async def test_update_measurement_non_partial_clears_across_a_date_change(db_ses
     assert moved.waist_cm == 85.0
     assert moved.neck_cm is None
     assert moved.note is None
-    rows = await weight_service.list_body_measurements(
+    rows = await weight_domain.measurements.list_body_measurements(
         db_session,
         subject_id=owner_write.subject_id,
     )

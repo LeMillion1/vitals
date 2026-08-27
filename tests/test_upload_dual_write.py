@@ -32,9 +32,17 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import ProgressPhoto, WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.persistence.file_storage import private_file_disk_path
-from vitals.services import ai_gateway_service, file_asset_service, lab_document_ai_service, labs_service, raw_payload_service, weight_service
+from vitals.services import file_asset_service, raw_payload_service, weight as weight_domain
+from vitals.services.ai_gateway import invocations as ai_gateway_invocations
+from vitals.services.labs import alerts as labs_alerts
+from vitals.services.labs import ai as lab_document_ai_service
+from vitals.services.labs import ingestion as labs_ingestion
+from vitals.services.labs import results as labs_results
 from vitals.services.conflicts import engine
-from vitals.services.body_scan import scans
+from vitals.services.body_scan.scans import ingestion as body_scan_ingestion
+from vitals.services.body_scan.scans import normalization as body_scan_normalization
+from vitals.services.body_scan.scans import queries as body_scan_queries
+from vitals.services.body_scan.scans import reparse as body_scan_reparse
 from vitals.services.upload_ownership_service import UploadOwnershipError
 from web.templating import STATIC_DIR
 from web.routers.labs import LabConfirm
@@ -147,7 +155,7 @@ async def _prepared_weight(
         evaluation_date=on_date,
         legacy_bridge=engine.LegacyConflictBridge.REJECT,
     )
-    return await weight_service.prepare_weight_write(session, context=context)
+    return await weight_domain.governance.prepare_weight_write(session, context=context)
 
 
 async def test_body_upload_confirm_copies_subject_actor_and_file_to_all_facts(
@@ -167,7 +175,7 @@ async def test_body_upload_confirm_copies_subject_actor_and_file_to_all_facts(
     )
     prepared_weight = await _prepared_weight(db_session, identity)
 
-    scan = await scans.save_scan(
+    scan = await body_scan_ingestion.save_scan(
         db_session,
         on_date=date(2026, 8, 19),
         file_key=raw.external_id,
@@ -212,7 +220,7 @@ async def test_lab_upload_confirm_copies_subject_actor_and_rejects_key_tampering
     prepared = await _prepared(db_session, identity)
 
     with pytest.raises(UploadOwnershipError, match="file_key"):
-        await labs_service.confirm_extracted(
+        await labs_ingestion.confirm_extracted(
             db_session,
             on_date=date(2026, 8, 19),
             markers=[{"marker": "Ferritin", "value": 95}],
@@ -223,7 +231,7 @@ async def test_lab_upload_confirm_copies_subject_actor_and_rejects_key_tampering
         )
     assert await db_session.scalar(select(func.count()).select_from(LabResult)) == 0
 
-    results = await labs_service.confirm_extracted(
+    results = await labs_ingestion.confirm_extracted(
         db_session,
         on_date=date(2026, 8, 19),
         markers=[{"marker": "Ferritin", "value": 105}],
@@ -285,7 +293,7 @@ async def test_foreign_raw_id_cannot_authorize_upload_confirmation(
     )
     with pytest.raises(expected_error):
         if is_body:
-            await scans.save_scan(
+            await body_scan_ingestion.save_scan(
                 db_session,
                 on_date=date(2026, 8, 19),
                 file_key=storage_ref,
@@ -295,7 +303,7 @@ async def test_foreign_raw_id_cannot_authorize_upload_confirmation(
                 prepared_weight_write=prepared_weight,
             )
         else:
-            await labs_service.confirm_extracted(
+            await labs_ingestion.confirm_extracted(
                 db_session,
                 on_date=date(2026, 8, 19),
                 markers=[{"marker": "TSH", "value": 2.0}],
@@ -335,7 +343,7 @@ async def test_progress_photo_reads_and_deletes_are_strictly_subject_scoped(
     )
     owner_prepared = await _prepared(db_session, owner_identity)
     foreign_prepared = await _prepared(db_session, foreign_identity)
-    own_photo = await weight_service.add_progress_photo(
+    own_photo = await weight_domain.photos.add_progress_photo(
         db_session,
         on_date=date(2026, 8, 19),
         file_key=owner_asset.storage_ref,
@@ -343,7 +351,7 @@ async def test_progress_photo_reads_and_deletes_are_strictly_subject_scoped(
         file_asset_id=owner_asset.id,
         prepared_conflict_write=owner_prepared,
     )
-    foreign_photo = await weight_service.add_progress_photo(
+    foreign_photo = await weight_domain.photos.add_progress_photo(
         db_session,
         on_date=date(2026, 8, 19),
         file_key=foreign_asset.storage_ref,
@@ -352,12 +360,12 @@ async def test_progress_photo_reads_and_deletes_are_strictly_subject_scoped(
         prepared_conflict_write=foreign_prepared,
     )
 
-    visible = await weight_service.list_progress_photos(
+    visible = await weight_domain.photos.list_progress_photos(
         db_session, subject_id=owner_subject.id
     )
     assert [row.id for row in visible] == [own_photo.id]
     assert (
-        await weight_service.delete_progress_photo(
+        await weight_domain.photos.delete_progress_photo(
             db_session,
             foreign_photo.id,
             identity=owner_identity,
@@ -401,12 +409,12 @@ async def test_body_and_lab_bare_ids_are_rejected_outside_subject_scope(db_sessi
     await db_session.flush()
 
     assert (
-        await scans.get_scan(
+        await body_scan_queries.get_scan(
             db_session, scan.id, subject_id=owner_subject.id
         )
         is None
     )
-    assert not await labs_service.delete_result(
+    assert not await labs_results.delete_result(
         db_session,
         result.id,
         subject_id=owner_subject.id,
@@ -414,7 +422,7 @@ async def test_body_and_lab_bare_ids_are_rejected_outside_subject_scope(db_sessi
         prepared_conflict_write=await _prepared(db_session, owner_identity),
     )
     assert (
-        await labs_service.defer_retest(
+        await labs_alerts.defer_retest(
             db_session,
             "TSH",
             until=date(2026, 9, 1),
@@ -468,7 +476,7 @@ async def test_owned_pending_upload_reparse_preserves_ownership(
     )
 
     if is_body:
-        replayed = await scans.reparse_owned_pending(
+        replayed = await body_scan_reparse.reparse_owned_pending(
             db_session,
             identity=WriteIdentity(subject.id, None),
         )
@@ -480,7 +488,7 @@ async def test_owned_pending_upload_reparse_preserves_ownership(
     else:
         system_identity = WriteIdentity(subject.id, None)
         prepared = await _prepared(db_session, system_identity)
-        await labs_service.reparse_owned_pending(
+        await labs_ingestion.reparse_owned_pending(
             db_session,
             identity=system_identity,
             prepared_conflict_write=prepared,
@@ -505,9 +513,9 @@ async def test_no_upload_domain_writes_without_naming_a_subject(db_session):
     import inspect
 
     for service, name in (
-        (weight_service, "add_progress_photo"),
-        (labs_service, "add_result"),
-        (scans, "save_scan"),
+        (weight_domain.photos, "add_progress_photo"),
+        (labs_results, "add_result"),
+        (body_scan_ingestion, "save_scan"),
     ):
         signature = inspect.signature(getattr(service, name))
         identity = signature.parameters["identity"]
@@ -589,8 +597,8 @@ async def test_lab_precommit_failure_rolls_back_metadata_and_removes_bytes(
         raise RuntimeError("synthetic pre-commit failure")
 
     monkeypatch.setattr(
-        ai_gateway_service,
-        "reserve_ai_invocation",
+        ai_gateway_invocations,
+            "reserve_ai_invocation",
         fail_reservation,
     )
     before = _directory_snapshot("labs")
@@ -654,7 +662,7 @@ async def test_lab_local_pdf_failure_releases_unpaid_invocation(
             provider_calls.append("provider")
             raise AssertionError("provider must not run after local PDF failure")
 
-    monkeypatch.setattr(labs_service, "_pdf_pages_png", fail_pdf_conversion)
+    monkeypatch.setattr(labs_ingestion, "_pdf_pages_png", fail_pdf_conversion)
     monkeypatch.setattr(
         lab_document_ai_service,
         "LLMClient",
@@ -718,7 +726,7 @@ async def test_lab_t3_transient_failure_reuses_completion_without_second_call(
         return result
 
     monkeypatch.setattr(
-        labs_service,
+        labs_ingestion,
         "extract_from_file_with_usage",
         extraction_probe,
     )
@@ -748,7 +756,7 @@ async def test_progress_precommit_failure_rolls_back_metadata_and_removes_bytes(
     async def fail_photo(*args, **kwargs):
         raise RuntimeError("synthetic progress pre-commit failure")
 
-    monkeypatch.setattr(weight_service, "add_progress_photo", fail_photo)
+    monkeypatch.setattr(weight_domain.photos, "add_progress_photo", fail_photo)
     before = _directory_snapshot("")
     with pytest.raises(RuntimeError, match="progress pre-commit"):
         await auth_client.post(
@@ -765,11 +773,11 @@ async def test_progress_precommit_failure_rolls_back_metadata_and_removes_bytes(
 @pytest.mark.parametrize(
     ("endpoint", "relative_dir", "extract_service", "fake_extract", "file_name"),
     [
-        ("/labs/upload", "labs", labs_service, _fake_lab_extract, "panel.png"),
+        ("/labs/upload", "labs", labs_ingestion, _fake_lab_extract, "panel.png"),
         (
             "/weight/body-scan/upload",
             "body",
-            scans,
+            body_scan_normalization,
             _fake_body_extract,
             "scan.png",
         ),
@@ -848,7 +856,7 @@ async def test_web_document_upload_stamps_openrouter_connection(
     platform_ai_ready,
 ):
     monkeypatch.setattr(
-        labs_service,
+        labs_ingestion,
         "extract_from_file_with_usage",
         _fake_lab_extract_with_usage,
     )
@@ -936,7 +944,7 @@ async def test_an_upload_can_only_be_confirmed_as_what_it_was_uploaded_for(
     )
     with pytest.raises(expected_error):
         if is_body:
-            await scans.save_scan(
+            await body_scan_ingestion.save_scan(
                 db_session,
                 on_date=date(2026, 8, 19),
                 file_key="labs/crossdoor.png",
@@ -946,7 +954,7 @@ async def test_an_upload_can_only_be_confirmed_as_what_it_was_uploaded_for(
                 prepared_weight_write=await _prepared_weight(db_session, identity),
             )
         else:
-            await labs_service.confirm_extracted(
+            await labs_ingestion.confirm_extracted(
                 db_session,
                 on_date=date(2026, 8, 19),
                 markers=[{"marker": "TSH", "value": 2.0}],

@@ -1,11 +1,14 @@
 """Genetics service + VCF importer (pure parsing core)."""
+
 from __future__ import annotations
+
+from vitals.services.genetics import queries as genetics_queries
+from vitals.services.genetics import writes as genetics_writes
 
 import pytest
 
 from vitals.services.genetics.vcf import ParsedVariant, interpret, iter_parsed, parse_vcf_line
 from vitals.enums import Source
-from vitals.services.genetics import variants
 
 # No module-level asyncio mark: this file mixes async DB tests (auto-detected via
 # asyncio_mode=auto) with pure sync parsing tests.
@@ -13,50 +16,65 @@ from vitals.services.genetics import variants
 
 # ── Service ───────────────────────────────────────────────────────────────────
 async def test_add_and_resolver(db_session, owner_write):
-    await variants.add_variant(
-        db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
+    await genetics_writes.add_variant(
+        db_session,
+        gene="HFE",
+        rsid="rs1800562",
+        marker="hemochromatosis_carrier",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    items = await variants.resolve_variants_scoped(
+    items = await genetics_queries.resolve_variants_scoped(
         db_session, scope=owner_write.context.scope
     )
     assert {"marker": "hemochromatosis_carrier", "gene": "HFE", "genotype": None} in items
 
 
 async def test_resolver_skips_markerless(db_session, owner_write):
-    await variants.add_variant(db_session, gene="ACTN3", rsid="rs1815739",
+    await genetics_writes.add_variant(
+        db_session,
+        gene="ACTN3",
+        rsid="rs1815739",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    items = await variants.resolve_variants_scoped(
+    items = await genetics_queries.resolve_variants_scoped(
         db_session, scope=owner_write.context.scope
     )
     assert items == []
 
 
 async def test_upsert_by_rsid_updates(db_session, owner_write):
-    await variants.upsert_by_rsid(db_session, gene="HFE", rsid="rs1800562", genotype="G/G", source=Source.MANUAL.value,
+    await genetics_writes.upsert_by_rsid(
+        db_session,
+        gene="HFE",
+        rsid="rs1800562",
+        genotype="G/G",
+        source=Source.MANUAL.value,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
-    await variants.upsert_by_rsid(db_session, gene="HFE", rsid="rs1800562", genotype="A/G", source=Source.MANUAL.value,
+    await genetics_writes.upsert_by_rsid(
+        db_session,
+        gene="HFE",
+        rsid="rs1800562",
+        genotype="A/G",
+        source=Source.MANUAL.value,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    rows = await variants.list_variants(db_session,
+    rows = await genetics_queries.list_variants(
+        db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(rows) == 1
     assert rows[0].genotype == "A/G"
 
 
-async def test_duplicate_rsid_rejected_within_one_subject(
-    db_session, legacy_owner_roots
-):
+async def test_duplicate_rsid_rejected_within_one_subject(db_session, legacy_owner_roots):
     """The partial-unique index forbids one subject holding an rsID twice, so a
     re-import/re-add can't silently duplicate a variant. An rsID identifies a
     locus, not a person, so the key is scoped to the subject."""
@@ -83,16 +101,23 @@ async def test_duplicate_rsid_rejected_within_one_subject(
 async def test_null_rsid_rows_coexist(db_session, owner_write):
     """The uniqueness is partial (WHERE rsid IS NOT NULL), so multiple manual
     rows without an rsID are still allowed."""
-    await variants.add_variant(db_session, gene="GeneA", rsid=None,
+    await genetics_writes.add_variant(
+        db_session,
+        gene="GeneA",
+        rsid=None,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
-    await variants.add_variant(db_session, gene="GeneB", rsid=None,
+    await genetics_writes.add_variant(
+        db_session,
+        gene="GeneB",
+        rsid=None,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    rows = await variants.list_variants(db_session,
+    rows = await genetics_queries.list_variants(
+        db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(rows) == 2
@@ -152,6 +177,7 @@ def test_interpret_g6pd_marker_when_alt_present():
 
 
 # ── Zygosity-aware markers (MTHFR het vs hom; COMT hom-only) ────────────────
+
 
 def test_mthfr_homozygous_ref_no_marker():
     v = ParsedVariant(rsid="rs1801133", ref="C", alt="T", genotype="C/C")

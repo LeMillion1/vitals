@@ -5,11 +5,20 @@ operators, and the $any/$all/$not top-level combinators.
 """
 from __future__ import annotations
 
+from vitals.services.alerts import legacy as alerts_service_legacy
+
+from vitals.services.supplements import writes as supplement_writes
+
+from vitals.services.glp1 import queries as glp1_queries
+from vitals.services.glp1 import writes as glp1_writes
+from vitals.services.nutrition import conflicts as nutrition_conflicts
+from vitals.services.nutrition import writes as nutrition_writes
+
 import pytest
 
 from vitals.enums import Domain
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import alerts_service, labs_service, supplements_service
+import vitals.services.labs.results as lab_results
 from vitals.services.conflicts import engine, registrations
 from vitals.services.conflicts.engine import ConflictBlocked, _matches
 from vitals.utils.timeutils import today_local
@@ -153,18 +162,18 @@ def test_nested_any_of_all():
 # ── Resolver shapes (Phase 2) — DB-touching, default sqlite is fine here ────
 
 async def test_glp1_resolve_active_empty_without_phase(db_session, owner_write):
-    from vitals.services import glp1_service
 
-    assert await glp1_service.resolve_active_scoped(
+
+    assert await glp1_queries.resolve_active_scoped(
         db_session, scope=owner_write.context.scope
     ) == []
 
 
 async def test_glp1_resolve_active_shape(db_session, owner_write):
-    from vitals.services import glp1_service
+
     from vitals.services.conflicts import engine
 
-    await glp1_service.add_dose_phase(
+    await glp1_writes.add_dose_phase(
         db_session,
         start_date=today_local(),
         drug="semaglutide",
@@ -173,7 +182,7 @@ async def test_glp1_resolve_active_shape(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    items = await glp1_service.resolve_active_scoped(
+    items = await glp1_queries.resolve_active_scoped(
         db_session,
         scope=engine.ConflictScope(
             subject_id=owner_write.subject_id,
@@ -191,7 +200,7 @@ async def test_glp1_resolve_active_shape(db_session, owner_write):
 
 
 async def test_labs_resolve_latest_shape(db_session, owner_write):
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=today_local(),
         marker="Калий",
@@ -202,7 +211,7 @@ async def test_labs_resolve_latest_shape(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    items = await labs_service.resolve_latest_scoped(
+    items = await lab_results.resolve_latest_scoped(
         db_session,
         scope=engine.ConflictScope(
             subject_id=owner_write.subject_id,
@@ -216,9 +225,9 @@ async def test_labs_resolve_latest_shape(db_session, owner_write):
 
 
 async def test_nutrition_resolve_today_shape(db_session, owner_write):
-    from vitals.services import nutrition_service
 
-    await nutrition_service.log_meal(
+
+    await nutrition_writes.log_meal(
         db_session,
         on_date=today_local(),
         name="Test meal",
@@ -228,7 +237,7 @@ async def test_nutrition_resolve_today_shape(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    items = await nutrition_service.resolve_today_scoped(
+    items = await nutrition_conflicts.resolve_today_scoped(
         db_session,
         scope=engine.ConflictScope(
             subject_id=owner_write.subject_id,
@@ -242,7 +251,7 @@ async def test_nutrition_resolve_today_shape(db_session, owner_write):
 # ── day_end_only rules: skipped live, evaluated only via include_day_end ────
 # A same-day running total (e.g. today's calories) compared with a lower-bound
 # threshold is trivially true early in the day — these rules must not fire off
-# the live/synchronous save path (see nutrition_service.log_meal's plain
+# the live/synchronous save path (see nutrition_writes.log_meal's plain
 # ``enforce()`` call, which never passes include_day_end).
 
 async def test_day_end_only_rule_skipped_by_default(db_session, owner_write):
@@ -258,7 +267,7 @@ async def test_day_end_only_rule_skipped_by_default(db_session, owner_write):
             active=True,
         )
     )
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=today_local(),
         marker="Калий",
@@ -299,14 +308,14 @@ async def test_glp1_low_intake_rules_skip_mid_day_but_fire_at_day_end(
     """End-to-end against the real curated catalog — the exact bug reported:
     a small breakfast while on GLP-1 must not raise the low-calorie/protein
     warnings live, only once the day-end job re-checks with include_day_end."""
-    from vitals.services import glp1_service, nutrition_service
+
     from vitals.services.conflicts import catalog
 
     registrations.register_all_resolvers()
     await catalog.sync_catalog(db_session)
     # Both halves of the rule belong to the same person, so both are written
     # inside that scope — otherwise the scoped evaluation sees only one of them.
-    await glp1_service.add_dose_phase(
+    await glp1_writes.add_dose_phase(
         db_session,
         start_date=today_local(),
         drug="semaglutide",
@@ -314,7 +323,7 @@ async def test_glp1_low_intake_rules_skip_mid_day_but_fire_at_day_end(
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(today_local()),
     )
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session,
         on_date=today_local(),
         name="breakfast",
@@ -361,8 +370,8 @@ async def test_enforce_day_end_raises_the_alert_when_violated(db_session, owner_
             active=True,
         )
     )
-    await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
-    await labs_service.add_result(
+    await supplement_writes.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+    await lab_results.add_result(
         db_session,
         on_date=today_local(),
         marker="Калий",
@@ -382,7 +391,7 @@ async def test_enforce_day_end_raises_the_alert_when_violated(db_session, owner_
     )
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, domain="supplements", subject_id=owner_write.subject_id)
+    active = await alerts_service_legacy.list_active(db_session, domain="supplements", subject_id=owner_write.subject_id)
     assert any(a.message == "test day-end rule" for a in active)
 
 
@@ -404,8 +413,8 @@ async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session, o
             active=True,
         )
     )
-    await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
-    await labs_service.add_result(
+    await supplement_writes.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+    await lab_results.add_result(
         db_session,
         on_date=today_local(),
         marker="Калий",
@@ -425,13 +434,13 @@ async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session, o
     await db_session.commit()
     assert any(
         a.message == "test day-end rule"
-        for a in await alerts_service.list_active(db_session, domain="supplements", subject_id=owner_write.subject_id)
+        for a in await alerts_service_legacy.list_active(db_session, domain="supplements", subject_id=owner_write.subject_id)
     )
 
     # A later, in-range result becomes the latest for the marker — potassium is
     # no longer flagged, so the day-end check must clear the earlier alert,
     # even though it's keyed under yesterday's entity_ref, not today's.
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=today_local() + timedelta(days=1),
         marker="Калий",
@@ -457,7 +466,7 @@ async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session, o
     )
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, domain="supplements", subject_id=owner_write.subject_id)
+    active = await alerts_service_legacy.list_active(db_session, domain="supplements", subject_id=owner_write.subject_id)
     assert not any(a.message == "test day-end rule" for a in active)
 
 
@@ -481,8 +490,8 @@ async def _seed_iron_zinc_timing_rule(db_session):
 async def test_timing_separation_fires_when_same_slot(db_session, owner_write):
     registrations.register_all_resolvers()
     await _seed_iron_zinc_timing_rule(db_session)
-    await supplements_service.add_supplement(db_session, name="Iron", key="iron", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
-    await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+    await supplement_writes.add_supplement(db_session, name="Iron", key="iron", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+    await supplement_writes.add_supplement(db_session, name="Zinc", key="zinc", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
     violations = await engine.evaluate_scoped(
@@ -496,8 +505,8 @@ async def test_timing_separation_fires_when_same_slot(db_session, owner_write):
 async def test_timing_separation_silent_when_different_slot(db_session, owner_write):
     registrations.register_all_resolvers()
     await _seed_iron_zinc_timing_rule(db_session)
-    await supplements_service.add_supplement(db_session, name="Iron", key="iron", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
-    await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", timing="вечер", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+    await supplement_writes.add_supplement(db_session, name="Iron", key="iron", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+    await supplement_writes.add_supplement(db_session, name="Zinc", key="zinc", timing="вечер", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
     violations = await engine.evaluate_scoped(
@@ -511,8 +520,8 @@ async def test_timing_separation_silent_when_different_slot(db_session, owner_wr
 async def test_timing_separation_silent_when_slot_unknown(db_session, owner_write):
     registrations.register_all_resolvers()
     await _seed_iron_zinc_timing_rule(db_session)
-    await supplements_service.add_supplement(db_session, name="Iron", key="iron", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())  # no timing
-    await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())  # no timing
+    await supplement_writes.add_supplement(db_session, name="Iron", key="iron", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())  # no timing
+    await supplement_writes.add_supplement(db_session, name="Zinc", key="zinc", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())  # no timing
     await db_session.commit()
 
     violations = await engine.evaluate_scoped(
@@ -537,7 +546,7 @@ async def test_operator_rule_fires_on_lab_value_threshold(db_session, owner_writ
             active=True,
         )
     )
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=today_local(),
         marker="Калий",
@@ -550,7 +559,7 @@ async def test_operator_rule_fires_on_lab_value_threshold(db_session, owner_writ
     await db_session.commit()
 
     with pytest.raises(ConflictBlocked):
-        await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+        await supplement_writes.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
 
 
 async def test_violation_carries_catalog_metadata(db_session, owner_write):
@@ -564,7 +573,7 @@ async def test_violation_carries_catalog_metadata(db_session, owner_write):
             source="NIH reference", evidence="A", active=True,
         )
     )
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=today_local(),
         marker="Калий",
@@ -604,7 +613,7 @@ async def test_operator_rule_silent_when_lab_value_below_threshold(db_session, o
             active=True,
         )
     )
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=today_local(),
         marker="Калий",
@@ -617,4 +626,4 @@ async def test_operator_rule_silent_when_lab_value_below_threshold(db_session, o
     await db_session.commit()
 
     # Must not raise — value is in range, the $gt condition should not match.
-    await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+    await supplement_writes.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())

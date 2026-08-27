@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -28,6 +29,39 @@ def _tracked_python_paths(root: Path) -> list[Path]:
         text=True,
     ).stdout.splitlines()
     return [Path(path) for path in tracked if path.endswith(".py")]
+
+
+def _architecture_service_paths() -> list[Path]:
+    """Count the post-change service tree before or after files are staged."""
+
+    tracked_existing = {
+        path
+        for path in _tracked_python_paths(SERVICES)
+        if (ROOT / path).is_file()
+    }
+    bounded_worktree = {
+        path.relative_to(ROOT)
+        for path in _python_files(SERVICES)
+        if path.parent != SERVICES
+    }
+    return sorted(tracked_existing | bounded_worktree)
+
+
+def _architecture_router_paths() -> list[Path]:
+    """Count new nested route leaves before or after they are staged."""
+
+    router_root = ROOT / "web" / "routers"
+    tracked_existing = {
+        path
+        for path in _tracked_python_paths(router_root)
+        if (ROOT / path).is_file()
+    }
+    bounded_worktree = {
+        path.relative_to(ROOT)
+        for path in _python_files(router_root)
+        if path.parent != router_root
+    }
+    return sorted(tracked_existing | bounded_worktree)
 
 
 def _platform_scope_callers() -> set[tuple[str, str | None]]:
@@ -91,6 +125,24 @@ def _module_name(path: Path) -> str:
     if parts[-1] == "__init__":
         parts.pop()
     return ".".join(parts)
+
+
+def test_web_delivery_does_not_build_sql_queries() -> None:
+    """HTTP/MCP adapters delegate persistence queries to core services."""
+
+    violations: list[str] = []
+    for path in _python_files(ROOT / "web"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "select"
+            ):
+                violations.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert not violations, "Delivery layer builds SQL queries:\n" + "\n".join(
+        violations
+    )
 
 
 def _top_level_import_nodes(nodes: list[ast.stmt]) -> list[ast.Import | ast.ImportFrom]:
@@ -244,13 +296,46 @@ def test_no_new_flat_service_modules() -> None:
     legacy = {
         path.name
         for path in _tracked_python_paths(SERVICES)
-        if path.parent == Path("vitals/services") and path.name != "__init__.py"
+        if path.parent == Path("vitals/services")
+        and path.name != "__init__.py"
+        and (ROOT / path).is_file()
     }
-    baseline = 39
+    baseline = 21
 
     assert len(legacy) <= baseline, (
         f"Flat service module count grew from the guarded ceiling {baseline} to {len(legacy)}. "
         "Put new behavior in a bounded-context package instead."
+    )
+
+    oversized = {
+        path.name: len((ROOT / path).read_text(encoding="utf-8").splitlines())
+        for path in _tracked_python_paths(SERVICES)
+        if path.parent == Path("vitals/services")
+        and path.name != "__init__.py"
+        and (ROOT / path).is_file()
+        and len((ROOT / path).read_text(encoding="utf-8").splitlines()) > 800
+    }
+    assert not oversized, (
+        "Flat services must stay focused or move into a bounded-context package: "
+        f"{oversized}"
+    )
+
+
+def test_application_service_leaves_stay_focused() -> None:
+    """Prevent a bounded package from becoming a monolith under a new path."""
+
+    line_limit = 1300
+    oversized = {
+        str(path): len((ROOT / path).read_text(encoding="utf-8").splitlines())
+        for path in _architecture_service_paths()
+        if path.name != "__init__.py"
+        and (ROOT / path).is_file()
+        and len((ROOT / path).read_text(encoding="utf-8").splitlines()) > line_limit
+    }
+
+    assert not oversized, (
+        "Application-service leaves must represent one focused responsibility; "
+        f"split files above {line_limit} lines: {oversized}"
     )
 
 
@@ -274,9 +359,9 @@ def test_architecture_reference_counters_match_the_source_tree() -> None:
     assert len(heads) == 1
     head = heads[0]
 
-    tracked_services = _tracked_python_paths(SERVICES)
+    tracked_services = _architecture_service_paths()
     tracked_integrations = _tracked_python_paths(VITALS / "integrations")
-    tracked_routers = _tracked_python_paths(ROOT / "web" / "routers")
+    tracked_routers = _architecture_router_paths()
     tables = len(Base.metadata.tables)
     current_table_names = set(Base.metadata.tables)
     subject_tables = sum("subject_id" in table.c for table in Base.metadata.tables.values())
@@ -394,3 +479,71 @@ def test_core_has_no_import_time_cycles() -> None:
     assert not cycles, "Import-time dependency cycles:\n" + "\n".join(
         " -> ".join(sorted(component)) for component in cycles
     )
+
+
+def test_browser_credential_primitives_do_not_depend_on_route_or_domain_layers() -> None:
+    """Keep session codecs reusable and prevent the former auth cycle returning."""
+
+    token_imports = _imports(ROOT / "web" / "authentication" / "tokens.py")
+    forbidden_prefixes = (
+        "fastapi",
+        "vitals.services",
+        "web.deps",
+        "web.ratelimit",
+        "web.templating",
+    )
+    forbidden = sorted(
+        name
+        for name in token_imports
+        if name in forbidden_prefixes
+        or name.startswith(tuple(f"{prefix}." for prefix in forbidden_prefixes))
+    )
+
+    assert not forbidden, "Credential primitives crossed delivery boundaries: " + ", ".join(
+        forbidden
+    )
+    assert "web.auth" not in _imports(ROOT / "web" / "deps.py")
+
+    isolated_import = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import web.authentication.tokens; "
+                "forbidden={'web.authentication.federated', "
+                "'web.authentication.legacy', 'web.deps', "
+                "'vitals.services.authentication.admission'}; "
+                "assert not (forbidden & sys.modules.keys())"
+            ),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert isolated_import.returncode == 0, isolated_import.stderr
+
+
+def test_platform_settings_do_not_depend_on_the_personal_settings_monolith() -> None:
+    """The installation control plane is a child boundary, never a reverse import."""
+
+    platform_imports = _imports(ROOT / "web" / "settings" / "platform.py")
+    assert "web.routers.settings" not in platform_imports
+
+    forms_imports = _imports(ROOT / "web" / "settings" / "forms.py")
+    assert not forms_imports
+
+    isolated_import = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import web.settings.platform; "
+                "assert 'web.routers.settings' not in sys.modules; "
+                "assert 'web.main' not in sys.modules"
+            ),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert isolated_import.returncode == 0, isolated_import.stderr

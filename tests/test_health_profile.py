@@ -14,6 +14,10 @@ like a right one.
 
 from __future__ import annotations
 
+from vitals.services.nutrition import analytics as nutrition_analytics
+
+from vitals.services.digest.projection import assembly as digest_projection
+
 import pytest
 
 from vitals.enums import UserStatus
@@ -122,6 +126,18 @@ async def test_one_persons_profile_is_not_the_others(
     assert other_profile.height_cm is None
 
 
+async def test_profile_projection_keeps_profile_and_timezone_on_one_subject(
+    db_session, other_subject
+):
+    projection = await health_profile_service.get_profile_projection(
+        db_session,
+        subject_id=other_subject,
+    )
+
+    assert projection.profile.height_cm is None
+    assert projection.timezone == "Europe/Chisinau"
+
+
 async def test_a_mistyped_measurement_is_absent_rather_than_clamped(db_session):
     """3 cm is somebody's finger slipping, and 120 cm is a plausible child.
 
@@ -145,15 +161,14 @@ async def test_the_report_carries_this_subjects_profile_and_not_the_owners(
     nothing about a body nobody described — rather than describing the owner's.
     """
 
-    from vitals.services import digest_service
 
-    owner_context = await digest_service.assemble_context(
+    owner_context = await digest_projection.assemble_context(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
     assert owner_context["user_profile"]["height_cm"] is not None
     assert owner_context["user_profile"]["program"] is not None
 
-    other_context = await digest_service.assemble_context(
+    other_context = await digest_projection.assemble_context(
         db_session, subject_id=other_subject
     )
     assert other_context["user_profile"]["height_cm"] is None
@@ -172,14 +187,14 @@ async def test_body_fat_is_not_computed_from_somebody_elses_height(
     of them was right.
     """
 
-    from vitals.services import weight_service
+    from vitals.services import weight as weight_domain
 
-    owner_height, owner_sex = await weight_service._body_config(
+    owner_height, owner_sex = await weight_domain.measurements._body_config(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
     assert owner_height is not None and owner_sex is not None
 
-    other_height, other_sex = await weight_service._body_config(
+    other_height, other_sex = await weight_domain.measurements._body_config(
         db_session, subject_id=other_subject
     )
     assert other_height is None and other_sex is None
@@ -193,9 +208,9 @@ async def test_half_a_profile_produces_no_estimate(db_session, other_subject):
     )
     await db_session.commit()
 
-    from vitals.services import weight_service
+    from vitals.services import weight as weight_domain
 
-    height, sex = await weight_service._body_config(
+    height, sex = await weight_domain.measurements._body_config(
         db_session, subject_id=other_subject
     )
     assert height is None and sex is None
@@ -204,7 +219,7 @@ async def test_half_a_profile_produces_no_estimate(db_session, other_subject):
 async def test_nutrition_goals_follow_the_subject(
     db_session, legacy_owner_roots, other_subject
 ):
-    from vitals.services import nutrition_service
+
 
     await health_profile_service.set_profile(
         db_session,
@@ -213,10 +228,10 @@ async def test_nutrition_goals_follow_the_subject(
     )
     await db_session.commit()
 
-    owner_goals = await nutrition_service.get_goals(
+    owner_goals = await nutrition_analytics.get_goals(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
-    other_goals = await nutrition_service.get_goals(
+    other_goals = await nutrition_analytics.get_goals(
         db_session, subject_id=other_subject
     )
     assert other_goals["protein_target_g"] == 95

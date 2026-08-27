@@ -11,6 +11,11 @@ silent-loss class this suite guards against. Two mechanisms cover it:
 """
 from __future__ import annotations
 
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
+from vitals.services.alerts import contracts as alerts_service_contracts
+from vitals.services.alerts import legacy as alerts_service_legacy
+
 import asyncio
 import time
 
@@ -25,7 +30,6 @@ from vitals.scheduler import scheduler as scheduler_mod
 from vitals.scheduler.fanout import for_each_connection, for_each_subject
 from vitals.scheduler.jobs import register_all_jobs
 from vitals.scheduler.scheduler_lock import scheduler_heartbeat_age
-from vitals.services import alerts_service
 
 
 
@@ -93,7 +97,7 @@ async def test_failing_job_raises_owned_provider_alert_and_does_not_propagate(
 
     await _runner(session_factory, "garmin_sync", boom)()  # must not raise
 
-    alerts = await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value, subject_id=legacy_owner_roots.subject_id)
+    alerts = await alerts_service_legacy.list_active(db_session, domain=Domain.SYSTEM.value, subject_id=legacy_owner_roots.subject_id)
     failed = [a for a in alerts if a.alert_key == "scheduler.job_failed:garmin_sync"]
     assert len(failed) == 1
     assert failed[0].severity == "warn"
@@ -124,7 +128,7 @@ async def test_repeated_failures_do_not_pile_up(
     await run()
     await run()
 
-    alerts = await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value, subject_id=legacy_owner_roots.subject_id)
+    alerts = await alerts_service_legacy.list_active(db_session, domain=Domain.SYSTEM.value, subject_id=legacy_owner_roots.subject_id)
     failed = [a for a in alerts if a.alert_key == "scheduler.job_failed:hevy_sync"]
     assert len(failed) == 1, "the alert key must dedupe, not add a row per failed tick"
 
@@ -144,14 +148,14 @@ async def test_successful_run_clears_the_alert_without_a_human_actor(
     run = _runner(session_factory, "hevy_sync", flaky)
     await run()
     assert [
-        a for a in await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value, subject_id=legacy_owner_roots.subject_id)
+        a for a in await alerts_service_legacy.list_active(db_session, domain=Domain.SYSTEM.value, subject_id=legacy_owner_roots.subject_id)
         if a.alert_key == "scheduler.job_failed:hevy_sync"
     ]
 
     state["fail"] = False
     await run()
     assert not [
-        a for a in await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value, subject_id=legacy_owner_roots.subject_id)
+        a for a in await alerts_service_legacy.list_active(db_session, domain=Domain.SYSTEM.value, subject_id=legacy_owner_roots.subject_id)
         if a.alert_key == "scheduler.job_failed:hevy_sync"
     ]
     row = await db_session.scalar(
@@ -214,12 +218,12 @@ async def test_platform_job_failure_stays_outside_subject_alerts(
     )
     assert row is not None
     assert (row.subject_id, row.integration_connection_id) == (None, None)
-    subject_alerts = await alerts_service.list_active_scoped(
+    subject_alerts = await alerts_service_lifecycle.list_active_scoped(
         db_session,
-        context=alerts_service.HealthAlertContext(
+        context=alerts_service_contracts.HealthAlertContext(
             WriteIdentity(legacy_owner_roots.subject_id, None)
         ),
-        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        legacy_bridge=alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED,
     )
     assert row.id not in {item.id for item in subject_alerts}
 
@@ -274,9 +278,9 @@ def test_job_failure_family_registry_is_complete_and_matches_alert_keys():
     scheduler_alert_ids = {
         key.removeprefix(f"{scheduler_mod.JOB_FAILED_KEY_PREFIX}:")
         for key in set().union(
-            alerts_service.HEALTH_ALERT_KEYS,
-            *alerts_service.PROVIDER_ALERT_KEYS.values(),
-            *alerts_service.PLATFORM_ALERT_KEYS.values(),
+            alerts_service_contracts.HEALTH_ALERT_KEYS,
+            *alerts_service_contracts.PROVIDER_ALERT_KEYS.values(),
+            *alerts_service_contracts.PLATFORM_ALERT_KEYS.values(),
         )
         if key.startswith(f"{scheduler_mod.JOB_FAILED_KEY_PREFIX}:")
     }

@@ -7,6 +7,9 @@ leaves alone.
 """
 from __future__ import annotations
 
+from vitals.services.alerts import contracts as alerts_service_contracts
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Path, Request, status
@@ -14,7 +17,6 @@ from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import alerts_service
 from vitals.services.conflicts import activation, engine
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
@@ -32,14 +34,14 @@ _CATEGORY_ORDER = (
 async def _firing_rule_ids(
     db: AsyncSession,
     *,
-    context: alerts_service.HealthAlertContext,
+    context: alerts_service_contracts.HealthAlertContext,
 ) -> set[int]:
     """Rule ids with an active (unresolved) alert right now — the conflict engine
     stamps ``alert_key = f"conflict:{rule_id}"`` (see conflict_engine.enforce)."""
-    active = await alerts_service.list_active_scoped(
+    active = await alerts_service_lifecycle.list_active_scoped(
         db,
         context=context,
-        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        legacy_bridge=alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED,
     )
     ids: set[int] = set()
     for row in active:
@@ -64,7 +66,7 @@ async def interactions_dashboard(
         db,
         actor_username=username,
     )
-    alert_context = alerts_service.HealthAlertContext(ownership.owner_action())
+    alert_context = alerts_service_contracts.HealthAlertContext(ownership.owner_action())
     conflict_scope = await engine.resolve_legacy_conflict_scope(
         db,
         actor_username=username,
@@ -163,12 +165,12 @@ async def toggle_rule(
             db,
             actor_username=username,
         )
-        await alerts_service.resolve_scoped_superseded(
+        await alerts_service_lifecycle.resolve_scoped_superseded(
             db,
-            context=alerts_service.HealthAlertContext(ownership.owner_action()),
+            context=alerts_service_contracts.HealthAlertContext(ownership.owner_action()),
             alert_key=f"conflict:{rule_id}",
             keep_entity=None,
-            legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+            legacy_bridge=alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED,
         )
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

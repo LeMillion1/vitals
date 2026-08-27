@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from vitals.services.alerts import contracts as alerts_contracts
+
 import asyncio
 import uuid
 from datetime import datetime, timedelta
@@ -20,8 +22,8 @@ from vitals.enums import (
 from vitals.models.identity import HealthSubject, User
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services import alerts_service as alerts
 from vitals.services import legacy_subject_alerts as subject_alerts
+from vitals.services import legacy_subject_alerts as subject_alerts_legacy
 from vitals.services.legacy_ownership import LegacyOwnershipContext
 from vitals.utils.timeutils import now_local
 
@@ -215,7 +217,7 @@ async def test_list_aggregates_health_current_and_rotated_roots_in_newest_order(
         created_at=base + timedelta(seconds=5),
     )
 
-    rows = await subject_alerts.list_active(
+    rows = await subject_alerts_legacy.list_active(
         db_session,
         ownership=_ownership(owner, subject, roots),
     )
@@ -258,7 +260,7 @@ async def test_legacy_rows_are_read_without_adoption_then_bind_to_exact_roots(
     )
     ownership = _ownership(owner, subject, roots)
 
-    listed = await subject_alerts.list_active(db_session, ownership=ownership)
+    listed = await subject_alerts_legacy.list_active(db_session, ownership=ownership)
 
     assert {row.id for row in listed} == {health.id, provider.id}
     assert health.subject_id is None
@@ -324,7 +326,7 @@ async def test_owner_and_system_actor_semantics_and_non_enumerating_misses(
 
     assert resolved is automatic
     assert automatic.resolved_by_user_id is None
-    with pytest.raises(alerts.AlertActorRequiredError):
+    with pytest.raises(alerts_contracts.AlertActorRequiredError):
         await subject_alerts.override(
             db_session,
             human_only.id,
@@ -341,7 +343,7 @@ async def test_owner_and_system_actor_semantics_and_non_enumerating_misses(
         platform.id,
         ownership=human,
     ) is None
-    assert await subject_alerts.resolve_all(
+    assert await subject_alerts_legacy.resolve_all(
         db_session,
         ownership=human,
         domain=Domain.SYSTEM,
@@ -403,25 +405,25 @@ async def test_resolve_all_is_domain_scoped_and_excludes_non_subject_namespaces(
     )
     ownership = _ownership(owner, subject, roots)
 
-    assert [row.id for row in await subject_alerts.list_active(
+    assert [row.id for row in await subject_alerts_legacy.list_active(
         db_session,
         ownership=ownership,
         domain=Domain.WORKOUTS,
     )] == [rotated_hevy.id]
-    assert [row.id for row in await subject_alerts.list_active(
+    assert [row.id for row in await subject_alerts_legacy.list_active(
         db_session,
         ownership=ownership,
         domain=Domain.GARMIN,
     )] == [garmin.id]
 
-    assert await subject_alerts.resolve_all(
+    assert await subject_alerts_legacy.resolve_all(
         db_session,
         ownership=ownership,
         domain=Domain.WEIGHT,
     ) == 1
     assert weight.resolved_by_user_id == owner.id
     assert labs.resolved_at is None
-    assert await subject_alerts.resolve_all(
+    assert await subject_alerts_legacy.resolve_all(
         db_session,
         ownership=ownership,
     ) == 3
@@ -451,7 +453,7 @@ async def test_context_and_current_root_snapshot_are_validated_fail_closed(
         },
     )
     with pytest.raises(subject_alerts.LegacySubjectAlertsContextError):
-        await subject_alerts.list_active(db_session, ownership=incomplete)
+        await subject_alerts_legacy.list_active(db_session, ownership=incomplete)
 
     wrong_actor = LegacyOwnershipContext(
         subject_id=subject.id,
@@ -460,7 +462,7 @@ async def test_context_and_current_root_snapshot_are_validated_fail_closed(
         connection_ids=base_ids,
     )
     with pytest.raises(subject_alerts.LegacySubjectAlertsContextError):
-        await subject_alerts.list_active(db_session, ownership=wrong_actor)
+        await subject_alerts_legacy.list_active(db_session, ownership=wrong_actor)
 
     forged_owner = LegacyOwnershipContext(
         subject_id=subject.id,
@@ -469,7 +471,7 @@ async def test_context_and_current_root_snapshot_are_validated_fail_closed(
         connection_ids=base_ids,
     )
     with pytest.raises(subject_alerts.LegacySubjectAlertsContextError):
-        await subject_alerts.list_active(db_session, ownership=forged_owner)
+        await subject_alerts_legacy.list_active(db_session, ownership=forged_owner)
 
     duplicate_ids = dict(base_ids)
     duplicate_ids[IntegrationProvider.HEVY] = base_ids[IntegrationProvider.GARMIN]
@@ -480,12 +482,12 @@ async def test_context_and_current_root_snapshot_are_validated_fail_closed(
         connection_ids=duplicate_ids,
     )
     with pytest.raises(subject_alerts.LegacySubjectAlertsContextError):
-        await subject_alerts.list_active(db_session, ownership=duplicate_roots)
+        await subject_alerts_legacy.list_active(db_session, ownership=duplicate_roots)
 
     roots[IntegrationProvider.GARMIN].status = IntegrationConnectionStatus.PENDING.value
     await db_session.flush()
     with pytest.raises(subject_alerts.LegacySubjectAlertsConnectionError):
-        await subject_alerts.list_active(
+        await subject_alerts_legacy.list_active(
             db_session,
             ownership=_ownership(owner, subject, roots),
         )
@@ -512,7 +514,7 @@ async def test_ambiguous_nonretired_provider_roots_fail_before_alert_mutation(
     )
 
     with pytest.raises(subject_alerts.LegacySubjectAlertsConnectionError):
-        await subject_alerts.resolve_all(
+        await subject_alerts_legacy.resolve_all(
             db_session,
             ownership=_ownership(owner, subject, roots),
         )
@@ -557,13 +559,13 @@ async def test_a_second_subject_does_not_leak_and_does_not_stop_the_first(
     )
     ownership_a = _ownership(owner_a, subject_a, roots_a)
 
-    visible = await subject_alerts.list_active(db_session, ownership=ownership_a)
+    visible = await subject_alerts_legacy.list_active(db_session, ownership=ownership_a)
     assert [row.id for row in visible] == [row_a.id]
 
     assert (
         await subject_alerts.resolve(db_session, row_b.id, ownership=ownership_a)
     ) is None
-    await subject_alerts.resolve_all(db_session, ownership=ownership_a)
+    await subject_alerts_legacy.resolve_all(db_session, ownership=ownership_a)
 
     # A resolved A's own, and B's is untouched — the point of the whole test.
     assert row_b.resolved_at is None
@@ -592,10 +594,10 @@ async def test_an_unowned_alert_still_closes_the_bridge_for_two_subjects(
     assert orphan.subject_id is None
     ownership_a = _ownership(owner_a, subject_a, roots_a)
 
-    with pytest.raises(alerts.AlertLegacyBridgeError):
-        await subject_alerts.list_active(db_session, ownership=ownership_a)
-    with pytest.raises(alerts.AlertLegacyBridgeError):
-        await subject_alerts.resolve_all(db_session, ownership=ownership_a)
+    with pytest.raises(alerts_contracts.AlertLegacyBridgeError):
+        await subject_alerts_legacy.list_active(db_session, ownership=ownership_a)
+    with pytest.raises(alerts_contracts.AlertLegacyBridgeError):
+        await subject_alerts_legacy.resolve_all(db_session, ownership=ownership_a)
 
     assert orphan.resolved_at is None
 

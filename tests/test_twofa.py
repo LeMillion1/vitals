@@ -13,9 +13,9 @@ import pytest
 
 from vitals.models.app_settings import AppSetting
 from vitals.operations.ownership import portability_v1
-from vitals.services import data_portability_service
+from vitals.services.portability import v1_export
 from vitals.services.authentication import legacy_two_factor as twofa_service
-from vitals.services.data_portability_service import _is_secret_setting_key
+from vitals.services.portability.v1_contract import _is_secret_setting_key
 from web.config import PENDING_2FA_COOKIE, SESSION_COOKIE
 
 # RFC 6238 Appendix B, SHA-1: the shared secret is the ASCII string
@@ -118,7 +118,7 @@ async def test_2fa_survives_a_backup_round_trip(db_session):
     before reloading — so without the mirroring guard, restoring any legitimate
     backup switched the second factor off with nothing on screen to say so."""
     await _enable(db_session)
-    snapshot = await data_portability_service.export_full(db_session)
+    snapshot = await v1_export.export_full(db_session)
     assert not [
         r for r in snapshot["app_settings"] if r["key"] == twofa_service.SETTINGS_KEY
     ], "the secret must not be in the file"
@@ -132,7 +132,7 @@ async def test_a_backup_cannot_plant_a_2fa_secret(db_session):
     credential either, or /settings/import becomes a route around the code check
     that turning 2FA off requires."""
     secret = await _enable(db_session)
-    snapshot = await data_portability_service.export_full(db_session)
+    snapshot = await v1_export.export_full(db_session)
     snapshot["app_settings"].append(
         {"key": twofa_service.SETTINGS_KEY, "value": {"secret": RFC_SECRET, "confirmed": True}}
     )
@@ -147,7 +147,7 @@ async def test_a_restore_onto_an_empty_db_leaves_2fa_off(db_session):
     """Moving to a fresh server: there is nothing to carry across, because the
     secret is deliberately not in the file. It must fail toward "password still
     works" rather than locking the owner out of their own dashboard."""
-    snapshot = await data_portability_service.export_full(db_session)
+    snapshot = await v1_export.export_full(db_session)
     await portability_v1.import_full(db_session, snapshot)
     assert (await twofa_service.get_state(db_session)).enabled is False
 

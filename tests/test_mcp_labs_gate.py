@@ -8,12 +8,18 @@ to a measurement.
 """
 from __future__ import annotations
 
+from vitals.services.alerts import legacy as alerts_service_legacy
+
+from vitals.services.supplements import writes as supplement_writes
+
 from datetime import date
 
 import pytest
 
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import labs_service, supplements_service
+import vitals.services.labs.alerts as lab_alerts
+import vitals.services.labs.results as lab_results
+
 from vitals.services.conflicts import registrations
 from vitals.services.conflicts.engine import ConflictBlocked
 
@@ -41,7 +47,7 @@ async def _potassium_hard_rule(session, owner_write):
             active=True,
         )
     )
-    await supplements_service.add_supplement(session, name="Калий", key="potassium", identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+    await supplement_writes.add_supplement(session, name="Калий", key="potassium", identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await session.commit()
 
 
@@ -50,7 +56,7 @@ async def test_add_result_blocks_on_a_hard_rule(db_session, owner_write):
     await _potassium_hard_rule(db_session, owner_write)
 
     with pytest.raises(ConflictBlocked):
-        await labs_service.add_result(
+        await lab_results.add_result(
             db_session,
             on_date=DAY,
             marker="Калий",
@@ -65,7 +71,7 @@ async def test_add_result_blocks_on_a_hard_rule(db_session, owner_write):
 async def test_add_result_saves_with_override(db_session, owner_write):
     await _potassium_hard_rule(db_session, owner_write)
 
-    row = await labs_service.add_result(
+    row = await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="Калий",
@@ -81,7 +87,7 @@ async def test_add_result_saves_with_override(db_session, owner_write):
 
 
 async def test_add_result_still_saves_when_nothing_conflicts(db_session, owner_write):
-    row = await labs_service.add_result(
+    row = await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="Калий",
@@ -124,7 +130,7 @@ async def test_log_lab_results_batch_reports_the_block(session_factory, owner_wr
 
 # ── Editing a result ──────────────────────────────────────────────────────────
 async def test_update_result_recomputes_the_flag(db_session, owner_write):
-    row = await labs_service.add_result(
+    row = await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="Ферритин",
@@ -137,7 +143,7 @@ async def test_update_result_recomputes_the_flag(db_session, owner_write):
     await db_session.commit()
     assert row.flag == "critical_high"
 
-    updated = await labs_service.update_result(
+    updated = await lab_results.update_result(
         db_session,
         row.id,
         value=200,
@@ -152,9 +158,8 @@ async def test_update_result_recomputes_the_flag(db_session, owner_write):
 
 
 async def test_update_result_refreshes_alerts(db_session, owner_write):
-    from vitals.services import alerts_service
 
-    row = await labs_service.add_result(
+    row = await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="Ферритин",
@@ -164,7 +169,7 @@ async def test_update_result_refreshes_alerts(db_session, owner_write):
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(DAY),
     )
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         on_date=DAY,
         identity=owner_write.identity,
@@ -172,10 +177,10 @@ async def test_update_result_refreshes_alerts(db_session, owner_write):
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, subject_id=owner_write.subject_id)
-    assert any(a.alert_key == labs_service.OUT_OF_RANGE_KEY for a in active)
+    active = await alerts_service_legacy.list_active(db_session, subject_id=owner_write.subject_id)
+    assert any(a.alert_key == lab_alerts.OUT_OF_RANGE_KEY for a in active)
 
-    await labs_service.update_result(
+    await lab_results.update_result(
         db_session,
         row.id,
         value=200,
@@ -184,8 +189,8 @@ async def test_update_result_refreshes_alerts(db_session, owner_write):
     )
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, subject_id=owner_write.subject_id)
-    assert not any(a.alert_key == labs_service.OUT_OF_RANGE_KEY for a in active)
+    active = await alerts_service_legacy.list_active(db_session, subject_id=owner_write.subject_id)
+    assert not any(a.alert_key == lab_alerts.OUT_OF_RANGE_KEY for a in active)
 
 
 async def test_update_lab_result_tool(session_factory):

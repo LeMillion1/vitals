@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -110,6 +112,67 @@ def test_platform_mutations_require_recent_authentication():
         assert require_recent_auth in dependencies, endpoint.__name__
 
 
+def test_platform_router_keeps_the_exact_public_route_manifest():
+    from fastapi.routing import APIRoute
+
+    from web.settings.platform import router
+
+    actual = {
+        (route.path, method)
+        for route in router.routes
+        if isinstance(route, APIRoute)
+        for method in route.methods
+    }
+    assert actual == {
+        ("/platform", "GET"),
+        ("/platform/ai", "GET"),
+        ("/ai", "POST"),
+        ("/platform/ai/configuration", "POST"),
+        ("/platform/ai/enable", "POST"),
+        ("/platform/ai/disable", "POST"),
+        ("/platform/ai/quota", "POST"),
+        ("/mcp", "POST"),
+        ("/platform/mcp", "POST"),
+    }
+
+
+def test_application_includes_each_platform_route_once_under_settings():
+    from web.main import app
+    from web.routers import settings
+    from web.settings import platform
+
+    expected = {
+        ("/settings/platform", "GET"),
+        ("/settings/platform/ai", "GET"),
+        ("/settings/ai", "POST"),
+        ("/settings/platform/ai/configuration", "POST"),
+        ("/settings/platform/ai/enable", "POST"),
+        ("/settings/platform/ai/disable", "POST"),
+        ("/settings/platform/ai/quota", "POST"),
+        ("/settings/mcp", "POST"),
+        ("/settings/platform/mcp", "POST"),
+    }
+    schema = app.openapi()
+    assert sum(
+        getattr(route, "original_router", None) is settings.router
+        for route in app.routes
+    ) == 1
+    assert sum(
+        getattr(route, "original_router", None) is platform.router
+        for route in settings.router.routes
+    ) == 1
+    actual = {
+        (path, method.upper())
+        for path, operations in schema["paths"].items()
+        for method in operations
+        if (path, method.upper()) in expected
+    }
+
+    assert actual == expected
+    for path, method in expected:
+        assert "settings" in schema["paths"][path][method.lower()]["tags"]
+
+
 async def test_mcp_configuration_lives_on_platform_hub(auth_client):
     personal = await auth_client.get("/settings")
     assert personal.status_code == 200
@@ -173,6 +236,111 @@ async def test_changing_mcp_client_id_revokes_live_connectors_and_audits(
     }
     assert "old-client" not in json.dumps(event.metadata_json)
     assert "new-client" not in json.dumps(event.metadata_json)
+
+
+async def test_mcp_commit_failure_restores_environment_and_rolls_back(
+    auth_client,
+    db_session,
+    legacy_owner_roots,
+    tmp_path,
+    monkeypatch,
+):
+    env_file = tmp_path / "mcp-commit-failure.env"
+    original = (
+        "VITALS_MCP_CLIENT_ID=old-client\n"
+        "VITALS_MCP_CLIENT_SECRET=old-secret\n"
+    )
+    env_file.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+    monkeypatch.setenv("VITALS_MCP_CLIENT_ID", "old-client")
+    monkeypatch.setenv("VITALS_MCP_CLIENT_SECRET", "old-secret")
+
+    now = datetime.now(timezone.utc)
+    connector = McpAccessToken(
+        user_id=legacy_owner_roots.user_id,
+        subject_id=legacy_owner_roots.subject_id,
+        client_id="old-client",
+        audience="http://test/mcp",
+        issued_at=now,
+        expires_at=now + timedelta(days=30),
+    )
+    db_session.add(connector)
+    await db_session.commit()
+    monkeypatch.setattr(
+        db_session,
+        "commit",
+        AsyncMock(side_effect=RuntimeError("synthetic MCP commit failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic MCP commit failure"):
+        await auth_client.post(
+            "/settings/platform/mcp",
+            data={"mcp_client_id": "new-client", "mcp_client_secret": "new-secret"},
+        )
+
+    assert env_file.read_text(encoding="utf-8") == original
+    assert os.environ["VITALS_MCP_CLIENT_ID"] == "old-client"
+    assert os.environ["VITALS_MCP_CLIENT_SECRET"] == "old-secret"
+    await db_session.refresh(connector)
+    assert connector.revoked_at is None
+    assert await db_session.scalar(
+        select(AuditEvent.id).where(
+            AuditEvent.event_type == "platform.mcp.configuration.updated"
+        )
+    ) is None
+
+
+async def test_mcp_failed_compensation_disables_runtime_authority(
+    auth_client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+):
+    from web.settings import platform
+
+    env_file = tmp_path / "mcp-compensation-failure.env"
+    env_file.write_text(
+        "VITALS_MCP_CLIENT_ID=old-client\n"
+        "VITALS_MCP_CLIENT_SECRET=old-secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+    monkeypatch.setenv("VITALS_MCP_CLIENT_ID", "old-client")
+    monkeypatch.setenv("VITALS_MCP_CLIENT_SECRET", "old-secret")
+    real_write_keys = platform.write_keys
+    write_count = 0
+
+    def fail_second_write(updates):
+        nonlocal write_count
+        write_count += 1
+        if write_count == 1:
+            return real_write_keys(updates)
+        raise OSError("synthetic MCP compensation failure")
+
+    monkeypatch.setattr(platform, "write_keys", fail_second_write)
+    monkeypatch.setattr(
+        db_session,
+        "commit",
+        AsyncMock(side_effect=RuntimeError("synthetic MCP commit failure")),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="platform MCP configuration could not restore its environment",
+    ):
+        await auth_client.post(
+            "/settings/platform/mcp",
+            data={"mcp_client_id": "new-client", "mcp_client_secret": "new-secret"},
+        )
+
+    assert write_count == 2
+    assert os.environ["VITALS_MCP_CLIENT_ID"] == ""
+    assert os.environ["VITALS_MCP_CLIENT_SECRET"] == ""
+    assert await db_session.scalar(
+        select(AuditEvent.id).where(
+            AuditEvent.event_type == "platform.mcp.configuration.updated"
+        )
+    ) is None
 
 
 async def test_platform_admin_save_is_value_free_in_audit(

@@ -22,21 +22,29 @@ raw provenance on the write path.
 Kept out of service-import time so importing a service for a unit test never
 mutates the global resolver registry (the test fixture clears it per test).
 """
+
 from __future__ import annotations
+
+from vitals.services.genetics import queries as genetics_queries
+
+from vitals.services.supplements import conflicts as supplement_conflicts
+
+from vitals.services.glp1 import queries as glp1_queries
+from vitals.services.nutrition import conflicts as nutrition_conflicts
+from vitals.services.skincare import conflicts as skincare_conflicts
 
 from vitals.enums import Domain
 from vitals.services.conflicts import engine
-from vitals.services import (
-    glp1_service,
-    labs_service,
-    nutrition_service,
-    skincare_service,
-    supplements_service,
-    weight_service,
-)
-from vitals.services.body_scan import scans
+
+from vitals.services.body_scan.scans import queries as body_scan_queries
 from vitals.services.hrt import records
-from vitals.services.genetics import variants
+from vitals.services.labs.results import (
+    legacy_unowned_present as labs_legacy_unowned_present,
+)
+from vitals.services.labs.results import (
+    resolve_latest_scoped as resolve_latest_labs_scoped,
+)
+from vitals.services.weight import queries as weight_queries
 
 
 def register_all_resolvers() -> None:
@@ -44,33 +52,33 @@ def register_all_resolvers() -> None:
     domain replaces it), so safe to call once per startup."""
     engine.register_domain_resolver(
         Domain.SUPPLEMENTS.value,
-        supplements_service.resolve_active_scoped,
-        legacy_probe=supplements_service.legacy_unowned_present,
+        supplement_conflicts.resolve_active_scoped,
+        legacy_probe=supplement_conflicts.legacy_unowned_present,
     )
     engine.register_domain_resolver(
         Domain.GENETICS.value,
-        variants.resolve_variants_scoped,
-        legacy_probe=variants.legacy_unowned_present,
+        genetics_queries.resolve_variants_scoped,
+        legacy_probe=genetics_queries.legacy_unowned_present,
     )
     engine.register_domain_resolver(
         Domain.SKINCARE.value,
-        skincare_service.resolve_today_scoped,
-        legacy_probe=skincare_service.legacy_unowned_present,
+        skincare_conflicts.resolve_today_scoped,
+        legacy_probe=skincare_conflicts.legacy_unowned_present,
     )
     engine.register_domain_resolver(
         Domain.GLP1.value,
-        glp1_service.resolve_active_scoped,
-        legacy_probe=glp1_service.legacy_unowned_present,
+        glp1_queries.resolve_active_scoped,
+        legacy_probe=glp1_queries.legacy_unowned_present,
     )
     engine.register_domain_resolver(
         Domain.LABS.value,
-        labs_service.resolve_latest_scoped,
-        legacy_probe=labs_service.legacy_unowned_present,
+        resolve_latest_labs_scoped,
+        legacy_probe=labs_legacy_unowned_present,
     )
     engine.register_domain_resolver(
         Domain.NUTRITION.value,
-        nutrition_service.resolve_today_scoped,
-        legacy_probe=nutrition_service.legacy_unowned_present,
+        nutrition_conflicts.resolve_today_scoped,
+        legacy_probe=nutrition_conflicts.legacy_unowned_present,
     )
     engine.register_domain_resolver(
         Domain.HRT.value,
@@ -79,11 +87,11 @@ def register_all_resolvers() -> None:
     )
     engine.register_domain_resolver(
         Domain.WEIGHT.value,
-        weight_service.resolve_active_scoped,
+        weight_queries.resolve_active_scoped,
         legacy_probe=engine.legacy_unowned_raw_present,
     )
     engine.register_domain_resolver(
         Domain.BODY_COMPOSITION.value,
-        scans.resolve_active_scoped,
+        body_scan_queries.resolve_active_scoped,
         legacy_probe=engine.legacy_unowned_raw_present,
     )

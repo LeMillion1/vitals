@@ -3,6 +3,10 @@
 defer-retest, delete."""
 from __future__ import annotations
 
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
+from vitals.services.alerts import contracts as alerts_service_contracts
+
 import logging
 from datetime import date as date_type
 from typing import Optional
@@ -15,17 +19,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from vitals.enums import (
-    AIInvocationStatus,
     Domain,
     FileAssetPurpose,
     FileStorageBackend,
 )
 from vitals.i18n import t
-from vitals.services import ai_gateway_service, alerts_service, lab_document_ai_service, labs_service
+from vitals.services.labs import ai as lab_document_ai_service
+from vitals.services.labs import alerts as lab_alerts
+from vitals.services.labs import flags as lab_flags
+from vitals.services.labs import ingestion as lab_ingestion
+from vitals.services.labs import markers as lab_markers
+from vitals.services.labs import results as lab_results
 from vitals.services.conflicts import engine
 from vitals.services.conflicts.engine import ConflictBlocked
 from web.config import get_web_config
 from web.deps import get_session, require_auth
+from web.medical_ai_upload import MedicalAIUploadReason, run_medical_ai_upload
 from web.ratelimit import rate_limit
 from web.templating import STATIC_DIR, templates
 from web.uploads import (
@@ -75,36 +84,36 @@ async def labs_dashboard(
         username=username,
         evaluation_date=today,
     )
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db,
         subject_id=conflict_context.identity.subject_id,
         identity=conflict_context.identity,
         prepared_conflict_write=prepared,
     )
 
-    latest = await labs_service.latest_per_marker(
+    latest = await lab_results.latest_per_marker(
         db,
         subject_id=conflict_context.identity.subject_id,
     )
     # Sort latest: out-of-range first (newest to oldest), then normal (newest to oldest)
     latest = sorted(
         latest,
-        key=lambda r: (labs_service.is_out_of_range(r.flag), r.date),
+        key=lambda r: (lab_flags.is_out_of_range(r.flag), r.date),
         reverse=True
     )
-    markers = await labs_service.list_markers(
+    markers = await lab_markers.list_markers(
         db,
         subject_id=conflict_context.identity.subject_id,
     )
-    alerts = await alerts_service.list_active_scoped(
+    alerts = await alerts_service_lifecycle.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(conflict_context.identity),
+        context=alerts_service_contracts.HealthAlertContext(conflict_context.identity),
         domain=Domain.LABS,
-        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        legacy_bridge=alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED,
     )
 
     selected_marker = (
-        await labs_service.get_marker(
+        await lab_markers.get_marker(
             db,
             marker,
             subject_id=conflict_context.identity.subject_id,
@@ -121,7 +130,7 @@ async def labs_dashboard(
                     row.marker
                     for row in latest
                     if marker
-                    and row.marker_key == labs_service.normalize_marker_key(marker)
+                    and row.marker_key == lab_markers.normalize_marker_key(marker)
                 ),
                 marker,
             )
@@ -130,7 +139,7 @@ async def labs_dashboard(
         )
     )
     history = (
-        await labs_service.marker_history(
+        await lab_results.marker_history(
             db,
             selected,
             subject_id=conflict_context.identity.subject_id,
@@ -139,7 +148,7 @@ async def labs_dashboard(
         else []
     )
 
-    out_of_range = sum(1 for r in latest if labs_service.is_out_of_range(r.flag))
+    out_of_range = sum(1 for r in latest if lab_flags.is_out_of_range(r.flag))
     ai_availability = await lab_document_ai_service.project_lab_ai_availability(
         db,
         actor_username=username,
@@ -188,7 +197,7 @@ async def add_result(
         evaluation_date=on_date,
     )
     try:
-        row = await labs_service.add_result(
+        row = await lab_results.add_result(
             db,
             on_date=on_date,
             marker=marker.strip(),
@@ -202,7 +211,7 @@ async def add_result(
             identity=conflict_context.identity,
             prepared_conflict_write=prepared,
         )
-        await labs_service.refresh_alerts(
+        await lab_alerts.refresh_alerts(
             db,
             subject_id=conflict_context.identity.subject_id,
             identity=conflict_context.identity,
@@ -267,17 +276,18 @@ async def upload_document(
     ext = document.extension
     contents = document.body
     storage_ref = private_storage_ref(FileAssetPurpose.LAB_DOCUMENT, ext)
-    file_written = False
-    prepared = None
-    try:
-        await run_in_threadpool(
-            write_private_file,
-            get_web_config().private_file_root,
-            storage_ref,
-            contents,
-        )
-        file_written = True
-        prepared = await lab_document_ai_service.prepare_lab_document_parse(
+    outcome = await run_medical_ai_upload(
+        db,
+        label="lab-upload",
+        logger=logger,
+        file_bytes=contents,
+        storage_ref=storage_ref,
+        private_root=get_web_config().private_file_root,
+        static_dir=STATIC_DIR,
+        write_file=write_private_file,
+        remove_file=remove_stored_file,
+        run_in_threadpool=run_in_threadpool,
+        prepare=lambda: lab_document_ai_service.prepare_lab_document_parse(
             db,
             actor_username=username,
             storage_ref=storage_ref,
@@ -285,202 +295,72 @@ async def upload_document(
             byte_size=document.byte_size,
             sha256_hex=document.sha256_hex,
             storage_backend=FileStorageBackend.PRIVATE_LOCAL,
-        )
-    except (
-        ai_gateway_service.AIGatewayConfigurationError,
-        ai_gateway_service.AIQuotaExceededError,
-    ) as exc:
-        await db.rollback()
-        if file_written:
-            await run_in_threadpool(
-                remove_stored_file,
-                storage_backend=FileStorageBackend.PRIVATE_LOCAL.value,
-                storage_ref=storage_ref,
-                static_dir=STATIC_DIR,
-                private_root=get_web_config().private_file_root,
+        ),
+        prepare_content=lambda prepared, body: (
+            lab_document_ai_service.prepare_lab_document_content(
+                prepared,
+                file_bytes=body,
             )
-        reason = (
-            "quota"
-            if isinstance(exc, ai_gateway_service.AIQuotaExceededError)
-            else "not_configured"
-        )
+        ),
+        validation_error=lab_document_ai_service.LabDocumentAIValidationError,
+        cancel=lambda prepared: (
+            lab_document_ai_service.cancel_prepared_lab_document_parse(
+                db,
+                prepared,
+            )
+        ),
+        start=lambda prepared, content: (
+            lab_document_ai_service.start_lab_document_dispatch(
+                db,
+                prepared,
+                content=content,
+            )
+        ),
+        render=lambda prepared, lease, body, content: (
+            lab_document_ai_service.render_lab_document(
+                prepared,
+                lease,
+                file_bytes=body,
+                content=content,
+            )
+        ),
+        persist=lambda prepared, completion: (
+            lab_document_ai_service.persist_lab_document_parse(
+                db,
+                prepared,
+                completion,
+            )
+        ),
+    )
+    if outcome.reason is not MedicalAIUploadReason.SUCCEEDED:
+        if outcome.reason is MedicalAIUploadReason.QUOTA:
+            message = t("labs.upload_quota")
+        elif outcome.reason is MedicalAIUploadReason.NOT_CONFIGURED:
+            message = t("labs.upload_not_configured")
+        else:
+            message = t("labs.upload_error")
         return JSONResponse(
             {
                 "ok": False,
-                "reason": reason,
-                "message": (
-                    t("labs.upload_quota")
-                    if reason == "quota"
-                    else t("labs.upload_not_configured")
-                ),
+                "reason": outcome.reason.value,
+                "message": message,
             }
         )
-    except BaseException:
-        try:
-            await db.rollback()
-        except BaseException:
-            logger.exception("Could not roll back failed lab-upload transaction")
-        if file_written:
-            try:
-                await run_in_threadpool(
-                    remove_stored_file,
-                    storage_backend=FileStorageBackend.PRIVATE_LOCAL.value,
-                    storage_ref=storage_ref,
-                    static_dir=STATIC_DIR,
-                    private_root=get_web_config().private_file_root,
-                )
-            except OSError as exc:
-                logger.warning("Could not clean up failed lab upload: %s", exc)
-        raise
 
-    try:
-        await db.commit()
-    except BaseException:
-        # A lost/cancelled COMMIT acknowledgement is not proof that PostgreSQL
-        # rolled back. Preserve the medical document so a committed metadata row
-        # can be reconciled instead of becoming an irreversible broken pointer.
-        try:
-            await db.rollback()
-        except BaseException:
-            logger.exception("Could not reset session after lab-upload commit failure")
-        logger.exception(
-            "Lab-upload preparation commit is ambiguous; preserved uploaded bytes"
-        )
-        raise
-
-    assert prepared is not None
-    if prepared.reservation_status is AIInvocationStatus.SUCCEEDED:
-        extracted = prepared.existing_extracted
-    elif not prepared.dispatchable:
-        return JSONResponse(
-            {"ok": False, "reason": "pending", "message": t("labs.upload_error")}
-        )
-    else:
-        try:
-            prepared_content = (
-                lab_document_ai_service.prepare_lab_document_content(
-                    prepared,
-                    file_bytes=contents,
-                )
-            )
-        except lab_document_ai_service.LabDocumentAIValidationError:
-            try:
-                await lab_document_ai_service.cancel_prepared_lab_document_parse(
-                    db,
-                    prepared,
-                )
-                await db.commit()
-            except Exception:
-                await db.rollback()
-                logger.warning(
-                    "Could not release a locally invalid lab AI reservation"
-                )
-            return JSONResponse(
-                {"ok": False, "reason": "error", "message": t("labs.upload_error")}
-            )
-        try:
-            lease = await lab_document_ai_service.start_lab_document_dispatch(
-                db,
-                prepared,
-                content=prepared_content,
-            )
-            await db.commit()
-        except (
-            ai_gateway_service.AIGatewayConfigurationError,
-            ai_gateway_service.AIQuotaExceededError,
-        ) as exc:
-            await db.rollback()
-            try:
-                await lab_document_ai_service.cancel_prepared_lab_document_parse(
-                    db,
-                    prepared,
-                )
-                await db.commit()
-            except Exception:
-                await db.rollback()
-                logger.warning(
-                    "Could not release a zero-network lab AI reservation"
-                )
-            reason = (
-                "quota"
-                if isinstance(exc, ai_gateway_service.AIQuotaExceededError)
-                else "not_configured"
-            )
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "reason": reason,
-                    "message": (
-                        t("labs.upload_quota")
-                        if reason == "quota"
-                        else t("labs.upload_not_configured")
-                    ),
-                }
-            )
-        completion = await lab_document_ai_service.render_lab_document(
-            prepared,
-            lease,
-            file_bytes=contents,
-            content=prepared_content,
-        )
-        result = None
-        for attempt in range(2):
-            try:
-                result = await lab_document_ai_service.persist_lab_document_parse(
-                    db,
-                    prepared,
-                    completion,
-                )
-                break
-            except Exception:
-                await db.rollback()
-                if attempt == 0:
-                    logger.warning(
-                        "Retrying transient lab AI finalization with the same "
-                        "paid completion"
-                    )
-                    continue
-                logger.exception("Lab AI finalization failed after internal retry")
-                raise
-        assert result is not None
-        try:
-            await db.commit()
-        except BaseException:
-            # If COMMIT reached PostgreSQL, rolling back locally cannot undo it.
-            # Preserve the file and surface the ambiguity instead of inviting a
-            # second paid upload with the same medical document.
-            try:
-                await db.rollback()
-            except BaseException:
-                logger.exception("Could not reset failed lab AI finalization")
-            logger.exception("Lab AI finalization commit outcome is ambiguous")
-            raise
-        if result.status is not AIInvocationStatus.SUCCEEDED:
-            logger.warning(
-                "Lab AI extraction ended with status %s",
-                result.status.value,
-            )
-            return JSONResponse(
-                {"ok": False, "reason": "error", "message": t("labs.upload_error")}
-            )
-        extracted = result.extracted
-
-    if not isinstance(extracted, dict):
-        return JSONResponse(
-            {"ok": False, "reason": "error", "message": t("labs.upload_error")}
-        )
+    extracted = outcome.extracted
+    assert extracted is not None
     try:
         lab_date = date_type.fromisoformat(str(extracted.get("date"))[:10])
     except (ValueError, TypeError):
         lab_date = today_local()
-    rows = labs_service.normalize_extracted(extracted)
+    rows = lab_ingestion.normalize_extracted(extracted)
 
     return JSONResponse({
         "ok": True,
         "lab": {
             "date": lab_date.isoformat(),
             "lab_name": extracted.get("lab_name"),
-            "raw_payload_id": prepared.raw_payload_id,
+            "raw_payload_id": outcome.raw_payload_id,
             "markers": rows,
         },
     })
@@ -505,7 +385,7 @@ async def labs_confirm(
         evaluation_date=on_date,
     )
     try:
-        created = await labs_service.confirm_extracted(
+        created = await lab_ingestion.confirm_extracted(
             db,
             on_date=on_date,
             markers=[m.model_dump() for m in payload.markers],
@@ -516,7 +396,7 @@ async def labs_confirm(
             identity=conflict_context.identity,
             prepared_conflict_write=prepared,
         )
-        await labs_service.refresh_alerts(
+        await lab_alerts.refresh_alerts(
             db,
             subject_id=conflict_context.identity.subject_id,
             identity=conflict_context.identity,
@@ -551,11 +431,12 @@ async def defer_marker(
         username=username,
         evaluation_date=today_local(),
     )
-    await labs_service.defer_retest(
+    await lab_alerts.defer_retest(
         db,
         name,
         until=date_type.fromisoformat(until),
         note=note,
+        subject_id=conflict_context.identity.subject_id,
         identity=conflict_context.identity,
         prepared_conflict_write=prepared,
     )
@@ -577,9 +458,10 @@ async def delete_result(
         username=username,
         evaluation_date=today_local(),
     )
-    await labs_service.delete_result(
+    await lab_results.delete_result(
         db,
         result_id,
+        subject_id=conflict_context.identity.subject_id,
         identity=conflict_context.identity,
         prepared_conflict_write=prepared,
     )

@@ -31,7 +31,7 @@ class GeneticVariant(Base, RequiredSubjectOwnershipMixin, OriginActorMixin, Time
     # that happened on a date — there is nothing to put in ``date``, and a fake one
     # would pollute every ``(domain, date)`` timeline query. That is why genetics is
     # the one domain the exporter handles as a special case instead of the generic
-    # dated walk (see ``data_portability_service.export_llm``).
+    # dated walk (see ``portability.llm_projection.export_llm``).
     __tablename__ = "genetic_variants"
     __table_args__ = (
         Index("ix_genetic_variants_marker", "marker"),

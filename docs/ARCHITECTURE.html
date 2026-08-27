@@ -350,7 +350,7 @@ tbody tr:hover td { background: var(--surface-2); }
     <span><b>88</b> tables</span>
     <span><b>84</b> migrations · head 0084</span>
     <span><b>14</b> domains</span>
-    <span><b>103</b> application services</span>
+    <span><b>232</b> application services</span>
     <span><b>71</b> RLS tables</span>
     <span>Reviewed <b>2026-08-27</b></span>
   </div>
@@ -436,9 +436,9 @@ flowchart TB
 <pre class="mermaid">
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"13px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
 flowchart LR
-  web["<b>Web process</b><br/><span style='font-size:11px'>34 routers · HTMX UI<br/>MCP + external API · no scheduler</span>"]
+  web["<b>Web process</b><br/><span style='font-size:11px'>37 routers · HTMX UI<br/>MCP + external API · no scheduler</span>"]
   worker["<b>Worker process</b><br/><span style='font-size:11px'>16 APScheduler jobs · 11 fan-out<br/>no published HTTP port</span>"]
-  svc["<b>Shared core</b><br/><span style='font-size:11px'>103 tracked service modules<br/>authorization + business rules</span>"]
+  svc["<b>Shared core</b><br/><span style='font-size:11px'>232 tracked service modules<br/>authorization + business rules</span>"]
   idp["<b>ZITADEL</b><br/><span style='font-size:11px'>PostgreSQL · API · Login V2<br/>separate recovery stream</span>"]
 
   pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>88 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]

@@ -25,9 +25,9 @@ from sqlalchemy.pool import NullPool
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.operations.ownership import portability_v1
-from vitals.services import data_portability_service
+from vitals.services.portability import v1_export
 from vitals.services.conflicts import catalog as conflict_catalog
-from vitals.services.body_scan import scans
+from vitals.services.body_scan.scans import queries as body_scan_queries
 from vitals.services.hrt import catalog
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,
@@ -433,7 +433,7 @@ async def _delete_live_scan(engine: AsyncEngine) -> None:
 async def _round_trip_portability_v1(engine: AsyncEngine) -> None:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
-        snapshot = await data_portability_service.export_full(session)
+        snapshot = await v1_export.export_full(session)
         await portability_v1.import_full(session, snapshot)
         await session.commit()
 
@@ -623,7 +623,7 @@ async def test_real_postgres_0034_body_scan_stop_resume_and_restore(
             # The backfill is halfway: body_comp is closed, so the reader
             # shows exactly the rows that already carry the subject and none of
             # the ones still waiting for the next batch.
-            visible = await scans.list_scans(
+            visible = await body_scan_queries.list_scans(
                 session,
                 subject_id=identity.subject_id,
             )

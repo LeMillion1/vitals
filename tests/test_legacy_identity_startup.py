@@ -13,7 +13,7 @@ from vitals.models.scoped_settings import SubjectSetting
 from vitals.persistence.rls import bound_subject, in_platform_scope
 from vitals.services import modules_service
 from vitals.services.identity_bootstrap import LegacyOwnerIdentityMismatchError
-from vitals.services.proactive import prefs
+from vitals.services.proactive.preferences import codec as preference_codec
 from vitals.services.scoped_settings_service import ScopedSettingKey
 from vitals.utils.passwords import hash_password
 from web.main import _bootstrap_legacy_identity, _load_oidc_identity_state
@@ -47,7 +47,7 @@ async def test_startup_boundary_commits_the_configured_legacy_owner(
     )
     assert module_policy is not None
     assert module_policy.value == modules_service.DEFAULT_STATE
-    assert preference_bundle.as_flat_dict() == prefs.sanitize(None)
+    assert preference_bundle.as_flat_dict() == preference_codec.sanitize(None)
     assert bound_subject(db_session) == subject_id
     assert not in_platform_scope(db_session)
 

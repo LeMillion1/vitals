@@ -20,19 +20,32 @@ still listed fails too, so the list cannot quietly go stale.
 
 from __future__ import annotations
 
+from vitals.services.digest.projection import assembly as digest_projection
+
+from datetime import date
+
 import pytest
 
-from vitals.enums import UserRoleName, UserStatus
+from vitals.enums import (
+    Domain,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    Source,
+    UserRoleName,
+    UserStatus,
+)
+from vitals.models.hevy import HevyWorkout
 from vitals.models.identity import HealthSubject, User, UserRole
+from vitals.models.tenancy import IntegrationConnection
+from vitals.models.weight import WeightLog
 
 
-#: What still refuses in a shared installation. One entry left, and it is not a
-#: gate: backup format v1 describes an installation holding one person, so with
-#: several it has nothing honest to write and says so, naming the per-subject
-#: export that does work.
-STILL_SOLE_SUBJECT = {
-    "/settings/export",
-}
+#: What still reaches a sole-subject compatibility bridge. Full portability-v1
+#: export is now authorized as an installation operation before its format
+#: check, so ordinary record owners receive the operator-policy answer instead
+#: of entering this backlog.
+STILL_SOLE_SUBJECT: set[str] = set()
 
 #: Not about this migration: these answer for their own reasons and are checked
 #: only for not crashing.
@@ -89,14 +102,14 @@ async def second_person(db_session):
     )
     db_session.add(owner)
     await db_session.flush()
-    db_session.add(
-        HealthSubject(
-            owner_user_id=owner.id,
-            display_name="Second person",
-            timezone="Europe/Chisinau",
-        )
+    subject = HealthSubject(
+        owner_user_id=owner.id,
+        display_name="Second person",
+        timezone="Europe/Chisinau",
     )
+    db_session.add(subject)
     await db_session.commit()
+    return subject
 
 
 async def test_no_page_answers_with_a_stack_trace(
@@ -228,7 +241,6 @@ async def test_each_patients_report_describes_that_patient(
 
     from sqlalchemy import select
 
-    from vitals.services import digest_service
 
     other_subject_id = await db_session.scalar(
         select(HealthSubject.id).where(
@@ -237,18 +249,102 @@ async def test_each_patients_report_describes_that_patient(
     )
     assert other_subject_id is not None
 
-    owner = await digest_service.assemble_context(
+    owner = await digest_projection.assemble_context(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
     assert owner["user_profile"]["height_cm"] is not None
     assert owner["user_profile"]["age"] is not None
 
-    other = await digest_service.assemble_context(
+    other = await digest_projection.assemble_context(
         db_session, subject_id=other_subject_id
     )
     assert other["user_profile"]["age"] is None
     assert other["user_profile"]["height_cm"] is None
     assert other["user_profile"]["program"] is None
+
+
+async def test_hevy_dashboard_reads_only_the_signed_in_subject(
+    auth_client,
+    db_session,
+    legacy_owner_roots,
+    second_person,
+    hevy_connection_id,
+):
+    other_connection = IntegrationConnection(
+        subject_id=second_person.id,
+        provider=IntegrationProvider.HEVY.value,
+        connection_type=IntegrationConnectionType.ACCOUNT.value,
+        external_account_discriminator="shared-page-hevy-other",
+        credential_ref="test:shared-page-hevy-other",
+        status=IntegrationConnectionStatus.ACTIVE.value,
+    )
+    db_session.add(other_connection)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            HevyWorkout(
+                subject_id=legacy_owner_roots.subject_id,
+                integration_connection_id=hevy_connection_id,
+                date=date(2026, 8, 1),
+                domain=Domain.WORKOUTS.value,
+                source=Source.HEVY_API.value,
+                external_id="shared-page-hevy-mine",
+                title="My scoped Hevy workout",
+            ),
+            HevyWorkout(
+                subject_id=second_person.id,
+                integration_connection_id=other_connection.id,
+                date=date(2026, 8, 20),
+                domain=Domain.WORKOUTS.value,
+                source=Source.HEVY_API.value,
+                external_id="shared-page-hevy-other",
+                title="FOREIGN HEVY WORKOUT MUST NOT LEAK",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    response = await auth_client.get("/hevy", headers={"Accept": "text/html"})
+
+    assert response.status_code == 200
+    assert "My scoped Hevy workout" in response.text
+    assert "FOREIGN HEVY WORKOUT MUST NOT LEAK" not in response.text
+
+
+async def test_share_earliest_date_reads_only_the_prepared_owner(
+    db_session, legacy_owner_roots, second_person
+):
+    from vitals.services.share import ownership, queries
+    from web.config import get_web_config
+
+    db_session.add_all(
+        [
+            WeightLog(
+                subject_id=legacy_owner_roots.subject_id,
+                date=date(2026, 3, 1),
+                domain=Domain.WEIGHT.value,
+                source=Source.MANUAL.value,
+                weight_kg=80.0,
+            ),
+            WeightLog(
+                subject_id=second_person.id,
+                date=date(2020, 1, 1),
+                domain=Domain.WEIGHT.value,
+                source=Source.MANUAL.value,
+                weight_kg=90.0,
+            ),
+        ]
+    )
+    await db_session.flush()
+    prepared = await ownership.prepare_legacy_owner(
+        db_session, actor_username=get_web_config().auth_username
+    )
+
+    earliest = await queries.earliest_data_date(
+        db_session, prepared_owner=prepared
+    )
+
+    assert earliest == date(2026, 3, 1)
 
 
 async def test_an_account_without_a_record_is_offered_no_personal_section(

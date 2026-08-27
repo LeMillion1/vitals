@@ -2,11 +2,15 @@
 enzymes) and hrt ↔ skincare (peel over androgen-driven acne)."""
 from __future__ import annotations
 
+from vitals.services.glp1 import writes as glp1_writes
+from vitals.services.skincare import writes as skincare_writes
+
 from sqlalchemy import select
 
 from vitals.enums import Domain
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import glp1_service, labs_service, skincare_service
+import vitals.services.labs.results as lab_results
+
 from vitals.services.conflicts import catalog as conflict_catalog
 from vitals.services.conflicts import engine, registrations
 from vitals.services.hrt import catalog
@@ -26,7 +30,7 @@ async def _glp1_on_lipase(db_session, owner_write, *, value: float):
     # GLP-1 is closed, so the dose phase is written and read inside the
     # subject's scope; labs is still bridged and keeps its legacy resolver.
     registrations.register_all_resolvers()
-    await glp1_service.add_dose_phase(
+    await glp1_writes.add_dose_phase(
         db_session,
         start_date=today_local(),
         drug="semaglutide",
@@ -34,7 +38,7 @@ async def _glp1_on_lipase(db_session, owner_write, *, value: float):
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(today_local()),
     )
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session, on_date=today_local(), marker="Липаза", value=value,
         ref_low=0, ref_high=60,
         identity=owner_write.identity,
@@ -70,7 +74,7 @@ async def _androgen_over_skincare(db_session, *, peel: bool, owner_write):
     await conflict_catalog.sync_catalog(db_session)
     # A scoped write consults every registered domain, so register them all.
     registrations.register_all_resolvers()
-    await skincare_service.upsert_log(
+    await skincare_writes.upsert_log(
         db_session, on_date=today_local(), peel=peel, moisturizer=True,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(today_local()),

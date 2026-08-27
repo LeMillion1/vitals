@@ -1,6 +1,12 @@
 """Stage-2 ownership gates for Timeline annotations and Supplements CRUD."""
 from __future__ import annotations
 
+from vitals.services.milestones import governance as milestone_governance
+from vitals.services.supplements import queries as supplement_queries
+from vitals.services.supplements import writes as supplement_writes
+from vitals.services.timeline import annotations as timeline_annotations
+from vitals.services.timeline import events as timeline_events
+
 import ast
 import uuid
 from datetime import date, datetime
@@ -37,7 +43,7 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.timeline import Annotation
 from vitals.models.weight import NoiseMarker, ProgressPhoto
 from vitals.ownership import WriteIdentity
-from vitals.services import milestones_service, supplements_service, timeline_service
+
 from vitals.services.conflicts import engine
 
 
@@ -284,7 +290,7 @@ async def _prepared_supplement_write(
 
 async def _add_owned_supplement(session, identity: WriteIdentity, **kwargs):
     prepared = await _prepared_supplement_write(session, identity)
-    return await supplements_service.add_supplement(
+    return await supplement_writes.add_supplement(
         session,
         identity=identity,
         prepared_conflict_write=prepared,
@@ -338,14 +344,14 @@ async def test_each_derived_timeline_selector_rejects_cross_subject_rows(
 
     owner_refs = {
         event.ref
-        for event in await timeline_service.list_events(
+        for event in await timeline_events.list_events(
             db_session,
             subject_id=owner.subject_id,
         )
     }
     foreign_refs = {
         event.ref
-        for event in await timeline_service.list_events(
+        for event in await timeline_events.list_events(
             db_session,
             subject_id=foreign.subject_id,
         )
@@ -386,7 +392,7 @@ async def test_no_derived_timeline_selector_can_reach_an_unowned_row(
 
     scoped_refs = {
         event.ref
-        for event in await timeline_service.list_events(
+        for event in await timeline_events.list_events(
             db_session,
             subject_id=owner.subject_id,
         )
@@ -412,8 +418,8 @@ async def test_derived_timeline_bridge_rejects_partial_actor_roots(
     # half-migrated row rather than passing over it. Every other selector now
     # simply cannot see one.
     if selector == "milestone":
-        with pytest.raises(milestones_service.MilestoneOwnershipError):
-            await timeline_service.list_events(
+        with pytest.raises(milestone_governance.MilestoneOwnershipError):
+            await timeline_events.list_events(
                 db_session,
                 subject_id=owner.subject_id,
             )
@@ -421,7 +427,7 @@ async def test_derived_timeline_bridge_rejects_partial_actor_roots(
 
     refs = {
         event.ref
-        for event in await timeline_service.list_events(
+        for event in await timeline_events.list_events(
             db_session,
             subject_id=owner.subject_id,
         )
@@ -460,7 +466,7 @@ async def test_derived_timeline_bridge_rejects_partial_file_roots(
 
     refs = {
         event.ref
-        for event in await timeline_service.list_events(
+        for event in await timeline_events.list_events(
             db_session,
             subject_id=owner.subject_id,
         )
@@ -507,7 +513,7 @@ async def test_derived_timeline_never_reaches_an_unowned_row_through_its_raw(
 
     refs = {
         event.ref
-        for event in await timeline_service.list_events(
+        for event in await timeline_events.list_events(
             db_session,
             subject_id=owner.subject_id,
         )
@@ -587,7 +593,7 @@ async def test_timeline_drops_stage3a_history_that_kept_no_subject(
 
     refs = {
         event.ref
-        for event in await timeline_service.list_events(
+        for event in await timeline_events.list_events(
             db_session,
             subject_id=owner.subject_id,
         )
@@ -656,7 +662,7 @@ async def test_timeline_provider_history_requires_exclusive_subject_connection(
 
     refs = {
         event.ref
-        for event in await timeline_service.list_events(
+        for event in await timeline_events.list_events(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -688,7 +694,7 @@ async def test_timeline_provider_history_requires_exclusive_subject_connection(
     await db_session.flush()
     mixed_refs = {
         event.ref
-        for event in await timeline_service.list_events(
+        for event in await timeline_events.list_events(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -717,12 +723,12 @@ async def test_direct_legacy_bridge_rejects_partial_actor_roots(db_session):
     db_session.add_all([annotation, supplement])
     await db_session.flush()
 
-    assert await timeline_service.get_annotation(
+    assert await timeline_annotations.get_annotation(
         db_session,
         annotation.id,
         subject_id=owner.subject_id,
     ) is None
-    assert await timeline_service.update_annotation(
+    assert await timeline_annotations.update_annotation(
         db_session,
         annotation.id,
         title="Must not mutate",
@@ -731,12 +737,12 @@ async def test_direct_legacy_bridge_rejects_partial_actor_roots(db_session):
         domain=annotation.domain,
         identity=owner,
     ) is None
-    assert await timeline_service.delete_annotation(
+    assert await timeline_annotations.delete_annotation(
         db_session,
         annotation.id,
         identity=owner,
     ) is False
-    assert await supplements_service.get_supplement(
+    assert await supplement_queries.get_supplement(
         db_session,
         supplement.id,
         subject_id=owner.subject_id,
@@ -745,7 +751,7 @@ async def test_direct_legacy_bridge_rejects_partial_actor_roots(db_session):
     # the scoped write finds nothing to change rather than refusing a bridge.
     partial_prepared = await _prepared_supplement_write(db_session, owner)
     assert (
-        await supplements_service.set_active(
+        await supplement_writes.set_active(
             db_session,
             supplement.id,
             False,
@@ -754,7 +760,7 @@ async def test_direct_legacy_bridge_rejects_partial_actor_roots(db_session):
         )
         is None
     )
-    assert await supplements_service.delete_supplement(
+    assert await supplement_writes.delete_supplement(
         db_session,
         supplement.id,
         identity=owner,
@@ -766,7 +772,7 @@ async def test_direct_legacy_bridge_rejects_partial_actor_roots(db_session):
 async def test_owned_creates_and_updates_preserve_provenance(db_session):
     identity = await _identity(db_session, "ownership-provenance")
 
-    annotation = await timeline_service.create_annotation(
+    annotation = await timeline_annotations.create_annotation(
         db_session,
         title="Private annotation",
         on_date=date(2026, 8, 19),
@@ -796,7 +802,7 @@ async def test_owned_creates_and_updates_preserve_provenance(db_session):
         db_session,
         system_identity,
     )
-    await timeline_service.update_annotation(
+    await timeline_annotations.update_annotation(
         db_session,
         annotation.id,
         title="Updated annotation",
@@ -805,7 +811,7 @@ async def test_owned_creates_and_updates_preserve_provenance(db_session):
         domain=annotation.domain,
         identity=system_identity,
     )
-    await supplements_service.update_supplement(
+    await supplement_writes.update_supplement(
         db_session,
         supplement.id,
         name="Creatine monohydrate",
@@ -828,7 +834,7 @@ async def test_owned_creates_and_updates_preserve_provenance(db_session):
 async def test_crud_and_timeline_feed_reject_cross_subject_ids(db_session):
     first = await _identity(db_session, "ownership-first")
     second = await _identity(db_session, "ownership-second")
-    annotation = await timeline_service.create_annotation(
+    annotation = await timeline_annotations.create_annotation(
         db_session,
         title="First subject annotation",
         on_date=date(2026, 8, 19),
@@ -840,10 +846,10 @@ async def test_crud_and_timeline_feed_reject_cross_subject_ids(db_session):
         name="First subject supplement",
     )
 
-    assert await timeline_service.get_annotation(
+    assert await timeline_annotations.get_annotation(
         db_session, annotation.id, subject_id=second.subject_id
     ) is None
-    assert await timeline_service.update_annotation(
+    assert await timeline_annotations.update_annotation(
         db_session,
         annotation.id,
         title="Forged",
@@ -852,15 +858,15 @@ async def test_crud_and_timeline_feed_reject_cross_subject_ids(db_session):
         domain=annotation.domain,
         identity=second,
     ) is None
-    assert await timeline_service.delete_annotation(
+    assert await timeline_annotations.delete_annotation(
         db_session, annotation.id, identity=second
     ) is False
 
-    assert await supplements_service.get_supplement(
+    assert await supplement_queries.get_supplement(
         db_session, supplement.id, subject_id=second.subject_id
     ) is None
     second_prepared = await _prepared_supplement_write(db_session, second)
-    assert await supplements_service.update_supplement(
+    assert await supplement_writes.update_supplement(
         db_session,
         supplement.id,
         name="Forged",
@@ -868,21 +874,21 @@ async def test_crud_and_timeline_feed_reject_cross_subject_ids(db_session):
         identity=second,
         prepared_conflict_write=second_prepared,
     ) is None
-    assert await supplements_service.set_active(
+    assert await supplement_writes.set_active(
         db_session,
         supplement.id,
         False,
         identity=second,
         prepared_conflict_write=second_prepared,
     ) is None
-    assert await supplements_service.delete_supplement(
+    assert await supplement_writes.delete_supplement(
         db_session, supplement.id, identity=second
     ) is False
 
-    first_events = await timeline_service.list_events(
+    first_events = await timeline_events.list_events(
         db_session, subject_id=first.subject_id
     )
-    second_events = await timeline_service.list_events(
+    second_events = await timeline_events.list_events(
         db_session, subject_id=second.subject_id
     )
     assert len(first_events) == 2
@@ -922,17 +928,17 @@ async def test_legacy_null_rows_are_outside_every_scope(db_session):
     await db_session.flush()
 
     assert list(
-        await timeline_service.list_annotations(
+        await timeline_annotations.list_annotations(
             db_session, subject_id=identity.subject_id
         )
     ) == []
     assert list(
-        await supplements_service.list_supplements(
+        await supplement_queries.list_supplements(
             db_session, subject_id=identity.subject_id
         )
     ) == []
 
-    assert await timeline_service.update_annotation(
+    assert await timeline_annotations.update_annotation(
         db_session,
         legacy_annotation.id,
         title="Adopted annotation",
@@ -1246,9 +1252,8 @@ def test_production_callsite_inventory_requires_owned_boundaries():
     }
     assert unscoped_reads == _KNOWN_LEGACY_READERS
 
-    source = (Path(__file__).resolve().parents[1] / "web/routers/mcp.py").read_text(
-        encoding="utf-8"
-    )
-    assert 'elif domain == "timeline":' in source
-    assert 'elif domain == "supplements":' in source
+    source = (
+        Path(__file__).resolve().parents[1] / "web/mcp/tools/records.py"
+    ).read_text(encoding="utf-8")
+    assert 'elif domain in {"supplements", "timeline"}:' in source
     assert '"identity": ownership.owner_action()' in source

@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services import share_service
+from vitals.services.share import ownership, queries, reports, snapshot
 from vitals.utils.timeutils import now_local, today_local
 from web.deps import get_session, require_auth
 from web.ratelimit import rate_limit
@@ -40,36 +40,36 @@ async def _page(
     status_code: int = status.HTTP_200_OK,
 ) -> Response:
     enabled = getattr(request.state, "enabled_modules", None) or {}
-    owner = await share_service.prepare_legacy_owner(
+    owner = await ownership.prepare_legacy_owner(
         db,
         actor_username=username,
     )
-    reports = await share_service.list_reports(db, prepared_owner=owner)
+    report_rows = await reports.list_reports(db, prepared_owner=owner)
     # The form opens on the last report's selection. That is the personal preset,
     # without a table to store one in: the next appointment is usually the same
     # shape as the last one.
-    last = reports[0] if reports else None
-    default_start, default_end = share_service.default_period()
+    last = report_rows[0] if report_rows else None
+    default_start, default_end = queries.default_period()
     return templates.TemplateResponse(
         request,
         "share/index.html",
         {
             "username": username,
-            "reports": reports,
-            "available": share_service.available_domains(enabled),
+            "reports": report_rows,
+            "available": snapshot.available_domains(enabled),
             # Each preset already narrowed to what this install can publish, so
             # picking one can never tick a switched-off module's box.
             "presets": {
                 key: {
-                    "domains": share_service.resolve_domains(spec["domains"], enabled),
+                    "domains": snapshot.resolve_domains(spec["domains"], enabled),
                     "labs_flagged_only": spec["labs_flagged_only"],
                 }
-                for key, spec in share_service.PRESETS.items()
+                for key, spec in snapshot.PRESETS.items()
             },
-            "period_choices": share_service.PERIOD_CHOICES,
-            "expiry_choices": share_service.EXPIRY_CHOICES,
-            "default_expiry": share_service.DEFAULT_EXPIRY_DAYS,
-            "selected": list(last.domains) if last else share_service.available_domains(enabled),
+            "period_choices": snapshot.PERIOD_CHOICES,
+            "expiry_choices": snapshot.EXPIRY_CHOICES,
+            "default_expiry": snapshot.DEFAULT_EXPIRY_DAYS,
+            "selected": list(last.domains) if last else snapshot.available_domains(enabled),
             "flagged_only": bool(last.labs_flagged_only) if last else False,
             "default_start": default_start.isoformat(),
             "default_end": default_end.isoformat(),
@@ -100,7 +100,7 @@ async def create(
     period: str = Form("90"),
     period_start: Optional[str] = Form(None),
     period_end: Optional[str] = Form(None),
-    expires_days: int = Form(share_service.DEFAULT_EXPIRY_DAYS),
+    expires_days: int = Form(snapshot.DEFAULT_EXPIRY_DAYS),
     labs_flagged_only: bool = Form(False),
     note: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_session),
@@ -115,7 +115,7 @@ async def create(
     string the owner copies within five seconds.
     """
     enabled = getattr(request.state, "enabled_modules", None) or {}
-    chosen = share_service.resolve_domains(domains, enabled)
+    chosen = snapshot.resolve_domains(domains, enabled)
     if not chosen:
         return await _page(
             request, db, username, error="share.error.no_sections",
@@ -137,13 +137,13 @@ async def create(
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
     elif period == "all":
-        owner = await share_service.prepare_legacy_owner(
+        owner = await ownership.prepare_legacy_owner(
             db,
             actor_username=username,
         )
-        _, end = share_service.window_for(1)
+        _, end = queries.window_for(1)
         start = (
-            await share_service.earliest_data_date(db, prepared_owner=owner)
+            await queries.earliest_data_date(db, prepared_owner=owner)
             or end
         )
     else:
@@ -151,15 +151,15 @@ async def create(
             days = int(period)
         except ValueError:
             days = 90
-        start, end = share_service.window_for(days)
+        start, end = queries.window_for(days)
 
     if period != "all":
-        owner = await share_service.prepare_legacy_owner(
+        owner = await ownership.prepare_legacy_owner(
             db,
             actor_username=username,
         )
 
-    row, password = await share_service.create_report(
+    row, password = await reports.create_report(
         db,
         title=title,
         domains=chosen,
@@ -199,11 +199,11 @@ async def revoke(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    owner = await share_service.prepare_legacy_owner(
+    owner = await ownership.prepare_legacy_owner(
         db,
         actor_username=username,
     )
-    await share_service.revoke(db, report_id, prepared_owner=owner)
+    await reports.revoke(db, report_id, prepared_owner=owner)
     await db.commit()
     return RedirectResponse(url="/share", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -214,11 +214,11 @@ async def delete(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    owner = await share_service.prepare_legacy_owner(
+    owner = await ownership.prepare_legacy_owner(
         db,
         actor_username=username,
     )
-    await share_service.delete_report(db, report_id, prepared_owner=owner)
+    await reports.delete_report(db, report_id, prepared_owner=owner)
     await db.commit()
     return RedirectResponse(url="/share", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -233,11 +233,11 @@ async def download(
     """The same document as a file — for handing over on a stick, or printing
     somewhere with no network. Everything is already inline, so there is nothing
     to bundle."""
-    owner = await share_service.prepare_legacy_owner(
+    owner = await ownership.prepare_legacy_owner(
         db,
         actor_username=username,
     )
-    row = await share_service.get_report(
+    row = await reports.get_report(
         db,
         report_id,
         prepared_owner=owner,

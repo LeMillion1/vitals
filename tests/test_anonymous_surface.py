@@ -165,7 +165,7 @@ async def an_owned_asset(db_session, owner_write, an_uploaded_file):
     from datetime import date
 
     from vitals.enums import FileAssetPurpose
-    from vitals.services import file_asset_service, weight_service
+    from vitals.services import file_asset_service, weight as weight_domain
 
     file_key = f"uploads/{an_uploaded_file}"
     asset = await file_asset_service.register_legacy_local(
@@ -178,7 +178,7 @@ async def an_owned_asset(db_session, owner_write, an_uploaded_file):
         size_bytes=15,
         content_sha256=hashlib.sha256(b"lab sheet bytes").hexdigest(),
     )
-    await weight_service.add_progress_photo(
+    await weight_domain.photos.add_progress_photo(
         db_session,
         on_date=date(2026, 8, 20),
         file_key=file_key,

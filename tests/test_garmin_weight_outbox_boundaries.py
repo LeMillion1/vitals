@@ -1,4 +1,5 @@
 """Production-boundary contracts for the scoped Garmin Weight outbox."""
+
 from __future__ import annotations
 
 import asyncio
@@ -28,8 +29,14 @@ from vitals.models.scoped_settings import IntegrationConnectionSetting
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import garmin_service, garmin_weight_service, weight_service
+from vitals.services import weight as weight_domain
+from vitals.services.garmin_weight import contracts as garmin_weight_contracts
+from vitals.services.garmin_weight import dispatch as garmin_weight_dispatch
+from vitals.services.garmin_weight import jobs as garmin_weight_jobs
+from vitals.services.garmin_weight import outbox as garmin_weight_outbox
+from vitals.services.garmin_weight import settings as garmin_weight_settings
 from vitals.services.conflicts import engine
+from vitals.services.garmin import alerts as garmin_alerts
 from vitals.services.scoped_settings_service import ScopedSettingKey
 
 
@@ -68,8 +75,8 @@ async def _connection(
 def _export_context(
     identity: WriteIdentity,
     garmin: IntegrationConnection,
-) -> garmin_weight_service.GarminWeightExportContext:
-    return garmin_weight_service.GarminWeightExportContext(
+) -> garmin_weight_contracts.GarminWeightExportContext:
+    return garmin_weight_contracts.GarminWeightExportContext(
         identity=identity,
         integration_connection_id=garmin.id,
         legacy_bridge=engine.LegacyConflictBridge.FULLY_UNOWNED,
@@ -135,7 +142,7 @@ async def test_weight_capability_projects_exact_destination_without_rewriting_sc
     await db_session.flush()
 
     export_context = _export_context(identity, garmin)
-    prepared = await weight_service.prepare_weight_write(
+    prepared = await weight_domain.governance.prepare_weight_write(
         db_session,
         context=_conflict_context(identity),
         garmin_weight_export_context=export_context,
@@ -144,7 +151,7 @@ async def test_weight_capability_projects_exact_destination_without_rewriting_sc
     assert prepared.garmin_weight_export is not None
     assert prepared.garmin_weight_export.context == export_context
 
-    weight = await weight_service.log_weight(
+    weight = await weight_domain.writes.log_weight(
         db_session,
         on_date=DAY,
         weight_kg=81.25,
@@ -193,8 +200,8 @@ async def test_fresh_capability_rejects_inactive_connection(
     garmin.status = status.value
     await db_session.flush()
 
-    with pytest.raises(garmin_weight_service.GarminWeightExportOwnershipError):
-        await garmin_weight_service.prepare_scoped_export(
+    with pytest.raises(garmin_weight_contracts.GarminWeightExportOwnershipError):
+        await garmin_weight_outbox.prepare_scoped_export(
             db_session,
             context=_export_context(identity, garmin),
             historical=False,
@@ -224,27 +231,30 @@ async def test_historical_capability_can_read_and_disable_closed_connection(
     if status is IntegrationConnectionStatus.RETIRED:
         garmin.retired_at = NOW
     await db_session.flush()
-    context = garmin_weight_service.GarminWeightExportContext(
+    context = garmin_weight_contracts.GarminWeightExportContext(
         identity=identity,
         integration_connection_id=garmin.id,
         legacy_bridge=engine.LegacyConflictBridge.REJECT,
     )
-    prepared = await garmin_weight_service.prepare_scoped_export(
+    prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=context,
         historical=True,
     )
 
-    status_projection = await garmin_weight_service.get_status_scoped(
+    status_projection = await garmin_weight_jobs.get_status_scoped(
         db_session,
         prepared=prepared,
     )
     assert status_projection["enabled"] is True
-    assert await garmin_weight_service.set_enabled_scoped(
-        db_session,
-        False,
-        prepared=prepared,
-    ) is False
+    assert (
+        await garmin_weight_settings.set_enabled_scoped(
+            db_session,
+            False,
+            prepared=prepared,
+        )
+        is False
+    )
     scoped = await db_session.get(
         IntegrationConnectionSetting,
         (garmin.id, ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED.value),
@@ -265,8 +275,8 @@ async def test_historical_capability_rejects_pending_connection(
     garmin.status = IntegrationConnectionStatus.PENDING.value
     await db_session.flush()
 
-    with pytest.raises(garmin_weight_service.GarminWeightExportOwnershipError):
-        await garmin_weight_service.prepare_scoped_export(
+    with pytest.raises(garmin_weight_contracts.GarminWeightExportOwnershipError):
+        await garmin_weight_outbox.prepare_scoped_export(
             db_session,
             context=_export_context(identity, garmin),
             historical=True,
@@ -284,7 +294,7 @@ async def test_capability_rejects_cross_session_and_closed_savepoint(
         provider=IntegrationProvider.GARMIN,
     )
     context = _export_context(identity, garmin)
-    prepared = await garmin_weight_service.prepare_scoped_export(
+    prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=context,
         historical=True,
@@ -298,21 +308,21 @@ async def test_capability_rejects_cross_session_and_closed_savepoint(
         expire_on_commit=False,
     )
     async with factory() as other_session:
-        with pytest.raises(garmin_weight_service.GarminWeightExportPreparedError):
-            await garmin_weight_service.get_status_scoped(
+        with pytest.raises(garmin_weight_contracts.GarminWeightExportPreparedError):
+            await garmin_weight_jobs.get_status_scoped(
                 other_session,
                 prepared=prepared,
             )
 
     nested = await db_session.begin_nested()
-    nested_prepared = await garmin_weight_service.prepare_scoped_export(
+    nested_prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=context,
         historical=True,
     )
     await nested.commit()
-    with pytest.raises(garmin_weight_service.GarminWeightExportPreparedError):
-        await garmin_weight_service.get_status_scoped(
+    with pytest.raises(garmin_weight_contracts.GarminWeightExportPreparedError):
+        await garmin_weight_jobs.get_status_scoped(
             db_session,
             prepared=nested_prepared,
         )
@@ -347,7 +357,7 @@ async def test_pg_scoped_capability_preparation_serializes_root_lock_order(
 
     async def hold_first() -> None:
         async with factory() as session:
-            await garmin_weight_service.prepare_scoped_export(
+            await garmin_weight_outbox.prepare_scoped_export(
                 session,
                 context=context,
                 historical=True,
@@ -358,7 +368,7 @@ async def test_pg_scoped_capability_preparation_serializes_root_lock_order(
 
     async def prepare_second() -> None:
         async with factory() as session:
-            await garmin_weight_service.prepare_scoped_export(
+            await garmin_weight_outbox.prepare_scoped_export(
                 session,
                 context=context,
                 historical=True,
@@ -401,19 +411,19 @@ async def test_strict_scope_rejects_fully_null_legacy_outbox(
         )
     )
     await db_session.flush()
-    context = garmin_weight_service.GarminWeightExportContext(
+    context = garmin_weight_contracts.GarminWeightExportContext(
         identity=identity,
         integration_connection_id=garmin.id,
         legacy_bridge=engine.LegacyConflictBridge.REJECT,
     )
-    prepared = await garmin_weight_service.prepare_scoped_export(
+    prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=context,
         historical=True,
     )
 
-    with pytest.raises(garmin_weight_service.GarminWeightExportOwnershipError):
-        await garmin_weight_service.get_status_scoped(
+    with pytest.raises(garmin_weight_contracts.GarminWeightExportOwnershipError):
+        await garmin_weight_jobs.get_status_scoped(
             db_session,
             prepared=prepared,
         )
@@ -476,12 +486,12 @@ async def test_exact_outbox_rejects_linked_weight_with_untrusted_roots(
         )
     )
     await db_session.flush()
-    context = garmin_weight_service.GarminWeightExportContext(
+    context = garmin_weight_contracts.GarminWeightExportContext(
         identity=identity,
         integration_connection_id=garmin.id,
         legacy_bridge=engine.LegacyConflictBridge.REJECT,
     )
-    prepared = await garmin_weight_service.prepare_scoped_export(
+    prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=context,
         historical=True,
@@ -489,11 +499,11 @@ async def test_exact_outbox_rejects_linked_weight_with_untrusted_roots(
 
     with pytest.raises(
         (
-            garmin_weight_service.GarminWeightExportOwnershipError,
-            weight_service.WeightOwnershipError,
+            garmin_weight_contracts.GarminWeightExportOwnershipError,
+            weight_domain.contracts.WeightOwnershipError,
         )
     ):
-        await garmin_weight_service.get_status_scoped(
+        await garmin_weight_jobs.get_status_scoped(
             db_session,
             prepared=prepared,
         )
@@ -516,21 +526,24 @@ async def test_strict_scoped_opt_in_does_not_fall_back_to_global_setting(
         )
     )
     await db_session.flush()
-    context = garmin_weight_service.GarminWeightExportContext(
+    context = garmin_weight_contracts.GarminWeightExportContext(
         identity=identity,
         integration_connection_id=garmin.id,
         legacy_bridge=engine.LegacyConflictBridge.REJECT,
     )
-    prepared = await garmin_weight_service.prepare_scoped_export(
+    prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=context,
         historical=True,
     )
 
-    assert await garmin_weight_service.is_enabled_scoped(
-        db_session,
-        prepared=prepared,
-    ) is False
+    assert (
+        await garmin_weight_settings.is_enabled_scoped(
+            db_session,
+            prepared=prepared,
+        )
+        is False
+    )
 
 
 def _empty_status() -> dict[str, object]:
@@ -592,30 +605,30 @@ async def test_settings_status_toggle_and_send_now_use_human_owner_and_exact_gar
         pytest.fail("Settings called a legacy unscoped Garmin Weight API")
 
     monkeypatch.setattr(
-        garmin_weight_service,
+        garmin_weight_jobs,
         "get_status_scoped",
         get_status_scoped,
         raising=False,
     )
     monkeypatch.setattr(
-        garmin_weight_service,
+        garmin_weight_settings,
         "set_enabled_scoped",
         set_enabled_scoped,
     )
     monkeypatch.setattr(
-        garmin_weight_service,
+        garmin_weight_jobs,
         "send_now_scoped",
         send_now_scoped,
         raising=False,
     )
-    monkeypatch.setattr(garmin_weight_service, "get_status", forbidden_legacy)
-    monkeypatch.setattr(garmin_weight_service, "set_enabled", forbidden_legacy)
-    monkeypatch.setattr(garmin_weight_service, "send_now", forbidden_legacy)
+    monkeypatch.setattr(garmin_weight_jobs, "get_status", forbidden_legacy)
+    monkeypatch.setattr(garmin_weight_settings, "set_enabled", forbidden_legacy)
+    monkeypatch.setattr(garmin_weight_jobs, "send_now", forbidden_legacy)
     from web.routers import settings as settings_router
 
     order: list[str] = []
     original_breaker = settings_router.login_breaker_state
-    original_prepare = garmin_weight_service.prepare_scoped_export
+    original_prepare = garmin_weight_outbox.prepare_scoped_export
 
     async def tracked_breaker(redis, namespace=""):
         order.append("redis")
@@ -631,7 +644,7 @@ async def test_settings_status_toggle_and_send_now_use_human_owner_and_exact_gar
 
     monkeypatch.setattr(settings_router, "login_breaker_state", tracked_breaker)
     monkeypatch.setattr(
-        garmin_weight_service,
+        garmin_weight_outbox,
         "prepare_scoped_export",
         tracked_prepare,
     )
@@ -688,7 +701,7 @@ async def test_send_now_releases_db_locks_before_redis_unlock(
         provider=IntegrationProvider.GARMIN,
     )
     await _enable_scoped(db_session, garmin)
-    prepared = await garmin_weight_service.prepare_scoped_export(
+    prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=_export_context(identity, garmin),
     )
@@ -718,18 +731,18 @@ async def test_send_now_releases_db_locks_before_redis_unlock(
         del args, kwargs
 
     monkeypatch.setattr(
-        garmin_weight_service,
+        garmin_weight_dispatch,
         "export_latest_scoped",
         leave_transaction_open,
     )
     monkeypatch.setattr(scheduler_lock, "with_scheduler_lock", run_and_unlock)
     monkeypatch.setattr(
-        garmin_service,
+        garmin_alerts,
         "_refresh_owned_token_cache_alert",
         ignore_token_alert,
     )
 
-    result = await garmin_weight_service.send_now_scoped(
+    result = await garmin_weight_jobs.send_now_scoped(
         db_session,
         prepared=prepared,
         redis=object(),
@@ -789,12 +802,12 @@ async def test_export_job_projects_with_system_requester_null(
         del args, kwargs
 
     monkeypatch.setattr(
-        garmin_service,
+        garmin_alerts,
         "refresh_token_cache_alert",
         ignore_token_alert,
     )
 
-    await garmin_weight_service.export_job(
+    await garmin_weight_jobs.export_job(
         session_factory, redis=None, subject_id=legacy_owner_roots.subject_id
     )
 
@@ -848,7 +861,7 @@ async def test_export_job_inactive_connection_never_constructs_client_or_network
 
     monkeypatch.setattr(GarminClient, "from_config", forbidden_client)
 
-    await garmin_weight_service.export_job(
+    await garmin_weight_jobs.export_job(
         session_factory, redis=None, subject_id=legacy_owner_roots.subject_id
     )
 
@@ -885,7 +898,7 @@ async def test_export_job_unconfigured_client_makes_no_vendor_call(
         classmethod(lambda cls, config=None, redis=None: client),
     )
 
-    await garmin_weight_service.export_job(
+    await garmin_weight_jobs.export_job(
         session_factory, redis=None, subject_id=legacy_owner_roots.subject_id
     )
 
@@ -905,9 +918,7 @@ def _garmin_weight_call_lines(path: Path) -> dict[str, list[int]]:
             isinstance(node, ast.ImportFrom)
             and node.module == "vitals.services.garmin_weight_service"
         ):
-            direct_imports.update(
-                {name.asname or name.name: name.name for name in node.names}
-            )
+            direct_imports.update({name.asname or name.name: name.name for name in node.names})
         elif isinstance(node, ast.Import):
             for name in node.names:
                 if name.name == "vitals.services.garmin_weight_service":
@@ -935,7 +946,7 @@ def _garmin_weight_call_lines(path: Path) -> dict[str, list[int]]:
     ("relative_path", "forbidden"),
     [
         (
-            "vitals/services/weight_service.py",
+            "vitals/services/weight/writes.py",
             {"handle_active_weight_changed", "handle_active_weight_deleted"},
         ),
         (
@@ -960,10 +971,5 @@ def test_production_boundaries_do_not_call_legacy_garmin_weight_apis(
     forbidden,
 ):
     called = _garmin_weight_call_lines(ROOT / relative_path)
-    matches = {
-        name: called[name]
-        for name in sorted(forbidden & called.keys())
-    }
-    assert not matches, (
-        f"{relative_path} still calls legacy Garmin Weight APIs: {matches}"
-    )
+    matches = {name: called[name] for name in sorted(forbidden & called.keys())}
+    assert not matches, f"{relative_path} still calls legacy Garmin Weight APIs: {matches}"

@@ -140,7 +140,7 @@ class Config:
     # pair one subject's password with another's session cache.
     provider_key_namespace: str = ""
     # The poll schedule (full sync interval, light pulse, active hours) is NOT
-    # here: it lives in app_settings via vitals/services/proactive/prefs.py, so
+    # here: it lives in app_settings via proactive/preferences/legacy.py, so
     # the settings card can change it without a container restart.
 
     db_statement_timeout_ms: int = DEFAULT_DB_STATEMENT_TIMEOUT_MS

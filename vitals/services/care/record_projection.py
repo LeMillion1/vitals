@@ -14,13 +14,22 @@ single source for the support disclosure audit.
 
 from __future__ import annotations
 
+from vitals.services.genetics import queries as genetics_queries
+
+from vitals.services.supplements import queries as supplement_queries
+
+from vitals.services.glp1 import queries as glp1_queries
+from vitals.services.skincare import queries as skincare_queries
+
+from vitals.services.digest import window as digest_window
+
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date as date_type
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.analytics import exclude_ranges
@@ -34,7 +43,6 @@ from vitals.access import (
     is_allowed,
 )
 from vitals.enums import Domain
-from vitals.services import digest_service
 from vitals.utils.timeutils import subject_timezone
 
 
@@ -74,9 +82,7 @@ def enabled_care_domains(enabled_modules: Mapping[str, bool]) -> tuple[Domain, .
     """Domains this installation can actually render to a professional."""
 
     return tuple(
-        section.domain
-        for section in SECTIONS
-        if bool(enabled_modules.get(section.module, False))
+        section.domain for section in SECTIONS if bool(enabled_modules.get(section.module, False))
     )
 
 
@@ -100,9 +106,7 @@ class _LoadedSection:
     coverage_extra: Mapping[str, Any] | None = None
 
 
-Loader = Callable[
-    [AsyncSession, uuid.UUID, digest_service.ReportWindow], Awaitable[_LoadedSection]
-]
+Loader = Callable[[AsyncSession, uuid.UUID, digest_window.ReportWindow], Awaitable[_LoadedSection]]
 
 
 def _mean(values: Sequence[float | None]) -> float | None:
@@ -111,7 +115,7 @@ def _mean(values: Sequence[float | None]) -> float | None:
 
 
 def _coverage(
-    *, section: _Section, loaded: _LoadedSection, window: digest_service.ReportWindow
+    *, section: _Section, loaded: _LoadedSection, window: digest_window.ReportWindow
 ) -> dict[str, Any]:
     dates = loaded.dates
     latest = max(dates) if dates else None
@@ -125,9 +129,7 @@ def _coverage(
             if loaded.current_rows is not None
             else sum(window.period_start <= day <= window.period_end for day in dates)
         ),
-        "previous_rows": sum(
-            window.previous_start <= day <= window.previous_end for day in dates
-        ),
+        "previous_rows": sum(window.previous_start <= day <= window.previous_end for day in dates),
         "first_date": min(dates).isoformat() if dates else None,
         "last_date": latest.isoformat() if latest else None,
         "freshness_days": (window.period_end - latest).days if latest else None,
@@ -151,11 +153,11 @@ def _may_read(context: AccessContext, domain: Domain) -> bool:
 
 
 async def _load_weight(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
-    from vitals.services import weight_service
+    from vitals.services.weight import queries as weight_queries
 
-    history = await weight_service.care_weight_history(
+    history = await weight_queries.care_weight_history(
         session,
         subject_id=subject_id,
         end=window.period_end,
@@ -176,9 +178,7 @@ async def _load_weight(
             "latest_kg": latest.weight_kg if latest else None,
             "latest_date": latest.date.isoformat() if latest else None,
             "ma7_kg": latest_ma[1] if latest_ma else None,
-            "trend_kg_per_week": (
-                round(trend.slope_per_week, 3) if trend else None
-            ),
+            "trend_kg_per_week": (round(trend.slope_per_week, 3) if trend else None),
         },
         row_count=len(rows),
         dates=tuple(row.date for row in rows),
@@ -192,11 +192,12 @@ async def _load_weight(
 
 
 async def _load_labs(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
-    from vitals.services import labs_service
+    from vitals.services.labs.flags import is_out_of_range
+    from vitals.services.labs.results import bounded_latest_results_by_marker
 
-    page = await labs_service.bounded_latest_results_by_marker(
+    page = await bounded_latest_results_by_marker(
         session,
         end=window.period_end,
         marker_limit=_LAB_MARKER_LIMIT,
@@ -214,8 +215,7 @@ async def _load_labs(
             "ref_high": row.ref_high,
         }
         for row in rows
-        if labs_service.is_out_of_range(row.flag)
-        and 0 <= (window.period_end - row.date).days <= 14
+        if is_out_of_range(row.flag) and 0 <= (window.period_end - row.date).days <= 14
     ]
     return _LoadedSection(
         value={"out_of_range": flagged},
@@ -227,11 +227,11 @@ async def _load_labs(
 
 
 async def _load_body_comp(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
-    from vitals.services.body_scan import scans
+    from vitals.services.body_scan.scans import queries as body_scan_queries
 
-    row = await scans.latest_scan(
+    row = await body_scan_queries.latest_scan(
         session,
         subject_id=subject_id,
         before_or_on=window.period_end,
@@ -244,7 +244,7 @@ async def _load_body_comp(
 
 
 async def _load_nutrition(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
     from vitals.models.nutrition import MealLog
 
@@ -296,7 +296,7 @@ async def _load_nutrition(
 
 
 async def _load_hrt(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
     from vitals.services.hrt import cycles
 
@@ -325,11 +325,10 @@ async def _load_hrt(
 
 
 async def _load_glp1(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
-    from vitals.services import glp1_service
 
-    phase = await glp1_service.active_dose_phase(
+    phase = await glp1_queries.active_dose_phase(
         session, on_date=window.period_end, subject_id=subject_id
     )
     return _LoadedSection(
@@ -340,13 +339,12 @@ async def _load_glp1(
 
 
 async def _load_supplements(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
     del window
-    from vitals.services import supplements_service
 
     rows = list(
-        await supplements_service.list_supplements(
+        await supplement_queries.list_supplements(
             session,
             subject_id=subject_id,
             active_only=True,
@@ -364,12 +362,11 @@ async def _load_supplements(
 
 
 async def _load_skincare(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
-    from vitals.services import skincare_service
 
     products = list(
-        await skincare_service.list_products(
+        await skincare_queries.list_products(
             session,
             subject_id=subject_id,
             active_only=True,
@@ -377,7 +374,7 @@ async def _load_skincare(
         )
     )
     observations = list(
-        await skincare_service.list_observations(
+        await skincare_queries.list_observations(
             session,
             subject_id=subject_id,
             start=window.period_start,
@@ -414,12 +411,11 @@ async def _load_skincare(
 
 
 async def _load_genetics(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
     del window
-    from vitals.services.genetics import variants
 
-    page = await variants.bounded_variants(
+    page = await genetics_queries.bounded_variants(
         session,
         subject_id=subject_id,
         limit=_GENETICS_LIMIT,
@@ -434,70 +430,44 @@ async def _load_genetics(
 
 
 async def _load_garmin(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
-    from vitals.models.garmin import GarminDaily
-    from vitals.services import garmin_service
+    from vitals.services.garmin import advice as garmin_advice
+    from vitals.services.garmin import queries as garmin_queries
 
-    reported = or_(
-        GarminDaily.sleep_score.is_not(None),
-        GarminDaily.sleep_seconds.is_not(None),
-        GarminDaily.resting_hr.is_not(None),
-        GarminDaily.hrv_avg.is_not(None),
-        GarminDaily.body_battery_high.is_not(None),
-        GarminDaily.avg_stress.is_not(None),
-        GarminDaily.steps.is_not(None),
-        GarminDaily.active_calories.is_not(None),
-    )
-    latest = await garmin_service.latest_daily(
-        session, subject_id=subject_id, before_or_on=window.period_end
-    )
-    total = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(GarminDaily)
-            .where(
-                GarminDaily.subject_id == subject_id,
-                GarminDaily.date <= window.period_end,
-                reported,
-            )
-        )
-        or 0
+    summary = await garmin_queries.recovery_summary(
+        session,
+        subject_id=subject_id,
+        before_or_on=window.period_end,
     )
     return _LoadedSection(
         value={
-            "advice": garmin_service.recovery_advice(latest),
-            "total_days_logged": total,
+            "advice": garmin_advice.recovery_advice(summary.latest),
+            "total_days_logged": summary.total_days_logged,
         },
-        row_count=total,
-        dates=(latest.date,) if latest else (),
+        row_count=summary.total_days_logged,
+        dates=(summary.latest.date,) if summary.latest else (),
     )
 
 
 async def _load_hevy(
-    session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
+    session: AsyncSession, subject_id: uuid.UUID, window: digest_window.ReportWindow
 ) -> _LoadedSection:
-    from vitals.models.hevy import HevyWorkout
+    from vitals.services.hevy import queries as hevy_queries
 
-    current_count, latest = (
-        await session.execute(
-            select(
-                func.count().filter(HevyWorkout.date >= window.period_start),
-                func.max(HevyWorkout.date),
-            ).where(
-                HevyWorkout.subject_id == subject_id,
-                HevyWorkout.date <= window.period_end,
-            )
-        )
-    ).one()
-    count = int(current_count or 0)
+    summary = await hevy_queries.workout_window_summary(
+        session,
+        subject_id=subject_id,
+        start=window.period_start,
+        end=window.period_end,
+    )
     return _LoadedSection(
         value={
-            "total_workouts": count,
-            "last_workout": latest.isoformat() if latest else None,
+            "total_workouts": summary.current_count,
+            "last_workout": (summary.latest_date.isoformat() if summary.latest_date else None),
         },
-        row_count=max(count, int(latest is not None)),
-        dates=(latest,) if latest else (),
+        row_count=max(summary.current_count, int(summary.latest_date is not None)),
+        dates=(summary.latest_date,) if summary.latest_date else (),
     )
 
 
@@ -528,7 +498,7 @@ async def assemble_record_projection(
     """Read only domains allowed by both policy and module configuration."""
 
     with subject_timezone(subject_timezone_name):
-        window = digest_service.report_window(
+        window = digest_window.report_window(
             on_date=on_date,
             period_days=period_days,
         )
@@ -550,9 +520,7 @@ async def assemble_record_projection(
 
         loaded = await _LOADERS[section.key](session, context.subject_id, window)
         record[section.key] = loaded.value
-        coverage[section.key] = _coverage(
-            section=section, loaded=loaded, window=window
-        )
+        coverage[section.key] = _coverage(section=section, loaded=loaded, window=window)
         loaded_domains.append(section.domain.value)
 
     return RecordProjection(

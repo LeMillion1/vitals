@@ -16,6 +16,7 @@ the original, domain-specific version of the same idea (predates this one and
 stays special-cased — it piggybacks on the morning brief instead of a
 schedule of its own; see its docstring).
 """
+
 from __future__ import annotations
 
 import logging
@@ -258,16 +259,11 @@ async def _require_single_subject_legacy_adoption(
     """
 
     subject_ids = list(
-        await session.scalars(
-            select(HealthSubject.id)
-            .order_by(HealthSubject.id)
-            .limit(2)
-        )
+        await session.scalars(select(HealthSubject.id).order_by(HealthSubject.id).limit(2))
     )
     if subject_ids != [subject_id]:
         raise RawPayloadConflictError(
-            "unscoped legacy raw payload cannot be adopted after multi-subject "
-            "activation"
+            "unscoped legacy raw payload cannot be adopted after multi-subject activation"
         )
 
 
@@ -304,9 +300,7 @@ def _validate_file_compatibility(
         and requested_file_asset_id is not None
         and row.file_asset_id != requested_file_asset_id
     ):
-        raise RawPayloadConflictError(
-            "raw payload already references a different file_asset_id"
-        )
+        raise RawPayloadConflictError("raw payload already references a different file_asset_id")
     return row.file_asset_id is None and requested_file_asset_id is not None
 
 
@@ -358,12 +352,8 @@ async def upsert_owned_raw_payload(
         integration_connection_id=integration_connection_id,
         file_asset_id=file_asset_id,
     )
-    if validate_locked_existing is not None and not callable(
-        validate_locked_existing
-    ):
-        raise RawPayloadValidationError(
-            "validate_locked_existing must be callable or None"
-        )
+    if validate_locked_existing is not None and not callable(validate_locked_existing):
+        raise RawPayloadValidationError("validate_locked_existing must be callable or None")
 
     requested_connection = (
         await _load_connection_reference(
@@ -439,14 +429,11 @@ async def upsert_owned_raw_payload(
         if validate_locked_existing is not None:
             validate_locked_existing(row)
         if row.subject_id not in {None, identity.subject_id}:
-            raise RawPayloadConflictError(
-                "legacy raw payload belongs to another subject"
-            )
+            raise RawPayloadConflictError("legacy raw payload belongs to another subject")
         if row.integration_connection_id is not None:
             if row.integration_connection_id != integration_connection_id:
                 raise RawPayloadConflictError(
-                    "legacy raw payload references a different "
-                    "integration_connection_id"
+                    "legacy raw payload references a different integration_connection_id"
                 )
         if row.subject_id is None:
             await _require_single_subject_legacy_adoption(
@@ -454,8 +441,7 @@ async def upsert_owned_raw_payload(
                 subject_id=identity.subject_id,
             )
         attach_connection = (
-            row.integration_connection_id is None
-            and integration_connection_id is not None
+            row.integration_connection_id is None and integration_connection_id is not None
         )
 
         await _validate_existing_file_scope(
@@ -557,9 +543,7 @@ async def sweep_domain(
     return done
 
 
-async def sweep_pending_job(
-    session_factory, redis=None, *, subject_id: uuid.UUID
-) -> None:
+async def sweep_pending_job(session_factory, redis=None, *, subject_id: uuid.UUID) -> None:
     """Nightly sweep for garmin/hevy/labs/body_comp/genetics raw payloads pending a
     normalized row (registered in vitals/scheduler/jobs.py).
 
@@ -573,26 +557,27 @@ async def sweep_pending_job(
     lose or block another's completed work.
     """
     from vitals.enums import IntegrationProvider
-    from vitals.services import garmin_service, hevy_service, labs_service
+    from vitals.services.garmin import raw_payloads as garmin_raw_payloads
+    from vitals.services.hevy import raw_payloads as hevy_raw_payloads
+    from vitals.services.labs import ingestion as lab_ingestion
     from vitals.services.conflicts import engine
-    from vitals.services.body_scan import scans
-    from vitals.services.genetics import variants
+    from vitals.services.body_scan.scans import reparse as body_scan_reparse
+    from vitals.services.genetics import reparse as genetics_reparse
     from vitals.services.legacy_ownership import resolve_subject_ownership_context
     from vitals.utils.timeutils import today_local
 
     async with session_factory() as session:
+
         async def _sweep_owned_garmin() -> int:
             ownership = await resolve_subject_ownership_context(
                 session,
                 subject_id=subject_id,
                 required_connections=(IntegrationProvider.GARMIN,),
             )
-            return await garmin_service.reparse_owned_pending(
+            return await garmin_raw_payloads.reparse_owned_pending(
                 session,
                 identity=ownership.system_action(),
-                integration_connection_id=ownership.connection_id(
-                    IntegrationProvider.GARMIN
-                ),
+                integration_connection_id=ownership.connection_id(IntegrationProvider.GARMIN),
             )
 
         async def _sweep_owned_hevy() -> int:
@@ -601,12 +586,10 @@ async def sweep_pending_job(
                 subject_id=subject_id,
                 required_connections=(IntegrationProvider.HEVY,),
             )
-            return await hevy_service.reparse_owned_pending(
+            return await hevy_raw_payloads.reparse_owned_pending(
                 session,
                 identity=ownership.system_action(),
-                integration_connection_id=ownership.connection_id(
-                    IntegrationProvider.HEVY
-                ),
+                integration_connection_id=ownership.connection_id(IntegrationProvider.HEVY),
             )
 
         async def _sweep_owned_labs() -> int:
@@ -619,7 +602,7 @@ async def sweep_pending_job(
                 session,
                 context=context,
             )
-            return await labs_service.reparse_owned_pending(
+            return await lab_ingestion.reparse_owned_pending(
                 session,
                 identity=context.identity,
                 prepared_conflict_write=prepared,
@@ -631,7 +614,7 @@ async def sweep_pending_job(
                 subject_id=subject_id,
                 evaluation_date=today_local(),
             )
-            return await scans.reparse_owned_pending(
+            return await body_scan_reparse.reparse_owned_pending(
                 session,
                 identity=context.identity,
             )
@@ -646,7 +629,7 @@ async def sweep_pending_job(
                 session,
                 context=context,
             )
-            return await variants.reparse_owned_pending(
+            return await genetics_reparse.reparse_owned_pending(
                 session,
                 identity=context.identity,
                 prepared_conflict_write=prepared,

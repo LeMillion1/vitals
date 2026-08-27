@@ -29,7 +29,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.i18n import current_lang
-from vitals.services import share_service
+from vitals.services.share import public_access
 from vitals.analytics.share_chart import weight_svg
 from vitals.utils.passwords import verify_password, verify_password_dummy
 from web.config import get_web_config
@@ -179,7 +179,7 @@ async def open_report(
     token: str,
     db: AsyncSession = Depends(get_session),
 ):
-    row = await share_service.resolve_public(db, token)
+    row = await public_access.resolve_public(db, token)
     if row is None:
         await db.commit()
         return _gone(request)
@@ -206,7 +206,7 @@ async def unlock_report(
         login_rate_limit(limit=20, window=300, bucket="report_pw", per_ip=False)
     ),
 ):
-    row = await share_service.resolve_public(db, token)
+    row = await public_access.resolve_public(db, token)
     password_hash = row.password_hash if row is not None else None
     # The bcrypt check is deliberately outside the governance/read transaction.
     # A correct password earns only a fresh token-based lock/revalidation below.
@@ -220,7 +220,7 @@ async def unlock_report(
     if not verify_password(password, password_hash):
         return _password_form(request, error=True)
 
-    opened = await share_service.register_open(db, token)
+    opened = await public_access.register_open(db, token)
     if opened is None:
         await db.commit()
         return _gone(request)

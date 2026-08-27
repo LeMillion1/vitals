@@ -387,7 +387,7 @@ class FileAssetPurpose(StrEnum):
 
 
 class Severity(StrEnum):
-    """system_alerts ladder (see services/alerts_service.py).
+    """system_alerts ladder (see services/alerts/).
 
     - ``NOTE``  — an *interpretation*, never a failure: the app read the data and
       has something to say about it (recovery is low, the dose has plateaued).
@@ -528,7 +528,7 @@ class LabFlag(StrEnum):
     """Out-of-range classification for a lab result (computed from value vs ref).
 
     ``CRITICAL_*`` is raised when the value is far outside the range (see
-    ``labs_service.compute_flag``) and escalates the alert."""
+    ``vitals.services.labs.flags.compute_flag``) and escalates the alert."""
 
     NORMAL = "normal"
     LOW = "low"

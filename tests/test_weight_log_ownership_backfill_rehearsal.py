@@ -27,7 +27,8 @@ from vitals.enums import Source
 from vitals.models.base import Base
 from vitals.ownership import WriteIdentity
 from vitals.operations.ownership import portability_v1
-from vitals.services import data_portability_service, weight_service
+from vitals.services import weight as weight_domain
+from vitals.services.portability import v1_export
 from vitals.services.conflicts import catalog as conflict_catalog
 from vitals.services.conflicts import engine as conflict_engine
 from vitals.services.hrt import catalog
@@ -343,7 +344,7 @@ async def _phase_statuses(engine: AsyncEngine, phase: str) -> tuple[str, ...]:
 async def _round_trip_portability_v1(engine: AsyncEngine) -> None:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
-        snapshot = await data_portability_service.export_full(session)
+        snapshot = await v1_export.export_full(session)
         await portability_v1.import_full(session, snapshot)
         await session.commit()
 
@@ -528,7 +529,7 @@ async def test_real_postgres_0034_weight_log_stop_resume_volatility_and_restore(
 
         factory = async_sessionmaker(engine, expire_on_commit=False)
         async with factory() as session:
-            active = await weight_service.list_active_weights(
+            active = await weight_domain.logs.list_active_weights(
                 session, subject_id=identity.subject_id
             )
             assert [row.id for row in active] == [WEIGHT_IDS[1]]
@@ -549,7 +550,7 @@ async def test_real_postgres_0034_weight_log_stop_resume_volatility_and_restore(
         # the frozen high-water mark, and one legitimate note correction.
         write_identity = WriteIdentity(identity.subject_id, identity.user_id)
         async with factory() as session:
-            prepared = await weight_service.prepare_weight_write(
+            prepared = await weight_domain.governance.prepare_weight_write(
                 session,
                 context=conflict_engine.ConflictWriteContext(
                     identity=write_identity,
@@ -557,7 +558,7 @@ async def test_real_postgres_0034_weight_log_stop_resume_volatility_and_restore(
                     legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
                 ),
             )
-            live = await weight_service.log_weight(
+            live = await weight_domain.writes.log_weight(
                 session,
                 on_date=LIVE_DATE,
                 weight_kg=80.4,

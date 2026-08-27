@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from vitals.models.garmin import GarminDaily
-from vitals.services import garmin_service
+from vitals.services.garmin import queries as garmin_queries
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,7 +46,7 @@ async def test_a_placeholder_row_is_not_the_latest_day(db_session, legacy_owner_
     ])
     await db_session.flush()
 
-    latest = await garmin_service.latest_daily(
+    latest = await garmin_queries.latest_daily(
         db_session, subject_id=legacy_owner_roots.subject_id
     )
     assert latest is not None

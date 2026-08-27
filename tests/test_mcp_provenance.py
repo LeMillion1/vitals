@@ -12,7 +12,7 @@ import pytest
 
 from vitals.enums import Source
 from vitals.ownership import WriteIdentity
-from vitals.services import weight_service
+from vitals.services import weight as weight_domain
 from vitals.services.conflicts import engine
 
 mcp_router = pytest.importorskip("web.routers.mcp")
@@ -54,7 +54,7 @@ async def test_write_tools_stamp_mcp_source():
 
 
 async def test_mcp_and_manual_weight_rank_equally():
-    assert weight_service._source_priority(Source.MCP.value) == weight_service._source_priority(
+    assert weight_domain.logs._source_priority(Source.MCP.value) == weight_domain.logs._source_priority(
         Source.MANUAL.value
     )
 
@@ -103,7 +103,7 @@ async def test_mcp_weight_outranks_garmin_both_ways(session_factory, owner_write
             actor_username=None,
             evaluation_date=on_date,
         )
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             session,
             on_date=on_date,
             weight_kg=81.0,
@@ -111,7 +111,7 @@ async def test_mcp_weight_outranks_garmin_both_ways(session_factory, owner_write
             raw_payload_id=raw.id,
             identity=context.identity,
             integration_connection_id=connection.id,
-            prepared_weight_write=await weight_service.prepare_weight_write(
+            prepared_weight_write=await weight_domain.governance.prepare_weight_write(
                 session, context=context
             ),
         )
@@ -120,7 +120,7 @@ async def test_mcp_weight_outranks_garmin_both_ways(session_factory, owner_write
     await mcp_router.log_weight(weight_kg=80.0, on_date=on_date.isoformat())
 
     async with session_factory() as session:
-        active = await weight_service.get_active_weight(
+        active = await weight_domain.logs.get_active_weight(
             session,
             on_date,
             subject_id=owner_write.subject_id,
@@ -148,7 +148,7 @@ async def test_mcp_weight_outranks_garmin_both_ways(session_factory, owner_write
             actor_username=None,
             evaluation_date=on_date,
         )
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             session,
             on_date=on_date,
             weight_kg=82.0,
@@ -156,12 +156,12 @@ async def test_mcp_weight_outranks_garmin_both_ways(session_factory, owner_write
             raw_payload_id=later_raw.id,
             identity=later_context.identity,
             integration_connection_id=later_connection.id,
-            prepared_weight_write=await weight_service.prepare_weight_write(
+            prepared_weight_write=await weight_domain.governance.prepare_weight_write(
                 session, context=later_context
             ),
         )
         await session.commit()
-        active = await weight_service.get_active_weight(
+        active = await weight_domain.logs.get_active_weight(
             session,
             on_date,
             subject_id=owner_write.subject_id,

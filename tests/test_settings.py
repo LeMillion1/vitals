@@ -1,5 +1,12 @@
 """Tests for the settings router and env_writer utility."""
+
 from __future__ import annotations
+
+from vitals.services.garmin_weight import contracts as garmin_weight_contracts
+from vitals.services.garmin_weight import jobs as garmin_weight_jobs
+from vitals.services.garmin_weight import settings as garmin_weight_settings
+from vitals.services.proactive.preferences import queries as preference_queries
+from vitals.services.proactive.preferences import writes as preference_writes
 
 import os
 import re
@@ -15,6 +22,7 @@ def test_env_writer_read_missing_file(tmp_path, monkeypatch):
     """read_key returns empty string when .env file does not exist."""
     monkeypatch.setenv("VITALS_ENV_FILE", str(tmp_path / "nonexistent.env"))
     from web.services.env_writer import read_key
+
     assert read_key("SOME_KEY") == ""
 
 
@@ -28,6 +36,7 @@ def test_env_writer_read_existing_key(tmp_path, monkeypatch):
 
     importlib.reload(env_writer)
     from web.services.env_writer import read_key
+
     assert read_key("VITALS_HEIGHT_CM") == "185"
     assert read_key("VITALS_SEX") == "male"
     assert read_key("MISSING_KEY") == ""
@@ -42,6 +51,7 @@ def test_env_writer_write_updates_existing_key(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
     from web.services.env_writer import write_keys
+
     write_keys({"VITALS_HEIGHT_CM": "180"})
     content = env_file.read_text(encoding="utf-8")
     assert "VITALS_HEIGHT_CM=180" in content
@@ -55,6 +65,7 @@ def test_env_writer_write_appends_new_key(tmp_path, monkeypatch):
     env_file.write_text("VITALS_HEIGHT_CM=190\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
     from web.services.env_writer import write_keys
+
     write_keys({"VITALS_NEW_KEY": "hello"})
     content = env_file.read_text(encoding="utf-8")
     assert "VITALS_NEW_KEY=hello" in content
@@ -85,6 +96,7 @@ def test_env_writer_write_multiple_keys(tmp_path, monkeypatch):
     env_file.write_text("VITALS_A=old_a\nVITALS_B=old_b\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
     from web.services.env_writer import write_keys
+
     write_keys({"VITALS_A": "new_a", "VITALS_B": "new_b", "VITALS_C": "new_c"})
     content = env_file.read_text(encoding="utf-8")
     assert "VITALS_A=new_a" in content
@@ -292,9 +304,7 @@ async def test_settings_save_profile(
     assert profile.program == "тест"
     assert profile.goals == ("цель1", "цель2")
 
-    assert env_file.read_text(encoding="utf-8") == (
-        "VITALS_HEIGHT_CM=190\nVITALS_SEX=male\n"
-    )
+    assert env_file.read_text(encoding="utf-8") == ("VITALS_HEIGHT_CM=190\nVITALS_SEX=male\n")
 
 
 async def test_settings_save_ai_key(auth_client, tmp_path, monkeypatch):
@@ -412,8 +422,6 @@ async def test_settings_save_garmin(
     assert r.status_code == 303
     assert "saved=garmin" in r.headers["location"]
 
-    from vitals.services import garmin_weight_service
-
     db_session.expire_all()
     account = await providers.resolve_garmin_account(
         db_session, subject_id=legacy_owner_roots.subject_id
@@ -423,7 +431,7 @@ async def test_settings_save_garmin(
     assert env_file.read_text(encoding="utf-8") == (
         "VITALS_GARMIN_EMAIL=\nVITALS_GARMIN_PASSWORD=\n"
     )
-    assert await garmin_weight_service.is_enabled(db_session) is False
+    assert await garmin_weight_settings.is_enabled(db_session) is False
 
     page = await auth_client.get("/settings", headers={"Accept": "text/html"})
     assert 'hx-post="/settings/garmin/weight-toggle"' in page.text
@@ -445,12 +453,9 @@ async def test_garmin_weight_toggle_refuses_missing_credentials(
 
     assert r.status_code == 200
     assert "Экспорт остался выключен" in r.text
-    from vitals.services import garmin_weight_service
 
-    assert await garmin_weight_service.is_enabled(db_session) is False
-    assert not re.search(
-        r'id="s-garmin-weight-export"[^>]*\schecked(?:\s|>)', r.text
-    )
+    assert await garmin_weight_settings.is_enabled(db_session) is False
+    assert not re.search(r'id="s-garmin-weight-export"[^>]*\schecked(?:\s|>)', r.text)
 
 
 async def test_garmin_weight_toggle_applies_live_and_can_turn_off(
@@ -482,13 +487,9 @@ async def test_garmin_weight_toggle_applies_live_and_can_turn_off(
 
     assert enabled.status_code == 200
     assert "Экспорт веса включён" in enabled.text
-    assert re.search(
-        r'id="s-garmin-weight-export"[^>]*\schecked(?:\s|>)', enabled.text
-    )
+    assert re.search(r'id="s-garmin-weight-export"[^>]*\schecked(?:\s|>)', enabled.text)
 
-    from vitals.services import garmin_weight_service
-
-    assert await garmin_weight_service.is_enabled(db_session) is True
+    assert await garmin_weight_settings.is_enabled(db_session) is True
 
     disabled = await auth_client.post(
         "/settings/garmin/weight-toggle",
@@ -497,16 +498,11 @@ async def test_garmin_weight_toggle_applies_live_and_can_turn_off(
     )
     assert disabled.status_code == 200
     assert "Экспорт веса выключен" in disabled.text
-    assert await garmin_weight_service.is_enabled(db_session) is False
-    assert not re.search(
-        r'id="s-garmin-weight-export"[^>]*\schecked(?:\s|>)', disabled.text
-    )
+    assert await garmin_weight_settings.is_enabled(db_session) is False
+    assert not re.search(r'id="s-garmin-weight-export"[^>]*\schecked(?:\s|>)', disabled.text)
 
 
-async def test_garmin_weight_send_now_calls_safe_service(
-    auth_client, monkeypatch
-):
-    from vitals.services import garmin_weight_service
+async def test_garmin_weight_send_now_calls_safe_service(auth_client, monkeypatch):
 
     called = {}
 
@@ -516,7 +512,7 @@ async def test_garmin_weight_send_now_calls_safe_service(
         called["redis"] = redis
         return {"status": "sent", "sent": True}
 
-    monkeypatch.setattr(garmin_weight_service, "send_now_scoped", _send_now)
+    monkeypatch.setattr(garmin_weight_jobs, "send_now_scoped", _send_now)
     r = await auth_client.post(
         "/settings/garmin/weight/send-now",
         headers={"HX-Request": "true"},
@@ -527,7 +523,7 @@ async def test_garmin_weight_send_now_calls_safe_service(
     assert called["session"] is not None
     assert isinstance(
         called["prepared"],
-        garmin_weight_service.PreparedGarminWeightExport,
+        garmin_weight_contracts.PreparedGarminWeightExport,
     )
     assert called["redis"] is not None
 
@@ -550,9 +546,7 @@ async def test_garmin_weight_send_now_calls_safe_service(
     ],
 )
 @pytest.mark.parametrize("lang", ["en", "ru"])
-def test_garmin_weight_partial_renders_every_status_and_escapes_error(
-    export_status, lang
-):
+def test_garmin_weight_partial_renders_every_status_and_escapes_error(export_status, lang):
     from datetime import date, datetime
 
     from vitals.i18n import current_lang, t
@@ -565,9 +559,7 @@ def test_garmin_weight_partial_renders_every_status_and_escapes_error(
             date="17-08-2026",
             weight=format_number(84.5),
         )
-        expected_next = t(
-            "settings.garmin_weight_next_attempt", at="17-08-2026 10:30"
-        )
+        expected_next = t("settings.garmin_weight_next_attempt", at="17-08-2026 10:30")
         html = templates.get_template("partials/garmin_weight_export.html").render(
             {
                 "garmin_credentials_configured": True,
@@ -615,7 +607,6 @@ async def test_settings_save_mcp(auth_client, tmp_path, monkeypatch):
     content = env_file.read_text(encoding="utf-8")
     assert "VITALS_MCP_CLIENT_ID=test-id" in content
     assert "VITALS_MCP_CLIENT_SECRET=test-secret" in content
-
 
 
 async def test_settings_change_password_wrong_old(auth_client):
@@ -675,9 +666,7 @@ async def _persist_owner_hash(db_session, password_hash: str) -> None:
     await db_session.commit()
 
 
-async def test_settings_change_password_success(
-    auth_client, db_session, tmp_path, monkeypatch
-):
+async def test_settings_change_password_success(auth_client, db_session, tmp_path, monkeypatch):
     """A password change updates both compatibility config and durable identity."""
     from sqlalchemy import select
 
@@ -768,9 +757,7 @@ async def test_settings_change_password_preserves_stronger_bcrypt_cost(
 
     stronger_hash = hash_password("password", minimum_rounds=5)
     env_file = tmp_path / "test.env"
-    env_file.write_text(
-        f"VITALS_AUTH_PASSWORD_HASH={stronger_hash}\n", encoding="utf-8"
-    )
+    env_file.write_text(f"VITALS_AUTH_PASSWORD_HASH={stronger_hash}\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
     monkeypatch.setenv("VITALS_AUTH_PASSWORD_HASH", stronger_hash)
     await _persist_owner_hash(db_session, stronger_hash)
@@ -804,9 +791,7 @@ async def test_settings_change_password_restores_env_when_db_commit_fails(
 
     old_hash = hash_password("password")
     env_file = tmp_path / "test.env"
-    env_file.write_text(
-        f"VITALS_AUTH_PASSWORD_HASH={old_hash}\n", encoding="utf-8"
-    )
+    env_file.write_text(f"VITALS_AUTH_PASSWORD_HASH={old_hash}\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
     monkeypatch.setenv("VITALS_AUTH_PASSWORD_HASH", old_hash)
     await _persist_owner_hash(db_session, old_hash)
@@ -826,9 +811,7 @@ async def test_settings_change_password_restores_env_when_db_commit_fails(
             },
         )
 
-    assert env_file.read_text(encoding="utf-8") == (
-        f"VITALS_AUTH_PASSWORD_HASH={old_hash}\n"
-    )
+    assert env_file.read_text(encoding="utf-8") == (f"VITALS_AUTH_PASSWORD_HASH={old_hash}\n")
     assert os.environ["VITALS_AUTH_PASSWORD_HASH"] == old_hash
     user_count = await db_session.scalar(select(func.count()).select_from(User))
     assert int(user_count or 0) == 1
@@ -853,9 +836,7 @@ async def test_settings_change_password_compensates_task_cancellation(
 
     old_hash = hash_password("password")
     env_file = tmp_path / "test.env"
-    env_file.write_text(
-        f"VITALS_AUTH_PASSWORD_HASH={old_hash}\n", encoding="utf-8"
-    )
+    env_file.write_text(f"VITALS_AUTH_PASSWORD_HASH={old_hash}\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
     monkeypatch.setenv("VITALS_AUTH_PASSWORD_HASH", old_hash)
     await _persist_owner_hash(db_session, old_hash)
@@ -878,9 +859,7 @@ async def test_settings_change_password_compensates_task_cancellation(
             },
         )
 
-    assert env_file.read_text(encoding="utf-8") == (
-        f"VITALS_AUTH_PASSWORD_HASH={old_hash}\n"
-    )
+    assert env_file.read_text(encoding="utf-8") == (f"VITALS_AUTH_PASSWORD_HASH={old_hash}\n")
     assert os.environ["VITALS_AUTH_PASSWORD_HASH"] == old_hash
     user_count = await db_session.scalar(select(func.count()).select_from(User))
     assert int(user_count or 0) == 1
@@ -905,9 +884,11 @@ async def test_settings_restart_endpoint(auth_client, monkeypatch):
 
     # Wait for the background task to execute
     import asyncio
+
     await asyncio.sleep(0.6)
 
     import os
+
     assert len(killed) == 1
     assert killed[0] == (os.getpid(), 15)  # 15 is signal.SIGTERM
 
@@ -916,7 +897,7 @@ async def test_settings_restart_endpoint(auth_client, monkeypatch):
 
 
 async def test_settings_save_proactive_flags_adjusted_values(auth_client):
-    """prefs.sanitize() (called inside set_preferences_bundle) silently clamps
+    """preference_codec.sanitize() (called inside set_preferences_bundle) silently clamps
     out-of-range input. The redirect must say so instead of a bare "saved",
     or the user has no way to know their number was changed underneath them.
 
@@ -938,9 +919,7 @@ async def test_settings_save_proactive_flags_adjusted_values(auth_client):
     assert r.headers["location"] == "/settings?saved=proactive&adjusted=1"
 
 
-async def test_saving_the_card_does_not_reset_the_hidden_delivery_policy(
-    auth_client, db_session
-):
+async def test_saving_the_card_does_not_reset_the_hidden_delivery_policy(auth_client, db_session):
     """The risk created by taking those controls off the card.
 
     ``Form(default)`` fills in a field the browser did not post, so a save from
@@ -950,18 +929,12 @@ async def test_saving_the_card_does_not_reset_the_hidden_delivery_policy(
     bundle and overlays only what the card still asks about.
     """
 
-    from vitals.services.proactive import prefs
-
-    scope = await prefs.resolve_legacy_preferences_scope(
-        db_session, actor_username="tester"
-    )
-    await prefs.set_preferences_bundle(
+    scope = await preference_queries.resolve_legacy_preferences_scope(db_session, actor_username="tester")
+    await preference_writes.set_preferences_bundle(
         db_session,
         {
             **(
-                await prefs.get_preferences_bundle(
-                    db_session, scope=scope, actor_username="tester"
-                )
+                await preference_queries.get_preferences_bundle(db_session, scope=scope, actor_username="tester")
             ).as_flat_dict(),
             "quiet_start": "01:15",
             "daily_budget": 11,
@@ -986,9 +959,7 @@ async def test_saving_the_card_does_not_reset_the_hidden_delivery_policy(
 
     db_session.expire_all()
     after = (
-        await prefs.get_preferences_bundle(
-            db_session, scope=scope, actor_username="tester"
-        )
+        await preference_queries.get_preferences_bundle(db_session, scope=scope, actor_username="tester")
     ).as_flat_dict()
     assert after["brief_time"] == "09:30", "the field the card does offer is saved"
     assert after["quiet_start"] == "01:15"
@@ -1024,6 +995,7 @@ async def test_web_only_schedule_save_is_honestly_deferred(
         "load_process_mode",
         lambda: ProcessMode.WEB,
     )
+
     async def failed_signal():
         return False
 
@@ -1041,9 +1013,7 @@ async def test_web_only_schedule_save_is_honestly_deferred(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == (
-        "/settings?saved=proactive&deferred=reload"
-    )
+    assert response.headers["location"] == ("/settings?saved=proactive&deferred=reload")
 
 
 async def test_web_only_schedule_save_signals_after_commit(
@@ -1052,18 +1022,17 @@ async def test_web_only_schedule_save_signals_after_commit(
     monkeypatch,
 ):
     from vitals.process_mode import ProcessMode
-    from vitals.services.proactive import prefs
     from web.routers import settings as settings_router
 
     calls = []
 
     async def signal_probe():
         async with session_factory() as session:
-            scope = await prefs.resolve_legacy_preferences_scope(
+            scope = await preference_queries.resolve_legacy_preferences_scope(
                 session,
                 actor_username="tester",
             )
-            bundle = await prefs.get_preferences_bundle(
+            bundle = await preference_queries.get_preferences_bundle(
                 session,
                 scope=scope,
                 actor_username="tester",

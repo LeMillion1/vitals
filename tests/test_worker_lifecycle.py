@@ -216,7 +216,7 @@ async def test_prepared_web_lifecycle_never_starts_scheduler(monkeypatch):
 
 async def test_worker_settings_use_explicit_platform_scope(monkeypatch):
     from vitals.scheduler import lifecycle as lifecycle_module
-    from vitals.services.proactive import prefs
+    from vitals.services.proactive.preferences import queries as preference_queries
 
     calls = []
 
@@ -249,12 +249,12 @@ async def test_worker_settings_use_explicit_platform_scope(monkeypatch):
         enter_scope_probe,
     )
     monkeypatch.setattr(
-        prefs,
+        preference_queries,
         "resolve_legacy_preferences_scope",
         resolve_scope_probe,
     )
     monkeypatch.setattr(
-        prefs,
+        preference_queries,
         "get_exact_one_preferences_bundle",
         get_bundle_probe,
     )
@@ -890,20 +890,20 @@ async def test_worker_cleanup_continues_after_scheduler_shutdown_failure(
 async def test_web_entrypoint_rejects_worker_mode_before_loading_resources(
     monkeypatch,
 ):
-    from web import main as web_main
+    from web import app_lifecycle
 
     monkeypatch.setattr(
-        web_main,
+        app_lifecycle,
         "load_process_mode",
         lambda: ProcessMode.WORKER,
     )
     monkeypatch.setattr(
-        web_main,
+        app_lifecycle,
         "get_session_factory",
         lambda: pytest.fail("web resources must not load in worker mode"),
     )
 
     app = SimpleNamespace(state=SimpleNamespace())
     with pytest.raises(RuntimeError, match="vitals.worker entry point"):
-        async with web_main.lifespan(app):
+        async with app_lifecycle.lifespan(app):
             pass

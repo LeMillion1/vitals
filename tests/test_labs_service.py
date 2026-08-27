@@ -3,6 +3,8 @@ out-of-range / retest alerts, defer-retest, and the LLM extraction → ingest pa
 (with a fake vision client, no network)."""
 from __future__ import annotations
 
+from vitals.services.alerts import legacy as alerts_service_legacy
+
 from datetime import date, timedelta
 
 import pytest
@@ -11,7 +13,11 @@ from sqlalchemy import select
 from vitals.i18n import t
 from vitals.models.labs import LabResult
 from vitals.models.raw_payload import RawPayload
-from vitals.services import alerts_service, labs_service
+import vitals.services.labs.alerts as lab_alerts
+import vitals.services.labs.flags as lab_flags
+import vitals.services.labs.ingestion as lab_ingestion
+import vitals.services.labs.markers as lab_markers
+import vitals.services.labs.results as lab_results
 
 # asyncio_mode=auto runs the async tests; compute_flag tests stay synchronous.
 
@@ -20,26 +26,26 @@ DAY = date(2026, 6, 10)
 
 # ── Pure flag logic ───────────────────────────────────────────────────────────
 def test_compute_flag_classifies():
-    assert labs_service.compute_flag(100, 30, 400) == "normal"
+    assert lab_flags.compute_flag(100, 30, 400) == "normal"
     # Wide range [30,400] (width 370): mildly out → low/high.
-    assert labs_service.compute_flag(25, 30, 400) == "low"
-    assert labs_service.compute_flag(450, 30, 400) == "high"
+    assert lab_flags.compute_flag(25, 30, 400) == "low"
+    assert lab_flags.compute_flag(450, 30, 400) == "high"
     # >half the range width beyond a bound → critical (400 + 185 = 585).
-    assert labs_service.compute_flag(700, 30, 400) == "critical_high"
+    assert lab_flags.compute_flag(700, 30, 400) == "critical_high"
     # Narrow range [80,120] (width 40): 50 < 80-20 → critical_low; 70 → low.
-    assert labs_service.compute_flag(50, 80, 120) == "critical_low"
-    assert labs_service.compute_flag(70, 80, 120) == "low"
+    assert lab_flags.compute_flag(50, 80, 120) == "critical_low"
+    assert lab_flags.compute_flag(70, 80, 120) == "low"
     # one-sided range (LDL < 3.0) → relative margin off the bound.
-    assert labs_service.compute_flag(2.0, None, 3.0) == "normal"
-    assert labs_service.compute_flag(3.5, None, 3.0) == "high"
-    assert labs_service.compute_flag(4.5, None, 3.0) == "critical_high"
+    assert lab_flags.compute_flag(2.0, None, 3.0) == "normal"
+    assert lab_flags.compute_flag(3.5, None, 3.0) == "high"
+    assert lab_flags.compute_flag(4.5, None, 3.0) == "critical_high"
     # no range → unknown
-    assert labs_service.compute_flag(5.0, None, None) is None
+    assert lab_flags.compute_flag(5.0, None, None) is None
 
 
 # ── Manual entry + catalog ────────────────────────────────────────────────────
 async def test_add_result_creates_marker_and_flag(db_session, owner_write):
-    r = await labs_service.add_result(
+    r = await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="TSH",
@@ -53,7 +59,7 @@ async def test_add_result_creates_marker_and_flag(db_session, owner_write):
     await db_session.commit()
     assert r.flag == "high"
 
-    markers = await labs_service.list_markers(
+    markers = await lab_markers.list_markers(
         db_session,
         subject_id=owner_write.subject_id,
     )
@@ -64,7 +70,7 @@ async def test_add_result_creates_marker_and_flag(db_session, owner_write):
 
 async def test_add_result_falls_back_to_catalog_range(db_session, owner_write):
     # First result establishes the catalog range.
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="Ferritin",
@@ -77,7 +83,7 @@ async def test_add_result_falls_back_to_catalog_range(db_session, owner_write):
     )
     await db_session.commit()
     # Second result omits the range → catalog default is used to flag it.
-    r = await labs_service.add_result(
+    r = await lab_results.add_result(
         db_session,
         on_date=DAY + timedelta(days=30),
         marker="Ferritin",
@@ -91,7 +97,7 @@ async def test_add_result_falls_back_to_catalog_range(db_session, owner_write):
 
 
 async def test_marker_history_and_latest(db_session, owner_write):
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="TSH",
@@ -101,7 +107,7 @@ async def test_marker_history_and_latest(db_session, owner_write):
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(DAY),
     )
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY + timedelta(days=90),
         marker="TSH",
@@ -113,14 +119,14 @@ async def test_marker_history_and_latest(db_session, owner_write):
     )
     await db_session.commit()
 
-    hist = await labs_service.marker_history(
+    hist = await lab_results.marker_history(
         db_session,
         "TSH",
         subject_id=owner_write.subject_id,
     )
     assert [p["value"] for p in hist] == [2.0, 3.0]
 
-    latest = await labs_service.latest_per_marker(
+    latest = await lab_results.latest_per_marker(
         db_session,
         subject_id=owner_write.subject_id,
     )
@@ -130,7 +136,7 @@ async def test_marker_history_and_latest(db_session, owner_write):
 
 # ── Alerts ────────────────────────────────────────────────────────────────────
 async def test_refresh_alerts_raises_and_resolves(db_session, owner_write):
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="TSH",
@@ -141,7 +147,7 @@ async def test_refresh_alerts_raises_and_resolves(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(DAY),
     )
     await db_session.commit()
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         on_date=DAY,
         identity=owner_write.identity,
@@ -150,11 +156,11 @@ async def test_refresh_alerts_raises_and_resolves(db_session, owner_write):
     )
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
-    assert any(a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:") for a in active)
+    active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+    assert any(a.alert_key == lab_alerts.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:") for a in active)
 
     # A later in-range value clears it.
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY + timedelta(days=90),
         marker="TSH",
@@ -165,7 +171,7 @@ async def test_refresh_alerts_raises_and_resolves(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(DAY + timedelta(days=90)),
     )
     await db_session.commit()
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         on_date=DAY + timedelta(days=90),
         identity=owner_write.identity,
@@ -173,15 +179,15 @@ async def test_refresh_alerts_raises_and_resolves(db_session, owner_write):
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
-    assert not any(a.alert_key == labs_service.OUT_OF_RANGE_KEY for a in active)
+    active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+    assert not any(a.alert_key == lab_alerts.OUT_OF_RANGE_KEY for a in active)
 
 
 async def test_out_of_range_alert_message_uses_localized_flag(db_session, owner_write):
     """Regression: the raw ``critical_high`` enum must not leak into the alert
     copy — the localized flag label is shown instead."""
     # 700 in a [30, 400] range → critical_high (see compute_flag tests above).
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="Ferritin",
@@ -192,7 +198,7 @@ async def test_out_of_range_alert_message_uses_localized_flag(db_session, owner_
         prepared_conflict_write=await owner_write.write(DAY),
     )
     await db_session.commit()
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         on_date=DAY,
         identity=owner_write.identity,
@@ -201,14 +207,14 @@ async def test_out_of_range_alert_message_uses_localized_flag(db_session, owner_
     )
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
-    alert = next(a for a in active if a.alert_key == labs_service.OUT_OF_RANGE_KEY)
+    active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+    alert = next(a for a in active if a.alert_key == lab_alerts.OUT_OF_RANGE_KEY)
     assert "critical_high" not in alert.message
     assert t("enum.flag.critical_high") in alert.message
 
 
 async def test_overdue_retest_alert_and_defer(db_session, owner_write):
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="Ferritin",
@@ -218,7 +224,7 @@ async def test_overdue_retest_alert_and_defer(db_session, owner_write):
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(DAY),
     )
-    marker = await labs_service.get_marker(
+    marker = await lab_markers.get_marker(
         db_session,
         "Ferritin",
         subject_id=owner_write.subject_id,
@@ -227,7 +233,7 @@ async def test_overdue_retest_alert_and_defer(db_session, owner_write):
     await db_session.commit()
 
     later = DAY + timedelta(days=120)  # overdue
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         on_date=later,
         identity=owner_write.identity,
@@ -235,11 +241,11 @@ async def test_overdue_retest_alert_and_defer(db_session, owner_write):
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
-    assert any(a.alert_key == labs_service.RETEST_DUE_KEY for a in active)
+    active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+    assert any(a.alert_key == lab_alerts.RETEST_DUE_KEY for a in active)
 
     # Defer pushes it out and resolves the alert.
-    await labs_service.defer_retest(
+    await lab_alerts.defer_retest(
         db_session,
         "Ferritin",
         until=later + timedelta(days=30),
@@ -248,7 +254,7 @@ async def test_overdue_retest_alert_and_defer(db_session, owner_write):
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         on_date=later,
         identity=owner_write.identity,
@@ -256,8 +262,8 @@ async def test_overdue_retest_alert_and_defer(db_session, owner_write):
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
-    assert not any(a.alert_key == labs_service.RETEST_DUE_KEY for a in active)
+    active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+    assert not any(a.alert_key == lab_alerts.RETEST_DUE_KEY for a in active)
 
 
 async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_session, owner_write):
@@ -266,7 +272,7 @@ async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_ses
     out-of-range result for the same marker raises a fresh alert."""
     from freezegun import freeze_time
 
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="TSH",
@@ -279,7 +285,7 @@ async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_ses
     await db_session.commit()
 
     with freeze_time("2026-06-10 10:00:00"):
-        await labs_service.refresh_alerts(
+        await lab_alerts.refresh_alerts(
             db_session,
             on_date=DAY,
             identity=owner_write.identity,
@@ -287,19 +293,19 @@ async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_ses
             subject_id=owner_write.subject_id,
         )
         await db_session.commit()
-        active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+        active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
         alert = next(
-            (a for a in active if a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")),
+            (a for a in active if a.alert_key == lab_alerts.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")),
             None,
         )
         assert alert is not None
 
         # User dismisses the alert.
-        await alerts_service.resolve_alert(db_session, alert.id, subject_id=owner_write.subject_id)
+        await alerts_service_legacy.resolve_alert(db_session, alert.id, subject_id=owner_write.subject_id)
         await db_session.commit()
 
         # Second load (same day): stays hidden.
-        await labs_service.refresh_alerts(
+        await lab_alerts.refresh_alerts(
             db_session,
             on_date=DAY,
             identity=owner_write.identity,
@@ -307,16 +313,16 @@ async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_ses
             subject_id=owner_write.subject_id,
         )
         await db_session.commit()
-        active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+        active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
         assert not any(
-            a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")
+            a.alert_key == lab_alerts.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")
             for a in active
         ), "Alert should stay hidden after dismiss on the same day"
 
     # Next calendar day, same underlying result: still hidden — this is the
     # behavior change from the old daily-nag design.
     with freeze_time("2026-06-11 10:00:00"):
-        await labs_service.refresh_alerts(
+        await lab_alerts.refresh_alerts(
             db_session,
             on_date=DAY + timedelta(days=1),
             identity=owner_write.identity,
@@ -324,15 +330,15 @@ async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_ses
             subject_id=owner_write.subject_id,
         )
         await db_session.commit()
-        active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+        active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
         assert not any(
-            a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")
+            a.alert_key == lab_alerts.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")
             for a in active
         ), "Alert should stay hidden indefinitely for the same result — only new data revives it"
 
         # A genuinely new out-of-range result for the same marker (a new upload)
         # raises a fresh alert.
-        await labs_service.add_result(
+        await lab_results.add_result(
             db_session,
             on_date=DAY + timedelta(days=1),
             marker="TSH",
@@ -343,7 +349,7 @@ async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_ses
             prepared_conflict_write=await owner_write.write(DAY + timedelta(days=1)),
         )
         await db_session.commit()
-        await labs_service.refresh_alerts(
+        await lab_alerts.refresh_alerts(
             db_session,
             on_date=DAY + timedelta(days=1),
             identity=owner_write.identity,
@@ -351,10 +357,10 @@ async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_ses
             subject_id=owner_write.subject_id,
         )
         await db_session.commit()
-        active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+        active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
         new_alerts = [
             a for a in active
-            if a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")
+            if a.alert_key == lab_alerts.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")
         ]
         assert len(new_alerts) == 1, "A new upload should raise exactly one fresh alert"
         assert new_alerts[0].entity_ref != alert.entity_ref
@@ -364,7 +370,7 @@ async def test_new_out_of_range_result_supersedes_previous_alert(db_session, own
     """A new out-of-range result for the same marker resolves the (still-active,
     never dismissed) alert tied to the previous result, instead of leaving it
     active alongside a fresh duplicate."""
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="TSH",
@@ -375,7 +381,7 @@ async def test_new_out_of_range_result_supersedes_previous_alert(db_session, own
         prepared_conflict_write=await owner_write.write(DAY),
     )
     await db_session.commit()
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         on_date=DAY,
         identity=owner_write.identity,
@@ -383,12 +389,12 @@ async def test_new_out_of_range_result_supersedes_previous_alert(db_session, own
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
-    tsh_alerts = [a for a in active if a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")]
+    active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+    tsh_alerts = [a for a in active if a.alert_key == lab_alerts.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")]
     assert len(tsh_alerts) == 1
     old_entity = tsh_alerts[0].entity_ref
 
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY + timedelta(days=1),
         marker="TSH",
@@ -399,7 +405,7 @@ async def test_new_out_of_range_result_supersedes_previous_alert(db_session, own
         prepared_conflict_write=await owner_write.write(DAY + timedelta(days=1)),
     )
     await db_session.commit()
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         on_date=DAY + timedelta(days=1),
         identity=owner_write.identity,
@@ -408,8 +414,8 @@ async def test_new_out_of_range_result_supersedes_previous_alert(db_session, own
     )
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
-    tsh_alerts = [a for a in active if a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")]
+    active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+    tsh_alerts = [a for a in active if a.alert_key == lab_alerts.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")]
     assert len(tsh_alerts) == 1, "The stale alert for the old result must be superseded, not left active"
     assert tsh_alerts[0].entity_ref != old_entity
 
@@ -417,7 +423,7 @@ async def test_new_out_of_range_result_supersedes_previous_alert(db_session, own
 async def test_dismissed_retest_due_alert_stays_hidden_until_new_result(db_session, owner_write):
     """Same forever-until-new-data contract as out-of-range alerts applies to
     the overdue-retest reminder."""
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="Ferritin",
@@ -427,7 +433,7 @@ async def test_dismissed_retest_due_alert_stays_hidden_until_new_result(db_sessi
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(DAY),
     )
-    marker = await labs_service.get_marker(
+    marker = await lab_markers.get_marker(
         db_session,
         "Ferritin",
         subject_id=owner_write.subject_id,
@@ -436,7 +442,7 @@ async def test_dismissed_retest_due_alert_stays_hidden_until_new_result(db_sessi
     await db_session.commit()
 
     later = DAY + timedelta(days=120)  # overdue
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         on_date=later,
         identity=owner_write.identity,
@@ -444,17 +450,17 @@ async def test_dismissed_retest_due_alert_stays_hidden_until_new_result(db_sessi
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
-    alert = next((a for a in active if a.alert_key == labs_service.RETEST_DUE_KEY), None)
+    active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+    alert = next((a for a in active if a.alert_key == lab_alerts.RETEST_DUE_KEY), None)
     assert alert is not None
 
-    await alerts_service.resolve_alert(db_session, alert.id, subject_id=owner_write.subject_id)
+    await alerts_service_legacy.resolve_alert(db_session, alert.id, subject_id=owner_write.subject_id)
     await db_session.commit()
 
     # Much later, still no new test taken: stays hidden — under the old
     # daily-nag design this would have reappeared the very next day.
     much_later = DAY + timedelta(days=200)
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         on_date=much_later,
         identity=owner_write.identity,
@@ -462,13 +468,13 @@ async def test_dismissed_retest_due_alert_stays_hidden_until_new_result(db_sessi
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
-    assert not any(a.alert_key == labs_service.RETEST_DUE_KEY for a in active)
+    active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+    assert not any(a.alert_key == lab_alerts.RETEST_DUE_KEY for a in active)
 
     # The user finally retests — once the new result in turn becomes overdue,
     # a fresh reminder is raised.
     retest_date = DAY + timedelta(days=210)
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=retest_date,
         marker="Ferritin",
@@ -480,7 +486,7 @@ async def test_dismissed_retest_due_alert_stays_hidden_until_new_result(db_sessi
     )
     await db_session.commit()
     final_check = retest_date + timedelta(days=100)
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         on_date=final_check,
         identity=owner_write.identity,
@@ -488,8 +494,8 @@ async def test_dismissed_retest_due_alert_stays_hidden_until_new_result(db_sessi
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
-    assert any(a.alert_key == labs_service.RETEST_DUE_KEY for a in active)
+    active = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
+    assert any(a.alert_key == lab_alerts.RETEST_DUE_KEY for a in active)
 
 
 # ── LLM extraction → ingest ───────────────────────────────────────────────────
@@ -583,7 +589,7 @@ async def test_extract_and_ingest(db_session, owner_write, platform_ai_ready):
         ],
     }
     llm = FakeLLM(payload)
-    extracted = await labs_service.extract_from_file(
+    extracted = await lab_ingestion.extract_from_file(
         b"\x89PNG\r\n\x1a\n-fake-image-bytes", llm=llm, content_type="image/png"
     )
     assert extracted == payload
@@ -592,7 +598,7 @@ async def test_extract_and_ingest(db_session, owner_write, platform_ai_ready):
     raw = await _lab_upload(
         db_session, owner_write, platform_ai_ready, storage_ref="labs/doc1.png", payload=extracted
     )
-    summary = await labs_service.ingest_extracted(
+    summary = await lab_ingestion.ingest_extracted(
         db_session,
         extracted,
         file_key="labs/doc1.png",
@@ -604,7 +610,7 @@ async def test_extract_and_ingest(db_session, owner_write, platform_ai_ready):
     assert summary["created"] == 2 and summary["skipped"] == 0
     assert {r.marker for r in summary["results"]} == {"Ferritin", "TSH"}
 
-    tsh = await labs_service.list_results(
+    tsh = await lab_results.list_results(
         db_session,
         marker="TSH",
         subject_id=owner_write.subject_id,
@@ -616,7 +622,7 @@ async def test_extract_and_ingest(db_session, owner_write, platform_ai_ready):
     assert raw is not None and raw.processed_at is not None
 
     # Re-ingesting the same document dedupes.
-    summary2 = await labs_service.ingest_extracted(
+    summary2 = await lab_ingestion.ingest_extracted(
         db_session,
         extracted,
         file_key="labs/doc1.png",
@@ -646,7 +652,7 @@ async def test_extract_and_ingest_multipage_pdf(db_session):
         ],
     }
     llm = FakeLLM(payload)
-    extracted = await labs_service.extract_from_file(
+    extracted = await lab_ingestion.extract_from_file(
         pdf_bytes, llm=llm, content_type="application/pdf"
     )
     assert extracted == payload
@@ -657,17 +663,17 @@ async def test_extract_and_ingest_multipage_pdf(db_session):
 
 def test_normalize_marker():
     # Test aliases
-    assert labs_service.normalize_marker("определение иммунореактивного инсулина") == "Инсулин"
-    assert labs_service.normalize_marker("тиреотропный гормон (ттг)") == "ТТГ"
-    assert labs_service.normalize_marker("определение холестерина общего") == "Холестерин общий"
+    assert lab_markers.normalize_marker("определение иммунореактивного инсулина") == "Инсулин"
+    assert lab_markers.normalize_marker("тиреотропный гормон (ттг)") == "ТТГ"
+    assert lab_markers.normalize_marker("определение холестерина общего") == "Холестерин общий"
     # Test fallback capitalization
-    assert labs_service.normalize_marker("ferritin") == "Ferritin"
-    assert labs_service.normalize_marker("кальций") == "Кальций"
+    assert lab_markers.normalize_marker("ferritin") == "Ferritin"
+    assert lab_markers.normalize_marker("кальций") == "Кальций"
 
 
 async def test_add_result_normalizes_marker_name(db_session, owner_write):
     # Add a result with a synonym name
-    r1 = await labs_service.add_result(
+    r1 = await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="определение иммунореактивного инсулина",
@@ -676,7 +682,7 @@ async def test_add_result_normalizes_marker_name(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(DAY),
     )
     # Add a result with standard name
-    r2 = await labs_service.add_result(
+    r2 = await lab_results.add_result(
         db_session,
         on_date=DAY + timedelta(days=1),
         marker="Инсулин",
@@ -690,14 +696,14 @@ async def test_add_result_normalizes_marker_name(db_session, owner_write):
     assert r1.marker == "Инсулин"
     assert r2.marker == "Инсулин"
 
-    markers = await labs_service.list_markers(
+    markers = await lab_markers.list_markers(
         db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(markers) == 1
     assert markers[0].name == "Инсулин"
 
-    hist = await labs_service.marker_history(
+    hist = await lab_results.marker_history(
         db_session,
         "Инсулин",
         subject_id=owner_write.subject_id,
@@ -709,7 +715,7 @@ async def test_add_result_normalizes_marker_name(db_session, owner_write):
 # ── Write-path validation ─────────────────────────────────────────────────────
 async def test_add_result_rejects_nameless_marker(db_session, owner_write):
     with pytest.raises(ValueError):
-        await labs_service.add_result(
+        await lab_results.add_result(
             db_session,
             on_date=date(2026, 6, 10),
             marker="   ",
@@ -723,7 +729,7 @@ async def test_add_result_rejects_nameless_marker(db_session, owner_write):
 async def test_add_result_rejects_implausible_value(db_session, bad_value, owner_write):
     """MCP and vision extraction both reach this without an HTML form in between."""
     with pytest.raises(ValueError):
-        await labs_service.add_result(
+        await lab_results.add_result(
             db_session,
             on_date=date(2026, 6, 10),
             marker="Ferritin",
@@ -736,7 +742,7 @@ async def test_add_result_rejects_implausible_value(db_session, bad_value, owner
 async def test_add_result_allows_negative_and_large_real_values(db_session, owner_write):
     """The ceiling only catches the absurd: base excess is legitimately negative
     and cell counts run into the hundreds of thousands."""
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=date(2026, 6, 10),
         marker="Base excess",
@@ -744,7 +750,7 @@ async def test_add_result_allows_negative_and_large_real_values(db_session, owne
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 10)),
     )
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=date(2026, 6, 10),
         marker="Platelets",
@@ -753,7 +759,7 @@ async def test_add_result_allows_negative_and_large_real_values(db_session, owne
         prepared_conflict_write=await owner_write.write(date(2026, 6, 10)),
     )
     await db_session.commit()
-    assert len(await labs_service.list_results(
+    assert len(await lab_results.list_results(
         db_session,
         marker="Base excess",
         subject_id=owner_write.subject_id,
@@ -774,7 +780,7 @@ async def test_ingest_skips_bad_row_and_keeps_the_rest(
     raw = await _lab_upload(
         db_session, owner_write, platform_ai_ready, storage_ref="labs/doc-bad.png", payload=extracted
     )
-    summary = await labs_service.ingest_extracted(
+    summary = await lab_ingestion.ingest_extracted(
         db_session,
         extracted,
         file_key="labs/doc-bad.png",
@@ -811,4 +817,4 @@ async def test_unparsed_llm_reply_is_kept_verbatim():
     out = await client.extract_json("extract", image_url="data:image/png;base64,x")
     assert out == {"_unparsed": "Sorry, I cannot read this image."}
     # Whatever comes back still has to behave like a payload dict downstream.
-    assert labs_service.normalize_extracted(out) == []
+    assert lab_ingestion.normalize_extracted(out) == []

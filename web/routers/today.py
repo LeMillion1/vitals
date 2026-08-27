@@ -1,11 +1,13 @@
 """The entry point: what is going on today, before picking a domain."""
 from __future__ import annotations
 
+from vitals.services.digest import ownership as digest_ownership
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services import digest_service, today_service
+from vitals.services import today_service
 from vitals.services.conflicts import engine
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
@@ -25,7 +27,7 @@ async def today_dashboard(
         actor_username=username,
         evaluation_date=today_local(),
     )
-    digest_owner = await digest_service.prepare_digest_owner(
+    digest_owner = await digest_ownership.prepare_digest_owner(
         db,
         actor_username=username,
     )

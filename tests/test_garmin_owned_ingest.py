@@ -20,8 +20,12 @@ from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import garmin_service
-from vitals.services.garmin_service import (
+from vitals.services.garmin import alerts as garmin_alerts
+from vitals.services.garmin import ingestion as garmin_ingestion
+from vitals.services.garmin import jobs as garmin_jobs
+from vitals.services.garmin import raw_payloads as garmin_raw_payloads
+from vitals.services.garmin import sync as garmin_sync
+from vitals.services.garmin.errors import (
     GarminConnectionInactiveError,
     GarminOwnershipConflictError,
     GarminRawPayloadInvariantError,
@@ -88,7 +92,7 @@ async def test_owned_daily_stamps_raw_daily_intraday_and_weight(db_session):
         "stress": {"stressValuesArray": [[1_777_000_000_000, 44]]},
     }
 
-    daily = await garmin_service.ingest_owned_daily(
+    daily = await garmin_ingestion.ingest_owned_daily(
         db_session,
         DAY,
         raw,
@@ -133,7 +137,7 @@ async def test_owned_daily_adopts_legacy_roots_without_rewriting_actor(db_sessio
     db_session.add_all([legacy_raw, legacy_daily])
     await db_session.flush()
 
-    row = await garmin_service.ingest_owned_daily(
+    row = await garmin_ingestion.ingest_owned_daily(
         db_session,
         DAY,
         {"summary": {"totalSteps": 2}},
@@ -162,7 +166,7 @@ async def test_owned_daily_preserves_legacy_weight_and_appends_exact_raw_link(db
     db_session.add(legacy_weight)
     await db_session.flush()
 
-    daily = await garmin_service.ingest_owned_daily(
+    daily = await garmin_ingestion.ingest_owned_daily(
         db_session,
         DAY,
         {"summary": {"totalSteps": 2, "weight": 85000}},
@@ -203,7 +207,7 @@ async def test_another_accounts_day_is_neither_read_nor_refreshed(db_session):
 
     # A Garmin day is unique inside the account it was fetched from, so both
     # accounts keep their own row for the same date.
-    mine = await garmin_service.ingest_owned_daily(
+    mine = await garmin_ingestion.ingest_owned_daily(
         db_session,
         DAY,
         {"summary": {"totalSteps": 9}},
@@ -233,7 +237,7 @@ async def test_another_accounts_activity_id_is_neither_read_nor_refreshed(db_ses
     await db_session.flush()
 
     # An activity id is unique inside the account it came from.
-    await garmin_service.ingest_owned_activities(
+    await garmin_ingestion.ingest_owned_activities(
         db_session,
         [{"activityId": "same-id", "activityName": "mine"}],
         identity=_identity(owner_a, subject_a),
@@ -284,7 +288,7 @@ async def test_owned_intraday_replacement_does_not_delete_foreign_scope(db_sessi
     )
     await db_session.flush()
 
-    await garmin_service.ingest_owned_intraday(
+    await garmin_ingestion.ingest_owned_intraday(
         db_session,
         DAY,
         "stress",
@@ -316,7 +320,7 @@ async def test_owned_intraday_rejects_foreign_raw_reference(db_session):
     await db_session.flush()
 
     with pytest.raises(GarminRawPayloadInvariantError, match="subject_id"):
-        await garmin_service.ingest_owned_intraday(
+        await garmin_ingestion.ingest_owned_intraday(
             db_session,
             DAY,
             "stress",
@@ -354,7 +358,7 @@ async def test_owned_reparse_derives_actor_and_allows_historical_connection(
     db_session.add(raw_row)
     await db_session.flush()
 
-    row = await garmin_service.reparse_owned_daily_from_raw(db_session, raw_row)
+    row = await garmin_raw_payloads.reparse_owned_daily_from_raw(db_session, raw_row)
 
     assert row.actor_user_id == owner.id
     assert row.subject_id == subject.id
@@ -380,7 +384,7 @@ async def test_owned_reparse_preserves_stage3a_actorless_account_history(db_sess
     db_session.add(raw)
     await db_session.flush()
 
-    row = await garmin_service.reparse_owned_daily_from_raw(db_session, raw)
+    row = await garmin_raw_payloads.reparse_owned_daily_from_raw(db_session, raw)
 
     assert (
         row.subject_id,
@@ -406,7 +410,7 @@ async def test_owned_activity_reparse_rejects_payload_id_substitution(db_session
     await db_session.flush()
 
     with pytest.raises(GarminRawPayloadInvariantError, match="does not match"):
-        await garmin_service.reparse_owned_activity_from_raw(db_session, raw_row)
+        await garmin_raw_payloads.reparse_owned_activity_from_raw(db_session, raw_row)
     assert await db_session.scalar(select(func.count()).select_from(GarminActivity)) == 0
     assert raw_row.processed_at is None
 
@@ -437,7 +441,7 @@ async def test_owned_hae_is_partial_and_reparsable(db_session):
         }
     }
 
-    result = await garmin_service.ingest_owned_health_auto_export(
+    result = await garmin_ingestion.ingest_owned_health_auto_export(
         db_session,
         payload,
         identity=identity,
@@ -460,7 +464,7 @@ async def test_owned_hae_is_partial_and_reparsable(db_session):
     existing.resting_hr = None
     hae_raw.processed_at = None
     await db_session.flush()
-    await garmin_service.reparse_owned_health_auto_export_from_raw(
+    await garmin_raw_payloads.reparse_owned_health_auto_export_from_raw(
         db_session, hae_raw
     )
     assert existing.resting_hr == 51
@@ -474,7 +478,7 @@ async def test_owned_daily_weight_bridge_fails_closed_with_multiple_subjects(
     await _scope(db_session, "owner-b")
 
     with pytest.raises(GarminOwnershipConflictError, match="multi-subject"):
-        await garmin_service.ingest_owned_daily(
+        await garmin_ingestion.ingest_owned_daily(
             db_session,
             DAY,
             {"summary": {"totalSteps": 42, "weight": 85000}},
@@ -490,7 +494,7 @@ async def test_owned_daily_weight_bridge_fails_closed_with_multiple_subjects(
 async def test_owned_pulse_merges_summary_into_latest_bundle_after_fetch(db_session):
     owner, subject, connection = await _scope(db_session, "owner")
     identity = _identity(owner, subject, system=True)
-    await garmin_service.ingest_owned_daily(
+    await garmin_ingestion.ingest_owned_daily(
         db_session,
         DAY,
         {
@@ -508,7 +512,7 @@ async def test_owned_pulse_merges_summary_into_latest_bundle_after_fetch(db_sess
     class _InterleavingClient:
         async def fetch_summary(self, on_date):
             assert on_date == DAY
-            await garmin_service.ingest_owned_daily(
+            await garmin_ingestion.ingest_owned_daily(
                 db_session,
                 DAY,
                 {
@@ -524,7 +528,7 @@ async def test_owned_pulse_merges_summary_into_latest_bundle_after_fetch(db_sess
             )
             return {"totalSteps": 300}
 
-    result = await garmin_service.pulse_owned(
+    result = await garmin_sync.pulse_owned(
         db_session,
         _InterleavingClient(),
         identity=identity,
@@ -562,7 +566,7 @@ async def test_fresh_owned_sync_rejects_inactive_connection_before_network(
 
     client = _NoFetchClient()
     with pytest.raises(GarminConnectionInactiveError, match=status.value):
-        await garmin_service.sync_owned(
+        await garmin_sync.sync_owned(
             db_session,
             client,
             identity=_identity(owner, subject),
@@ -590,7 +594,7 @@ async def test_owned_sync_attributes_auth_alert_and_auto_resolves_actorlessly(
         async def fetch_activities(self, start, end):
             raise AssertionError("activities must not be fetched after auth failure")
 
-    summary = await garmin_service.sync_owned(
+    summary = await garmin_sync.sync_owned(
         db_session,
         _AuthFailureClient(),
         identity=identity,
@@ -601,7 +605,7 @@ async def test_owned_sync_attributes_auth_alert_and_auto_resolves_actorlessly(
     assert summary["error"] == "mfa"
     row = await db_session.scalar(
         select(SystemAlert).where(
-            SystemAlert.alert_key == garmin_service.AUTH_ALERT_KEY
+            SystemAlert.alert_key == garmin_alerts.AUTH_ALERT_KEY
         )
     )
     assert row is not None
@@ -619,7 +623,7 @@ async def test_owned_sync_attributes_auth_alert_and_auto_resolves_actorlessly(
         async def fetch_activities(self, start, end):
             return []
 
-    await garmin_service.sync_owned(
+    await garmin_sync.sync_owned(
         db_session,
         _HealthyClient(),
         identity=identity,
@@ -643,7 +647,7 @@ async def test_owned_sync_attributes_token_cache_alert(db_session):
         async def fetch_activities(self, start, end):
             return []
 
-    await garmin_service.sync_owned(
+    await garmin_sync.sync_owned(
         db_session,
         _TokenWarningClient(),
         identity=_identity(owner, subject),
@@ -654,7 +658,7 @@ async def test_owned_sync_attributes_token_cache_alert(db_session):
 
     row = await db_session.scalar(
         select(SystemAlert).where(
-            SystemAlert.alert_key == garmin_service.TOKEN_ALERT_KEY
+            SystemAlert.alert_key == garmin_alerts.TOKEN_ALERT_KEY
         )
     )
     assert row is not None
@@ -688,7 +692,7 @@ async def test_owned_pending_sweep_is_scoped_and_rolls_back_bad_row(db_session):
     db_session.add_all([bad, good])
     await db_session.flush()
 
-    done = await garmin_service.reparse_owned_pending(
+    done = await garmin_raw_payloads.reparse_owned_pending(
         db_session,
         identity=identity,
         integration_connection_id=connection.id,
@@ -748,7 +752,7 @@ async def test_sync_job_resolves_system_or_owner_actor(
     await db_session.commit()
 
     monkeypatch.setattr(client_module, "GarminClient", _Client)
-    await garmin_service.sync_job(
+    await garmin_jobs.sync_job(
         session_factory,
         days=1,
         subject_id=subject.id,
@@ -798,7 +802,7 @@ async def test_sync_job_noops_for_disabled_connection(
         _Client,
     )
 
-    result = await garmin_service.sync_job(
+    result = await garmin_jobs.sync_job(
         session_factory, days=1, subject_id=subject.id
     )
 

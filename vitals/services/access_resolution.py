@@ -188,11 +188,11 @@ async def resolve_access_context(
         if UserRoleName.PLATFORM_SUPERADMIN in principal.roles and (
             support_grant_id is not None or not relationship_is_live
         ):
-            from vitals.services.support_access_service import (
+            from vitals.services.support_access.contracts import (
                 AmbiguousSupportGrant,
                 NotAPlatformAdmin,
-                load_support_grant,
             )
+            from vitals.services.support_access.lifecycle import load_support_grant
 
             try:
                 with session.no_autoflush:

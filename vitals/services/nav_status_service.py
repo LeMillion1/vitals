@@ -16,6 +16,8 @@ throws simply loses its row.
 """
 from __future__ import annotations
 
+from vitals.services.nutrition import analytics as nutrition_analytics
+
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
@@ -59,10 +61,10 @@ def _enabled(em: dict[str, bool], key: str) -> bool:
 async def _weight_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
     """Latest weight, and the week's direction beside it — the direction is the
     reason to look, not the number."""
-    from vitals.services import weight_service
+    from vitals.services.weight import logs as weight_logs
 
     today = today_local()
-    logs = await weight_service.list_active_weights(
+    logs = await weight_logs.list_active_weights(
         session, start=today - timedelta(days=21), subject_id=subject_id
     )
     if not logs:
@@ -88,9 +90,9 @@ async def _weight_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
 
 async def _recovery_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
     """Last night's sleep, with training readiness as the note."""
-    from vitals.services import garmin_service
+    from vitals.services.garmin import queries as garmin_queries
 
-    row = await garmin_service.latest_daily(session, subject_id=subject_id)
+    row = await garmin_queries.latest_daily(session, subject_id=subject_id)
     if row is None:
         return None
     gap = (today_local() - row.date).days
@@ -109,9 +111,9 @@ async def _recovery_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
 
 async def _nutrition_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
     """Today's intake against the ceiling, protein beside it."""
-    from vitals.services import nutrition_service
 
-    summary = await nutrition_service.daily_summary(
+
+    summary = await nutrition_analytics.daily_summary(
         session, today_local(), subject_id=subject_id
     )
     if not summary["meal_count"]:
@@ -130,9 +132,11 @@ async def _nutrition_row(session: AsyncSession, subject_id) -> Optional[StatRow]
 
 async def _workouts_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
     """When the last session was — the only workout fact worth a nav rail."""
-    from vitals.services import hevy_service
+    import vitals.services.hevy.queries as hevy_queries
 
-    last = await hevy_service.latest_workout_date(session)
+    last = await hevy_queries.latest_workout_date(
+        session, subject_id=subject_id
+    )
     if last is None:
         return None
     gap = (today_local() - last).days

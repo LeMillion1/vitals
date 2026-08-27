@@ -1,6 +1,10 @@
 """Platform-funded, raw-first Body Scan document parser contracts."""
 from __future__ import annotations
 
+from vitals.services.ai_gateway import contracts as gateway_contracts
+from vitals.services.ai_gateway import dispatch as gateway_dispatch
+from vitals.services.ai_gateway import invocations as gateway_invocations
+
 import asyncio
 import hashlib
 import json
@@ -45,11 +49,14 @@ from vitals.models.tenancy import (
 )
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import ai_gateway_service as gateway
-from vitals.services import file_asset_service, weight_service
+from vitals.services import file_asset_service, weight as weight_domain
 from vitals.services.conflicts import engine
-from vitals.services.body_scan import ai as body_ai
-from vitals.services.body_scan import scans
+from vitals.services.body_scan.ai import contracts as body_ai_contracts
+from vitals.services.body_scan.ai import projection as body_ai_projection
+from vitals.services.body_scan.ai import workflow as body_ai_workflow
+from vitals.services.body_scan.scans import normalization as scan_normalization
+from vitals.services.body_scan.scans import queries as body_scan_queries
+from vitals.services.body_scan.scans import reparse as body_scan_reparse
 from vitals.services.legacy_ownership import LegacySubjectResolutionError
 from web.config import get_web_config
 
@@ -82,15 +89,17 @@ EXTRACTED = {
 
 @pytest.fixture(autouse=True)
 def _runtime(monkeypatch):
-    monkeypatch.setattr(gateway, "now_utc", lambda: NOW)
-    if hasattr(body_ai, "now_utc"):
-        monkeypatch.setattr(body_ai, "now_utc", lambda: NOW)
+    monkeypatch.setattr(gateway_dispatch, "now_utc", lambda: NOW)
+    monkeypatch.setattr(gateway_invocations, "now_utc", lambda: NOW)
+    monkeypatch.setattr(body_ai_projection, "now_utc", lambda: NOW)
     config = replace(
         load_runtime_config(),
         openrouter_api_key=SECRET,
         llm_model_parser=MODEL,
     )
-    monkeypatch.setattr(body_ai, "load_config", lambda: config)
+    monkeypatch.setattr(body_ai_contracts, "load_config", lambda: config)
+    monkeypatch.setattr(body_ai_projection, "load_config", lambda: config)
+    monkeypatch.setattr(body_ai_workflow, "load_config", lambda: config)
 
 
 async def _configure_platform(
@@ -155,7 +164,7 @@ def _storage_ref(suffix: str) -> str:
 
 
 async def _prepare(session: AsyncSession, *, suffix: str = "panel"):
-    return await body_ai.prepare_body_scan_parse(
+    return await body_ai_workflow.prepare_body_scan_parse(
         session,
         actor_username=get_web_config().auth_username,
         storage_ref=_storage_ref(suffix),
@@ -171,7 +180,7 @@ async def test_legacy_prepare_retry_reuses_exact_existing_roots(
 ):
     await _configure_platform(db_session, legacy_owner_roots)
     storage_ref = _storage_ref("legacy-retry")
-    first = await body_ai.prepare_body_scan_parse(
+    first = await body_ai_workflow.prepare_body_scan_parse(
         db_session,
         actor_username=get_web_config().auth_username,
         storage_ref=storage_ref,
@@ -180,7 +189,7 @@ async def test_legacy_prepare_retry_reuses_exact_existing_roots(
         sha256_hex=SHA256,
     )
     await db_session.commit()
-    second = await body_ai.prepare_body_scan_parse(
+    second = await body_ai_workflow.prepare_body_scan_parse(
         db_session,
         actor_username=get_web_config().auth_username,
         storage_ref=storage_ref,
@@ -238,11 +247,11 @@ def _llm(session: AsyncSession, observed: dict, *, behavior: str = "success"):
 
 
 async def _start(session: AsyncSession, prepared):
-    content = body_ai.prepare_body_scan_content(
+    content = body_ai_workflow.prepare_body_scan_content(
         prepared,
         file_bytes=FILE_BYTES,
     )
-    lease = await body_ai.start_body_scan_dispatch(
+    lease = await body_ai_workflow.start_body_scan_dispatch(
         session,
         prepared,
         content=content,
@@ -263,7 +272,7 @@ async def _render(
     behavior="success",
 ):
     observed = _observed()
-    completion = await body_ai.render_body_scan(
+    completion = await body_ai_workflow.render_body_scan(
         prepared,
         lease,
         file_bytes=FILE_BYTES,
@@ -314,14 +323,14 @@ async def _persist_and_replay_platform_scan(
     await session.commit()
     lease, content = await _start(session, prepared)
     completion, _ = await _render(session, prepared, lease, content)
-    await body_ai.persist_body_scan_parse(session, prepared, completion)
+    await body_ai_workflow.persist_body_scan_parse(session, prepared, completion)
     await session.commit()
     context = await engine.resolve_legacy_conflict_write_context(
         session,
         actor_username=None,
         evaluation_date=DAY,
     )
-    assert await scans.reparse_owned_pending(
+    assert await body_scan_reparse.reparse_owned_pending(
         session,
         identity=context.identity,
     ) == 1
@@ -418,7 +427,7 @@ async def test_full_flow_is_opaque_c_null_usage_aware_and_transaction_free(
     assert observed["models"] == [MODEL]
     assert db_session.in_transaction() is False
 
-    await body_ai.persist_body_scan_parse(db_session, prepared, completion)
+    await body_ai_workflow.persist_body_scan_parse(db_session, prepared, completion)
     raw = await db_session.get(RawPayload, raw_id)
     invocation = await db_session.get(AIInvocation, invocation_id)
     assert raw is not None and raw.payload == EXTRACTED and raw.payload != placeholder
@@ -467,14 +476,14 @@ async def test_image_preprocessing_finishes_once_before_charge(
         conversions.append((file_bytes, content_type, filename))
         return ("data:image/png;base64,c3ludGhldGlj",)
 
-    monkeypatch.setattr(scans, "prepare_file_for_extraction", convert)
-    content = body_ai.prepare_body_scan_content(
+    monkeypatch.setattr(scan_normalization, "prepare_file_for_extraction", convert)
+    content = body_ai_workflow.prepare_body_scan_content(
         prepared,
         file_bytes=FILE_BYTES,
     )
     assert len(conversions) == 1
     await db_session.commit()
-    lease = await body_ai.start_body_scan_dispatch(
+    lease = await body_ai_workflow.start_body_scan_dispatch(
         db_session,
         prepared,
         content=content,
@@ -482,7 +491,7 @@ async def test_image_preprocessing_finishes_once_before_charge(
     )
     await db_session.commit()
     observed = _observed()
-    completion = await body_ai.render_body_scan(
+    completion = await body_ai_workflow.render_body_scan(
         prepared,
         lease,
         file_bytes=FILE_BYTES,
@@ -491,7 +500,7 @@ async def test_image_preprocessing_finishes_once_before_charge(
     )
     assert len(conversions) == 1
     assert observed["calls"] == 1
-    await body_ai.persist_body_scan_parse(db_session, prepared, completion)
+    await body_ai_workflow.persist_body_scan_parse(db_session, prepared, completion)
     await db_session.commit()
 
 
@@ -507,7 +516,11 @@ async def test_web_precommit_failure_rolls_back_roots_and_removes_private_bytes(
     async def fail_reservation(*_args, **_kwargs):
         raise RuntimeError("synthetic body reservation failure")
 
-    monkeypatch.setattr(gateway, "reserve_ai_invocation", fail_reservation)
+    monkeypatch.setattr(
+        gateway_invocations,
+        "reserve_ai_invocation",
+        fail_reservation,
+    )
     with pytest.raises(RuntimeError, match="reservation failure"):
         await _web_upload(db_session)
 
@@ -527,9 +540,9 @@ async def test_web_quota_precommit_failure_returns_bounded_reason_and_cleans_byt
     del legacy_owner_roots, platform_ai_ready
 
     async def reject_quota(*_args, **_kwargs):
-        raise gateway.AIQuotaExceededError("synthetic quota")
+        raise gateway_contracts.AIQuotaExceededError("synthetic quota")
 
-    monkeypatch.setattr(gateway, "reserve_ai_invocation", reject_quota)
+    monkeypatch.setattr(gateway_invocations, "reserve_ai_invocation", reject_quota)
     response = await _web_upload(db_session)
 
     assert response.status_code == 200
@@ -566,7 +579,7 @@ async def test_web_local_pdf_failure_cancels_without_provider_call(
     monkeypatch,
 ):
     del legacy_owner_roots, platform_ai_ready
-    from web.routers import weight as weight_router
+    from web.routers.weight_routes import common as weight_common
 
     provider_calls = []
 
@@ -577,13 +590,15 @@ async def test_web_local_pdf_failure_cancels_without_provider_call(
         provider_calls.append("provider")
         raise AssertionError("provider ran after local body PDF failure")
 
-    monkeypatch.setattr(weight_router, "STATIC_DIR", tmp_path)
+    monkeypatch.setattr(weight_common, "STATIC_DIR", tmp_path)
     monkeypatch.setattr(
-        scans,
+        scan_normalization,
         "prepare_file_for_extraction",
         fail_conversion,
     )
-    monkeypatch.setattr(body_ai, "render_body_scan", provider_must_not_run)
+    monkeypatch.setattr(
+        body_ai_workflow, "render_body_scan", provider_must_not_run
+    )
     response = await _web_upload(
         db_session,
         file_bytes=b"%PDF-not-a-valid-pdf",
@@ -609,7 +624,7 @@ async def test_web_t3_transient_failure_reuses_one_paid_completion(
     monkeypatch,
 ):
     del legacy_owner_roots, platform_ai_ready
-    from web.routers import weight as weight_router
+    from web.routers.weight_routes import common as weight_common
 
     provider_calls = 0
     persist_attempts = 0
@@ -627,7 +642,7 @@ async def test_web_t3_transient_failure_reuses_one_paid_completion(
             cost_microunits=1,
         )
 
-    real_persist = body_ai.persist_body_scan_parse
+    real_persist = body_ai_workflow.persist_body_scan_parse
 
     async def transient_persist(session, prepared, completion):
         nonlocal persist_attempts
@@ -637,13 +652,15 @@ async def test_web_t3_transient_failure_reuses_one_paid_completion(
             raise RuntimeError("synthetic body T3 failure")
         return result
 
-    monkeypatch.setattr(weight_router, "STATIC_DIR", tmp_path)
+    monkeypatch.setattr(weight_common, "STATIC_DIR", tmp_path)
     monkeypatch.setattr(
-        scans,
+        scan_normalization,
         "extract_prepared_file_with_usage",
         extraction_probe,
     )
-    monkeypatch.setattr(body_ai, "persist_body_scan_parse", transient_persist)
+    monkeypatch.setattr(
+        body_ai_workflow, "persist_body_scan_parse", transient_persist
+    )
     response = await _web_upload(db_session)
 
     assert response.status_code == 200
@@ -709,7 +726,7 @@ async def test_terminal_failure_accounts_attempt_without_persisting_extraction(
         content,
         behavior=behavior,
     )
-    result = await body_ai.persist_body_scan_parse(
+    result = await body_ai_workflow.persist_body_scan_parse(
         db_session, prepared, completion
     )
     await db_session.commit()
@@ -753,7 +770,7 @@ async def test_t3_rollback_keeps_completion_retryable_and_raw_atomic(
         content,
     )
 
-    await body_ai.persist_body_scan_parse(db_session, prepared, completion)
+    await body_ai_workflow.persist_body_scan_parse(db_session, prepared, completion)
     assert (await db_session.get(RawPayload, raw_id)).payload == EXTRACTED
     await db_session.rollback()
     rolled_back_raw = await db_session.get(RawPayload, raw_id)
@@ -763,7 +780,7 @@ async def test_t3_rollback_keeps_completion_retryable_and_raw_atomic(
     assert rolled_back_invocation.status == AIInvocationStatus.DISPATCHING.value
     await db_session.rollback()
 
-    await body_ai.persist_body_scan_parse(db_session, prepared, completion)
+    await body_ai_workflow.persist_body_scan_parse(db_session, prepared, completion)
     await db_session.commit()
     stored_raw = await db_session.get(RawPayload, raw_id)
     stored_invocation = await db_session.get(AIInvocation, invocation_id)
@@ -782,7 +799,7 @@ async def test_prepare_rejects_foreign_actor_before_file_raw_or_reservation(
     # foreign actor matches no row rather than loading one and being compared
     # against it.
     with pytest.raises(LegacySubjectResolutionError, match="no health record of its own"):
-        await body_ai.prepare_body_scan_parse(
+        await body_ai_workflow.prepare_body_scan_parse(
             db_session,
             actor_username="foreign-user",
             storage_ref=_storage_ref("foreign-actor"),
@@ -802,7 +819,7 @@ async def test_start_rejects_inactive_actor_before_credential_resolution(
 ):
     await _configure_platform(db_session, legacy_owner_roots)
     prepared = await _prepare(db_session, suffix="inactive")
-    content = body_ai.prepare_body_scan_content(
+    content = body_ai_workflow.prepare_body_scan_content(
         prepared,
         file_bytes=FILE_BYTES,
     )
@@ -813,8 +830,8 @@ async def test_start_rejects_inactive_actor_before_credential_resolution(
     await db_session.commit()
     credential_calls = []
 
-    with pytest.raises(body_ai.BodyScanAIOwnershipError):
-        await body_ai.start_body_scan_dispatch(
+    with pytest.raises(body_ai_contracts.BodyScanAIOwnershipError):
+        await body_ai_workflow.start_body_scan_dispatch(
             db_session,
             prepared,
             content=content,
@@ -832,7 +849,7 @@ async def test_start_rejects_changed_raw_file_or_actor_graph(
 ):
     await _configure_platform(db_session, legacy_owner_roots)
     prepared = await _prepare(db_session, suffix=f"tamper-{tamper}")
-    content = body_ai.prepare_body_scan_content(
+    content = body_ai_workflow.prepare_body_scan_content(
         prepared,
         file_bytes=FILE_BYTES,
     )
@@ -866,8 +883,8 @@ async def test_start_rejects_changed_raw_file_or_actor_graph(
     await db_session.commit()
 
     credential_calls = []
-    with pytest.raises(body_ai.BodyScanAIOwnershipError):
-        await body_ai.start_body_scan_dispatch(
+    with pytest.raises(body_ai_contracts.BodyScanAIOwnershipError):
+        await body_ai_workflow.start_body_scan_dispatch(
             db_session,
             prepared,
             content=content,
@@ -886,7 +903,7 @@ async def test_availability_requires_active_root_credential_and_aligned_quotas(
     legacy_owner_roots,
 ):
     username = get_web_config().auth_username
-    unavailable = await body_ai.project_body_scan_ai_availability(
+    unavailable = await body_ai_projection.project_body_scan_ai_availability(
         db_session, actor_username=username
     )
     assert unavailable.available is False
@@ -897,7 +914,7 @@ async def test_availability_requires_active_root_credential_and_aligned_quotas(
         legacy_owner_roots,
         subject_quota=False,
     )
-    no_subject_quota = await body_ai.project_body_scan_ai_availability(
+    no_subject_quota = await body_ai_projection.project_body_scan_ai_availability(
         db_session, actor_username=username
     )
     assert no_subject_quota.available is False
@@ -913,7 +930,7 @@ async def test_availability_requires_active_root_credential_and_aligned_quotas(
     )
     db_session.add(misaligned)
     await db_session.commit()
-    misaligned_quota = await body_ai.project_body_scan_ai_availability(
+    misaligned_quota = await body_ai_projection.project_body_scan_ai_availability(
         db_session, actor_username=username
     )
     assert misaligned_quota.available is False
@@ -931,7 +948,7 @@ async def test_availability_requires_active_root_credential_and_aligned_quotas(
         )
     )
     await db_session.commit()
-    available = await body_ai.project_body_scan_ai_availability(
+    available = await body_ai_projection.project_body_scan_ai_availability(
         db_session, actor_username=username
     )
     assert available.available is True
@@ -941,11 +958,11 @@ async def test_availability_requires_active_root_credential_and_aligned_quotas(
     ("code", "message_key"),
     (
         (
-            body_ai.BodyScanAIAvailabilityCode.NOT_CONFIGURED,
+            body_ai_contracts.BodyScanAIAvailabilityCode.NOT_CONFIGURED,
             "body.not_configured",
         ),
         (
-            body_ai.BodyScanAIAvailabilityCode.QUOTA,
+            body_ai_contracts.BodyScanAIAvailabilityCode.QUOTA,
             "body.quota",
         ),
     ),
@@ -958,10 +975,10 @@ async def test_measures_page_projects_redacted_unavailable_state_and_disables_up
 ):
     async def unavailable(_session, *, actor_username):
         assert actor_username == get_web_config().auth_username
-        return body_ai.BodyScanAIAvailability(False, code)
+        return body_ai_contracts.BodyScanAIAvailability(False, code)
 
     monkeypatch.setattr(
-        body_ai,
+        body_ai_projection,
         "project_body_scan_ai_availability",
         unavailable,
     )
@@ -1001,7 +1018,7 @@ async def test_replay_normalizes_only_successful_platform_extraction(
         success_lease,
         success_content,
     )
-    await body_ai.persist_body_scan_parse(
+    await body_ai_workflow.persist_body_scan_parse(
         db_session, successful, success_completion
     )
     await db_session.commit()
@@ -1033,7 +1050,7 @@ async def test_replay_normalizes_only_successful_platform_extraction(
         failed_content,
         behavior="provider_error",
     )
-    await body_ai.persist_body_scan_parse(db_session, failed, failed_completion)
+    await body_ai_workflow.persist_body_scan_parse(db_session, failed, failed_completion)
     await db_session.commit()
     failed_invocation = await db_session.scalar(
         select(AIInvocation).where(AIInvocation.raw_payload_id == failed_raw.id)
@@ -1054,7 +1071,7 @@ async def test_replay_normalizes_only_successful_platform_extraction(
         actor_username=None,
         evaluation_date=DAY,
     )
-    done = await scans.reparse_owned_pending(
+    done = await body_scan_reparse.reparse_owned_pending(
         db_session,
         identity=context.identity,
     )
@@ -1065,7 +1082,7 @@ async def test_replay_normalizes_only_successful_platform_extraction(
         select(BodyScan).where(BodyScan.raw_payload_id == success_raw.id)
     )
     assert result is not None and result.date == DAY
-    weight = await weight_service.get_active_weight(
+    weight = await weight_domain.logs.get_active_weight(
         db_session,
         DAY,
         subject_id=legacy_owner_roots.subject_id,
@@ -1133,7 +1150,7 @@ async def test_derived_weight_rejects_broken_platform_parser_graph(
     await db_session.commit()
 
     with pytest.raises(engine.ConflictRawOwnershipError):
-        await weight_service.get_active_weight(
+        await weight_domain.logs.get_active_weight(
             db_session,
             DAY,
             subject_id=legacy_owner_roots.subject_id,
@@ -1162,7 +1179,7 @@ async def test_retained_weight_accepts_monotonically_retired_scan_file(
     )
     await db_session.commit()
 
-    weight = await weight_service.get_active_weight(
+    weight = await weight_domain.logs.get_active_weight(
         db_session,
         DAY,
         subject_id=legacy_owner_roots.subject_id,
@@ -1212,7 +1229,7 @@ async def test_mcp_scan_and_derived_weight_reject_mixed_parser_invocation(
         superseded=False,
     )
     db_session.add_all([scan, weight])
-    await gateway.reserve_ai_invocation(
+    await gateway_invocations.reserve_ai_invocation(
         db_session,
         identity=identity,
         purpose=AIInvocationPurpose.BODY_SCAN_PARSE,
@@ -1226,13 +1243,13 @@ async def test_mcp_scan_and_derived_weight_reject_mixed_parser_invocation(
     await db_session.commit()
 
     with pytest.raises(engine.ConflictRawOwnershipError):
-        await scans.list_scans(
+        await body_scan_queries.list_scans(
             db_session,
             subject_id=identity.subject_id,
         )
     await db_session.rollback()
     with pytest.raises(engine.ConflictRawOwnershipError):
-        await weight_service.get_active_weight(
+        await weight_domain.logs.get_active_weight(
             db_session,
             DAY,
             subject_id=identity.subject_id,
@@ -1246,7 +1263,7 @@ async def test_postgres_concurrent_start_issues_one_lease_and_one_provider_call(
 ):
     await _configure_platform(db_session, legacy_owner_roots)
     prepared = await _prepare(db_session, suffix="concurrent")
-    content = body_ai.prepare_body_scan_content(
+    content = body_ai_workflow.prepare_body_scan_content(
         prepared,
         file_bytes=FILE_BYTES,
     )
@@ -1261,7 +1278,7 @@ async def test_postgres_concurrent_start_issues_one_lease_and_one_provider_call(
     async def contender():
         async with factory() as session:
             try:
-                lease = await body_ai.start_body_scan_dispatch(
+                lease = await body_ai_workflow.start_body_scan_dispatch(
                     session,
                     prepared,
                     content=content,
@@ -1269,7 +1286,7 @@ async def test_postgres_concurrent_start_issues_one_lease_and_one_provider_call(
                 )
                 await session.commit()
                 return lease
-            except gateway.AIInvocationStateError as exc:
+            except gateway_contracts.AIInvocationStateError as exc:
                 await session.rollback()
                 return exc
 
@@ -1277,15 +1294,15 @@ async def test_postgres_concurrent_start_issues_one_lease_and_one_provider_call(
         asyncio.gather(contender(), contender()),
         timeout=10,
     )
-    leases = [item for item in outcomes if isinstance(item, gateway.AIDispatchLease)]
+    leases = [item for item in outcomes if isinstance(item, gateway_contracts.AIDispatchLease)]
     assert len(leases) == 1
     assert (
-        sum(isinstance(item, gateway.AIInvocationStateError) for item in outcomes)
+        sum(isinstance(item, gateway_contracts.AIInvocationStateError) for item in outcomes)
         == 1
     )
 
     observed = _observed()
-    completion = await body_ai.render_body_scan(
+    completion = await body_ai_workflow.render_body_scan(
         prepared,
         leases[0],
         file_bytes=FILE_BYTES,
@@ -1293,7 +1310,7 @@ async def test_postgres_concurrent_start_issues_one_lease_and_one_provider_call(
         llm_factory=_llm(db_session, observed),
     )
     async with factory() as session:
-        await body_ai.persist_body_scan_parse(session, prepared, completion)
+        await body_ai_workflow.persist_body_scan_parse(session, prepared, completion)
         await session.commit()
     assert observed["calls"] == 1
     assert await db_session.scalar(

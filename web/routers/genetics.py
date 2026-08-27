@@ -1,5 +1,15 @@
 """Endpoints for the genetics reference table."""
+
 from __future__ import annotations
+
+from vitals.services.genetics import contracts as genetics_contracts
+from vitals.services.genetics import queries as genetics_queries
+from vitals.services.genetics import vcf_ingestion as genetics_vcf_ingestion
+from vitals.services.genetics import writes as genetics_writes
+
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
+from vitals.services.alerts import contracts as alerts_service_contracts
 
 from typing import Optional
 
@@ -8,9 +18,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, Source
-from vitals.services import alerts_service
 from vitals.services.conflicts import engine
-from vitals.services.genetics import variants as variant_records
 from vitals.services.genetics.vcf import INTERPRETATIONS, ParsedVariant, parse_vcf_line
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
@@ -55,15 +63,15 @@ async def genetics_dashboard(
         actor_username=username,
         evaluation_date=today_local(),
     )
-    variants = await variant_records.list_variants(
+    variants = await genetics_queries.list_variants(
         db,
         subject_id=context.identity.subject_id,
     )
-    alerts = await alerts_service.list_active_scoped(
+    alerts = await alerts_service_lifecycle.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(context.identity),
+        context=alerts_service_contracts.HealthAlertContext(context.identity),
         domain=Domain.GENETICS,
-        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        legacy_bridge=alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED,
     )
     return templates.TemplateResponse(
         request,
@@ -111,7 +119,7 @@ async def import_vcf(
         variant = parse_vcf_line(line)
         if variant is None:
             continue
-        if len(raw_variants) < variant_records.MAX_RAW_VARIANTS:
+        if len(raw_variants) < genetics_contracts.MAX_RAW_VARIANTS:
             raw_variants.append(variant)
         else:
             truncated = True
@@ -122,7 +130,7 @@ async def import_vcf(
 
     context, prepared = await _prepared_owner_write(db, username=username)
     try:
-        summary = await variant_records.ingest_vcf_batch(
+        summary = await genetics_vcf_ingestion.ingest_vcf_batch(
             db,
             filename=file.filename,
             curated_variants=curated_variants,
@@ -174,13 +182,13 @@ async def save_variant(
         if rsid:
             # An rsID is a globally-unique dbSNP id: re-saving the same one
             # updates only the exact owner's row under the locked write boundary.
-            await variant_records.upsert_by_rsid(
+            await genetics_writes.upsert_by_rsid(
                 db,
                 rsid=rsid,
                 **fields,
             )
         else:
-            await variant_records.add_variant(
+            await genetics_writes.add_variant(
                 db,
                 rsid=None,
                 **fields,
@@ -201,7 +209,7 @@ async def delete_variant(
 ):
     context, prepared = await _prepared_owner_write(db, username=username)
     try:
-        await variant_records.delete_variant(
+        await genetics_writes.delete_variant(
             db,
             id,
             identity=context.identity,

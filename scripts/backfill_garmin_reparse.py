@@ -17,7 +17,7 @@ NOT recovered here (need a live Garmin call, not just a reparse):
     today, so it's simply absent from old raw payloads.
   - per-activity hr_zone_seconds/splits — need
     fetch_activity_details(activity_id), one call per historical activity.
-Backfilling those means a real resync (garmin_service.sync(days=N), or a
+Backfilling those means a real resync (garmin.sync.sync_owned(days=N), or a
 purpose-built loop over historical activity ids) with the rate-limit caution
 the original plan called out — deliberately not attempted here.
 
@@ -39,16 +39,26 @@ from vitals.config import load_config
 from vitals.database import create_session_factory
 from vitals.models.garmin import DOMAIN
 from vitals.models.raw_payload import RawPayload
-from vitals.services import garmin_service
+from vitals.services.garmin import raw_payloads as garmin_raw_payloads
+
+
+def _owned_raw(kind: str):
+    """Select only durable subject+connection roots; never guess legacy scope."""
+
+    return select(RawPayload).where(
+        RawPayload.domain == DOMAIN,
+        RawPayload.subject_id.is_not(None),
+        RawPayload.integration_connection_id.is_not(None),
+        RawPayload.external_id.startswith(f"{kind}:"),
+    )
 
 
 async def _stats(session) -> None:
     daily = (await session.execute(
-        select(RawPayload).where(RawPayload.domain == DOMAIN, RawPayload.external_id.startswith("daily:"))
-        .order_by(RawPayload.external_id)
+        _owned_raw("daily").order_by(RawPayload.external_id)
     )).scalars().all()
     activities = (await session.execute(
-        select(RawPayload).where(RawPayload.domain == DOMAIN, RawPayload.external_id.startswith("activity:"))
+        _owned_raw("activity")
     )).scalars().all()
     span = f"{daily[0].external_id} .. {daily[-1].external_id}" if daily else "—"
     print(f"daily payloads:    {len(daily)}  ({span})")
@@ -61,14 +71,16 @@ async def _run(limit: int | None, batch: int) -> None:
 
     async with session_factory() as session:
         daily_rows = (await session.execute(
-            select(RawPayload).where(RawPayload.domain == DOMAIN, RawPayload.external_id.startswith("daily:"))
-            .order_by(RawPayload.external_id)
+            _owned_raw("daily").order_by(RawPayload.external_id)
         )).scalars().all()
         if limit:
             daily_rows = daily_rows[:limit]
 
         for i, raw_row in enumerate(daily_rows, 1):
-            await garmin_service.reparse_daily_from_raw(session, raw_row)
+            await garmin_raw_payloads.reparse_owned_daily_from_raw(
+                session,
+                raw_row,
+            )
             if i % batch == 0:
                 await session.commit()
                 print(f"  days: {i}/{len(daily_rows)}")
@@ -76,13 +88,16 @@ async def _run(limit: int | None, batch: int) -> None:
         print(f"done: {len(daily_rows)} daily payloads reparsed")
 
         activity_rows = (await session.execute(
-            select(RawPayload).where(RawPayload.domain == DOMAIN, RawPayload.external_id.startswith("activity:"))
+            _owned_raw("activity")
         )).scalars().all()
         if limit:
             activity_rows = activity_rows[:limit]
 
         for i, raw_row in enumerate(activity_rows, 1):
-            await garmin_service.reparse_activity_from_raw(session, raw_row)
+            await garmin_raw_payloads.reparse_owned_activity_from_raw(
+                session,
+                raw_row,
+            )
             if i % batch == 0:
                 await session.commit()
                 print(f"  activities: {i}/{len(activity_rows)}")

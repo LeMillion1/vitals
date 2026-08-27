@@ -63,9 +63,9 @@ verdict:
 | Ownership cutover | 19 ordered backfill phases and 19 matching scripts | Verified |
 | Domain enum | 14 values: 13 record sections plus internal `system` | Verified |
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
-| Web routers | 34 tracked non-`__init__` modules under `web/routers` | Verified |
-| Application services | 103 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
-| Flat service debt | 39 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 35 |
+| Web routers | 37 tracked non-`__init__` modules under `web/routers` | Verified |
+| Application services | 232 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
+| Flat service debt | 21 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 53 |
 | Scheduled jobs | 16 registered jobs; 11 fan out per subject or provider connection | Verified |
 | Platform-scope callers | the AST contract in `tests/test_row_level_security.py` enumerates 9 exact permitted functions; invitation acceptance is no longer one of them | Verified and shrinking |
 | Browser scenarios | `pytest tests/ui -m ui -q` → 43 passed in 138.35s | Verified on the current runtime tree |
@@ -442,15 +442,20 @@ those programs in an operational coordinator. Share and weight read the two
 remaining historical checkpoint projections through a non-mutating
 `vitals/ownership_transition` seam, so no application service imports an
 operation and no compatibility forwarding modules preserve the old flat paths.
-The architecture test fixes that direction and lowered the flat-service ceiling
-from 74 modules to 47. Genetics variant persistence and VCF parsing now form one
-bounded-context package; the HRT catalog, records, cycles, templates, and
-reminders form another rather than five flat service modules.
+The architecture tests fix that direction and lower the flat-service ceiling
+from 74 modules to 21, with an 800-line ceiling for those remaining integration
+facades and a 1,300-line ceiling for every service leaf. Genetics, HRT, Weight,
+Garmin, Hevy, Labs, Body Scan, GLP-1, Nutrition, Skincare, Supplements,
+Timeline, Milestones, digest, proactive delivery/preferences/briefs, alerts,
+AI gateway, sharing, support access, and portability now have named
+responsibility leaves rather than 1,500–5,000-line service monoliths.
 
-Continue moving bounded contexts in dependency order and split
-the 2,000–4,000-line monoliths under characterization tests. Delivery adapters
-(`mcp.py`, settings, care/consent routers) should become thin only after the
-application-service APIs stabilize.
+MCP and Settings are composition registries with explicit child adapters; the
+Reports router delegates application workflow to core services; Labs and Body
+Scan share one medical-AI upload coordinator; and no module below `web/` builds
+SQLAlchemy queries. Static contracts prevent these delivery and service
+boundaries from regressing while operational ownership backfills remain cohesive,
+resumable operator programs rather than request-time application services.
 
 ## Evidence executed during the audit
 

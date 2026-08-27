@@ -18,12 +18,15 @@ from vitals.enums import (
     Source,
     UserStatus,
 )
-from vitals.models.hevy import HevyExercise, HevySet, HevyWorkout
+from vitals.models.hevy import DOMAIN, HevyExercise, HevySet, HevyWorkout
 from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import hevy_service
+from vitals.services.hevy import jobs as hevy_jobs
+from vitals.services.hevy import ownership as hevy_ownership
+from vitals.services.hevy import raw_payloads as hevy_raw_payloads
+from vitals.services.hevy import sync as hevy_sync
 from vitals.services.legacy_ownership import LegacySubjectResolutionError
 
 from tests.conftest import legacy_unenforced_write
@@ -134,7 +137,7 @@ async def _owned_raw(
         subject_id=identity.subject_id,
         actor_user_id=identity.actor_user_id,
         integration_connection_id=connection_id,
-        domain=hevy_service.DOMAIN,
+        domain=DOMAIN,
         source=Source.HEVY_API.value,
         external_id=str(payload["id"]),
         payload=payload,
@@ -148,7 +151,7 @@ async def test_sync_owned_stamps_raw_root_and_entire_child_graph(db_session):
     owner, subject, connection = await _roots(db_session, "owner")
     identity = WriteIdentity(subject.id, owner.id)
 
-    summary = await hevy_service.sync_owned(
+    summary = await hevy_sync.sync_owned(
         db_session,
         FakeHevyClient([_payload("owned-1")]),
         identity=identity,
@@ -186,7 +189,7 @@ async def test_sync_owned_stamps_raw_root_and_entire_child_graph(db_session):
 async def test_owned_refresh_preserves_historical_actor(db_session):
     owner, subject, connection = await _roots(db_session, "owner")
     original_identity = WriteIdentity(subject.id, owner.id)
-    await hevy_service.sync_owned(
+    await hevy_sync.sync_owned(
         db_session,
         FakeHevyClient([_payload("owned-actor")]),
         identity=original_identity,
@@ -198,7 +201,7 @@ async def test_owned_refresh_preserves_historical_actor(db_session):
         updated="2026-08-19T12:00:00Z",
         title="Refreshed by scheduler",
     )
-    await hevy_service.sync_owned(
+    await hevy_sync.sync_owned(
         db_session,
         FakeHevyClient([refreshed]),
         identity=WriteIdentity(subject.id, None),
@@ -218,7 +221,7 @@ async def test_unchanged_exact_root_adopts_nullable_children_without_rebuild(
     owner, subject, connection = await _roots(db_session, "owner")
     identity = WriteIdentity(subject.id, owner.id)
     payload = _payload("exact-null-children")
-    await hevy_service.sync_owned(
+    await hevy_sync.sync_owned(
         db_session,
         FakeHevyClient([payload]),
         identity=identity,
@@ -236,7 +239,7 @@ async def test_unchanged_exact_root_adopts_nullable_children_without_rebuild(
     exercise_id = exercise.id
     set_id = hevy_set.id
 
-    summary = await hevy_service.sync_owned(
+    summary = await hevy_sync.sync_owned(
         db_session,
         FakeHevyClient([payload]),
         identity=WriteIdentity(subject.id, None),
@@ -263,7 +266,7 @@ async def test_sync_owned_adopts_only_fully_unowned_legacy_graph_and_keeps_actor
     payload = _payload("legacy-owned", title="Legacy")
     raw = RawPayload(
         actor_user_id=historical_actor.id,
-        domain=hevy_service.DOMAIN,
+        domain=DOMAIN,
         source=Source.HEVY_API.value,
         external_id="legacy-owned",
         payload=payload,
@@ -273,7 +276,7 @@ async def test_sync_owned_adopts_only_fully_unowned_legacy_graph_and_keeps_actor
         external_id="legacy-owned",
         raw_payload_id=None,
         date=date(2026, 8, 19),
-        domain=hevy_service.DOMAIN,
+        domain=DOMAIN,
         source=Source.HEVY_API.value,
         title="Old legacy title",
     )
@@ -293,7 +296,7 @@ async def test_sync_owned_adopts_only_fully_unowned_legacy_graph_and_keeps_actor
     raw_id = raw.id
     db_session.expunge(exercise)
 
-    summary = await hevy_service.sync_owned(
+    summary = await hevy_sync.sync_owned(
         db_session,
         FakeHevyClient([payload]),
         identity=WriteIdentity(subject.id, owner.id),
@@ -337,7 +340,7 @@ async def test_partial_legacy_root_and_children_are_adopted_without_actor_rewrit
         integration_connection_id=None,
         external_id="partial",
         date=date(2026, 8, 19),
-        domain=hevy_service.DOMAIN,
+        domain=DOMAIN,
         source=Source.HEVY_API.value,
         title="Untouched",
     )
@@ -366,7 +369,7 @@ async def test_partial_legacy_root_and_children_are_adopted_without_actor_rewrit
         )
     db_session.expunge(exercise)
 
-    summary = await hevy_service.sync_owned(
+    summary = await hevy_sync.sync_owned(
         db_session,
         FakeHevyClient([_payload("partial", title="Adopted")]),
         identity=WriteIdentity(subject.id, owner.id),
@@ -401,7 +404,7 @@ async def test_another_accounts_workout_id_is_never_read_or_overwritten(db_sessi
         integration_connection_id=connection_a.id,
         external_id="shared-upstream-id",
         date=date(2026, 8, 19),
-        domain=hevy_service.DOMAIN,
+        domain=DOMAIN,
         source=Source.HEVY_API.value,
         title="Subject A",
     )
@@ -410,7 +413,7 @@ async def test_another_accounts_workout_id_is_never_read_or_overwritten(db_sessi
 
     # A Hevy workout id is unique inside the account it came from, so both
     # accounts keep their own workout under the same upstream id.
-    await hevy_service.sync_owned(
+    await hevy_sync.sync_owned(
         db_session,
         FakeHevyClient([_payload("shared-upstream-id", title="Subject B")]),
         identity=WriteIdentity(subject_b.id, owner_b.id),
@@ -438,7 +441,7 @@ async def test_rebuild_rejects_foreign_child_scope_before_deleting_it(db_session
     owner_a, subject_a, connection_a = await _roots(db_session, "owner-a")
     _owner_b, subject_b, connection_b = await _roots(db_session, "owner-b")
     identity = WriteIdentity(subject_a.id, owner_a.id)
-    await hevy_service.sync_owned(
+    await hevy_sync.sync_owned(
         db_session,
         FakeHevyClient([_payload("bad-child")]),
         identity=identity,
@@ -453,9 +456,9 @@ async def test_rebuild_rejects_foreign_child_scope_before_deleting_it(db_session
         exercise.integration_connection_id = connection_b.id
     exercise_id = exercise.id
 
-    with pytest.raises(hevy_service.HevyOwnershipConflictError, match="exercise"):
+    with pytest.raises(hevy_ownership.HevyOwnershipConflictError, match="exercise"):
         async with db_session.begin_nested():
-            await hevy_service.sync_owned(
+            await hevy_sync.sync_owned(
                 db_session,
                 FakeHevyClient(
                     [
@@ -481,7 +484,7 @@ async def test_owned_reparse_derives_historical_actor_from_raw(db_session):
         payload=_payload("reparse-actor"),
     )
 
-    await hevy_service.reparse_owned_from_raw(
+    await hevy_raw_payloads.reparse_owned_from_raw(
         db_session,
         raw,
         identity=WriteIdentity(subject.id, None),
@@ -506,7 +509,7 @@ async def test_owned_reparse_preserves_stage3a_actorless_account_history(db_sess
         payload=_payload("stage3a-actorless-hevy"),
     )
 
-    await hevy_service.reparse_owned_from_raw(
+    await hevy_raw_payloads.reparse_owned_from_raw(
         db_session,
         raw,
         identity=WriteIdentity(subject.id, None),
@@ -533,8 +536,8 @@ async def test_owned_reparse_rejects_raw_subject_or_connection_mismatch(db_sessi
         payload=_payload("foreign-raw"),
     )
 
-    with pytest.raises(hevy_service.HevyRawPayloadInvariantError):
-        await hevy_service.reparse_owned_from_raw(
+    with pytest.raises(hevy_ownership.HevyRawPayloadInvariantError):
+        await hevy_raw_payloads.reparse_owned_from_raw(
             db_session,
             raw,
             identity=WriteIdentity(subject_b.id, owner_b.id),
@@ -555,8 +558,8 @@ async def test_owned_reparse_rejects_payload_id_mismatch(db_session):
     raw.external_id = "raw-id"
     await db_session.flush()
 
-    with pytest.raises(hevy_service.HevyRawPayloadInvariantError, match="payload id"):
-        await hevy_service.reparse_owned_from_raw(
+    with pytest.raises(hevy_ownership.HevyRawPayloadInvariantError, match="payload id"):
+        await hevy_raw_payloads.reparse_owned_from_raw(
             db_session,
             raw,
             identity=WriteIdentity(subject.id, None),
@@ -587,8 +590,8 @@ async def test_owned_reparse_rejects_account_raw_with_file_provenance(db_session
     raw.file_asset_id = file_asset.id
     await db_session.flush()
 
-    with pytest.raises(hevy_service.HevyRawPayloadInvariantError, match="file asset"):
-        await hevy_service.reparse_owned_from_raw(
+    with pytest.raises(hevy_ownership.HevyRawPayloadInvariantError, match="file asset"):
+        await hevy_raw_payloads.reparse_owned_from_raw(
             db_session,
             raw,
             identity=WriteIdentity(subject.id, None),
@@ -608,8 +611,8 @@ async def test_owned_reparse_rejects_detached_raw_state(db_session):
     )
     db_session.expunge(raw)
 
-    with pytest.raises(hevy_service.HevyRawPayloadInvariantError, match="detached"):
-        await hevy_service.reparse_owned_from_raw(
+    with pytest.raises(hevy_ownership.HevyRawPayloadInvariantError, match="detached"):
+        await hevy_raw_payloads.reparse_owned_from_raw(
             db_session,
             raw,
             identity=WriteIdentity(subject.id, None),
@@ -639,15 +642,15 @@ async def test_owned_reparse_never_rewires_a_different_raw_root(db_session):
         external_id="same-key",
         raw_payload_id=raw_one.id,
         date=date(2026, 8, 19),
-        domain=hevy_service.DOMAIN,
+        domain=DOMAIN,
         source=Source.HEVY_API.value,
         title="Original",
     )
     db_session.add(workout)
     await db_session.flush()
 
-    with pytest.raises(hevy_service.HevyRawPayloadInvariantError, match="different raw"):
-        await hevy_service.reparse_owned_from_raw(
+    with pytest.raises(hevy_ownership.HevyRawPayloadInvariantError, match="different raw"):
+        await hevy_raw_payloads.reparse_owned_from_raw(
             db_session,
             raw_two,
             identity=identity,
@@ -674,7 +677,7 @@ async def test_reparse_owned_pending_is_exactly_subject_connection_scoped(db_ses
         payload=_payload("pending-b"),
     )
 
-    done = await hevy_service.reparse_owned_pending(
+    done = await hevy_raw_payloads.reparse_owned_pending(
         db_session,
         identity=WriteIdentity(subject_a.id, None),
         integration_connection_id=connection_a.id,
@@ -706,10 +709,10 @@ async def test_inactive_connection_rejects_sync_but_allows_historical_reparse(
     client = FakeHevyClient([_payload("retired")])
 
     with pytest.raises(
-        hevy_service.HevyOwnershipReferenceError,
+        hevy_ownership.HevyOwnershipReferenceError,
         match=status.value,
     ):
-        await hevy_service.sync_owned(
+        await hevy_sync.sync_owned(
             db_session,
             client,
             identity=identity,
@@ -723,7 +726,7 @@ async def test_inactive_connection_rejects_sync_but_allows_historical_reparse(
         connection_id=connection.id,
         payload=_payload("retired"),
     )
-    await hevy_service.reparse_owned_from_raw(
+    await hevy_raw_payloads.reparse_owned_from_raw(
         db_session,
         raw,
         identity=WriteIdentity(subject.id, None),
@@ -744,10 +747,10 @@ async def test_fresh_sync_rejects_inactive_connection_before_fetch(
     client = FakeHevyClient([_payload("must-not-fetch")])
 
     with pytest.raises(
-        hevy_service.HevyOwnershipInactiveConnectionError,
+        hevy_ownership.HevyOwnershipInactiveConnectionError,
         match=status.value,
     ):
-        await hevy_service.sync_owned(
+        await hevy_sync.sync_owned(
             db_session,
             client,
             identity=WriteIdentity(subject.id, owner.id),
@@ -778,7 +781,7 @@ async def test_sync_job_resolves_system_and_named_owner_actor(
         lambda config=None: client,
     )
 
-    await hevy_service.sync_job(session_factory, subject_id=subject.id)
+    await hevy_jobs.sync_job(session_factory, subject_id=subject.id)
     system_workout = await db_session.scalar(
         select(HevyWorkout).where(HevyWorkout.external_id == "job-system")
     )
@@ -790,7 +793,7 @@ async def test_sync_job_resolves_system_and_named_owner_actor(
     ) == (subject.id, None, connection.id)
 
     client.workouts = [_payload("job-owner")]
-    await hevy_service.sync_job(
+    await hevy_jobs.sync_job(
         session_factory, subject_id=subject.id, actor_user_id=owner.id
     )
     owner_workout = await db_session.scalar(
@@ -817,7 +820,7 @@ async def test_sync_job_actor_mismatch_fails_before_fetch(
     # named in the query, so an actor who owns nothing matches no row rather
     # than loading one and being compared against it.
     with pytest.raises(LegacySubjectResolutionError, match="no health record of its own"):
-        await hevy_service.sync_now_for_actor(
+        await hevy_jobs.sync_now_for_actor(
             session_factory,
             actor_username="different-user",
         )
@@ -841,7 +844,7 @@ async def test_sync_job_noops_for_disabled_connection(
         lambda config=None: client,
     )
 
-    result = await hevy_service.sync_job(session_factory, subject_id=subject.id)
+    result = await hevy_jobs.sync_job(session_factory, subject_id=subject.id)
 
     assert result is None
     assert client.calls == 0

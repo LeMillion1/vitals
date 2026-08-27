@@ -1,5 +1,5 @@
-"""Genetic variant persistence and VCF interpretation services.
+"""Subject-scoped Genetics bounded-context services."""
 
-Import the concept needed by the caller, for example
-``from vitals.services.genetics import variants``.
-"""
+from . import contracts, queries, reparse, validation, vcf, vcf_ingestion, writes
+
+__all__ = ["contracts", "queries", "reparse", "validation", "vcf", "vcf_ingestion", "writes"]

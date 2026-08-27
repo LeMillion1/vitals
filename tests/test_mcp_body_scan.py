@@ -51,8 +51,8 @@ async def test_log_get_history_delete_body_scan(db_session, session_factory, mon
     scan_id = res["id"]
 
     # The scan's weight was bridged into the weight domain as a body_scan source.
-    from vitals.services import weight_service
-    active = await weight_service.get_active_weight(
+    from vitals.services import weight as weight_domain
+    active = await weight_domain.logs.get_active_weight(
         db_session,
         date(2026, 6, 10),
         subject_id=owner_write.subject_id,

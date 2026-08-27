@@ -10,7 +10,7 @@ from datetime import date
 
 import pytest
 
-from vitals.services import weight_service
+from vitals.services import weight as weight_domain
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
@@ -161,21 +161,21 @@ async def test_generate_digest_without_llm_key_errors():
 async def test_get_trend_weight_slope_and_projection(
     db_session, owned_by_legacy_subject, owner_write
 ):
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 6, 1),
         weight_kg=92.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(date(2026, 6, 1)),
     )
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 6, 8),
         weight_kg=91.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(date(2026, 6, 8)),
     )
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 6, 15),
         weight_kg=90.0,
@@ -194,21 +194,21 @@ async def test_get_trend_weight_slope_and_projection(
 
 
 async def test_get_trend_excludes_noise(db_session, owned_by_legacy_subject, owner_write):
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 6, 1),
         weight_kg=92.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(date(2026, 6, 1)),
     )
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 6, 8),
         weight_kg=91.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(date(2026, 6, 8)),
     )
-    await weight_service.add_noise_marker(
+    await weight_domain.noise.add_noise_marker(
         db_session,
         start_date=date(2026, 6, 8),
         end_date=date(2026, 6, 8),

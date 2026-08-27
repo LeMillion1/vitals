@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from vitals.services.glp1 import jobs as glp1_jobs
+from vitals.services.glp1 import plateau as glp1_plateau
+from vitals.services.glp1 import queries as glp1_queries
+from vitals.services.glp1 import writes as glp1_writes
+
 from tests.job_runner import run_job_for_every_subject
 
 import asyncio
@@ -21,7 +26,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.models.weight import NoiseMarker, WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import glp1_service, modules_service
+from vitals.services import modules_service
 from vitals.services.conflicts import engine
 
 
@@ -109,7 +114,7 @@ def _register_resolvers() -> None:
     engine.register_domain_resolver(Domain.LABS.value, labs)
     engine.register_domain_resolver(
         Domain.GLP1.value,
-        glp1_service.resolve_active_scoped,
+        glp1_queries.resolve_active_scoped,
     )
 
 
@@ -125,7 +130,7 @@ async def test_all_writers_stamp_subject_actor_and_requested_source(
     prepared = await _prepared(db_session, context)
 
     injections = [
-        await glp1_service.log_injection(
+        await glp1_writes.log_injection(
             db_session,
             on_date=EVALUATION_DATE,
             drug="semaglutide",
@@ -137,7 +142,7 @@ async def test_all_writers_stamp_subject_actor_and_requested_source(
         for source in (Source.MANUAL, Source.MCP)
     ]
     phases = [
-        await glp1_service.add_dose_phase(
+        await glp1_writes.add_dose_phase(
             db_session,
             start_date=EVALUATION_DATE,
             end_date=EVALUATION_DATE,
@@ -150,7 +155,7 @@ async def test_all_writers_stamp_subject_actor_and_requested_source(
         for source in (Source.MANUAL, Source.MCP)
     ]
     effects = [
-        await glp1_service.log_side_effect(
+        await glp1_writes.log_side_effect(
             db_session,
             on_date=EVALUATION_DATE,
             effect_type="nausea",
@@ -191,10 +196,10 @@ async def test_prepared_identity_and_date_fail_before_target_read(
         target_reads += 1
         raise AssertionError("target row must not be read")
 
-    monkeypatch.setattr(glp1_service, "_owned_row_for_update", target_probe)
+    monkeypatch.setattr(glp1_writes, "_owned_row_for_update", target_probe)
 
     with pytest.raises(engine.ConflictPreparedWriteError, match="date"):
-        await glp1_service.update_injection(
+        await glp1_writes.update_injection(
             db_session,
             1,
             on_date=EVALUATION_DATE,
@@ -204,7 +209,7 @@ async def test_prepared_identity_and_date_fail_before_target_read(
             prepared_conflict_write=prepared,
         )
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await glp1_service.delete_injection(
+        await glp1_writes.delete_injection(
             db_session,
             1,
             identity=WriteIdentity(identity.subject_id, uuid.uuid4()),
@@ -226,7 +231,7 @@ async def test_conflict_block_is_write_free_and_override_is_human_attributed(
     prepared = await _prepared(db_session, _context(identity))
 
     with pytest.raises(engine.ConflictBlocked):
-        await glp1_service.log_injection(
+        await glp1_writes.log_injection(
             db_session,
             on_date=EVALUATION_DATE,
             drug="semaglutide",
@@ -237,7 +242,7 @@ async def test_conflict_block_is_write_free_and_override_is_human_attributed(
     assert await db_session.scalar(select(func.count()).select_from(Injection)) == 0
     assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == 0
 
-    row = await glp1_service.log_injection(
+    row = await glp1_writes.log_injection(
         db_session,
         on_date=EVALUATION_DATE,
         drug="semaglutide",
@@ -269,7 +274,7 @@ async def test_blocked_phase_does_not_close_existing_phase(
         legacy_owner_roots.user_id,
     )
     baseline_context = _context(identity, on_date=OTHER_DATE)
-    baseline = await glp1_service.add_dose_phase(
+    baseline = await glp1_writes.add_dose_phase(
         db_session,
         start_date=OTHER_DATE,
         drug="tirzepatide",
@@ -282,7 +287,7 @@ async def test_blocked_phase_does_not_close_existing_phase(
     _register_resolvers()
 
     with pytest.raises(engine.ConflictBlocked):
-        await glp1_service.add_dose_phase(
+        await glp1_writes.add_dose_phase(
             db_session,
             start_date=EVALUATION_DATE,
             drug="semaglutide",
@@ -369,18 +374,18 @@ async def test_reads_updates_notes_and_deletes_are_strictly_subject_scoped(
     )
     await db_session.commit()
 
-    assert [row.id for row in await glp1_service.list_injections(
+    assert [row.id for row in await glp1_queries.list_injections(
         db_session, subject_id=identity.subject_id
     )] == [owned.id]
-    assert [row.id for row in await glp1_service.list_dose_phases(
+    assert [row.id for row in await glp1_queries.list_dose_phases(
         db_session, subject_id=identity.subject_id
     )] == [owned_phase.id]
-    assert [row.id for row in await glp1_service.list_side_effects(
+    assert [row.id for row in await glp1_queries.list_side_effects(
         db_session, subject_id=identity.subject_id
     )] == [owned_effect.id]
 
     context = _context(identity)
-    assert await glp1_service.update_injection(
+    assert await glp1_writes.update_injection(
         db_session,
         foreign.id,
         on_date=EVALUATION_DATE,
@@ -389,7 +394,7 @@ async def test_reads_updates_notes_and_deletes_are_strictly_subject_scoped(
         identity=identity,
         prepared_conflict_write=await _prepared(db_session, context),
     ) is None
-    updated = await glp1_service.update_injection_note(
+    updated = await glp1_writes.update_injection_note(
         db_session,
         owned.id,
         note="scoped note",
@@ -402,19 +407,19 @@ async def test_reads_updates_notes_and_deletes_are_strictly_subject_scoped(
         Source.MCP.value,
         identity.actor_user_id,
     )
-    assert await glp1_service.delete_injection(
+    assert await glp1_writes.delete_injection(
         db_session,
         foreign.id,
         identity=identity,
         prepared_conflict_write=await _prepared(db_session, context),
     ) is False
-    assert await glp1_service.delete_dose_phase(
+    assert await glp1_writes.delete_dose_phase(
         db_session,
         foreign_phase.id,
         identity=identity,
         prepared_conflict_write=await _prepared(db_session, context),
     ) is False
-    assert await glp1_service.delete_side_effect(
+    assert await glp1_writes.delete_side_effect(
         db_session,
         foreign_effect.id,
         identity=identity,
@@ -485,22 +490,22 @@ async def test_no_glp1_reader_or_writer_reaches_an_unowned_row(
     await db_session.commit()
     context, prepared = await _legacy_context(db_session)
 
-    assert [row.id for row in await glp1_service.list_injections(
+    assert [row.id for row in await glp1_queries.list_injections(
         db_session,
         subject_id=context.identity.subject_id,
     )] == []
-    assert [row.id for row in await glp1_service.list_dose_phases(
+    assert [row.id for row in await glp1_queries.list_dose_phases(
         db_session,
         subject_id=context.identity.subject_id,
     )] == []
-    assert [row.id for row in await glp1_service.list_side_effects(
+    assert [row.id for row in await glp1_queries.list_side_effects(
         db_session,
         subject_id=context.identity.subject_id,
     )] == []
 
     # Adoption on write went with the bridge, so an unowned row stays unowned
     # and unedited rather than being claimed by the first writer to touch it.
-    assert await glp1_service.update_injection(
+    assert await glp1_writes.update_injection(
         db_session,
         full_injection.id,
         on_date=EVALUATION_DATE,
@@ -510,19 +515,19 @@ async def test_no_glp1_reader_or_writer_reaches_an_unowned_row(
         prepared_conflict_write=prepared,
     ) is None
     assert full_injection.subject_id is None
-    assert await glp1_service.delete_injection(
+    assert await glp1_writes.delete_injection(
         db_session,
         partial_injection.id,
         identity=context.identity,
         prepared_conflict_write=prepared,
     ) is False
-    assert await glp1_service.delete_dose_phase(
+    assert await glp1_writes.delete_dose_phase(
         db_session,
         partial_phase.id,
         identity=context.identity,
         prepared_conflict_write=prepared,
     ) is False
-    assert await glp1_service.delete_side_effect(
+    assert await glp1_writes.delete_side_effect(
         db_session,
         partial_effect.id,
         identity=context.identity,
@@ -560,7 +565,7 @@ async def test_open_phase_auto_close_never_crosses_subjects(
     db_session.add_all([old, foreign])
     await db_session.commit()
 
-    await glp1_service.add_dose_phase(
+    await glp1_writes.add_dose_phase(
         db_session,
         start_date=EVALUATION_DATE,
         drug="semaglutide",
@@ -581,7 +586,7 @@ async def test_backdated_open_phase_stops_before_newer_open_phase(
         legacy_owner_roots.subject_id,
         legacy_owner_roots.user_id,
     )
-    newer = await glp1_service.add_dose_phase(
+    newer = await glp1_writes.add_dose_phase(
         db_session,
         start_date=EVALUATION_DATE,
         drug="semaglutide",
@@ -591,7 +596,7 @@ async def test_backdated_open_phase_stops_before_newer_open_phase(
     )
     await db_session.commit()
 
-    older = await glp1_service.add_dose_phase(
+    older = await glp1_writes.add_dose_phase(
         db_session,
         start_date=OTHER_DATE,
         drug="semaglutide",
@@ -615,7 +620,7 @@ async def test_repeated_same_day_phase_leaves_only_newest_row_open(
         legacy_owner_roots.subject_id,
         legacy_owner_roots.user_id,
     )
-    first = await glp1_service.add_dose_phase(
+    first = await glp1_writes.add_dose_phase(
         db_session,
         start_date=EVALUATION_DATE,
         drug="semaglutide",
@@ -625,7 +630,7 @@ async def test_repeated_same_day_phase_leaves_only_newest_row_open(
     )
     await db_session.commit()
 
-    second = await glp1_service.add_dose_phase(
+    second = await glp1_writes.add_dose_phase(
         db_session,
         start_date=EVALUATION_DATE,
         drug="semaglutide",
@@ -636,7 +641,7 @@ async def test_repeated_same_day_phase_leaves_only_newest_row_open(
 
     assert first.end_date == EVALUATION_DATE
     assert second.end_date is None
-    active = await glp1_service.active_dose_phase(
+    active = await glp1_queries.active_dose_phase(
         db_session,
         on_date=EVALUATION_DATE,
         subject_id=identity.subject_id,
@@ -727,7 +732,7 @@ async def test_plateau_uses_scoped_phase_weights_noise_and_typed_health_alert(
     context = _context(identity, on_date=today)
     prepared = await _prepared(db_session, context)
 
-    plateau = await glp1_service.evaluate_plateau(
+    plateau = await glp1_plateau.evaluate_plateau(
         db_session,
         subject_id=identity.subject_id,
         scope=context.scope,
@@ -739,7 +744,7 @@ async def test_plateau_uses_scoped_phase_weights_noise_and_typed_health_alert(
         18,
     )
 
-    alert = await glp1_service.refresh_plateau_alert(
+    alert = await glp1_plateau.refresh_plateau_alert(
         db_session,
         identity=identity,
         prepared_conflict_write=prepared,
@@ -752,13 +757,13 @@ async def test_plateau_uses_scoped_phase_weights_noise_and_typed_health_alert(
     assert (alert.domain, alert.severity, alert.alert_key) == (
         Domain.GLP1.value,
         Severity.NOTE.value,
-        glp1_service.PLATEAU_ALERT_KEY,
+        glp1_plateau.PLATEAU_ALERT_KEY,
     )
     assert (alert.overridden_by_user_id, alert.resolved_by_user_id) == (None, None)
 
     own_weights[-1].weight_kg = 84
     await db_session.flush()
-    resolved = await glp1_service.refresh_plateau_alert(
+    resolved = await glp1_plateau.refresh_plateau_alert(
         db_session,
         identity=identity,
         prepared_conflict_write=prepared,
@@ -813,7 +818,7 @@ async def test_plateau_rejects_weight_linked_to_foreign_raw_provenance(
     await db_session.commit()
 
     with pytest.raises(engine.ConflictRawOwnershipError):
-        await glp1_service.evaluate_plateau(
+        await glp1_plateau.evaluate_plateau(
             db_session,
             subject_id=identity.subject_id,
             scope=_context(identity).scope,
@@ -865,7 +870,7 @@ async def test_plateau_ignores_a_weight_that_names_no_subject(
     )
     await db_session.commit()
 
-    assert await glp1_service.evaluate_plateau(
+    assert await glp1_plateau.evaluate_plateau(
         db_session,
         subject_id=identity.subject_id,
         scope=_context(identity, legacy_bridge=True).scope,
@@ -892,9 +897,9 @@ async def test_plateau_job_is_noop_when_subject_module_is_disabled(
         calls += 1
         raise AssertionError("disabled GLP-1 job must not reconcile alerts")
 
-    monkeypatch.setattr(glp1_service, "refresh_plateau_alert", refresh_probe)
+    monkeypatch.setattr(glp1_jobs, "refresh_plateau_alert", refresh_probe)
 
-    await run_job_for_every_subject(glp1_service.plateau_job, session_factory)
+    await run_job_for_every_subject(glp1_jobs.plateau_job, session_factory)
 
     assert calls == 0
     assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == 0
@@ -1186,7 +1191,7 @@ async def test_postgres_same_subject_concurrent_phases_leave_one_open_phase(
     async def create(start_date: date, dose_mg: float) -> None:
         async with factory() as session:
             context = _context(identity, on_date=start_date)
-            await glp1_service.add_dose_phase(
+            await glp1_writes.add_dose_phase(
                 session,
                 start_date=start_date,
                 drug="semaglutide",
@@ -1234,7 +1239,7 @@ async def test_postgres_same_day_concurrent_phases_leave_one_open_phase(
     async def create(dose_mg: float) -> None:
         async with factory() as session:
             context = _context(identity)
-            await glp1_service.add_dose_phase(
+            await glp1_writes.add_dose_phase(
                 session,
                 start_date=EVALUATION_DATE,
                 drug="semaglutide",
@@ -1287,7 +1292,7 @@ async def test_postgres_legacy_phase_write_serializes_subject_governance(
             )
             bridge_locked.set()
             await asyncio.wait_for(subject_write_attempted.wait(), timeout=5)
-            await glp1_service.add_dose_phase(
+            await glp1_writes.add_dose_phase(
                 session,
                 start_date=EVALUATION_DATE,
                 drug="semaglutide",

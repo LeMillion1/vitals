@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import date, timedelta
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -46,7 +47,17 @@ from vitals.models.identity import (
 from vitals.models.conflict_rule import ConflictRule
 from vitals.models.system_alert import SystemAlert
 from vitals.models.weight import BodyMeasurement
-from vitals.services import support_access_service as support
+from vitals.services.support_access import contracts, export, jobs, lifecycle, projections, repair
+
+support = SimpleNamespace(
+    **{
+        name: value
+        for module in (contracts, export, jobs, lifecycle, projections, repair)
+        for name, value in vars(module).items()
+        if not name.startswith("_")
+    }
+)
+from vitals.services.portability import v1_contract
 from vitals.services.conflicts import engine
 from vitals.services.access_resolution import resolve_access_context
 
@@ -657,7 +668,7 @@ async def test_export_is_a_separate_exact_one_shot_grant(db_session, monkeypatch
         return {"metadata": {"kind": "subject_export"}, "weight_logs": []}
 
     monkeypatch.setattr(
-        support.data_portability_service, "export_subject", synthetic_export
+        support.v1_export, "export_subject", synthetic_export
     )
     payload = await support.consume_subject_export(db_session, context=context)
     await db_session.commit()
@@ -2671,7 +2682,7 @@ async def test_support_export_http_is_post_only_no_store_and_one_shot(
         return {"metadata": {"kind": "subject_export"}, "raw_payloads": []}
 
     monkeypatch.setattr(
-        support.data_portability_service, "export_subject", synthetic_export
+        support.v1_export, "export_subject", synthetic_export
     )
     _sign_in(client, admin.username)
 
@@ -2910,7 +2921,7 @@ async def test_support_repair_invalid_selectors_never_reach_the_workspace(
     async def phi_read_would_be_a_bug(*_args, **_kwargs):
         raise AssertionError("invalid repair selector reached the PHI workspace")
 
-    monkeypatch.setattr(support, "repair_workspace", phi_read_would_be_a_bug)
+    monkeypatch.setattr(repair, "repair_workspace", phi_read_would_be_a_bug)
     _sign_in(client, admin.username)
     response = await client.get(
         "/settings/platform/support/not-a-subject/grant/not-a-grant/repair"
@@ -2928,7 +2939,7 @@ async def test_support_export_invalid_selector_never_reaches_portability(
         raise AssertionError("invalid selector reached the portability exporter")
 
     monkeypatch.setattr(
-        support.data_portability_service, "export_subject", phi_read_would_be_a_bug
+        support.v1_export, "export_subject", phi_read_would_be_a_bug
     )
     _sign_in(client, admin.username)
     response = await client.post(
@@ -2957,12 +2968,12 @@ async def test_unrepresentable_support_export_does_not_spend_the_grant(
     await db_session.commit()
 
     async def unrepresentable(*_args, **_kwargs):
-        raise support.data_portability_service.PortabilityError(
+        raise v1_contract.PortabilityError(
             "This record cannot be represented by portability v1."
         )
 
     monkeypatch.setattr(
-        support.data_portability_service, "export_subject", unrepresentable
+        support.v1_export, "export_subject", unrepresentable
     )
     _sign_in(client, admin.username)
     response = await client.post(

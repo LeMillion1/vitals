@@ -15,8 +15,10 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services import hevy_service, labs_service
-from vitals.services.body_scan import scans
+import vitals.services.hevy.queries as hevy_queries
+from vitals.services.body_scan.scans import queries as body_scan_queries
+from vitals.services.labs.markers import get_marker, list_markers
+from vitals.services.labs.results import marker_history
 from vitals.analytics import body_metrics, chart_registry
 from vitals.analytics.chart_registry import MetricField
 
@@ -53,12 +55,10 @@ async def build_catalog(
                 "param_kind": field.param_kind,
             }
             if field.param_kind == "labs_marker":
-                markers = await labs_service.list_markers(
-                    session, subject_id=subject_id
-                )
+                markers = await list_markers(session, subject_id=subject_id)
                 entry["params"] = [{"value": m.name, "label": m.name} for m in markers]
             elif field.param_kind == "hevy_exercise":
-                exercises = await hevy_service.exercise_catalog(
+                exercises = await hevy_queries.exercise_catalog(
                     session, subject_id=subject_id
                 )
                 entry["params"] = [
@@ -66,7 +66,7 @@ async def build_catalog(
                     for e in exercises
                 ]
             elif field.param_kind == "body_scan_metric":
-                entry["params"] = await scans.available_metrics(
+                entry["params"] = await body_scan_queries.available_metrics(
                     session, subject_id=subject_id
                 )
             metrics.append(entry)
@@ -119,9 +119,7 @@ async def series_for(
         raise ValueError(f"metric '{metric_key}' requires a param")
 
     if field.param_kind == "labs_marker":
-        rows = await labs_service.marker_history(
-            session, param, subject_id=subject_id
-        )
+        rows = await marker_history(session, param, subject_id=subject_id)
         return [
             {"date": r["date"], "value": r["value"]}
             for r in rows
@@ -129,7 +127,7 @@ async def series_for(
         ]
 
     if field.param_kind == "hevy_exercise":
-        rows = await hevy_service.working_weight_series(
+        rows = await hevy_queries.working_weight_series(
             session, param, subject_id=subject_id
         )
         return [
@@ -140,7 +138,7 @@ async def series_for(
 
     if field.param_kind == "body_scan_metric":
         metric_key_part, _, segment = param.partition(":")
-        rows = await scans.metric_history(
+        rows = await body_scan_queries.metric_history(
             session,
             metric_key_part,
             segment=(segment or None),
@@ -166,7 +164,7 @@ async def _unit_for(
     varies per parameter (a lab marker's unit, a BIA metric's unit); a constant
     from the registry for everything else."""
     if field.param_kind == "labs_marker" and param:
-        marker = await labs_service.get_marker(session, param, subject_id=subject_id)
+        marker = await get_marker(session, param, subject_id=subject_id)
         return marker.unit if marker else None
     if field.param_kind == "body_scan_metric" and param:
         metric_key_part = param.split(":", 1)[0]
@@ -189,7 +187,7 @@ async def _auto_label(
     if field.param_kind == "labs_marker":
         return param or field.label_ru
     if field.param_kind == "hevy_exercise":
-        exercises = await hevy_service.exercise_catalog(
+        exercises = await hevy_queries.exercise_catalog(
             session, subject_id=subject_id
         )
         for e in exercises:
@@ -200,7 +198,10 @@ async def _auto_label(
         metric_key_part, _, segment = (param or "").partition(":")
         label = body_metrics.display_name(metric_key_part) or metric_key_part or field.label_ru
         if segment:
-            label = f"{label} — {scans.SEGMENT_LABELS_RU.get(segment, segment)}"
+            label = (
+                f"{label} — "
+                f"{body_scan_queries.SEGMENT_LABELS_RU.get(segment, segment)}"
+            )
         return label
     return field.label_ru if lang == "ru" else field.label_en
 

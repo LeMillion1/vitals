@@ -1,6 +1,13 @@
 """Endpoints for the supplements catalog (reference, no daily logging)."""
 from __future__ import annotations
 
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
+from vitals.services.alerts import contracts as alerts_service_contracts
+
+from vitals.services.supplements import queries as supplement_queries
+from vitals.services.supplements import writes as supplement_writes
+
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Request, status
@@ -8,7 +15,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, Evidence
-from vitals.services import alerts_service, supplements_service
 from vitals.services.conflicts import engine
 from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
@@ -35,15 +41,15 @@ async def supplements_dashboard(
         db,
         actor_username=username,
     )
-    supplements = await supplements_service.list_supplements(
+    supplements = await supplement_queries.list_supplements(
         db,
         subject_id=ownership.subject_id,
     )
-    alerts = await alerts_service.list_active_scoped(
+    alerts = await alerts_service_lifecycle.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        context=alerts_service_contracts.HealthAlertContext(ownership.owner_action()),
         domain=Domain.SUPPLEMENTS,
-        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        legacy_bridge=alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED,
     )
     return templates.TemplateResponse(
         request,
@@ -84,7 +90,7 @@ async def save_supplement(
             context=conflict_context,
         )
         if id is not None:
-            await supplements_service.update_supplement(
+            await supplement_writes.update_supplement(
                 db,
                 id,
                 name=name,
@@ -99,7 +105,7 @@ async def save_supplement(
                 prepared_conflict_write=prepared,
             )
         else:
-            await supplements_service.add_supplement(
+            await supplement_writes.add_supplement(
                 db,
                 name=name,
                 dose=dose,
@@ -139,7 +145,7 @@ async def toggle_supplement(
         context=conflict_context,
     )
     try:
-        await supplements_service.set_active(
+        await supplement_writes.set_active(
             db,
             id,
             active,
@@ -167,7 +173,7 @@ async def delete_supplement(
         db,
         actor_username=username,
     )
-    await supplements_service.delete_supplement(
+    await supplement_writes.delete_supplement(
         db,
         id,
         identity=ownership.owner_action(),

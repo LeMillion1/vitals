@@ -1,11 +1,12 @@
 """VCF import keeps the parsed genome in the data lake (raw_payloads)."""
+
 from __future__ import annotations
 
 from sqlalchemy import select
 
 from vitals.enums import Source
 from vitals.models.raw_payload import RawPayload
-from vitals.services.genetics import variants
+from vitals.services.genetics import contracts as genetics_contracts
 
 VCF = (
     "##fileformat=VCFv4.2\n"
@@ -27,9 +28,7 @@ async def _import(auth_client, vcf: str, filename: str = "genome.vcf"):
 
 
 async def _raw_rows(db_session):
-    result = await db_session.execute(
-        select(RawPayload).where(RawPayload.domain == "genetics")
-    )
+    result = await db_session.execute(select(RawPayload).where(RawPayload.domain == "genetics"))
     return result.scalars().all()
 
 
@@ -69,7 +68,7 @@ async def test_header_only_vcf_stores_nothing(auth_client, db_session):
 async def test_payload_capped(auth_client, db_session, monkeypatch):
     """Past the ceiling the import keeps going (catalog rows are still written)
     but flags the payload as truncated instead of blowing up the JSON blob."""
-    monkeypatch.setattr(variants, "MAX_RAW_VARIANTS", 1)
+    monkeypatch.setattr(genetics_contracts, "MAX_RAW_VARIANTS", 1)
     await _import(auth_client, VCF)
 
     raw = (await _raw_rows(db_session))[0]

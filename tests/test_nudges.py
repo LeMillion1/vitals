@@ -10,6 +10,10 @@ Three things here fail silently if nobody watches them:
 """
 from __future__ import annotations
 
+from vitals.services.proactive.delivery import contracts as delivery_contracts
+
+from vitals.services.nutrition import writes as nutrition_writes
+
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -18,8 +22,12 @@ from sqlalchemy import select
 
 from vitals.enums import NotificationDeliveryStatus
 from vitals.models.proactive import Notification, NotificationDeliveryIntent
-from vitals.services import garmin_service, nutrition_service
-from vitals.services.proactive import channels, delivery, nudges
+
+from vitals.services.garmin import ingestion as garmin_ingestion
+from vitals.services.garmin import jobs as garmin_jobs
+from vitals.services.garmin import queries as garmin_queries
+from vitals.services.garmin import sync as garmin_sync
+from vitals.services.proactive import channels, nudges
 from vitals.utils.timeutils import now_local
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
@@ -83,7 +91,7 @@ async def _seed_steps(db_session, steps: int, *, on_date=TODAY, garmin_owned_sco
 
     from vitals.models.identity import HealthSubject
 
-    row = await garmin_service.ingest_owned_daily(
+    row = await garmin_ingestion.ingest_owned_daily(
         db_session, on_date, {"summary": {"totalSteps": steps}}
     , identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     row.subject_id = await db_session.scalar(select(HealthSubject.id).limit(2))
@@ -153,7 +161,7 @@ async def test_steps_nudge_waits_for_the_evening(garmin_owned_scope, db_session,
     sent = await scoped_nudges.run(now=EVENING)
     assert len(sent) == 1
     assert "3000" in scoped_nudges.notifier.sent[0]
-    assert sent[0].category == delivery.CATEGORY_NUDGE
+    assert sent[0].category == delivery_contracts.CATEGORY_NUDGE
 
 
 async def test_missing_data_is_not_a_nudge(garmin_owned_scope, db_session, scoped_nudges):
@@ -168,7 +176,7 @@ async def test_missing_data_is_not_a_nudge(garmin_owned_scope, db_session, scope
 async def test_protein_nudge_fires_while_the_day_is_still_open(
     db_session, owner_write, monkeypatch
 ):
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session,
         on_date=TODAY,
         name="Курица с рисом",
@@ -286,13 +294,13 @@ async def test_owned_nudge_uses_opaque_durable_claim_and_transaction_free_send(
     assert len(sent) == 1
     intent = await db_session.scalar(select(NotificationDeliveryIntent))
     assert intent.status == NotificationDeliveryStatus.SENT.value
-    assert intent.idempotency_key == delivery.make_delivery_idempotency_key(
+    assert intent.idempotency_key == delivery_contracts.make_delivery_idempotency_key(
         "nudge",
         "steps_short",
         EVENING.date(),
         EVENING.hour,
     )
-    assert intent.policy_key == delivery.make_delivery_policy_key(
+    assert intent.policy_key == delivery_contracts.make_delivery_policy_key(
         "nudge",
         "steps_short",
     )
@@ -385,7 +393,7 @@ async def test_budget_cuts_the_nudge_that_does_not_fit(
     and the evening block spend two of the four every day, which is why a nudge
     is never the message that matters most."""
     await _seed_steps(db_session, 3000, garmin_owned_scope=garmin_owned_scope)  # steps: short
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session,
         on_date=TODAY,
         name="Творог",
@@ -393,7 +401,7 @@ async def test_budget_cuts_the_nudge_that_does_not_fit(
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(TODAY),
     )  # protein: behind
-    for i in range(delivery.DAILY_BUDGET - 1):  # brief, evening, one earlier nudge
+    for i in range(delivery_contracts.DAILY_BUDGET - 1):  # brief, evening, one earlier nudge
         db_session.add(
             Notification(
                 # A dedupe_key demands the whole root: subject, recipient, channel.
@@ -401,7 +409,7 @@ async def test_budget_cuts_the_nudge_that_does_not_fit(
                 recipient_user_id=legacy_owner_roots.user_id,
                 integration_connection_id=telegram_connection_id,
                 sent_at=EVENING,
-                category=delivery.CATEGORY_BRIEF,
+                category=delivery_contracts.CATEGORY_BRIEF,
                 channel="telegram",
                 dedupe_key=f"spent:{i}",
             )
@@ -437,14 +445,18 @@ async def test_a_broken_condition_does_not_take_the_others_down(garmin_owned_sco
 async def test_pulse_refreshes_steps_without_losing_the_night(db_session, *, garmin_owned_scope):
     """The merge is the whole point: a bare {"summary": …} normalised over the
     day would blank sleep and HRV, and the morning brief would go out empty."""
-    await garmin_service.ingest_owned_daily(db_session, TODAY, FULL_DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    await garmin_ingestion.ingest_owned_daily(db_session, TODAY, FULL_DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     client = PulseClient({"totalSteps": 9100, "restingHeartRate": 52})
-    out = await garmin_service.pulse_owned(db_session, client, on_date=TODAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    out = await garmin_sync.pulse_owned(db_session, client, on_date=TODAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
-    row = await garmin_service.get_daily(db_session, TODAY)
+    row = await garmin_queries.get_daily(
+        db_session,
+        TODAY,
+        subject_id=garmin_owned_scope.subject_id,
+    )
     assert out["steps"] == 9100 and row.steps == 9100
     assert row.sleep_score == 80
     assert row.hrv_avg == 61
@@ -453,14 +465,18 @@ async def test_pulse_refreshes_steps_without_losing_the_night(db_session, *, gar
 
 async def test_pulse_ignores_an_empty_response(db_session, *, garmin_owned_scope):
     """An empty summary is a failed call, not a day without steps."""
-    await garmin_service.ingest_owned_daily(db_session, TODAY, FULL_DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    await garmin_ingestion.ingest_owned_daily(db_session, TODAY, FULL_DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
-    out = await garmin_service.pulse_owned(db_session, PulseClient({}), on_date=TODAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    out = await garmin_sync.pulse_owned(db_session, PulseClient({}), on_date=TODAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     assert out["error"] == "empty"
-    row = await garmin_service.get_daily(db_session, TODAY)
+    row = await garmin_queries.get_daily(
+        db_session,
+        TODAY,
+        subject_id=garmin_owned_scope.subject_id,
+    )
     assert row.steps == 3000 and row.sleep_score == 80
 
 
@@ -473,7 +489,7 @@ async def test_pulse_swallows_a_throttled_login(db_session, *, garmin_owned_scop
     from sqlalchemy import select
 
     client = PulseClient(raise_exc=GarminLoginThrottled("daily allowance spent"))
-    out = await garmin_service.pulse_owned(db_session, client, on_date=TODAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
+    out = await garmin_sync.pulse_owned(db_session, client, on_date=TODAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     assert out["error"] == "throttled"
@@ -503,12 +519,14 @@ async def test_pulse_job_only_runs_in_active_hours(
             return {"totalSteps": 1000}
 
     monkeypatch.setattr(
-        garmin_service, "now_local", lambda: datetime.combine(TODAY, datetime.min.time()).replace(hour=hour)
+        garmin_jobs,
+        "now_local",
+        lambda: datetime.combine(TODAY, datetime.min.time()).replace(hour=hour),
     )
     import vitals.integrations.garmin_client as gc
 
     monkeypatch.setattr(gc, "GarminClient", _Client)
-    await garmin_service.pulse_job(
+    await garmin_jobs.pulse_job(
         session_factory, subject_id=legacy_owner_roots.subject_id
     )
     assert bool(calls) is runs

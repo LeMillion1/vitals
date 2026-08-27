@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from vitals.services.supplements import conflicts as supplement_conflicts
+from vitals.services.supplements import writes as supplement_writes
+
 import uuid
 from datetime import date
 
@@ -13,7 +16,7 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.models.supplements import Supplement
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import supplements_service
+
 from vitals.services.conflicts import engine
 
 
@@ -45,7 +48,7 @@ def _register_resolvers() -> None:
     engine.register_domain_resolver(Domain.LABS.value, labs)
     engine.register_domain_resolver(
         Domain.SUPPLEMENTS.value,
-        supplements_service.resolve_active_scoped,
+        supplement_conflicts.resolve_active_scoped,
     )
 
 
@@ -69,7 +72,7 @@ async def test_scoped_create_block_is_write_free(db_session, legacy_owner_roots)
     )
 
     with pytest.raises(engine.ConflictBlocked):
-        await supplements_service.add_supplement(
+        await supplement_writes.add_supplement(
             db_session,
             name="Iron",
             key="iron",
@@ -97,7 +100,7 @@ async def test_scoped_create_override_stamps_row_and_alert(
         context=context,
     )
 
-    row = await supplements_service.add_supplement(
+    row = await supplement_writes.add_supplement(
         db_session,
         name="Iron",
         key="iron",
@@ -135,7 +138,7 @@ async def test_scoped_activation_blocks_then_overrides_without_losing_identity(
         db_session,
         context=context,
     )
-    row = await supplements_service.add_supplement(
+    row = await supplement_writes.add_supplement(
         db_session,
         name="Iron",
         key="iron",
@@ -150,7 +153,7 @@ async def test_scoped_activation_blocks_then_overrides_without_losing_identity(
         context=context,
     )
     with pytest.raises(engine.ConflictBlocked):
-        await supplements_service.set_active(
+        await supplement_writes.set_active(
             db_session,
             row.id,
             True,
@@ -166,7 +169,7 @@ async def test_scoped_activation_blocks_then_overrides_without_losing_identity(
         db_session,
         context=context,
     )
-    result = await supplements_service.set_active(
+    result = await supplement_writes.set_active(
         db_session,
         row.id,
         True,
@@ -197,7 +200,7 @@ async def test_prepared_identity_mismatch_is_rejected_before_create(
     mismatched = WriteIdentity(context.identity.subject_id, uuid.uuid4())
 
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await supplements_service.add_supplement(
+        await supplement_writes.add_supplement(
             db_session,
             name="Magnesium",
             key="magnesium",
@@ -229,13 +232,13 @@ async def test_scoped_identity_without_prepared_capability_is_rejected(
     # A subject without its conflict decision is not a call the service can
     # even be asked to make any more.
     with pytest.raises(TypeError):
-        await supplements_service.add_supplement(
+        await supplement_writes.add_supplement(
             db_session,
             name="Unprepared",
             identity=identity,
         )
     with pytest.raises(TypeError):
-        await supplements_service.set_active(
+        await supplement_writes.set_active(
             db_session,
             row.id,
             False,
@@ -267,7 +270,7 @@ async def test_deactivation_rejects_mismatched_or_committed_capability(
     )
     mismatched = WriteIdentity(context.identity.subject_id, uuid.uuid4())
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await supplements_service.set_active(
+        await supplement_writes.set_active(
             db_session,
             row.id,
             False,
@@ -278,7 +281,7 @@ async def test_deactivation_rejects_mismatched_or_committed_capability(
 
     await db_session.commit()
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await supplements_service.set_active(
+        await supplement_writes.set_active(
             db_session,
             row.id,
             False,
@@ -322,7 +325,7 @@ async def test_activation_refreshes_locked_row_before_conflict_evaluation(
     )
 
     with pytest.raises(engine.ConflictBlocked):
-        await supplements_service.set_active(
+        await supplement_writes.set_active(
             db_session,
             row.id,
             True,
@@ -362,7 +365,7 @@ async def test_scoped_update_replaces_old_resolver_entity_without_false_block(
         context=context,
     )
 
-    result = await supplements_service.update_supplement(
+    result = await supplement_writes.update_supplement(
         db_session,
         row.id,
         name="Updated",
@@ -403,7 +406,7 @@ async def test_scoped_update_to_conflicting_state_is_blocked_write_free(
     )
 
     with pytest.raises(engine.ConflictBlocked):
-        await supplements_service.update_supplement(
+        await supplement_writes.update_supplement(
             db_session,
             row.id,
             name="Iron",
@@ -421,7 +424,7 @@ async def test_scoped_update_to_conflicting_state_is_blocked_write_free(
         select(func.count()).select_from(SystemAlert)
     ) == 0
 
-    overridden = await supplements_service.update_supplement(
+    overridden = await supplement_writes.update_supplement(
         db_session,
         row.id,
         name="Iron",

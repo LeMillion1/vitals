@@ -24,11 +24,15 @@ from vitals.models.tenancy import IntegrationConnection
 from vitals.services.identity_service import (
     authorize_pre_identity_compatibility_transaction,
 )
-from vitals.services.proactive import prefs
+from vitals.services.proactive.preferences import codec as preference_codec
+from vitals.services.proactive.preferences import contracts as preference_contracts
+from vitals.services.proactive.preferences import legacy as preference_legacy
+from vitals.services.proactive.preferences import queries as preference_queries
+from vitals.services.proactive.preferences import writes as preference_writes
 
 
-async def _legacy_scope(db_session: AsyncSession) -> prefs.ProactivePreferencesScope:
-    return await prefs.resolve_legacy_preferences_scope(
+async def _legacy_scope(db_session: AsyncSession) -> preference_contracts.ProactivePreferencesScope:
+    return await preference_queries.resolve_legacy_preferences_scope(
         db_session,
         actor_username="tester",
     )
@@ -37,7 +41,7 @@ async def _legacy_scope(db_session: AsyncSession) -> prefs.ProactivePreferencesS
 async def _new_scope(
     db_session: AsyncSession,
     slug: str,
-) -> prefs.ProactivePreferencesScope:
+) -> preference_contracts.ProactivePreferencesScope:
     user = User(
         username=slug,
         normalized_username=slug.casefold(),
@@ -71,7 +75,7 @@ async def _new_scope(
     )
     db_session.add_all([telegram, garmin])
     await db_session.flush()
-    return prefs.ProactivePreferencesScope(
+    return preference_contracts.ProactivePreferencesScope(
         subject_id=subject.id,
         recipient_user_id=user.id,
         telegram_connection_id=telegram.id,
@@ -82,12 +86,12 @@ async def _new_scope(
 
 async def _clear_preferences(
     db_session: AsyncSession,
-    scope: prefs.ProactivePreferencesScope,
+    scope: preference_contracts.ProactivePreferencesScope,
 ) -> None:
     await db_session.execute(
         delete(SubjectSetting).where(
             SubjectSetting.subject_id == scope.subject_id,
-            SubjectSetting.key == prefs.SUBJECT_POLICY_KEY,
+            SubjectSetting.key == preference_contracts.SUBJECT_POLICY_KEY,
         )
     )
     await db_session.execute(
@@ -99,14 +103,14 @@ async def _clear_preferences(
     )
     await db_session.execute(
         delete(AppSetting).where(
-            AppSetting.key == prefs.LEGACY_SETTINGS_KEY
+            AppSetting.key == preference_contracts.LEGACY_SETTINGS_KEY
         )
     )
     await db_session.flush()
 
 
 def _custom(**overrides):
-    value = prefs.sanitize(
+    value = preference_codec.sanitize(
         {
             "brief_time": "08:15",
             "quiet_start": "00:30",
@@ -132,11 +136,11 @@ async def test_startup_splits_legacy_value_and_strict_reads_are_typed(
     scope = await _legacy_scope(db_session)
     await _clear_preferences(db_session, scope)
     legacy = _custom()
-    db_session.add(AppSetting(key=prefs.LEGACY_SETTINGS_KEY, value=legacy))
+    db_session.add(AppSetting(key=preference_contracts.LEGACY_SETTINGS_KEY, value=legacy))
     await db_session.flush()
 
-    first = await prefs.initialize_legacy_preferences(db_session, scope=scope)
-    second = await prefs.initialize_legacy_preferences(db_session, scope=scope)
+    first = await preference_writes.initialize_legacy_preferences(db_session, scope=scope)
+    second = await preference_writes.initialize_legacy_preferences(db_session, scope=scope)
 
     assert first == second
     assert first.as_flat_dict() == legacy
@@ -149,15 +153,15 @@ async def test_startup_splits_legacy_value_and_strict_reads_are_typed(
 
     subject_row = await db_session.get(
         SubjectSetting,
-        (scope.subject_id, prefs.SUBJECT_POLICY_KEY),
+        (scope.subject_id, preference_contracts.SUBJECT_POLICY_KEY),
     )
     delivery_row = await db_session.get(
         IntegrationConnectionSetting,
-        (scope.telegram_connection_id, prefs.TELEGRAM_DELIVERY_POLICY_KEY),
+        (scope.telegram_connection_id, preference_contracts.TELEGRAM_DELIVERY_POLICY_KEY),
     )
     garmin_row = await db_session.get(
         IntegrationConnectionSetting,
-        (scope.garmin_connection_id, prefs.GARMIN_POLICY_KEY),
+        (scope.garmin_connection_id, preference_contracts.GARMIN_POLICY_KEY),
     )
     assert set(subject_row.value) == {"brief_time", "nudges"}
     assert set(delivery_row.value) == {"quiet_start", "quiet_end", "daily_budget"}
@@ -170,16 +174,16 @@ async def test_startup_splits_legacy_value_and_strict_reads_are_typed(
         "pulse_end_hour",
     }
 
-    strict = await prefs.get_preferences_bundle(
+    strict = await preference_queries.get_preferences_bundle(
         db_session,
         scope=scope,
         actor_username="tester",
     )
-    exact_one = await prefs.get_exact_one_preferences_bundle(
+    exact_one = await preference_queries.get_exact_one_preferences_bundle(
         db_session,
         scope=scope,
     )
-    locked = await prefs.get_locked_delivery_policy(
+    locked = await preference_queries.get_locked_delivery_policy(
         db_session,
         subject_id=scope.subject_id,
         recipient_user_id=scope.recipient_user_id,
@@ -196,13 +200,13 @@ async def test_startup_seeds_explicit_defaults_before_strict_runtime_reads(
 ):
     scope = await _legacy_scope(db_session)
     await _clear_preferences(db_session, scope)
-    bundle = await prefs.initialize_legacy_preferences(db_session, scope=scope)
+    bundle = await preference_writes.initialize_legacy_preferences(db_session, scope=scope)
 
-    assert bundle.as_flat_dict() == prefs.sanitize(None)
-    legacy = await db_session.get(AppSetting, prefs.LEGACY_SETTINGS_KEY)
-    assert legacy is not None and legacy.value == prefs.sanitize(None)
+    assert bundle.as_flat_dict() == preference_codec.sanitize(None)
+    legacy = await db_session.get(AppSetting, preference_contracts.LEGACY_SETTINGS_KEY)
+    assert legacy is not None and legacy.value == preference_codec.sanitize(None)
     assert (
-        await prefs.get_preferences_bundle(
+        await preference_queries.get_preferences_bundle(
             db_session,
             scope=scope,
             actor_username="tester",
@@ -231,30 +235,30 @@ async def test_partial_malformed_and_drifted_state_fail_closed(
     scope = await _legacy_scope(db_session)
     await _clear_preferences(db_session, scope)
 
-    unconfigured = await prefs.get_preferences_bundle(
+    unconfigured = await preference_queries.get_preferences_bundle(
         db_session,
         scope=scope,
         actor_username="tester",
     )
-    assert unconfigured.as_flat_dict() == prefs.sanitize(None)
+    assert unconfigured.as_flat_dict() == preference_codec.sanitize(None)
 
-    with pytest.raises(prefs.ProactivePreferencesUnavailableError):
-        await prefs.get_locked_delivery_policy(
+    with pytest.raises(preference_contracts.ProactivePreferencesUnavailableError):
+        await preference_queries.get_locked_delivery_policy(
             db_session,
             subject_id=scope.subject_id,
             recipient_user_id=scope.recipient_user_id,
             integration_connection_id=scope.telegram_connection_id,
         )
 
-    await prefs.initialize_legacy_preferences(db_session, scope=scope)
+    await preference_writes.initialize_legacy_preferences(db_session, scope=scope)
     delivery = await db_session.get(
         IntegrationConnectionSetting,
-        (scope.telegram_connection_id, prefs.TELEGRAM_DELIVERY_POLICY_KEY),
+        (scope.telegram_connection_id, preference_contracts.TELEGRAM_DELIVERY_POLICY_KEY),
     )
     delivery.value = {"daily_budget": 4}
     await db_session.flush()
-    with pytest.raises(prefs.ProactivePreferencesUnavailableError):
-        await prefs.get_locked_delivery_policy(
+    with pytest.raises(preference_contracts.ProactivePreferencesUnavailableError):
+        await preference_queries.get_locked_delivery_policy(
             db_session,
             subject_id=scope.subject_id,
             recipient_user_id=scope.recipient_user_id,
@@ -263,12 +267,12 @@ async def test_partial_malformed_and_drifted_state_fail_closed(
     await db_session.rollback()
 
     scope = await _legacy_scope(db_session)
-    await prefs.initialize_legacy_preferences(db_session, scope=scope)
-    legacy = await db_session.get(AppSetting, prefs.LEGACY_SETTINGS_KEY)
+    await preference_writes.initialize_legacy_preferences(db_session, scope=scope)
+    legacy = await db_session.get(AppSetting, preference_contracts.LEGACY_SETTINGS_KEY)
     legacy.value = _custom(daily_budget=11)
     await db_session.flush()
-    with pytest.raises(prefs.ProactivePreferencesDriftError):
-        await prefs.initialize_legacy_preferences(db_session, scope=scope)
+    with pytest.raises(preference_contracts.ProactivePreferencesDriftError):
+        await preference_writes.initialize_legacy_preferences(db_session, scope=scope)
 
 
 async def test_subject_job_policy_distinguishes_opt_in_from_torn_bundle(
@@ -278,22 +282,22 @@ async def test_subject_job_policy_distinguishes_opt_in_from_torn_bundle(
     scope = await _legacy_scope(db_session)
     await _clear_preferences(db_session, scope)
 
-    with pytest.raises(prefs.ProactivePreferencesNotConfiguredError):
-        await prefs.get_subject_policy(db_session, subject_id=scope.subject_id)
+    with pytest.raises(preference_contracts.ProactivePreferencesNotConfiguredError):
+        await preference_queries.get_subject_policy(db_session, subject_id=scope.subject_id)
 
-    await prefs.initialize_legacy_preferences(db_session, scope=scope)
+    await preference_writes.initialize_legacy_preferences(db_session, scope=scope)
     subject = await db_session.get(
         SubjectSetting,
-        (scope.subject_id, prefs.SUBJECT_POLICY_KEY),
+        (scope.subject_id, preference_contracts.SUBJECT_POLICY_KEY),
     )
     await db_session.delete(subject)
     await db_session.flush()
 
-    with pytest.raises(prefs.ProactivePreferencesUnavailableError) as exc_info:
-        await prefs.get_subject_policy(db_session, subject_id=scope.subject_id)
+    with pytest.raises(preference_contracts.ProactivePreferencesUnavailableError) as exc_info:
+        await preference_queries.get_subject_policy(db_session, subject_id=scope.subject_id)
     assert not isinstance(
         exc_info.value,
-        prefs.ProactivePreferencesNotConfiguredError,
+        preference_contracts.ProactivePreferencesNotConfiguredError,
     )
 
 
@@ -302,13 +306,13 @@ async def test_two_subjects_keep_all_three_policy_partitions_isolated(
     legacy_owner_roots,
 ):
     first_legacy_scope = await _legacy_scope(db_session)
-    await prefs.initialize_legacy_preferences(db_session, scope=first_legacy_scope)
+    await preference_writes.initialize_legacy_preferences(db_session, scope=first_legacy_scope)
     legacy_before = (
-        await db_session.get(AppSetting, prefs.LEGACY_SETTINGS_KEY)
+        await db_session.get(AppSetting, preference_contracts.LEGACY_SETTINGS_KEY)
     ).value.copy()
 
     second_scope = await _new_scope(db_session, "second-policy-owner")
-    first_scope = prefs.ProactivePreferencesScope(
+    first_scope = preference_contracts.ProactivePreferencesScope(
         subject_id=first_legacy_scope.subject_id,
         recipient_user_id=first_legacy_scope.recipient_user_id,
         telegram_connection_id=first_legacy_scope.telegram_connection_id,
@@ -317,13 +321,13 @@ async def test_two_subjects_keep_all_three_policy_partitions_isolated(
     )
     first_value = _custom(brief_time="06:10", daily_budget=3)
     second_value = _custom(brief_time="12:20", daily_budget=10)
-    await prefs.set_preferences_bundle(
+    await preference_writes.set_preferences_bundle(
         db_session,
         first_value,
         scope=first_scope,
         actor_username="tester",
     )
-    await prefs.set_preferences_bundle(
+    await preference_writes.set_preferences_bundle(
         db_session,
         second_value,
         scope=second_scope,
@@ -331,37 +335,37 @@ async def test_two_subjects_keep_all_three_policy_partitions_isolated(
     )
 
     assert (
-        await prefs.get_preferences_bundle(
+        await preference_queries.get_preferences_bundle(
             db_session,
             scope=first_scope,
             actor_username="tester",
         )
     ).as_flat_dict() == first_value
     assert (
-        await prefs.get_preferences_bundle(
+        await preference_queries.get_preferences_bundle(
             db_session,
             scope=second_scope,
             actor_username="second-policy-owner",
         )
     ).as_flat_dict() == second_value
     assert (
-        await db_session.get(AppSetting, prefs.LEGACY_SETTINGS_KEY)
+        await db_session.get(AppSetting, preference_contracts.LEGACY_SETTINGS_KEY)
     ).value == legacy_before
 
-    foreign_scope = prefs.ProactivePreferencesScope(
+    foreign_scope = preference_contracts.ProactivePreferencesScope(
         subject_id=first_scope.subject_id,
         recipient_user_id=first_scope.recipient_user_id,
         telegram_connection_id=second_scope.telegram_connection_id,
         garmin_connection_id=first_scope.garmin_connection_id,
     )
-    with pytest.raises(prefs.ProactivePreferencesScopeError):
-        await prefs.get_preferences_bundle(
+    with pytest.raises(preference_contracts.ProactivePreferencesScopeError):
+        await preference_queries.get_preferences_bundle(
             db_session,
             scope=foreign_scope,
             actor_username="tester",
         )
-    with pytest.raises(prefs.ProactivePreferencesUnavailableError):
-        await prefs.get_locked_delivery_policy(
+    with pytest.raises(preference_contracts.ProactivePreferencesUnavailableError):
+        await preference_queries.get_locked_delivery_policy(
             db_session,
             subject_id=first_scope.subject_id,
             recipient_user_id=first_scope.recipient_user_id,
@@ -374,38 +378,38 @@ async def test_two_subjects_keep_all_three_policy_partitions_isolated(
     # what stopped anybody on a shared installation from saving their
     # notification settings at all. The mirror is skipped; the row is written.
     legacy_flagged_value = _custom(brief_time="06:40", daily_budget=4)
-    await prefs.set_preferences_bundle(
+    await preference_writes.set_preferences_bundle(
         db_session,
         legacy_flagged_value,
         scope=first_legacy_scope,
         actor_username="tester",
     )
     assert (
-        await prefs.get_preferences_bundle(
+        await preference_queries.get_preferences_bundle(
             db_session,
             scope=first_scope,
             actor_username="tester",
         )
     ).as_flat_dict() == legacy_flagged_value
     assert (
-        await db_session.get(AppSetting, prefs.LEGACY_SETTINGS_KEY)
+        await db_session.get(AppSetting, preference_contracts.LEGACY_SETTINGS_KEY)
     ).value == legacy_before
 
-    with pytest.raises(prefs.ProactivePreferencesScopeError):
-        await prefs.get_preferences_bundle(
+    with pytest.raises(preference_contracts.ProactivePreferencesScopeError):
+        await preference_queries.get_preferences_bundle(
             db_session,
             scope=second_scope,
             actor_username="tester",
         )
-    with pytest.raises(prefs.ProactivePreferencesScopeError):
-        await prefs.set_preferences_bundle(
+    with pytest.raises(preference_contracts.ProactivePreferencesScopeError):
+        await preference_writes.set_preferences_bundle(
             db_session,
             _custom(daily_budget=12),
             scope=second_scope,
             actor_username="tester",
         )
-    with pytest.raises(prefs.LegacyProactivePreferencesBridgeClosedError):
-        await prefs.get_exact_one_preferences_bundle(
+    with pytest.raises(preference_contracts.LegacyProactivePreferencesBridgeClosedError):
+        await preference_queries.get_exact_one_preferences_bundle(
             db_session,
             scope=first_legacy_scope,
         )
@@ -415,10 +419,10 @@ async def test_unscoped_compatibility_is_zero_subject_only(
     db_session,
     legacy_owner_roots,
 ):
-    with pytest.raises(prefs.ProactivePreferencesScopeError):
-        await prefs.get_pre_identity_legacy_prefs(db_session)
-    with pytest.raises(prefs.ProactivePreferencesScopeError):
-        await prefs.set_pre_identity_legacy_prefs(db_session, _custom())
+    with pytest.raises(preference_contracts.ProactivePreferencesScopeError):
+        await preference_legacy.get_pre_identity_legacy_prefs(db_session)
+    with pytest.raises(preference_contracts.ProactivePreferencesScopeError):
+        await preference_legacy.set_pre_identity_legacy_prefs(db_session, _custom())
 
 
 @pytest.mark.parametrize("operation", ["get", "set"])
@@ -442,11 +446,11 @@ async def test_pre_identity_compatibility_rejects_pending_identity_without_flush
     )
     db_session.add_all([user, subject])
 
-    with pytest.raises(prefs.ProactivePreferencesScopeError):
+    with pytest.raises(preference_contracts.ProactivePreferencesScopeError):
         if operation == "get":
-            await prefs.get_pre_identity_legacy_prefs(db_session)
+            await preference_legacy.get_pre_identity_legacy_prefs(db_session)
         else:
-            await prefs.set_pre_identity_legacy_prefs(
+            await preference_legacy.set_pre_identity_legacy_prefs(
                 db_session,
                 _custom(daily_budget=8),
             )
@@ -482,13 +486,13 @@ async def test_pre_identity_compatibility_does_not_flush_unrelated_pending_state
     db_session.add(user)
 
     if operation == "get":
-        assert await prefs.get_pre_identity_legacy_prefs(
+        assert await preference_legacy.get_pre_identity_legacy_prefs(
             db_session
-        ) == prefs.sanitize(None)
+        ) == preference_codec.sanitize(None)
         expected_setting_count = 0
     else:
         assert (
-            await prefs.set_pre_identity_legacy_prefs(
+            await preference_legacy.set_pre_identity_legacy_prefs(
                 db_session,
                 _custom(daily_budget=8),
             )
@@ -511,10 +515,10 @@ async def test_pre_identity_compatibility_rejects_unrecognized_transaction(
 ):
     await db_session.scalar(select(func.count()).select_from(AppSetting))
 
-    with pytest.raises(prefs.ProactivePreferencesScopeError):
-        await prefs.get_pre_identity_legacy_prefs(db_session)
-    with pytest.raises(prefs.ProactivePreferencesScopeError):
-        await prefs.set_pre_identity_legacy_prefs(db_session, _custom())
+    with pytest.raises(preference_contracts.ProactivePreferencesScopeError):
+        await preference_legacy.get_pre_identity_legacy_prefs(db_session)
+    with pytest.raises(preference_contracts.ProactivePreferencesScopeError):
+        await preference_legacy.set_pre_identity_legacy_prefs(db_session, _custom())
 
 
 async def test_pre_identity_compatibility_rejects_nested_transaction(
@@ -523,8 +527,8 @@ async def test_pre_identity_compatibility_rejects_nested_transaction(
     await authorize_pre_identity_compatibility_transaction(db_session)
 
     async with db_session.begin_nested():
-        with pytest.raises(prefs.ProactivePreferencesScopeError):
-            await prefs.get_pre_identity_legacy_prefs(db_session)
+        with pytest.raises(preference_contracts.ProactivePreferencesScopeError):
+            await preference_legacy.get_pre_identity_legacy_prefs(db_session)
 
 
 @pytest.mark.integration
@@ -533,7 +537,7 @@ async def test_postgres_absent_scoped_rows_serialize_on_subject_root(
     legacy_owner_roots,
 ):
     legacy_scope = await _legacy_scope(db_session)
-    scope = prefs.ProactivePreferencesScope(
+    scope = preference_contracts.ProactivePreferencesScope(
         subject_id=legacy_scope.subject_id,
         recipient_user_id=legacy_scope.recipient_user_id,
         telegram_connection_id=legacy_scope.telegram_connection_id,
@@ -549,7 +553,7 @@ async def test_postgres_absent_scoped_rows_serialize_on_subject_root(
     )
 
     session_a = factory()
-    await prefs.set_preferences_bundle(
+    await preference_writes.set_preferences_bundle(
         session_a,
         _custom(daily_budget=2),
         scope=scope,
@@ -558,7 +562,7 @@ async def test_postgres_absent_scoped_rows_serialize_on_subject_root(
 
     async def write_b() -> None:
         async with factory() as session_b:
-            await prefs.set_preferences_bundle(
+            await preference_writes.set_preferences_bundle(
                 session_b,
                 _custom(daily_budget=9),
                 scope=scope,
@@ -575,7 +579,7 @@ async def test_postgres_absent_scoped_rows_serialize_on_subject_root(
 
     async with factory() as verify:
         assert (
-            await prefs.get_preferences_bundle(
+            await preference_queries.get_preferences_bundle(
                 verify,
                 scope=scope,
                 actor_username="tester",
@@ -597,7 +601,7 @@ async def test_postgres_pre_identity_read_serializes_identity_bootstrap(
         class_=AsyncSession,
     )
     holder = factory()
-    assert await prefs.get_pre_identity_legacy_prefs(holder) == prefs.sanitize(
+    assert await preference_legacy.get_pre_identity_legacy_prefs(holder) == preference_codec.sanitize(
         None
     )
 

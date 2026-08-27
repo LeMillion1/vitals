@@ -1,6 +1,10 @@
 """Endpoints for the HRT/TRT domain: compound catalog, dose log, side effects."""
 from __future__ import annotations
 
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
+from vitals.services.alerts import contracts as alerts_service_contracts
+
 from datetime import date as date_type
 from typing import Optional
 
@@ -12,7 +16,6 @@ from datetime import timedelta
 
 from vitals.enums import CycleKind, Domain, DoseUnit, HrtInjectionSite, Source
 from vitals.i18n import current_lang
-from vitals.services import alerts_service
 from vitals.services.conflicts import engine
 from vitals.services.hrt import (
     cycles as cycle_records,
@@ -136,11 +139,11 @@ async def hrt_dashboard(
     }
     doses = await records.list_doses(db, limit=200, **scope_kwargs)
     side_effects = await records.list_side_effects(db, **scope_kwargs)
-    alerts = await alerts_service.list_active_scoped(
+    alerts = await alerts_service_lifecycle.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(context.identity),
+        context=alerts_service_contracts.HealthAlertContext(context.identity),
         domain=Domain.HRT,
-        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        legacy_bridge=alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED,
     )
     last = await records.last_dose(db, **scope_kwargs)
 

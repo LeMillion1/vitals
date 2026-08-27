@@ -9,7 +9,7 @@ Settings.
 
 Single user, so there is no per-account table: the secret and whether enrolment
 was ever completed live in one ``app_settings`` row. The key is deliberately
-named ``twofa_secret`` — ``data_portability_service`` drops ``app_settings`` keys
+named ``twofa_secret`` — portability v1 drops ``app_settings`` keys
 that look like a credential, so the secret never rides along in a downloaded
 backup. Renaming this key silently re-opens that leak; the test suite pins it.
 

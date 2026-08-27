@@ -7,6 +7,12 @@ without rendering a card for a module that is switched off.
 """
 from __future__ import annotations
 
+from vitals.services.milestones import goals as milestone_goals
+
+from vitals.services.nutrition import writes as nutrition_writes
+
+from vitals.services.digest import ownership as digest_ownership
+
 import pytest
 
 from datetime import timedelta
@@ -15,13 +21,7 @@ from vitals.enums import DigestKind, Domain, Severity, Source
 from vitals.models.milestones import DOMAIN as INSIGHTS_DOMAIN, WeeklyDigest
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    digest_service,
-    milestones_service,
-    nutrition_service,
-    today_service,
-    weight_service,
-)
+from vitals.services import today_service, weight as weight_domain
 from vitals.utils.timeutils import today_local
 
 ALL_OFF: dict[str, bool] = {}
@@ -38,7 +38,7 @@ async def test_build_survives_an_empty_database(db_session, legacy_owner_roots):
     ctx = await today_service.build(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
-        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+        prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
             db_session,
             identity=WriteIdentity(
                 legacy_owner_roots.subject_id, legacy_owner_roots.user_id
@@ -136,7 +136,7 @@ async def test_hero_takes_only_the_prose_out_of_todays_brief(db_session, legacy_
     ctx = await today_service.build(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
-        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+        prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
             db_session,
             identity=WriteIdentity(
                 legacy_owner_roots.subject_id, legacy_owner_roots.user_id
@@ -162,7 +162,7 @@ async def test_a_header_only_brief_falls_back_to_the_computed_sentence(db_sessio
     ctx = await today_service.build(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
-        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+        prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
             db_session,
             identity=WriteIdentity(
                 legacy_owner_roots.subject_id, legacy_owner_roots.user_id
@@ -192,7 +192,7 @@ async def test_yesterdays_brief_does_not_stand_in_for_today(db_session, legacy_o
     ctx = await today_service.build(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
-        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+        prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
             db_session,
             identity=WriteIdentity(
                 legacy_owner_roots.subject_id, legacy_owner_roots.user_id
@@ -207,7 +207,7 @@ async def test_yesterdays_brief_does_not_stand_in_for_today(db_session, legacy_o
 
 async def test_weight_drives_the_figure_and_the_fallback_sentence(db_session, legacy_owner_roots, owner_write):
     for offset, kg in ((14, 95.0), (7, 93.5), (0, 92.0)):
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=today_local() - timedelta(days=offset),
             weight_kg=kg,
@@ -219,7 +219,7 @@ async def test_weight_drives_the_figure_and_the_fallback_sentence(db_session, le
     ctx = await today_service.build(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
-        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+        prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
             db_session,
             identity=WriteIdentity(
                 legacy_owner_roots.subject_id, legacy_owner_roots.user_id
@@ -240,7 +240,7 @@ async def test_weight_drives_the_figure_and_the_fallback_sentence(db_session, le
 
 async def test_a_disabled_module_contributes_nothing(db_session, legacy_owner_roots, owner_write):
     """Nutrition off: no calories figure, no meal in the feed — not an empty card."""
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session,
         on_date=today_local(),
         name="Курица с рисом",
@@ -253,7 +253,7 @@ async def test_a_disabled_module_contributes_nothing(db_session, legacy_owner_ro
     off = await today_service.build(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
-        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+        prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
             db_session,
             identity=WriteIdentity(
                 legacy_owner_roots.subject_id, legacy_owner_roots.user_id
@@ -267,7 +267,7 @@ async def test_a_disabled_module_contributes_nothing(db_session, legacy_owner_ro
     on = await today_service.build(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
-        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+        prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
             db_session,
             identity=WriteIdentity(
                 legacy_owner_roots.subject_id, legacy_owner_roots.user_id
@@ -283,7 +283,7 @@ async def test_calories_change_compares_logged_days(db_session, legacy_owner_roo
     """Intake week over week is per *logged* day: a week with three days filled in
     must not read as a crash in intake that never happened."""
     for offset, cal in ((10, 1800.0), (9, 2000.0), (2, 1500.0)):
-        await nutrition_service.log_meal(
+        await nutrition_writes.log_meal(
             db_session,
             on_date=today_local() - timedelta(days=offset),
             name="Обед",
@@ -296,7 +296,7 @@ async def test_calories_change_compares_logged_days(db_session, legacy_owner_roo
     ctx = await today_service.build(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
-        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+        prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
             db_session,
             identity=WriteIdentity(
                 legacy_owner_roots.subject_id, legacy_owner_roots.user_id
@@ -312,17 +312,17 @@ async def test_calories_change_compares_logged_days(db_session, legacy_owner_roo
 
 
 async def test_goal_reads_as_distance_covered(db_session, legacy_owner_roots, owner_write):
-    """The bar needs a starting point, and milestones_service has no notion of one
+    """The bar needs a starting point, and milestone progress has no notion of one
     — the first logged weight is what "11.2 of 17.5 covered" is measured from."""
     for offset, kg in ((30, 100.0), (0, 94.0)):
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=today_local() - timedelta(days=offset),
             weight_kg=kg,
             identity=owner_write.identity,
             prepared_weight_write=await owner_write.weight_write(today_local() - timedelta(days=offset)),
         )
-    await milestones_service.create_milestone(
+    await milestone_goals.create_milestone(
         db_session, name="Дойти до 85", domain=Domain.WEIGHT.value,
         target_value=85.0, target_unit="кг",
         identity=owner_write.identity,
@@ -333,7 +333,7 @@ async def test_goal_reads_as_distance_covered(db_session, legacy_owner_roots, ow
     goal = (await today_service.build(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
-        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+        prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
             db_session,
             identity=WriteIdentity(
                 legacy_owner_roots.subject_id, legacy_owner_roots.user_id
@@ -367,7 +367,7 @@ async def test_recovery_advice_arrives_as_an_observation(db_session, legacy_owne
     ctx = await today_service.build(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
-        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+        prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
             db_session,
             identity=WriteIdentity(
                 legacy_owner_roots.subject_id, legacy_owner_roots.user_id
@@ -431,7 +431,7 @@ async def test_platform_scheduler_diagnostics_never_reach_today_attention(
     ctx = await today_service.build(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
-        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+        prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
             db_session,
             identity=WriteIdentity(
                 legacy_owner_roots.subject_id, legacy_owner_roots.user_id
@@ -451,7 +451,7 @@ async def test_feed_stays_a_glance_on_a_busy_day(db_session, legacy_owner_roots,
     """Every seeded goal and supplement carries today's date on a first run — the
     card is the day at a glance, so it is capped rather than left unbounded."""
     for i in range(20):
-        await nutrition_service.log_meal(
+        await nutrition_writes.log_meal(
             db_session,
             on_date=today_local(),
             name=f"Приём {i}",
@@ -464,7 +464,7 @@ async def test_feed_stays_a_glance_on_a_busy_day(db_session, legacy_owner_roots,
     ctx = await today_service.build(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
-        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+        prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
             db_session,
             identity=WriteIdentity(
                 legacy_owner_roots.subject_id, legacy_owner_roots.user_id

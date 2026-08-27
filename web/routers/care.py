@@ -22,23 +22,18 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.access import PolicyAction, PolicyResourceType
 from vitals.enums import (
     CarePlanStatus,
     FileStorageBackend,
-    ProfessionalKind,
-    ProfessionalVerificationStatus,
-    UserRoleName,
 )
-from vitals.models.identity import UserRole
-from vitals.models.professional import ProfessionalProfile
-from vitals.services import modules_service, support_access_service
+from vitals.services.support_access import contracts as support_contracts
+from vitals.services.support_access import export as support_export
 from vitals.services.care import invitations, professionals, records, relationships
-from vitals.services.care import record_projection
 from vitals.services.care import threads as care_threads
+from vitals.services.care import workspace as care_workspace
 from web.care_context import CareContext, principal_user_id, require_care_context
 from web.config import get_web_config
 from web.deps import get_session, require_auth
@@ -55,6 +50,17 @@ from web.uploads import (
 )
 
 router = APIRouter(prefix="/care", tags=["care"])
+
+
+async def _visible_record(db: AsyncSession, care: CareContext):
+    """Compatibility seam for tests; domain projection lives in the service."""
+
+    return await care_workspace.visible_record(
+        db,
+        subject_id=care.subject_id,
+        subject_timezone=care.subject_timezone,
+        context=care.access,
+    )
 
 
 async def _attach_private_document(
@@ -94,30 +100,6 @@ async def _attach_private_document(
     return path
 
 
-async def _professional_display_names(
-    db: AsyncSession, user_ids: set[uuid.UUID]
-) -> dict[uuid.UUID, str]:
-    """Human names professionals submitted, keyed without changing identity.
-
-    Usernames remain the safe fallback: identity lookup still uses immutable
-    IDs, while this small presentation map keeps technical login handles out of
-    clinical guidance and conversations whenever a profile exists.
-    """
-
-    if not user_ids:
-        return {}
-    return dict(
-        (
-            await db.execute(
-                select(
-                    ProfessionalProfile.user_id,
-                    ProfessionalProfile.display_name,
-                ).where(ProfessionalProfile.user_id.in_(user_ids))
-            )
-        ).all()
-    )
-
-
 @router.get("/accept/{token}", response_class=HTMLResponse)
 async def show_invitation(
     request: Request,
@@ -151,7 +133,10 @@ async def accept_invitation(
     """
 
     user_id = await principal_user_id(request, db)
-    verified_email = await _verified_email(request, db, user_id=user_id)
+    verified_email = await care_workspace.verified_email_for_user(
+        db,
+        user_id=user_id,
+    )
     try:
         invitation = await invitations.accept(
             db,
@@ -178,32 +163,6 @@ async def accept_invitation(
     )
 
 
-async def _verified_email(
-    request: Request, db: AsyncSession, *, user_id: uuid.UUID
-) -> str | None:
-    """The address this session has actually proved, or nothing.
-
-    After the federated cutover the provider states it at sign-in; before it,
-    the account's own column counts only once somebody has verified it. Neither
-    is inferred from the other, and an unverified address is not an address —
-    it is somebody asserting they own a mailbox, which is what the invitation's
-    binding exists to stop.
-    """
-
-    from vitals.models.identity import User as UserModel
-
-    row = (
-        await db.execute(
-            select(UserModel.normalized_email, UserModel.email_verified_at).where(
-                UserModel.id == user_id
-            )
-        )
-    ).one_or_none()
-    if row is None or row.email_verified_at is None:
-        return None
-    return row.normalized_email
-
-
 @router.get("", response_class=HTMLResponse)
 async def roster(
     request: Request,
@@ -220,68 +179,36 @@ async def roster(
     """
 
     user_id = await principal_user_id(request, db)
-    assigned_roles = set(
-        await db.scalars(
-            select(UserRole.role).where(
-                UserRole.user_id == user_id,
-            )
-        )
+    workspace = await care_workspace.load_professional_workspace(
+        db,
+        user_id=user_id,
     )
-    professional_roles = assigned_roles.intersection(
-        (UserRoleName.DOCTOR.value, UserRoleName.TRAINER.value)
-    )
-    if not professional_roles:
+    if not workspace.professional_roles:
         # ``/care`` is the professional workspace. A record owner reaches
         # their people, consent and guidance through the patient-side hub; an
         # empty professional roster is not a meaningful version of that page.
         # A platform-only operator has a separate control-plane home and must
         # not depend on a fake patient directory merely to reach it.
-        destination = (
-            "/settings/platform"
-            if UserRoleName.PLATFORM_SUPERADMIN.value in assigned_roles
-            else "/settings/care"
-        )
         return RedirectResponse(
-            url=destination,
+            url=workspace.destination_without_professional_role,
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    profile = await db.scalar(
-        select(ProfessionalProfile).where(ProfessionalProfile.user_id == user_id)
-    )
-    available_kinds = [
-        kind
-        for kind in ProfessionalKind
-        if professionals.ROLE_FOR_KIND[kind].value in professional_roles
-    ]
-    onboarding_kind = (
-        ProfessionalKind(profile.kind)
-        if profile is not None
-        else available_kinds[0]
-        if len(available_kinds) == 1
-        else None
-    )
-    profile_verified = (
-        profile is not None
-        and profile.verification_status
-        == ProfessionalVerificationStatus.VERIFIED.value
-    )
-    patients = await relationships.list_professional_roster(
-        db, professional_user_id=user_id
-    )
     return templates.TemplateResponse(
         request,
         "care/roster.html",
         {
-            "patients": patients,
+            "patients": workspace.patients,
             "username": username,
             "accepted": accepted,
             "submitted": submitted,
-            "professional_profile": profile,
+            "professional_profile": workspace.profile,
             "onboarding_kind": (
-                onboarding_kind.value if onboarding_kind is not None else None
+                workspace.onboarding_kind.value
+                if workspace.onboarding_kind is not None
+                else None
             ),
-            "profile_verified": profile_verified,
-            "is_professional_account": bool(professional_roles),
+            "profile_verified": workspace.profile_verified,
+            "is_professional_account": bool(workspace.professional_roles),
             "active_account_nav": "professional_care",
         },
     )
@@ -302,34 +229,20 @@ async def submit_professional_profile(
     """
 
     user_id = await principal_user_id(request, db)
-    roles = set(
-        await db.scalars(
-            select(UserRole.role).where(
-                UserRole.user_id == user_id,
-                UserRole.role.in_(
-                    (UserRoleName.DOCTOR.value, UserRoleName.TRAINER.value)
-                ),
-            )
-        )
-    )
-    profile = await db.scalar(
-        select(ProfessionalProfile).where(ProfessionalProfile.user_id == user_id)
+    workspace = await care_workspace.load_professional_workspace(
+        db,
+        user_id=user_id,
     )
     try:
-        if profile is None:
-            kinds = [
-                kind
-                for kind in ProfessionalKind
-                if professionals.ROLE_FOR_KIND[kind].value in roles
-            ]
-            if len(kinds) != 1:
+        if workspace.profile is None:
+            if len(workspace.available_kinds) != 1:
                 raise professionals.ProfessionalValidationError(
                     "professional onboarding requires one assigned kind"
                 )
             await professionals.submit_profile(
                 db,
                 user_id=user_id,
-                kind=kinds[0],
+                kind=workspace.available_kinds[0],
                 display_name=display_name,
                 credential_reference=credential_reference,
             )
@@ -352,34 +265,6 @@ async def submit_professional_profile(
     return RedirectResponse(
         url="/care?submitted=1",
         status_code=status.HTTP_303_SEE_OTHER,
-    )
-
-
-async def _visible_record(
-    db: AsyncSession, care: CareContext
-) -> record_projection.RecordProjection:
-    """The patient's record as this professional may see it, and what is missing.
-
-    A doctor and a trainer are granted the same domains — the kind decides who
-    is writing, not what may be read — so by default this is the whole record.
-    The patient can narrow it, and when they have, the withheld sections are
-    named rather than quietly absent: a clinician reasoning from a partial
-    record needs to know it is partial, and a gap they cannot see is worse than
-    one they can.
-
-    Modules the patient has switched off are not withheld and are not named.
-    Those are sections of the product they do not use, which is not about this
-    professional and not theirs to be told about.
-    """
-
-    enabled = await modules_service.get_enabled_modules(
-        db, subject_id=care.subject_id
-    )
-    return await record_projection.assemble_record_projection(
-        db,
-        context=care.access,
-        enabled_modules=enabled,
-        subject_timezone_name=care.subject_timezone,
     )
 
 
@@ -424,9 +309,9 @@ async def patient(
         if may_read_plans
         else []
     )
-    author_names = await _professional_display_names(
+    author_names = await care_workspace.professional_display_names(
         db,
-        {item.actor_user_id for item in (*notes, *plans)},
+        user_ids={item.actor_user_id for item in (*notes, *plans)},
     )
     visible = await _visible_record(db, care)
     response = templates.TemplateResponse(
@@ -491,7 +376,7 @@ async def patient(
         if may_read_plans:
             artifact_keys.append(records.PLAN_ARTIFACT)
         try:
-            await support_access_service.record_record_opened(
+            await support_export.record_record_opened(
                 db,
                 context=care.access,
                 domain_keys=visible.loaded_domains,
@@ -501,8 +386,8 @@ async def patient(
             # boundary. No committed audit event means no medical HTML leaves.
             await db.commit()
         except (
-            support_access_service.NotASupportSession,
-            support_access_service.NotAPlatformAdmin,
+            support_contracts.NotASupportSession,
+            support_contracts.NotAPlatformAdmin,
         ):
             await db.rollback()
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
@@ -558,9 +443,9 @@ async def messages(
         )
     except care_threads.NotInTheConversation:
         thread_summaries = []
-    counterpart_names = await _professional_display_names(
+    counterpart_names = await care_workspace.professional_display_names(
         db,
-        {
+        user_ids={
             item.counterpart_user_id
             for item in thread_summaries
             if item.counterpart_user_id is not None
@@ -647,8 +532,9 @@ async def thread(
     message_users = {
         message.actor_user_id: message.author.username for message in thread_messages
     }
-    names = await _professional_display_names(
-        db, set(participant_users) | set(message_users)
+    names = await care_workspace.professional_display_names(
+        db,
+        user_ids=set(participant_users) | set(message_users),
     )
     names.update(
         {

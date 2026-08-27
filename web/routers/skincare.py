@@ -1,6 +1,13 @@
 """Endpoints for skincare daily checklist + observations."""
 from __future__ import annotations
 
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
+from vitals.services.alerts import contracts as alerts_service_contracts
+
+from vitals.services.skincare import queries as skincare_queries
+from vitals.services.skincare import writes as skincare_writes
+
 from datetime import date as date_type
 from typing import Optional
 
@@ -9,7 +16,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain
-from vitals.services import alerts_service, skincare_service
 from vitals.services.conflicts import engine
 from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
@@ -57,28 +63,28 @@ async def skincare_dashboard(
         evaluation_date=today,
     )
     identity = context.identity
-    logs = await skincare_service.list_logs(
+    logs = await skincare_queries.list_logs(
         db,
         subject_id=identity.subject_id,
     )
-    observations = await skincare_service.list_observations(
+    observations = await skincare_queries.list_observations(
         db,
         subject_id=identity.subject_id,
     )
-    alerts = await alerts_service.list_active_scoped(
+    alerts = await alerts_service_lifecycle.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(identity),
+        context=alerts_service_contracts.HealthAlertContext(identity),
         domain=Domain.SKINCARE,
-        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        legacy_bridge=alerts_service_contracts.LegacyAlertBridge.FULLY_UNOWNED,
     )
-    today_log = await skincare_service.get_log(
+    today_log = await skincare_queries.get_log(
         db,
         today,
         subject_id=identity.subject_id,
     )
 
     # Load products dynamically
-    products = await skincare_service.list_products(
+    products = await skincare_queries.list_products(
         db,
         subject_id=identity.subject_id,
     )
@@ -129,7 +135,7 @@ async def save_log(
         evaluation_date=on_date,
     )
     try:
-        await skincare_service.upsert_log(
+        await skincare_writes.upsert_log(
             db,
             on_date=on_date,
             retinoid=retinoid,
@@ -171,7 +177,7 @@ async def save_observation(
         username=username,
         evaluation_date=on_date,
     )
-    await skincare_service.add_observation(
+    await skincare_writes.add_observation(
         db,
         on_date=on_date,
         inflammation=inflammation,
@@ -197,7 +203,7 @@ async def delete_log(
         username=username,
         evaluation_date=today_local(),
     )
-    await skincare_service.delete_log(
+    await skincare_writes.delete_log(
         db,
         id,
         identity=context.identity,
@@ -219,7 +225,7 @@ async def delete_observation(
         username=username,
         evaluation_date=today_local(),
     )
-    await skincare_service.delete_observation(
+    await skincare_writes.delete_observation(
         db,
         id,
         identity=context.identity,
@@ -251,7 +257,7 @@ async def save_product(
         evaluation_date=today_local(),
     )
     if id is not None:
-        await skincare_service.update_product(
+        await skincare_writes.update_product(
             db,
             id,
             name=name,
@@ -266,7 +272,7 @@ async def save_product(
             prepared_conflict_write=prepared,
         )
     else:
-        await skincare_service.add_product(
+        await skincare_writes.add_product(
             db,
             name=name,
             type=type,
@@ -295,7 +301,7 @@ async def delete_product(
         username=username,
         evaluation_date=today_local(),
     )
-    await skincare_service.delete_product(
+    await skincare_writes.delete_product(
         db,
         id,
         identity=context.identity,

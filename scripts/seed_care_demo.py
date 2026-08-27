@@ -66,7 +66,7 @@ from vitals.models.identity import HealthSubject, User, UserRole  # noqa: E402
 from vitals.models.labs import LabResult  # noqa: E402
 from vitals.models.nutrition import MealLog  # noqa: E402
 from vitals.models.supplements import Supplement  # noqa: E402
-from vitals.services import labs_service  # noqa: E402
+from vitals.services.labs import markers as lab_markers  # noqa: E402
 from vitals.models.weight import WeightLog  # noqa: E402
 from vitals.services.credentials import providers  # noqa: E402
 from vitals.services.authentication import (  # noqa: E402
@@ -280,7 +280,7 @@ async def _seed_record(session: AsyncSession, subject_id, *, seed: int) -> None:
                     domain=Domain.LABS.value,
                     source=Source.MANUAL.value,
                     date=TODAY - timedelta(days=days_ago),
-                    marker=labs_service.normalize_marker(marker),
+                    marker=lab_markers.normalize_marker(marker),
                     value=reading,
                     unit=unit,
                     ref_low=low,

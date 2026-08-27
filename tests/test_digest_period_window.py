@@ -7,6 +7,9 @@ narrative then quoted as the report's sample size ("43 days of history").
 """
 from __future__ import annotations
 
+from vitals.services.digest.projection import assembly as digest_projection
+from vitals.services.digest import window as digest_window
+
 from datetime import date, timedelta
 
 import pytest
@@ -15,7 +18,6 @@ import pytest
 from vitals.enums import Source
 from vitals.models.garmin import GarminDaily
 from vitals.models.hevy import HevyWorkout
-from vitals.services import digest_service
 
 # A Tuesday, like the day the complaint came from.
 DAY = date(2026, 8, 4)
@@ -30,7 +32,7 @@ def _now_is_the_morning_after(monkeypatch):
     Without it these tests read differently depending on the date they are run:
     the window ends yesterday whenever the report is generated today.
     """
-    monkeypatch.setattr(digest_service, "today_local", lambda: DAY + timedelta(days=1))
+    monkeypatch.setattr(digest_window, "today_local", lambda: DAY + timedelta(days=1))
 
 
 def _workout(external_id: str, on_date: date, title: str, *, hevy_connection_id, legacy_owner_roots) -> HevyWorkout:
@@ -53,7 +55,7 @@ async def test_sessions_before_the_window_are_visible_but_not_counted(hevy_conne
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
     hevy = ctx["hevy"]
@@ -84,7 +86,7 @@ async def test_recovery_covers_the_period_not_just_the_latest_day(db_session, le
         )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
 
@@ -120,7 +122,7 @@ async def test_period_is_handed_the_period_before_it_to_compare_against(hevy_con
     )
     await db_session.commit()
 
-    stats = (await digest_service.assemble_context(
+    stats = (await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         on_date=DAY, period_days=7
@@ -141,7 +143,7 @@ async def test_the_window_holds_only_days_that_are_over(db_session, monkeypatch,
     seventh day of the window and read its missing log as a day its owner had
     skipped — while he was still awake on it. The window ends yesterday and holds
     seven closed days instead."""
-    monkeypatch.setattr(digest_service, "today_local", lambda: DAY)  # report run on DAY
+    monkeypatch.setattr(digest_window, "today_local", lambda: DAY)  # report run on DAY
 
     # Garmin has written today's row, but the watch has scored nothing on it yet.
     db_session.add(
@@ -159,7 +161,7 @@ async def test_the_window_holds_only_days_that_are_over(db_session, monkeypatch,
         )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
     meta, current = ctx["report_meta"], ctx["period_stats"]["current"]
@@ -174,9 +176,9 @@ async def test_the_window_holds_only_days_that_are_over(db_session, monkeypatch,
 
 async def test_a_past_period_ends_on_its_own_date(db_session, monkeypatch, legacy_owner_roots):
     """Regenerate an old digest and nothing shifts: every day in it is long over."""
-    monkeypatch.setattr(digest_service, "today_local", lambda: DAY + timedelta(days=30))
+    monkeypatch.setattr(digest_window, "today_local", lambda: DAY + timedelta(days=30))
 
-    meta = (await digest_service.assemble_context(
+    meta = (await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         on_date=DAY, period_days=7
@@ -200,7 +202,7 @@ async def test_training_cadence_survives_the_window_edge(hevy_connection_id, db_
     )
     await db_session.commit()
 
-    hevy = (await digest_service.assemble_context(
+    hevy = (await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         on_date=DAY, period_days=7
@@ -213,10 +215,10 @@ async def test_training_cadence_survives_the_window_edge(hevy_connection_id, db_
 async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session, legacy_owner_roots, owner_write):
     """A marker sliding 120 → 95 → 80 never trips a flag, so out_of_range never
     sees it — and a table of current values shows one green number."""
-    from vitals.services import labs_service
+    import vitals.services.labs.results as lab_results
 
     for offset, value in ((120, 120.0), (60, 95.0), (10, 80.0)):
-        await labs_service.add_result(
+        await lab_results.add_result(
             db_session,
             on_date=DAY - timedelta(days=offset),
             marker="Ферритин",
@@ -228,7 +230,7 @@ async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session, le
             prepared_conflict_write=await owner_write.write(DAY - timedelta(days=offset)),
         )
     # One-off marker: no trajectory, nothing to say, stays out.
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY,
         marker="Кальций общий",
@@ -241,7 +243,7 @@ async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session, le
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
 
@@ -267,12 +269,12 @@ async def test_brief_context_stays_a_single_day(db_session, legacy_owner_roots, 
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         on_date=DAY,
         period_days=1,
-        mode=digest_service.REPORT_MODE_BRIEF,
+        mode=digest_window.REPORT_MODE_BRIEF,
     )
     assert "days" not in ctx["garmin"]
     assert "period_stats" not in ctx

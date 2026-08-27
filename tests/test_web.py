@@ -1,6 +1,10 @@
 """Integration tests for the Vitals FastAPI web panel and router endpoints."""
 from __future__ import annotations
 
+from vitals.services.alerts import legacy as alerts_service_legacy
+
+from vitals.services.skincare import writes as skincare_writes
+
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -15,7 +19,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import FileAsset
 from vitals.models.weight import WeightLog
-from vitals.services import weight_service
+from vitals.services import weight as weight_domain
 from vitals.services.conflicts import engine
 from vitals.services.modules_service import SETTINGS_KEY
 from vitals.persistence.file_storage import private_file_disk_path
@@ -55,9 +59,9 @@ async def test_web_mode_health_uses_worker_manifest_and_generation(
         publish_worker_manifest,
         request_schedule_reload,
     )
-    from web import main as web_main
+    from web import system_routes
 
-    monkeypatch.setattr(web_main, "load_process_mode", lambda: ProcessMode.WEB)
+    monkeypatch.setattr(system_routes, "load_process_mode", lambda: ProcessMode.WEB)
     generation = await request_schedule_reload(redis)
     await publish_worker_manifest(
         redis,
@@ -311,7 +315,7 @@ async def test_conflict_engine_override_flow(auth_client, db_session):
     """Test conflict blocks trigger HTTP 409, and overrides save correctly."""
     engine.register_domain_resolver(
         "weight",
-        weight_service.resolve_active_scoped,
+        weight_domain.queries.resolve_active_scoped,
     )
     # Seed a conflict rule
     rule = ConflictRule(
@@ -376,9 +380,9 @@ async def test_csp_headers_and_no_cdn_references(client):
 
 async def test_delete_weight_entry(auth_client, db_session, owner_write):
     from datetime import date
-    from vitals.services import weight_service
+    from vitals.services import weight as weight_domain
     # Seed a weight log
-    w = await weight_service.log_weight(
+    w = await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 6, 12),
         weight_kg=85.0,
@@ -557,9 +561,9 @@ async def test_genetics_save_dedupes_by_rsid(auth_client, db_session):
 
 async def test_edit_weight_entry(auth_client, db_session, owner_write):
     from datetime import date
-    from vitals.services import weight_service
+    from vitals.services import weight as weight_domain
     # Seed a weight log
-    w = await weight_service.log_weight(
+    w = await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 6, 12),
         weight_kg=85.0,
@@ -585,9 +589,9 @@ async def test_edit_measurement_blank_field_clears_it(auth_client, db_session, o
     delete the value. FastAPI turns a blank number input into None, which the
     service's partial merge used to read as "not passed" and silently restore."""
     from datetime import date
-    from vitals.services import weight_service
+    from vitals.services import weight as weight_domain
 
-    m = await weight_service.upsert_body_measurement(
+    m = await weight_domain.measurements.upsert_body_measurement(
         db_session,
         on_date=date(2026, 6, 13),
         neck_cm=39.0,
@@ -687,7 +691,7 @@ async def test_hevy_sync_not_configured_redirects(auth_client):
 
 async def test_hevy_dashboard_shows_synced_workout(auth_client, db_session, *, hevy_owned_scope):
     """A synced workout appears on the dashboard and its exercise in the catalog."""
-    from vitals.services import hevy_service
+    from vitals.services.hevy import sync as hevy_sync
 
     class _FakeClient:
         is_configured = True
@@ -711,7 +715,7 @@ async def test_hevy_dashboard_shows_synced_workout(auth_client, db_session, *, h
                 }
             ]
 
-    await hevy_service.sync_owned(db_session, _FakeClient(), identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
+    await hevy_sync.sync_owned(db_session, _FakeClient(), identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     await db_session.commit()
 
     response = await auth_client.get("/hevy", headers={"Accept": "text/html"})
@@ -1063,12 +1067,13 @@ async def test_delete_controls_render_for_labs_skincare_and_hrt(auth_client, db_
     result, a diary entry, an observation and a whole cycle could only be removed
     through the API. Also covers the diary/observation lists themselves, which the
     skincare page never rendered."""
-    from vitals.services import labs_service, skincare_service
+
+    from vitals.services.labs import results as lab_results
     from vitals.services.hrt import cycles
     from vitals.utils.timeutils import today_local
 
     day = today_local()
-    result = await labs_service.add_result(
+    result = await lab_results.add_result(
         db_session,
         on_date=day,
         marker="TSH",
@@ -1078,11 +1083,11 @@ async def test_delete_controls_render_for_labs_skincare_and_hrt(auth_client, db_
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(day),
     )
-    log = await skincare_service.upsert_log(db_session, on_date=day, retinoid=True,
+    log = await skincare_writes.upsert_log(db_session, on_date=day, retinoid=True,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(day),
     )
-    obs = await skincare_service.add_observation(
+    obs = await skincare_writes.add_observation(
         db_session, on_date=day, inflammation=3, zone="cheeks",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(day),
@@ -1120,6 +1125,42 @@ async def test_labs_manual_add_and_flag(auth_client, db_session):
     row = (await db_session.execute(select(LabResult))).scalar_one_or_none()
     assert row is not None
     assert row.marker == "TSH" and row.flag == "high"
+
+
+async def test_labs_defer_and_delete_routes_keep_the_subject_scope(
+    auth_client,
+    db_session,
+    owner_write,
+):
+    from datetime import date
+
+    from vitals.models.labs import LabMarker
+    from vitals.services.labs import results as lab_results
+
+    result = await lab_results.add_result(
+        db_session,
+        on_date=date(2026, 6, 10),
+        marker="TSH",
+        value=5.5,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(date(2026, 6, 10)),
+    )
+    await db_session.commit()
+
+    response = await auth_client.post(
+        "/labs/marker/TSH/defer",
+        data={"until": "2026-07-01", "note": "repeat after appointment"},
+    )
+    assert response.status_code == 303
+    marker = await db_session.scalar(
+        select(LabMarker).where(LabMarker.subject_id == owner_write.identity.subject_id)
+    )
+    assert marker is not None
+    assert marker.defer_until == date(2026, 7, 1)
+
+    response = await auth_client.post(f"/labs/result/{result.id}/delete")
+    assert response.status_code == 303
+    assert await db_session.get(LabResult, result.id) is None
 
 
 async def test_labs_manual_add_with_a_cyrillic_marker_over_fetch(auth_client, db_session):
@@ -1195,14 +1236,14 @@ async def test_labs_upload_extraction_failure_returns_error_json(
     """A file that fails vision extraction surfaces ok:false/reason:error in the
     JSON response (the original failure-signalling intent, now at single-file
     granularity — multi-file batching moved into a client-side queue)."""
-    from vitals.services import labs_service
+    from vitals.services.labs import ingestion as lab_ingestion
 
     async def fake_extract(
         contents, *, llm, content_type, filename=None, model, max_tokens
     ):
         raise ValueError("could not parse")
 
-    monkeypatch.setattr(labs_service, "extract_from_file_with_usage", fake_extract)
+    monkeypatch.setattr(lab_ingestion, "extract_from_file_with_usage", fake_extract)
 
     r = await auth_client.post(
         "/labs/upload",
@@ -1218,14 +1259,14 @@ async def test_failed_extraction_keeps_auditable_raw_and_file(
     auth_client, db_session, monkeypatch, platform_ai_ready, _private_file_test_root
 ):
     """A paid/ambiguous parse keeps its raw-first document graph for audit."""
-    from vitals.services import labs_service
+    from vitals.services.labs import ingestion as lab_ingestion
 
     async def fake_extract(
         contents, *, llm, content_type, filename=None, model, max_tokens
     ):
         raise ValueError("could not parse")
 
-    monkeypatch.setattr(labs_service, "extract_from_file_with_usage", fake_extract)
+    monkeypatch.setattr(lab_ingestion, "extract_from_file_with_usage", fake_extract)
 
     r = await auth_client.post(
         "/labs/upload",
@@ -1248,7 +1289,7 @@ async def test_labs_upload_returns_preview_without_persisting_results(
     """Regression: /labs/upload must extract and return an editable preview
     without writing any LabResult — the whole point of the preview step is that
     a misread value never reaches the DB until the owner confirms it."""
-    from vitals.services import labs_service
+    from vitals.services.labs import ingestion as lab_ingestion
 
     payload = {
         "date": "2026-06-10",
@@ -1268,7 +1309,7 @@ async def test_labs_upload_returns_preview_without_persisting_results(
             cost_microunits=1,
         )
 
-    monkeypatch.setattr(labs_service, "extract_from_file_with_usage", fake_extract)
+    monkeypatch.setattr(lab_ingestion, "extract_from_file_with_usage", fake_extract)
 
     r = await auth_client.post(
         "/labs/upload",
@@ -1296,7 +1337,7 @@ async def test_labs_confirm_persists_edited_markers(
 ):
     """Regression: /labs/confirm must save the owner's edits, not the raw OCR
     values — proves the edit-before-save step actually takes effect."""
-    from vitals.services import labs_service
+    from vitals.services.labs import ingestion as lab_ingestion
 
     payload = {
         "date": "2026-06-10",
@@ -1316,7 +1357,7 @@ async def test_labs_confirm_persists_edited_markers(
             cost_microunits=1,
         )
 
-    monkeypatch.setattr(labs_service, "extract_from_file_with_usage", fake_extract)
+    monkeypatch.setattr(lab_ingestion, "extract_from_file_with_usage", fake_extract)
 
     upload_r = await auth_client.post(
         "/labs/upload",
@@ -1500,7 +1541,6 @@ async def test_alerts_with_same_text_are_distinct_and_resolve_all(
     unrelated alert in another domain that read the same). resolve-all still
     clears everything."""
     from vitals.models.system_alert import SystemAlert
-    from vitals.services import alerts_service
 
     # alert1 and alert2 are DIFFERENT alerts (different entity_ref = different lab
     # markers/rows); their message text differs only by ё/о + case. They must
@@ -1542,7 +1582,7 @@ async def test_alerts_with_same_text_are_distinct_and_resolve_all(
 
     # 1. list_active returns every distinct (key, entity) — all three labs alerts,
     #    including the two that share normalized text.
-    active_labs = await alerts_service.list_active(db_session, domain="labs", subject_id=legacy_owner_roots.subject_id)
+    active_labs = await alerts_service_legacy.list_active(db_session, domain="labs", subject_id=legacy_owner_roots.subject_id)
     assert len(active_labs) == 3
     assert {a.entity_ref for a in active_labs} == {"marker_1", "marker_2", "marker_3"}
 

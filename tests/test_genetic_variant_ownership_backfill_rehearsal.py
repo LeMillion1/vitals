@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from vitals.services.genetics import queries as genetics_queries
+from vitals.services.genetics import writes as genetics_writes
+
 import asyncio
 import hashlib
 import json
@@ -26,12 +29,11 @@ import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.ownership import WriteIdentity
 from vitals.operations.ownership import portability_v1
-from vitals.services import data_portability_service
+from vitals.services.portability import v1_export
 from vitals.services.conflicts import catalog as conflict_catalog
 from vitals.services.conflicts import engine as conflict_engine
 from vitals.services.conflicts import registrations
 from vitals.services.hrt import catalog
-from vitals.services.genetics import variants
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,
 )
@@ -79,12 +81,8 @@ VARIANT_IDS = (55_201, 55_202)
 VARIANT_DATES = (date(2026, 8, 19), date(2026, 8, 20))
 LIVE_DATE = date(2026, 8, 21)
 PRIVATE_SENTINEL = "synthetic-private-stage3n-gene-rsid-interpretation"
-DOWNGRADE_REFUSAL = (
-    "0045 downgrade refused: ownership backfill checkpoints contain durable state"
-)
-PASSWORD_HASH = (
-    "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
-)
+DOWNGRADE_REFUSAL = "0045 downgrade refused: ownership backfill checkpoints contain durable state"
+PASSWORD_HASH = "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
 AGGREGATE_CLI_KEYS = {
     "batch_scanned_rows",
     "batch_size",
@@ -143,9 +141,7 @@ def _digest(rows: list[dict[str, Any]]) -> str:
 
 def _reflect(connection: sa.Connection, names: tuple[str, ...]) -> dict[str, sa.Table]:
     metadata = sa.MetaData()
-    return {
-        name: sa.Table(name, metadata, autoload_with=connection) for name in names
-    }
+    return {name: sa.Table(name, metadata, autoload_with=connection) for name in names}
 
 
 def _seed_revision_0034(connection: sa.Connection) -> None:
@@ -211,10 +207,7 @@ def _seed_revision_0034(connection: sa.Connection) -> None:
         ("genetic_variants", max(VARIANT_IDS)),
     ):
         connection.execute(
-            sa.text(
-                f"SELECT setval(pg_get_serial_sequence('{table_name}', 'id'), "
-                ":value, true)"
-            ),
+            sa.text(f"SELECT setval(pg_get_serial_sequence('{table_name}', 'id'), :value, true)"),
             {"value": value},
         )
 
@@ -224,9 +217,7 @@ def _link_vcf_batch(connection: sa.Connection) -> None:
 
     table = _reflect(connection, ("genetic_variants",))["genetic_variants"]
     connection.execute(
-        table.update()
-        .where(table.c.id == VARIANT_IDS[0])
-        .values(raw_payload_id=RAW_ID)
+        table.update().where(table.c.id == VARIANT_IDS[0]).values(raw_payload_id=RAW_ID)
     )
 
 
@@ -377,7 +368,7 @@ async def _phase_statuses(engine: AsyncEngine, phase: str) -> tuple[str, ...]:
 async def _round_trip_portability_v1(engine: AsyncEngine) -> None:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
-        snapshot = await data_portability_service.export_full(session)
+        snapshot = await v1_export.export_full(session)
         await portability_v1.import_full(session, snapshot)
         await session.commit()
 
@@ -398,9 +389,7 @@ async def _replace_with_empty_portability_v1(engine: AsyncEngine) -> None:
 
 async def _alembic_version(engine: AsyncEngine) -> str:
     async with engine.connect() as connection:
-        return str(
-            await connection.scalar(sa.text("SELECT version_num FROM alembic_version"))
-        )
+        return str(await connection.scalar(sa.text("SELECT version_num FROM alembic_version")))
 
 
 @pytest.mark.integration
@@ -480,7 +469,6 @@ async def test_real_postgres_0034_genetic_variant_stop_resume_volatility_and_res
                 PROGRESS_PHOTO_OWNERSHIP_BACKFILL_PHASE,
                 AGGREGATE_CLI_KEYS,
             ),
-
             (
                 "backfill_shared_report_subject_ownership.py",
                 ["--apply", "--batch-size", "1000", "--max-batches", "10"],
@@ -578,7 +566,7 @@ async def test_real_postgres_0034_genetic_variant_stop_resume_volatility_and_res
             # Migrated history keeps its unknown actor null, which the genetics
             # reader still reaches through the legacy compatibility bridge; its
             # retirement is a separate later gate.
-            listed = await variants.list_variants(
+            listed = await genetics_queries.list_variants(
                 session,
                 subject_id=identity.subject_id,
             )
@@ -609,7 +597,7 @@ async def test_real_postgres_0034_genetic_variant_stop_resume_volatility_and_res
                     legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
                 ),
             )
-            live = await variants.add_variant(
+            live = await genetics_writes.add_variant(
                 session,
                 gene="SYNTHETIC",
                 rsid="rs-synthetic-live",
@@ -685,5 +673,7 @@ async def test_real_postgres_0034_genetic_variant_stop_resume_volatility_and_res
         assert await _checkpoint_states(engine) == final_checkpoint
     finally:
         if migration_control_ready:
-            await asyncio.to_thread(command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION)
+            await asyncio.to_thread(
+                command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION
+            )
         await engine.dispose()

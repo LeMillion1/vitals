@@ -9,11 +9,14 @@
 Same import-skip guard as the other MCP tool tests."""
 from __future__ import annotations
 
+from vitals.services.supplements import writes as supplement_writes
+
 import pytest
 
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import supplements_service, weight_service
+from vitals.services import weight as weight_domain
 from vitals.services.conflicts import registrations
+from vitals.services.projections.data_overview import project_data_overview
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
@@ -52,7 +55,7 @@ async def _seed_meal_block(db_session, owner_write):
             active=True,
         )
     )
-    await supplements_service.add_supplement(db_session, name="Iron", key="iron", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+    await supplement_writes.add_supplement(db_session, name="Iron", key="iron", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
 
@@ -88,7 +91,7 @@ async def test_get_full_snapshot_returns_cross_domain_context(db_session, sessio
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     from datetime import date
 
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 7, 1),
         weight_kg=90.0,
@@ -121,7 +124,7 @@ async def test_export_everything_includes_history(db_session, session_factory, m
 
     from vitals.utils.timeutils import today_local
 
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=today_local() - timedelta(days=3),
         weight_kg=88.5,
@@ -149,14 +152,14 @@ async def test_export_everything_defaults_to_the_last_90_days(
 
     recent = today_local() - timedelta(days=10)
     ancient = today_local() - timedelta(days=400)
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=recent,
         weight_kg=88.5,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(recent),
     )
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=ancient,
         weight_kg=110.0,
@@ -181,7 +184,7 @@ async def test_export_everything_narrows_to_named_domains(
 
     from vitals.utils.timeutils import today_local
 
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=today_local() - timedelta(days=1),
         weight_kg=88.5,
@@ -204,14 +207,14 @@ async def test_get_data_overview_reports_counts_and_range(db_session, session_fa
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     from datetime import date
 
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 6, 1),
         weight_kg=91.0,
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(date(2026, 6, 1)),
     )
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 6, 10),
         weight_kg=90.0,
@@ -289,6 +292,10 @@ async def test_get_data_overview_count_only_domains_do_not_count_another_record(
     await db_session.commit()
 
     overview = await mcp_router.get_data_overview()
+    projected = await project_data_overview(
+        db_session,
+        subject_id=owner_subject_id,
+    )
 
     assert {
         name: overview[name]["count"]
@@ -299,6 +306,7 @@ async def test_get_data_overview_count_only_domains_do_not_count_another_record(
         "milestones": 1,
         "dose_phases": 1,
     }
+    assert projected == overview
 
 
 # ── get_garmin_metrics: intraday series ───────────────────────────────────────

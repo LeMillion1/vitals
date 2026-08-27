@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from vitals.services.nutrition import conflicts as nutrition_conflicts
+from vitals.services.nutrition import jobs as nutrition_jobs
+from vitals.services.nutrition import writes as nutrition_writes
+
 from tests.job_runner import run_job_for_every_subject
 
 import asyncio
@@ -18,7 +22,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.nutrition import MealLog
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import nutrition_service
+
 from vitals.services.conflicts import engine
 
 
@@ -90,7 +94,7 @@ def _register_resolvers() -> None:
     engine.register_domain_resolver(Domain.LABS.value, labs)
     engine.register_domain_resolver(
         Domain.NUTRITION.value,
-        nutrition_service.resolve_today_scoped,
+        nutrition_conflicts.resolve_today_scoped,
     )
 
 
@@ -104,7 +108,7 @@ async def _owned_meal(
     source: str = Source.MANUAL.value,
 ) -> MealLog:
     context = _context(legacy_owner_roots, on_date=on_date)
-    return await nutrition_service.log_meal(
+    return await nutrition_writes.log_meal(
         db_session,
         on_date=on_date,
         name=name,
@@ -130,7 +134,7 @@ async def test_create_evaluates_post_write_daily_aggregate(
     context = _context(legacy_owner_roots)
 
     with pytest.raises(engine.ConflictBlocked):
-        await nutrition_service.log_meal(
+        await nutrition_writes.log_meal(
             db_session,
             on_date=EVALUATION_DATE,
             name="would cross the threshold",
@@ -160,7 +164,7 @@ async def test_create_evaluates_per_meal_name_rule(
     context = _context(legacy_owner_roots)
 
     with pytest.raises(engine.ConflictBlocked):
-        await nutrition_service.log_meal(
+        await nutrition_writes.log_meal(
             db_session,
             on_date=EVALUATION_DATE,
             name="steak",
@@ -188,7 +192,7 @@ async def test_same_day_update_replaces_old_daily_total_without_double_counting(
     await db_session.commit()
     context = _context(legacy_owner_roots)
 
-    result = await nutrition_service.update_meal(
+    result = await nutrition_writes.update_meal(
         db_session,
         row.id,
         on_date=EVALUATION_DATE,
@@ -226,7 +230,7 @@ async def test_move_date_evaluates_the_destination_day_and_is_write_free_on_bloc
     context = _context(legacy_owner_roots)
 
     with pytest.raises(engine.ConflictBlocked):
-        await nutrition_service.update_meal(
+        await nutrition_writes.update_meal(
             db_session,
             moving.id,
             on_date=EVALUATION_DATE,
@@ -251,7 +255,7 @@ async def test_prepared_date_mismatch_is_rejected_before_any_write(
     context = _context(legacy_owner_roots, on_date=OTHER_DATE)
 
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await nutrition_service.log_meal(
+        await nutrition_writes.log_meal(
             db_session,
             on_date=EVALUATION_DATE,
             name="wrong day",
@@ -281,7 +285,7 @@ async def test_block_is_write_free_and_override_stamps_subject_actor_and_alert(
     prepared = await _prepared(db_session, context)
 
     with pytest.raises(engine.ConflictBlocked):
-        await nutrition_service.log_meal(
+        await nutrition_writes.log_meal(
             db_session,
             on_date=EVALUATION_DATE,
             name="steak",
@@ -291,7 +295,7 @@ async def test_block_is_write_free_and_override_stamps_subject_actor_and_alert(
     assert await db_session.scalar(select(func.count()).select_from(MealLog)) == 0
     assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == 0
 
-    row = await nutrition_service.log_meal(
+    row = await nutrition_writes.log_meal(
         db_session,
         on_date=EVALUATION_DATE,
         name="steak",
@@ -335,7 +339,7 @@ async def test_update_refreshes_stale_locked_row_before_daily_delta(
     assert row.calories == 100
     context = _context(legacy_owner_roots)
 
-    result = await nutrition_service.update_meal(
+    result = await nutrition_writes.update_meal(
         db_session,
         row.id,
         on_date=EVALUATION_DATE,
@@ -391,7 +395,7 @@ async def test_foreign_partial_and_legacy_roots_obey_bridge_contract(
     db_session.add_all([foreign, partial, legacy])
     await db_session.commit()
     exact_context = _context(legacy_owner_roots)
-    assert await nutrition_service.update_meal(
+    assert await nutrition_writes.update_meal(
         db_session,
         foreign.id,
         on_date=EVALUATION_DATE,
@@ -416,7 +420,7 @@ async def test_foreign_partial_and_legacy_roots_obey_bridge_contract(
     # Nutrition is closed: adoption on write is gone, so a row belonging to
     # nobody is simply out of scope rather than claimable, and a partial row
     # with an actor and no subject stays exactly as unreachable as it was.
-    assert await nutrition_service.update_meal(
+    assert await nutrition_writes.update_meal(
         db_session,
         partial.id,
         on_date=EVALUATION_DATE,
@@ -426,7 +430,7 @@ async def test_foreign_partial_and_legacy_roots_obey_bridge_contract(
     ) is None
     assert partial.name == "partial"
 
-    assert await nutrition_service.update_meal(
+    assert await nutrition_writes.update_meal(
         db_session,
         legacy.id,
         on_date=EVALUATION_DATE,
@@ -447,7 +451,7 @@ async def test_prepared_mismatch_and_committed_capability_are_rejected(
     mismatched = WriteIdentity(context.identity.subject_id, uuid.uuid4())
 
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await nutrition_service.log_meal(
+        await nutrition_writes.log_meal(
             db_session,
             on_date=EVALUATION_DATE,
             name="mismatch",
@@ -456,7 +460,7 @@ async def test_prepared_mismatch_and_committed_capability_are_rejected(
         )
     await db_session.commit()
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await nutrition_service.log_meal(
+        await nutrition_writes.log_meal(
             db_session,
             on_date=EVALUATION_DATE,
             name="committed token",
@@ -492,7 +496,7 @@ async def test_day_end_job_uses_system_actor_and_exact_subject_date(
         calories=2000,
     )
     await db_session.commit()
-    monkeypatch.setattr(nutrition_service, "today_local", lambda: EVALUATION_DATE)
+    monkeypatch.setattr(nutrition_jobs, "today_local", lambda: EVALUATION_DATE)
     original = engine.resolve_subject_conflict_write_context
     captured = {}
 
@@ -513,7 +517,7 @@ async def test_day_end_job_uses_system_actor_and_exact_subject_date(
         capture_context,
     )
 
-    await run_job_for_every_subject(nutrition_service.day_end_job, session_factory)
+    await run_job_for_every_subject(nutrition_jobs.day_end_job, session_factory)
 
     alert = await db_session.scalar(
         select(SystemAlert).where(SystemAlert.alert_key == f"conflict:{rule.id}")
@@ -770,7 +774,7 @@ async def test_postgres_same_subject_concurrent_creates_serialize_daily_threshol
                 context=context,
             )
             try:
-                await nutrition_service.log_meal(
+                await nutrition_writes.log_meal(
                     session,
                     on_date=EVALUATION_DATE,
                     name=name,

@@ -3,6 +3,8 @@ Optional module, since it exists specifically to overlay metrics *across*
 domains)."""
 from __future__ import annotations
 
+from vitals.services.timeline import annotations as timeline_annotations
+
 import logging
 
 from fastapi import APIRouter, Depends, Form, Request, status
@@ -81,7 +83,7 @@ async def _overlays_by_chart(
 ) -> dict[str, list[dict]]:
     """Manual Timeline flags for each saved chart — the union of its series'
     domains, deduped (a global flag would otherwise repeat once per domain)."""
-    from vitals.services import timeline_service
+
 
     result: dict[str, list[dict]] = {}
     for c in charts:
@@ -89,7 +91,7 @@ async def _overlays_by_chart(
         seen: set[tuple] = set()
         merged: list[dict] = []
         for d in domains:
-            for o in await timeline_service.overlays_for(
+            for o in await timeline_annotations.overlays_for(
                 db,
                 subject_id=subject_id,
                 domain=d,

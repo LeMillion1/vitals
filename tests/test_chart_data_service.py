@@ -10,8 +10,11 @@ from vitals.models.garmin import GarminDaily
 from vitals.models.glp1 import Injection, SideEffect
 from vitals.models.nutrition import MealLog
 from vitals.models.weight import WeightLog
-from vitals.services import chart_data_service, hevy_service, labs_service
-from vitals.services.body_scan import scans
+import vitals.services.labs.results as lab_results
+from vitals.services import chart_data_service
+from vitals.services.body_scan.scans import ingestion as body_scan_ingestion
+from vitals.services.hevy import queries as hevy_queries
+from vitals.services.hevy import sync as hevy_sync
 from vitals.services.modules_service import MODULE_REGISTRY
 
 
@@ -98,7 +101,7 @@ async def test_series_for_labs_marker_requires_param(db_session, owned_by_legacy
 
 
 async def test_series_for_labs_marker_matches_marker_history(db_session, owned_by_legacy_subject, owner_write):
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY1,
         marker="TSH",
@@ -107,7 +110,7 @@ async def test_series_for_labs_marker_matches_marker_history(db_session, owned_b
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(DAY1),
     )
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY2,
         marker="TSH",
@@ -119,7 +122,7 @@ async def test_series_for_labs_marker_matches_marker_history(db_session, owned_b
     await db_session.commit()
 
     points = await chart_data_service.series_for(db_session, subject_id=owned_by_legacy_subject.subject_id, metric_key="labs.marker", param="TSH")
-    expected = await labs_service.marker_history(
+    expected = await lab_results.marker_history(
         db_session, "TSH", subject_id=owned_by_legacy_subject.subject_id
     )
     assert points == [{"date": r["date"], "value": r["value"]} for r in expected]
@@ -144,11 +147,11 @@ async def test_series_for_hevy_exercise_matches_working_weight_series(db_session
                 }],
             }]
 
-    await hevy_service.sync_owned(db_session, FakeHevyClient(), identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
+    await hevy_sync.sync_owned(db_session, FakeHevyClient(), identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     await db_session.commit()
 
     points = await chart_data_service.series_for(db_session, subject_id=owned_by_legacy_subject.subject_id, metric_key="hevy.working_weight", param="BENCH")
-    expected = await hevy_service.working_weight_series(
+    expected = await hevy_queries.working_weight_series(
         db_session, "BENCH", subject_id=owned_by_legacy_subject.subject_id
     )
     assert points == [{"date": r["date"], "value": r["weight_kg"]} for r in expected]
@@ -157,7 +160,7 @@ async def test_series_for_hevy_exercise_matches_working_weight_series(db_session
 async def test_series_for_body_scan_metric_whole_body(
     db_session, owned_by_legacy_subject, owner_write
 ):
-    await scans.save_scan(
+    await body_scan_ingestion.save_scan(
         db_session, on_date=DAY1, device="InBody",
         metrics=[{"label": "Процент жира", "value": 18.5, "unit": "%"}],
         source="manual",
@@ -173,7 +176,7 @@ async def test_series_for_body_scan_metric_whole_body(
 async def test_series_for_body_scan_metric_segmental(
     db_session, owned_by_legacy_subject, owner_write
 ):
-    await scans.save_scan(
+    await body_scan_ingestion.save_scan(
         db_session, on_date=DAY1, device="InBody",
         metrics=[{"label": "Мышцы", "value": 3.2, "unit": "кг", "segment": "trunk"}],
         source="manual",
@@ -200,7 +203,7 @@ async def test_build_catalog_omits_disabled_optional_domain(db_session, owned_by
 
 
 async def test_build_catalog_includes_enabled_optional_domain_with_params(db_session, owned_by_legacy_subject, owner_write):
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY1,
         marker="TSH",
@@ -257,7 +260,7 @@ async def test_resolve_chart_series_skips_unknown_metric_key(db_session, owned_b
 
 
 async def test_resolve_chart_series_labs_marker_unit_from_catalog(db_session, owned_by_legacy_subject, owner_write):
-    await labs_service.add_result(
+    await lab_results.add_result(
         db_session,
         on_date=DAY1,
         marker="TSH",

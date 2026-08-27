@@ -25,11 +25,14 @@ from vitals.models.identity import (
 )
 from vitals.services.authentication.federation import (
     BootstrapRefused,
+    FederatedSessionDecision,
     FederatedLoginError,
     InactiveAccount,
     UnknownFederatedIdentity,
+    decide_federated_login,
     resolve_federated_user,
 )
+from vitals.services.authentication.oidc import FederatedIdentity
 
 ISSUER = "https://idp.example.test"
 OWNER_SUBJECT = "provider-subject-owner"
@@ -67,6 +70,18 @@ async def _bootstrap_owner_graph(
         )
     await db_session.flush()
     return owner
+
+
+def _identity(subject: str) -> FederatedIdentity:
+    return FederatedIdentity(
+        issuer=ISSUER,
+        subject=subject,
+        authenticated_at=datetime(2026, 8, 23, 9, 0, tzinfo=timezone.utc),
+        acr=None,
+        amr=("pwd",),
+        email=None,
+        email_verified=False,
+    )
 
 
 # ── The closed door ──────────────────────────────────────────────────────────
@@ -178,6 +193,52 @@ async def test_a_linked_identity_resolves_to_its_user(db_session):
     if stored.tzinfo is None:
         stored = stored.replace(tzinfo=timezone.utc)
     assert stored == when
+
+
+async def test_login_decision_projects_a_linked_user_and_owned_subject(db_session):
+    owner = await _bootstrap_owner_graph(db_session)
+    db_session.add(
+        UserFederatedIdentity(
+            user_id=owner.id,
+            issuer=ISSUER,
+            subject=OWNER_SUBJECT,
+        )
+    )
+    await db_session.flush()
+
+    decision = await decide_federated_login(
+        db_session,
+        identity=_identity(OWNER_SUBJECT),
+        bootstrap_subject="",
+        invitation_id=None,
+        step_up=False,
+    )
+
+    assert isinstance(decision, FederatedSessionDecision)
+    assert decision.user_id == owner.id
+    assert decision.username == owner.username
+    assert decision.subject_id is not None
+    assert decision.authenticated_at == _identity(OWNER_SUBJECT).authenticated_at
+
+
+async def test_step_up_unknown_identity_never_becomes_an_admission_request(db_session):
+    from sqlalchemy import func, select
+
+    from vitals.models.registration import RegistrationRequest
+
+    await _user(db_session, "owner")
+    with pytest.raises(UnknownFederatedIdentity):
+        await decide_federated_login(
+            db_session,
+            identity=_identity("switched-provider-account"),
+            bootstrap_subject="",
+            invitation_id=None,
+            step_up=True,
+        )
+
+    assert await db_session.scalar(
+        select(func.count()).select_from(RegistrationRequest)
+    ) == 0
 
 
 async def test_a_verified_provider_email_becomes_the_current_invitation_proof(

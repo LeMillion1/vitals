@@ -8,6 +8,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
 from vitals.i18n import t, decimal, get_js_strings, plural
+from vitals.services.supplements.parsing import timing_bucket
 from vitals.services.modules_service import (
     MODULE_REGISTRY,
     NAV_RUBRICS,
@@ -16,7 +17,7 @@ from vitals.services.modules_service import (
     more_routes,
     nav_modules,
 )
-from vitals.services.supplements_service import timing_bucket
+
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")

@@ -29,18 +29,17 @@ import uuid
 from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.access import AccessContext, PolicyAction, PolicyResourceType, is_allowed
-from vitals.enums import CareRelationshipStatus, ProfessionalKind
-from vitals.models.identity import HealthSubject, User
-from vitals.models.professional import CareRelationship
+from vitals.enums import ProfessionalKind
 from vitals.persistence.rls import bind_session_subject
 from vitals.services.access_resolution import (
     AccessResolutionError,
     resolve_access_context,
 )
+from vitals.services import identity_service
+from vitals.services.care import workspace as care_workspace
 from web.config import SESSION_COOKIE
 from web.deps import get_session, require_auth
 
@@ -124,7 +123,7 @@ async def principal_user_id(request: Request, session: AsyncSession) -> uuid.UUI
     a name is an identity.
     """
 
-    from web.auth import decode_session
+    from web.authentication.tokens import decode_session
 
     claims = decode_session(request.cookies.get(SESSION_COOKIE))
     if claims is None:
@@ -132,11 +131,9 @@ async def principal_user_id(request: Request, session: AsyncSession) -> uuid.UUI
     if claims.user_id is not None:
         return claims.user_id
 
-    from vitals.services.identity_service import normalize_username
-
-    normalized = normalize_username(claims.username)
-    user_id = await session.scalar(
-        select(User.id).where(User.normalized_username == normalized.lookup_key)
+    user_id = await identity_service.find_user_id_by_username(
+        session,
+        username=claims.username,
     )
     if user_id is None:
         raise _MISSING
@@ -167,16 +164,14 @@ async def resolve_care_context(
     except AccessResolutionError:
         raise _MISSING from None
 
-    subject = (
-        await session.execute(
-            select(HealthSubject.display_name, HealthSubject.timezone).where(
-                HealthSubject.id == subject_id
-            )
-        )
-    ).one_or_none()
+    subject = await care_workspace.subject_identity(
+        session,
+        subject_id=subject_id,
+    )
     if subject is None:
         raise _MISSING
-    display_name, timezone_name = subject
+    display_name = subject.display_name
+    timezone_name = subject.timezone
 
     if access.subject_owner_user_id == user_id:
         # The patient's own record. There is no relationship to name and there
@@ -224,11 +219,9 @@ async def resolve_care_context(
         # lapsed or revoked. All the same answer — see ``_MISSING``.
         raise _MISSING
 
-    relationship_kind = await session.scalar(
-        select(CareRelationship.kind).where(
-            CareRelationship.id == grant.relationship_id,
-            CareRelationship.status == CareRelationshipStatus.ACTIVE.value,
-        )
+    relationship_kind = await care_workspace.active_relationship_kind(
+        session,
+        relationship_id=grant.relationship_id,
     )
     if relationship_kind is None:
         raise _MISSING
@@ -239,7 +232,7 @@ async def resolve_care_context(
         subject_display_name=display_name or "",
         subject_timezone=timezone_name,
         relationship_id=grant.relationship_id,
-        kind=ProfessionalKind(relationship_kind),
+        kind=relationship_kind,
         consent_version=grant.consent_version,
         basis=f"care:{relationship_kind}",
     )

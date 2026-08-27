@@ -54,7 +54,9 @@ BINDS_A_SUBJECT = {
     "hevy_sync": "resolve_subject_ownership_context",
     "garmin_sync": "resolve_subject_ownership_context",
     "garmin_pulse": "resolve_subject_ownership_context",
-    "garmin_weight_export": "resolve_subject_ownership_context",
+    # The job resolves the typed Garmin-export context; that owner delegates to
+    # the shared subject resolver and binds before any outbox/provider read.
+    "garmin_weight_export": "resolve_scoped_export_context",
     # The proactive family resolves the channel owner: a message needs somebody
     # to send it to before it needs anything to say.
     "daily_brief": "resolve_subject_channel_ownership",

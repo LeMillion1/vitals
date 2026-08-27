@@ -45,13 +45,11 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import BodyMeasurement, ProgressPhoto, WeightLog
 from vitals.operations.ownership import portability_v1
 from vitals.operations.ownership.portability_v1 import import_full
-from vitals.services import data_portability_service
+from vitals.services.portability import v1_contract, v1_export, v1_import
 from vitals.services.conflicts import catalog
-from vitals.services.data_portability_service import (
-    PortabilityError,
-    export_full,
-    export_llm,
-)
+from vitals.services.portability.llm_projection import export_llm
+from vitals.services.portability.v1_contract import PortabilityError
+from vitals.services.portability.v1_export import export_full
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     CONFLICT_RULE_OWNERSHIP_BACKFILL_TABLES,
@@ -392,9 +390,9 @@ async def test_v1_import_rejects_other_versions_before_mutation(
 
     metadata = {
         "kind": (
-            data_portability_service.KIND_FULL
+            v1_contract.KIND_FULL
             if scope == "full"
-            else data_portability_service.KIND_SUBJECT
+            else v1_export.KIND_SUBJECT
         )
     }
     if version_case != "missing":
@@ -405,7 +403,7 @@ async def test_v1_import_rejects_other_versions_before_mutation(
         if scope == "full":
             await import_full(db_session, payload)
         else:
-            await data_portability_service.import_subject(
+            await v1_import.import_subject(
                 db_session,
                 payload,
                 subject_id=legacy_owner_roots.subject_id,
@@ -553,9 +551,9 @@ async def test_full_import_blocks_raw_backfill_atomically_and_preserves_other_ph
     monkeypatch,
 ):
     order: list[str] = []
-    original_governance = data_portability_service.acquire_identity_governance_lock
-    original_subject = data_portability_service._single_local_subject_id
-    original_preflight = data_portability_service._refuse_retained_raw_references
+    original_governance = v1_import.acquire_identity_governance_lock
+    original_subject = v1_import._single_local_subject_id
+    original_preflight = v1_import._refuse_retained_raw_references
     original_block = (
         portability_v1.block_raw_ownership_backfill_for_portability_v1_restore
     )
@@ -577,17 +575,17 @@ async def test_full_import_blocks_raw_backfill_atomically_and_preserves_other_ph
         return await original_block(*args, **kwargs)
 
     monkeypatch.setattr(
-        data_portability_service,
+        v1_import,
         "acquire_identity_governance_lock",
         tracked_governance,
     )
     monkeypatch.setattr(
-        data_portability_service,
+        v1_import,
         "_single_local_subject_id",
         tracked_subject,
     )
     monkeypatch.setattr(
-        data_portability_service,
+        v1_import,
         "_refuse_retained_raw_references",
         tracked_preflight,
     )
@@ -3316,7 +3314,7 @@ async def test_database_failure_is_bounded_and_caller_rollback_is_atomic(
         )
 
     monkeypatch.setattr(
-        data_portability_service,
+        v1_import,
         "_secret_settings",
         rejected_database_read,
     )
@@ -3421,8 +3419,8 @@ async def test_import_endpoint_rejects_wrong_extension(auth_client):
 @pytest.mark.parametrize(
     ("endpoint", "kind"),
     (
-        ("/settings/import", data_portability_service.KIND_FULL),
-        ("/settings/import-subject", data_portability_service.KIND_SUBJECT),
+        ("/settings/import", v1_contract.KIND_FULL),
+        ("/settings/import-subject", v1_export.KIND_SUBJECT),
     ),
 )
 async def test_import_http_boundaries_reject_future_version_without_mutation(

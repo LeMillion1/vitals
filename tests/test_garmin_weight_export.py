@@ -1,5 +1,8 @@
 """Outbound Garmin weight sync: opt-in, idempotency and ownership safety."""
+
 from __future__ import annotations
+
+from vitals.services.alerts import legacy as alerts_service_legacy
 
 import asyncio
 import importlib
@@ -30,9 +33,17 @@ from vitals.models.garmin import (
     GarminWeightExport,
 )
 from vitals.models.weight import WeightLog
-from vitals.services import alerts_service, garmin_service, garmin_weight_service, weight_service
+from vitals.services import weight as weight_domain
+from vitals.services.garmin_weight import contracts as garmin_weight_contracts
+from vitals.services.garmin_weight import dispatch as garmin_weight_dispatch
+from vitals.services.garmin_weight import jobs as garmin_weight_jobs
+from vitals.services.garmin_weight import outbox as garmin_weight_outbox
+from vitals.services.garmin_weight import reconciliation as garmin_weight_reconciliation
+from vitals.services.garmin_weight import settings as garmin_weight_settings
 from vitals.services.conflicts import engine
-from vitals.services.proactive import prefs
+from vitals.services.garmin import alerts as garmin_alerts
+from vitals.services.proactive.preferences import queries as preference_queries
+from vitals.services.proactive.preferences import writes as preference_writes
 from web.config import get_web_config
 
 
@@ -49,18 +60,18 @@ def garmin_export(owner_write, db_session):
     from types import SimpleNamespace
 
     async def prepared(*, historical: bool = False):
-        context = await garmin_weight_service.resolve_legacy_export_context(
+        context = await garmin_weight_outbox.resolve_legacy_export_context(
             db_session,
             actor_username=None,
         )
-        return await garmin_weight_service.prepare_scoped_export(
+        return await garmin_weight_outbox.prepare_scoped_export(
             db_session,
             context=context,
             historical=historical,
         )
 
     async def export_latest(client, **kwargs):
-        return await garmin_weight_service.export_latest_scoped(
+        return await garmin_weight_dispatch.export_latest_scoped(
             db_session,
             client,
             prepared=await prepared(),
@@ -68,7 +79,7 @@ def garmin_export(owner_write, db_session):
         )
 
     async def set_enabled(value, **kwargs):
-        return await garmin_weight_service.set_enabled_scoped(
+        return await garmin_weight_settings.set_enabled_scoped(
             db_session,
             value,
             prepared=await prepared(),
@@ -76,13 +87,13 @@ def garmin_export(owner_write, db_session):
         )
 
     async def is_enabled():
-        return await garmin_weight_service.is_enabled_scoped(
+        return await garmin_weight_settings.is_enabled_scoped(
             db_session,
             prepared=await prepared(),
         )
 
     async def reconcile_latest(**kwargs):
-        return await garmin_weight_service.reconcile_latest_scoped(
+        return await garmin_weight_reconciliation.reconcile_latest_scoped(
             db_session,
             prepared=await prepared(),
             **kwargs,
@@ -130,8 +141,7 @@ class FakeWeightClient:
             raise self.fail_readback
         return {
             "dateWeightList": [
-                dict(row) if isinstance(row, dict) else row
-                for row in self.rows.get(on_date, [])
+                dict(row) if isinstance(row, dict) else row for row in self.rows.get(on_date, [])
             ]
         }
 
@@ -144,9 +154,7 @@ class FakeWeightClient:
             remote.update(
                 {
                     "sourceType": "MANUAL",
-                    "timestampGMT": garmin_weight_service._dispatch_timestamp_ms(
-                        measured_at
-                    ),
+                    "timestampGMT": garmin_weight_contracts._dispatch_timestamp_ms(measured_at),
                 }
             )
         self.rows.setdefault(measured_at.date(), []).append(remote)
@@ -160,9 +168,7 @@ class FakeWeightClient:
         if self.fail_delete is not None:
             raise self.fail_delete
         self.rows[on_date] = [
-            row
-            for row in self.rows.get(on_date, [])
-            if str(row.get("samplePk")) != str(sample_pk)
+            row for row in self.rows.get(on_date, []) if str(row.get("samplePk")) != str(sample_pk)
         ]
 
 
@@ -173,15 +179,13 @@ async def _manual_weight(db_session, owner_write, value: float, *, on_date: date
     belongs to the transaction that issued it, so the capability is minted
     against ``db_session`` rather than borrowed from the fixture.
     """
-    return await weight_service.log_weight(
+    return await weight_domain.writes.log_weight(
         db_session,
         on_date=on_date,
         weight_kg=value,
         source=Source.MANUAL.value,
         identity=owner_write.identity,
-        prepared_weight_write=await _session_weight_write(
-            db_session, on_date=on_date
-        ),
+        prepared_weight_write=await _session_weight_write(db_session, on_date=on_date),
     )
 
 
@@ -211,7 +215,7 @@ async def _garmin_weight(db_session, owner_write, value: float, *, on_date: date
         external_id=f"garmin:weight:{on_date.isoformat()}",
         payload={"date": on_date.isoformat(), "weight_kg": value},
     )
-    return await weight_service.log_weight(
+    return await weight_domain.writes.log_weight(
         db_session,
         on_date=on_date,
         weight_kg=value,
@@ -224,7 +228,7 @@ async def _garmin_weight(db_session, owner_write, value: float, *, on_date: date
 
 
 async def _delete_weight(db_session, owner_write, row_id: int) -> bool:
-    return await weight_service.delete_weight_log(
+    return await weight_domain.writes.delete_weight_log(
         db_session,
         row_id,
         identity=owner_write.identity,
@@ -232,9 +236,7 @@ async def _delete_weight(db_session, owner_write, row_id: int) -> bool:
     )
 
 
-async def _outbox(
-    db_session, *, on_date: date = DAY
-) -> GarminWeightExport:
+async def _outbox(db_session, *, on_date: date = DAY) -> GarminWeightExport:
     return (
         await db_session.execute(
             select(GarminWeightExport).where(GarminWeightExport.date == on_date)
@@ -254,20 +256,20 @@ async def _session_weight_write(session, *, on_date=None):
         actor_username=get_web_config().auth_username,
         evaluation_date=on_date,
     )
-    export_context = (
-        await garmin_weight_service.resolve_optional_legacy_export_context(
-            session,
-            actor_username=get_web_config().auth_username,
-        )
+    export_context = await garmin_weight_outbox.resolve_optional_legacy_export_context(
+        session,
+        actor_username=get_web_config().auth_username,
     )
-    return await weight_service.prepare_weight_write(
+    return await weight_domain.governance.prepare_weight_write(
         session,
         context=context,
         garmin_weight_export_context=export_context,
     )
 
 
-async def test_export_is_opt_in_and_enabling_only_queues_locally(db_session, owner_write, garmin_export):
+async def test_export_is_opt_in_and_enabling_only_queues_locally(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -285,7 +287,9 @@ async def test_export_is_opt_in_and_enabling_only_queues_locally(db_session, own
     assert row.weight_log_id is not None
 
 
-async def test_latest_weight_posts_once_then_stays_idempotent(db_session, owner_write, garmin_export):
+async def test_latest_weight_posts_once_then_stays_idempotent(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -319,7 +323,9 @@ async def test_latest_weight_posts_once_then_stays_idempotent(db_session, owner_
     ).scalar_one() == 1
 
 
-async def test_equal_preexisting_garmin_weight_skips_post_and_is_not_owned(db_session, owner_write, garmin_export):
+async def test_equal_preexisting_garmin_weight_skips_post_and_is_not_owned(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -337,7 +343,9 @@ async def test_equal_preexisting_garmin_weight_skips_post_and_is_not_owned(db_se
     assert row.remote_owned is False
 
 
-async def test_same_day_correction_replaces_only_vitals_owned_record(db_session, owner_write, garmin_export):
+async def test_same_day_correction_replaces_only_vitals_owned_record(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -362,7 +370,9 @@ async def test_same_day_correction_replaces_only_vitals_owned_record(db_session,
     assert row.weight_kg == 84.0
 
 
-async def test_correction_never_deletes_matching_record_vitals_did_not_create(db_session, owner_write, garmin_export):
+async def test_correction_never_deletes_matching_record_vitals_did_not_create(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -384,7 +394,9 @@ async def test_correction_never_deletes_matching_record_vitals_did_not_create(db
     assert [row["weight"] for row in client.rows[DAY]] == [85000]
 
 
-async def test_accepted_post_followed_by_timeout_stays_unverified_without_duplicate(db_session, owner_write, garmin_export):
+async def test_accepted_post_followed_by_timeout_stays_unverified_without_duplicate(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -420,8 +432,10 @@ async def test_failure_sets_backoff_and_warn_alert(db_session, owner_write, garm
     assert row.attempts == 1
     assert row.next_attempt_at == NOW + timedelta(minutes=15)
     assert "Garmin unavailable" in row.last_error
-    alerts = await alerts_service.list_active(db_session, domain="garmin", subject_id=owner_write.subject_id)
-    assert [a.alert_key for a in alerts] == [garmin_weight_service.ALERT_KEY]
+    alerts = await alerts_service_legacy.list_active(
+        db_session, domain="garmin", subject_id=owner_write.subject_id
+    )
+    assert [a.alert_key for a in alerts] == [garmin_weight_contracts.ALERT_KEY]
 
     # A scheduler tick inside the backoff window makes no upstream request.
     client.fail_fetch = None
@@ -429,7 +443,9 @@ async def test_failure_sets_backoff_and_warn_alert(db_session, owner_write, garm
     assert len(client.fetch_calls) == 1
 
 
-async def test_retry_preflight_keeps_previous_alert_until_recovery(db_session, owner_write, garmin_export):
+async def test_retry_preflight_keeps_previous_alert_until_recovery(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -438,7 +454,9 @@ async def test_retry_preflight_keeps_previous_alert_until_recovery(db_session, o
     failed_client = FakeWeightClient(fail_fetch=RuntimeError("Garmin unavailable"))
     await garmin_export.export_latest(failed_client, now=NOW)
     await db_session.commit()
-    assert await alerts_service.list_active(db_session, domain="garmin", subject_id=owner_write.subject_id)
+    assert await alerts_service_legacy.list_active(
+        db_session, domain="garmin", subject_id=owner_write.subject_id
+    )
 
     fetch_started = asyncio.Event()
     never_resume = asyncio.Event()
@@ -461,17 +479,21 @@ async def test_retry_preflight_keeps_previous_alert_until_recovery(db_session, o
     row = await _outbox(db_session)
     assert row.status == WEIGHT_EXPORT_CHECKING
     assert "Garmin unavailable" in row.last_error
-    assert await alerts_service.list_active(db_session, domain="garmin", subject_id=owner_write.subject_id)
+    assert await alerts_service_legacy.list_active(
+        db_session, domain="garmin", subject_id=owner_write.subject_id
+    )
 
 
-async def test_export_uses_live_freshness_and_retry_preferences(db_session, owner_write, garmin_export):
-    await prefs.set_preferences_bundle(
+async def test_export_uses_live_freshness_and_retry_preferences(
+    db_session, owner_write, garmin_export
+):
+    await preference_writes.set_preferences_bundle(
         db_session,
         {
             "garmin_weight_export_minutes": 20,
             "garmin_weight_max_age_days": 1,
         },
-        scope=await prefs.resolve_legacy_preferences_scope(
+        scope=await preference_queries.resolve_legacy_preferences_scope(
             db_session, actor_username=get_web_config().auth_username
         ),
         actor_username=get_web_config().auth_username,
@@ -500,7 +522,9 @@ async def test_export_uses_live_freshness_and_retry_preferences(db_session, owne
 
 
 async def test_latest_garmin_import_is_not_echoed_and_older_manual_is_not_backfilled(
-    db_session, owner_write, garmin_export,
+    db_session,
+    owner_write,
+    garmin_export,
 ):
     await _manual_weight(
         db_session,
@@ -543,7 +567,7 @@ async def test_disabled_job_never_constructs_a_garmin_client(
         raise AssertionError("disabled export must not create a Garmin client")
 
     monkeypatch.setattr(GarminClient, "from_config", explode)
-    await garmin_weight_service.export_job(
+    await garmin_weight_jobs.export_job(
         session_factory, redis=None, subject_id=legacy_owner_roots.subject_id
     )
 
@@ -569,10 +593,8 @@ async def test_unconfigured_job_does_not_reconcile_retry_or_alert(
         row.last_error = "unchanged"
         await session.commit()
 
-    monkeypatch.setattr(
-        GarminClient, "from_config", lambda *args, **kwargs: UnconfiguredClient()
-    )
-    await garmin_weight_service.export_job(
+    monkeypatch.setattr(GarminClient, "from_config", lambda *args, **kwargs: UnconfiguredClient())
+    await garmin_weight_jobs.export_job(
         session_factory, redis=None, subject_id=legacy_owner_roots.subject_id
     )
 
@@ -581,7 +603,12 @@ async def test_unconfigured_job_does_not_reconcile_retry_or_alert(
         assert row.status == WEIGHT_EXPORT_PENDING
         assert row.attempts == 3
         assert row.last_error == "unchanged"
-        assert await alerts_service.list_active(session, domain="garmin", subject_id=owner_write.subject_id) == []
+        assert (
+            await alerts_service_legacy.list_active(
+                session, domain="garmin", subject_id=owner_write.subject_id
+            )
+            == []
+        )
 
 
 async def test_weight_job_surfaces_garmin_token_cache_warnings(
@@ -605,23 +632,25 @@ async def test_weight_job_surfaces_garmin_token_cache_warnings(
         await garmin_export.set_enabled(True, now=NOW)
         await session.commit()
 
-    monkeypatch.setattr(
-        GarminClient, "from_config", lambda *args, **kwargs: WarningClient()
-    )
-    await garmin_weight_service.export_job(
+    monkeypatch.setattr(GarminClient, "from_config", lambda *args, **kwargs: WarningClient())
+    await garmin_weight_jobs.export_job(
         session_factory, redis=None, subject_id=legacy_owner_roots.subject_id
     )
 
     async with session_factory() as session:
-        alerts = await alerts_service.list_active(session, domain="garmin", subject_id=owner_write.subject_id)
+        alerts = await alerts_service_legacy.list_active(
+            session, domain="garmin", subject_id=owner_write.subject_id
+        )
         token_alerts = [
-            alert for alert in alerts if alert.alert_key == garmin_service.TOKEN_ALERT_KEY
+            alert for alert in alerts if alert.alert_key == garmin_alerts.TOKEN_ALERT_KEY
         ]
         assert len(token_alerts) == 1
         assert "token store unavailable" in token_alerts[0].message
 
 
-async def test_different_or_multiple_external_records_block_all_mutations(db_session, owner_write, garmin_export):
+async def test_different_or_multiple_external_records_block_all_mutations(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -655,7 +684,9 @@ async def test_malformed_nonempty_remote_day_fails_closed(db_session, owner_writ
     assert client.add_calls == []
 
 
-async def test_unverified_never_claims_one_match_from_a_multi_entry_day(db_session, owner_write, garmin_export):
+async def test_unverified_never_claims_one_match_from_a_multi_entry_day(
+    db_session, owner_write, garmin_export
+):
     local = await _manual_weight(
         db_session,
         owner_write,
@@ -687,10 +718,16 @@ async def test_unverified_never_claims_one_match_from_a_multi_entry_day(db_sessi
 
 
 async def test_delete_pending_without_verified_ownership_never_deletes_by_weight(
-    db_session, garmin_export, *, garmin_connection_id, legacy_owner_roots,
+    db_session,
+    garmin_export,
+    *,
+    garmin_connection_id,
+    legacy_owner_roots,
 ):
     db_session.add(
-        GarminWeightExport(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
+        GarminWeightExport(
+            subject_id=legacy_owner_roots.subject_id,
+            integration_connection_id=garmin_connection_id,
             date=DAY,
             weight_kg=84.5,
             measured_at=NOW,
@@ -708,7 +745,9 @@ async def test_delete_pending_without_verified_ownership_never_deletes_by_weight
     assert client.delete_calls == []
 
 
-async def test_owned_record_next_to_foreign_record_blocks_correction(db_session, owner_write, garmin_export):
+async def test_owned_record_next_to_foreign_record_blocks_correction(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -731,7 +770,9 @@ async def test_owned_record_next_to_foreign_record_blocks_correction(db_session,
 
 
 async def test_successful_post_with_failed_readback_stays_unverified_without_retry(
-    db_session, owner_write, garmin_export,
+    db_session,
+    owner_write,
+    garmin_export,
 ):
     await _manual_weight(
         db_session,
@@ -761,7 +802,9 @@ async def test_successful_post_with_failed_readback_stays_unverified_without_ret
 
 
 async def test_unverified_dispatch_marker_survives_rollback_and_blocks_duplicate(
-    db_session, owner_write, garmin_export,
+    db_session,
+    owner_write,
+    garmin_export,
 ):
     await _manual_weight(
         db_session,
@@ -785,7 +828,9 @@ async def test_unverified_dispatch_marker_survives_rollback_and_blocks_duplicate
     assert len(client.add_calls) == 1
 
 
-async def test_equal_record_appearing_after_post_is_never_claimed_as_owned(db_session, owner_write, garmin_export):
+async def test_equal_record_appearing_after_post_is_never_claimed_as_owned(
+    db_session, owner_write, garmin_export
+):
     class InterleavedExternalClient(FakeWeightClient):
         async def add_weigh_in(self, weight_kg: float, measured_at: datetime):
             self.add_calls.append((weight_kg, measured_at))
@@ -818,7 +863,9 @@ async def test_equal_record_appearing_after_post_is_never_claimed_as_owned(db_se
     assert client.delete_calls == []
 
 
-async def test_response_sample_pk_establishes_ownership_without_readback(db_session, owner_write, garmin_export):
+async def test_response_sample_pk_establishes_ownership_without_readback(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -836,7 +883,9 @@ async def test_response_sample_pk_establishes_ownership_without_readback(db_sess
     assert len(client.fetch_calls) == 1
 
 
-async def test_response_sample_pk_ownership_survives_caller_rollback(db_session, owner_write, garmin_export):
+async def test_response_sample_pk_ownership_survives_caller_rollback(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -856,7 +905,9 @@ async def test_response_sample_pk_ownership_survives_caller_rollback(db_session,
     assert row.remote_sample_pk == "100"
 
 
-async def test_normal_204_response_claims_exact_timestamped_readback(db_session, owner_write, garmin_export):
+async def test_normal_204_response_claims_exact_timestamped_readback(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -944,7 +995,9 @@ async def test_204_readback_requires_every_exact_correlation_field(
 
 
 async def test_legacy_zero_millisecond_timestamp_can_never_establish_ownership(
-    db_session, owner_write, garmin_export,
+    db_session,
+    owner_write,
+    garmin_export,
 ):
     await _manual_weight(
         db_session,
@@ -965,7 +1018,7 @@ async def test_legacy_zero_millisecond_timestamp_can_never_establish_ownership(
                 "samplePk": "legacy-looking",
                 "weight": 84_500,
                 "sourceType": "MANUAL",
-                "timestampGMT": garmin_weight_service._dispatch_timestamp_ms(NOW),
+                "timestampGMT": garmin_weight_contracts._dispatch_timestamp_ms(NOW),
             }
         ]
     )
@@ -979,7 +1032,9 @@ async def test_legacy_zero_millisecond_timestamp_can_never_establish_ownership(
     assert client.add_calls == []
 
 
-async def test_204_exact_entry_next_to_foreign_entry_is_never_claimed(db_session, owner_write, garmin_export):
+async def test_204_exact_entry_next_to_foreign_entry_is_never_claimed(
+    db_session, owner_write, garmin_export
+):
     class ExtraEntryClient(FakeWeightClient):
         async def add_weigh_in(self, weight_kg: float, measured_at: datetime):
             response = await super().add_weigh_in(weight_kg, measured_at)
@@ -1006,7 +1061,9 @@ async def test_204_exact_entry_next_to_foreign_entry_is_never_claimed(db_session
     assert row.remote_sample_pk is None
 
 
-async def test_timed_out_post_later_claims_its_exact_timestamped_record(db_session, owner_write, garmin_export):
+async def test_timed_out_post_later_claims_its_exact_timestamped_record(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -1031,7 +1088,9 @@ async def test_timed_out_post_later_claims_its_exact_timestamped_record(db_sessi
     assert len(client.add_calls) == 1
 
 
-async def test_late_exact_claim_survives_timezone_change(db_session, monkeypatch, owner_write, garmin_export):
+async def test_late_exact_claim_survives_timezone_change(
+    db_session, monkeypatch, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -1048,7 +1107,7 @@ async def test_late_exact_claim_survives_timezone_change(db_session, monkeypatch
     assert persisted_epoch is not None
 
     monkeypatch.setattr(
-        garmin_weight_service,
+        garmin_weight_contracts,
         "load_config",
         lambda: Config(
             database_url="sqlite+aiosqlite://",
@@ -1057,7 +1116,9 @@ async def test_late_exact_claim_survives_timezone_change(db_session, monkeypatch
         ),
     )
     client.raise_after_add = None
-    recovered = await garmin_export.export_latest(client, now=NOW + timedelta(minutes=1), force=True)
+    recovered = await garmin_export.export_latest(
+        client, now=NOW + timedelta(minutes=1), force=True
+    )
 
     assert recovered["status"] == WEIGHT_EXPORT_SENT
     row = await _outbox(db_session)
@@ -1088,7 +1149,9 @@ async def test_204_exact_ownership_survives_caller_rollback(db_session, owner_wr
 
 
 async def test_delete_owned_latest_removes_remote_and_never_backfills_older_weight(
-    db_session, owner_write, garmin_export,
+    db_session,
+    owner_write,
+    garmin_export,
 ):
     await _manual_weight(
         db_session,
@@ -1105,11 +1168,14 @@ async def test_delete_owned_latest_removes_remote_and_never_backfills_older_weig
     await garmin_export.set_enabled(True, now=NOW)
     await garmin_export.export_latest(client, now=NOW)
 
-    assert await _delete_weight(
-        db_session,
-        owner_write,
-        latest.id,
-    ) is True
+    assert (
+        await _delete_weight(
+            db_session,
+            owner_write,
+            latest.id,
+        )
+        is True
+    )
     result = await garmin_export.export_latest(client, now=NOW + timedelta(minutes=1), force=True)
 
     assert result["status"] == WEIGHT_EXPORT_DELETED
@@ -1118,14 +1184,14 @@ async def test_delete_owned_latest_removes_remote_and_never_backfills_older_weig
     assert client.rows[DAY] == []
     assert (
         await db_session.execute(
-            select(GarminWeightExport).where(
-                GarminWeightExport.date == DAY - timedelta(days=1)
-            )
+            select(GarminWeightExport).where(GarminWeightExport.date == DAY - timedelta(days=1))
         )
     ).scalar_one_or_none() is None
 
 
-async def test_delete_external_match_never_deletes_the_garmin_record(db_session, owner_write, garmin_export):
+async def test_delete_external_match_never_deletes_the_garmin_record(
+    db_session, owner_write, garmin_export
+):
     local = await _manual_weight(
         db_session,
         owner_write,
@@ -1135,11 +1201,14 @@ async def test_delete_external_match_never_deletes_the_garmin_record(db_session,
     await garmin_export.set_enabled(True, now=NOW)
     await garmin_export.export_latest(client, now=NOW)
 
-    assert await _delete_weight(
-        db_session,
-        owner_write,
-        local.id,
-    ) is True
+    assert (
+        await _delete_weight(
+            db_session,
+            owner_write,
+            local.id,
+        )
+        is True
+    )
     result = await garmin_export.export_latest(client, now=NOW + timedelta(minutes=1), force=True)
 
     assert result["status"] == "empty"
@@ -1148,7 +1217,9 @@ async def test_delete_external_match_never_deletes_the_garmin_record(db_session,
     assert (await _outbox(db_session)).status == WEIGHT_EXPORT_DELETED
 
 
-async def test_delete_failure_keeps_cleanup_intent_and_recovers_without_post(db_session, owner_write, garmin_export):
+async def test_delete_failure_keeps_cleanup_intent_and_recovers_without_post(
+    db_session, owner_write, garmin_export
+):
     local = await _manual_weight(
         db_session,
         owner_write,
@@ -1169,13 +1240,17 @@ async def test_delete_failure_keeps_cleanup_intent_and_recovers_without_post(db_
     assert len(client.add_calls) == 1
 
     client.fail_delete = None
-    recovered = await garmin_export.export_latest(client, now=NOW + timedelta(minutes=2), force=True)
+    recovered = await garmin_export.export_latest(
+        client, now=NOW + timedelta(minutes=2), force=True
+    )
     assert recovered["status"] == WEIGHT_EXPORT_DELETED
     assert len(client.add_calls) == 1
     assert client.rows[DAY] == []
 
 
-async def test_deleting_unverified_post_never_claims_or_deletes_readback_record(db_session, owner_write, garmin_export):
+async def test_deleting_unverified_post_never_claims_or_deletes_readback_record(
+    db_session, owner_write, garmin_export
+):
     local = await _manual_weight(
         db_session,
         owner_write,
@@ -1200,7 +1275,9 @@ async def test_deleting_unverified_post_never_claims_or_deletes_readback_record(
     assert len(client.rows[DAY]) == 1
 
 
-async def test_deleted_unverified_post_stays_unresolved_until_remote_appears(db_session, owner_write, garmin_export):
+async def test_deleted_unverified_post_stays_unresolved_until_remote_appears(
+    db_session, owner_write, garmin_export
+):
     local = await _manual_weight(
         db_session,
         owner_write,
@@ -1229,7 +1306,9 @@ async def test_deleted_unverified_post_stays_unresolved_until_remote_appears(db_
     assert client.delete_calls == []
 
 
-async def test_delete_same_day_correction_restores_prior_local_value(db_session, owner_write, garmin_export):
+async def test_delete_same_day_correction_restores_prior_local_value(
+    db_session, owner_write, garmin_export
+):
     prior = await _manual_weight(
         db_session,
         owner_write,
@@ -1244,11 +1323,14 @@ async def test_delete_same_day_correction_restores_prior_local_value(db_session,
     await garmin_export.set_enabled(True, now=NOW)
     await garmin_export.export_latest(client, now=NOW)
 
-    assert await _delete_weight(
-        db_session,
-        owner_write,
-        latest.id,
-    ) is True
+    assert (
+        await _delete_weight(
+            db_session,
+            owner_write,
+            latest.id,
+        )
+        is True
+    )
     result = await garmin_export.export_latest(client, now=NOW + timedelta(minutes=1), force=True)
 
     assert prior.superseded is False
@@ -1257,7 +1339,9 @@ async def test_delete_same_day_correction_restores_prior_local_value(db_session,
     assert [item["weight"] for item in client.rows[DAY]] == [85000.0]
 
 
-async def test_owned_small_local_correction_is_not_hidden_by_remote_tolerance(db_session, owner_write, garmin_export):
+async def test_owned_small_local_correction_is_not_hidden_by_remote_tolerance(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -1284,7 +1368,8 @@ async def test_owned_small_local_correction_is_not_hidden_by_remote_tolerance(db
 async def test_deleting_future_weight_does_not_poison_the_no_backfill_watermark(
     db_session, monkeypatch, owner_write, garmin_export
 ):
-    monkeypatch.setattr(garmin_weight_service, "now_local", lambda: NOW)
+    monkeypatch.setattr(garmin_weight_reconciliation, "now_local", lambda: NOW)
+    monkeypatch.setattr(garmin_weight_dispatch, "now_local", lambda: NOW)
     await _manual_weight(
         db_session,
         owner_write,
@@ -1298,11 +1383,14 @@ async def test_deleting_future_weight_does_not_poison_the_no_backfill_watermark(
         on_date=DAY + timedelta(days=365),
     )
 
-    assert await _delete_weight(
-        db_session,
-        owner_write,
-        future.id,
-    ) is True
+    assert (
+        await _delete_weight(
+            db_session,
+            owner_write,
+            future.id,
+        )
+        is True
+    )
     current = await garmin_export.reconcile_latest(now=NOW)
 
     assert current is not None
@@ -1313,11 +1401,15 @@ async def test_deleting_future_weight_does_not_poison_the_no_backfill_watermark(
 
 @pytest.mark.integration
 async def test_newer_weight_save_during_preflight_cancels_older_post(
-    db_session, monkeypatch, owner_write, garmin_export,
+    db_session,
+    monkeypatch,
+    owner_write,
+    garmin_export,
 ):
     """PostgreSQL regression: DB locks cover transitions, never Garmin latency."""
     race_now = NOW + timedelta(days=1)
-    monkeypatch.setattr(garmin_weight_service, "now_local", lambda: race_now)
+    monkeypatch.setattr(garmin_weight_reconciliation, "now_local", lambda: race_now)
+    monkeypatch.setattr(garmin_weight_dispatch, "now_local", lambda: race_now)
     await _manual_weight(
         db_session,
         owner_write,
@@ -1325,9 +1417,7 @@ async def test_newer_weight_save_during_preflight_cancels_older_post(
     )
     await garmin_export.set_enabled(True, now=race_now)
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
     preflight_started = asyncio.Event()
     resume_preflight = asyncio.Event()
 
@@ -1367,7 +1457,9 @@ async def test_newer_weight_save_during_preflight_cancels_older_post(
 
 @pytest.mark.integration
 async def test_local_delete_is_not_blocked_by_garmin_preflight_and_cancels_post(
-    db_session, owner_write, garmin_export,
+    db_session,
+    owner_write,
+    garmin_export,
 ):
     local = await _manual_weight(
         db_session,
@@ -1375,9 +1467,7 @@ async def test_local_delete_is_not_blocked_by_garmin_preflight_and_cancels_post(
         84.5,
     )
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
     preflight_started = asyncio.Event()
     resume_preflight = asyncio.Event()
 
@@ -1400,12 +1490,15 @@ async def test_local_delete_is_not_blocked_by_garmin_preflight_and_cancels_post(
     await asyncio.wait_for(preflight_started.wait(), timeout=2)
 
     async with factory() as session:
-        assert await weight_service.delete_weight_log(
-            session,
-            local.id,
-            identity=owner_write.identity,
-            prepared_weight_write=await _session_weight_write(session),
-        ) is True
+        assert (
+            await weight_domain.writes.delete_weight_log(
+                session,
+                local.id,
+                identity=owner_write.identity,
+                prepared_weight_write=await _session_weight_write(session),
+            )
+            is True
+        )
         await asyncio.wait_for(session.commit(), timeout=2)
 
     resume_preflight.set()
@@ -1417,9 +1510,13 @@ async def test_local_delete_is_not_blocked_by_garmin_preflight_and_cancels_post(
 
 @pytest.mark.integration
 async def test_correction_during_nonempty_preflight_cannot_finalize_stale_match(
-    db_session, monkeypatch, owner_write, garmin_export,
+    db_session,
+    monkeypatch,
+    owner_write,
+    garmin_export,
 ):
-    monkeypatch.setattr(garmin_weight_service, "now_local", lambda: NOW)
+    monkeypatch.setattr(garmin_weight_reconciliation, "now_local", lambda: NOW)
+    monkeypatch.setattr(garmin_weight_dispatch, "now_local", lambda: NOW)
     await _manual_weight(
         db_session,
         owner_write,
@@ -1427,9 +1524,7 @@ async def test_correction_during_nonempty_preflight_cannot_finalize_stale_match(
     )
     await garmin_export.set_enabled(True, now=NOW)
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
     preflight_started = asyncio.Event()
     resume_preflight = asyncio.Event()
 
@@ -1438,9 +1533,7 @@ async def test_correction_during_nonempty_preflight_cannot_finalize_stale_match(
             self.fetch_calls.append(on_date)
             preflight_started.set()
             await resume_preflight.wait()
-            return {
-                "dateWeightList": [{"samplePk": "external", "weight": 85000}]
-            }
+            return {"dateWeightList": [{"samplePk": "external", "weight": 85000}]}
 
     client = PausingEqualClient()
 
@@ -1481,9 +1574,7 @@ async def test_opt_out_during_preflight_cancels_post(db_session, owner_write, ga
     )
     await garmin_export.set_enabled(True, now=NOW)
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
     preflight_started = asyncio.Event()
     resume_preflight = asyncio.Event()
 
@@ -1528,9 +1619,7 @@ async def test_exact_post_identity_survives_concurrent_local_delete(
     )
     await garmin_export.set_enabled(True, now=NOW)
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
     post_started = asyncio.Event()
     resume_response = asyncio.Event()
 
@@ -1556,12 +1645,15 @@ async def test_exact_post_identity_survives_concurrent_local_delete(
     await asyncio.wait_for(post_started.wait(), timeout=2)
 
     async with factory() as session:
-        assert await weight_service.delete_weight_log(
-            session,
-            local.id,
-            identity=owner_write.identity,
-            prepared_weight_write=await _session_weight_write(session),
-        ) is True
+        assert (
+            await weight_domain.writes.delete_weight_log(
+                session,
+                local.id,
+                identity=owner_write.identity,
+                prepared_weight_write=await _session_weight_write(session),
+            )
+            is True
+        )
         await asyncio.wait_for(session.commit(), timeout=2)
 
     resume_response.set()
@@ -1581,7 +1673,8 @@ async def test_exact_post_identity_survives_concurrent_local_delete(
 async def test_exact_post_identity_preserves_concurrent_correction(
     db_session, monkeypatch, response_has_sample_pk, owner_write, garmin_export
 ):
-    monkeypatch.setattr(garmin_weight_service, "now_local", lambda: NOW)
+    monkeypatch.setattr(garmin_weight_reconciliation, "now_local", lambda: NOW)
+    monkeypatch.setattr(garmin_weight_dispatch, "now_local", lambda: NOW)
     await _manual_weight(
         db_session,
         owner_write,
@@ -1589,9 +1682,7 @@ async def test_exact_post_identity_preserves_concurrent_correction(
     )
     await garmin_export.set_enabled(True, now=NOW)
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
     post_started = asyncio.Event()
     resume_response = asyncio.Event()
 
@@ -1638,7 +1729,9 @@ async def test_exact_post_identity_preserves_concurrent_correction(
 
 
 @pytest.mark.integration
-async def test_204_exact_readback_survives_concurrent_opt_out(db_session, owner_write, garmin_export):
+async def test_204_exact_readback_survives_concurrent_opt_out(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -1646,9 +1739,7 @@ async def test_204_exact_readback_survives_concurrent_opt_out(db_session, owner_
     )
     await garmin_export.set_enabled(True, now=NOW)
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
     post_started = asyncio.Event()
     resume_response = asyncio.Event()
 
@@ -1701,26 +1792,22 @@ async def test_active_delete_takes_advisory_before_outbox_fk_lock(
     )
     await garmin_export.set_enabled(True, now=NOW)
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
     delete_reached_lock = asyncio.Event()
-    original_lock = garmin_weight_service.lock_active_weight_change
+    original_lock = garmin_weight_outbox.lock_active_weight_change
 
     async def signaling_lock(session):
         delete_reached_lock.set()
         await original_lock(session)
 
-    monkeypatch.setattr(
-        garmin_weight_service, "lock_active_weight_change", signaling_lock
-    )
+    monkeypatch.setattr(garmin_weight_outbox, "lock_active_weight_change", signaling_lock)
 
     async with factory() as exporter_session:
-        await garmin_weight_service._acquire_operation_lock(exporter_session)
+        await garmin_weight_outbox._acquire_operation_lock(exporter_session)
 
         async def deleting():
             async with factory() as session:
-                deleted = await weight_service.delete_weight_log(
+                deleted = await weight_domain.writes.delete_weight_log(
                     session,
                     local.id,
                     identity=owner_write.identity,
@@ -1741,7 +1828,9 @@ async def test_active_delete_takes_advisory_before_outbox_fk_lock(
 
 
 @pytest.mark.integration
-async def test_stale_inactive_delete_reloads_row_after_advisory_lock(db_session, owner_write, garmin_export):
+async def test_stale_inactive_delete_reloads_row_after_advisory_lock(
+    db_session, owner_write, garmin_export
+):
     """A concurrent delete may reactivate an object cached as superseded."""
     prior = await _manual_weight(
         db_session,
@@ -1756,37 +1845,39 @@ async def test_stale_inactive_delete_reloads_row_after_advisory_lock(db_session,
     await garmin_export.set_enabled(True, now=NOW)
     await garmin_export.export_latest(FakeWeightClient(), now=NOW)
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
 
     async with factory() as stale_session:
         cached_prior = (
-            await stale_session.execute(
-                select(WeightLog).where(WeightLog.id == prior.id)
-            )
+            await stale_session.execute(select(WeightLog).where(WeightLog.id == prior.id))
         ).scalar_one()
         assert cached_prior.superseded is True
 
         async with factory() as other_session:
-            assert await weight_service.delete_weight_log(
-                other_session,
-                current.id,
-                identity=owner_write.identity,
-                prepared_weight_write=await _session_weight_write(other_session),
-            ) is True
+            assert (
+                await weight_domain.writes.delete_weight_log(
+                    other_session,
+                    current.id,
+                    identity=owner_write.identity,
+                    prepared_weight_write=await _session_weight_write(other_session),
+                )
+                is True
+            )
             await other_session.commit()
 
         # This Python object is deliberately stale. delete_weight_log must take
         # the advisory first and repopulate it before deciding whether cleanup is
         # required.
         assert cached_prior.superseded is True
-        assert await weight_service.delete_weight_log(
-            stale_session,
-            prior.id,
-            identity=owner_write.identity,
-            prepared_weight_write=await _session_weight_write(stale_session),
-        ) is True
+        assert (
+            await weight_domain.writes.delete_weight_log(
+                stale_session,
+                prior.id,
+                identity=owner_write.identity,
+                prepared_weight_write=await _session_weight_write(stale_session),
+            )
+            is True
+        )
         await stale_session.commit()
 
     async with factory() as check_session:
@@ -1801,7 +1892,9 @@ async def test_stale_inactive_delete_reloads_row_after_advisory_lock(db_session,
 
 
 @pytest.mark.integration
-async def test_stale_inactive_cache_does_not_break_concurrent_weight_save(db_session, owner_write, garmin_export):
+async def test_stale_inactive_cache_does_not_break_concurrent_weight_save(
+    db_session, owner_write, garmin_export
+):
     prior = await _manual_weight(
         db_session,
         owner_write,
@@ -1815,25 +1908,24 @@ async def test_stale_inactive_cache_does_not_break_concurrent_weight_save(db_ses
     await garmin_export.set_enabled(True, now=NOW)
     await garmin_export.export_latest(FakeWeightClient(), now=NOW)
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
 
     async with factory() as stale_session:
         cached_prior = (
-            await stale_session.execute(
-                select(WeightLog).where(WeightLog.id == prior.id)
-            )
+            await stale_session.execute(select(WeightLog).where(WeightLog.id == prior.id))
         ).scalar_one()
         assert cached_prior.superseded is True
 
         async with factory() as other_session:
-            assert await weight_service.delete_weight_log(
-                other_session,
-                current.id,
-                identity=owner_write.identity,
-                prepared_weight_write=await _session_weight_write(other_session),
-            ) is True
+            assert (
+                await weight_domain.writes.delete_weight_log(
+                    other_session,
+                    current.id,
+                    identity=owner_write.identity,
+                    prepared_weight_write=await _session_weight_write(other_session),
+                )
+                is True
+            )
             await other_session.commit()
 
         saved = await _manual_weight(
@@ -1845,10 +1937,8 @@ async def test_stale_inactive_cache_does_not_break_concurrent_weight_save(db_ses
 
     async with factory() as check_session:
         rows = (
-            await check_session.execute(
-                select(WeightLog).order_by(WeightLog.id)
-            )
-        ).scalars().all()
+            (await check_session.execute(select(WeightLog).order_by(WeightLog.id))).scalars().all()
+        )
         assert [(row.id, row.weight_kg, row.superseded) for row in rows] == [
             (prior.id, 85.0, True),
             (saved.id, 83.0, False),
@@ -1860,7 +1950,9 @@ async def test_stale_inactive_cache_does_not_break_concurrent_weight_save(db_ses
 
 
 @pytest.mark.integration
-async def test_stale_inactive_cache_is_refreshed_before_same_date_edit(db_session, owner_write, garmin_export):
+async def test_stale_inactive_cache_is_refreshed_before_same_date_edit(
+    db_session, owner_write, garmin_export
+):
     prior = await _manual_weight(
         db_session,
         owner_write,
@@ -1873,28 +1965,27 @@ async def test_stale_inactive_cache_is_refreshed_before_same_date_edit(db_sessio
     )
     await garmin_export.set_enabled(True, now=NOW)
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
 
     async with factory() as stale_session:
         cached_prior = (
-            await stale_session.execute(
-                select(WeightLog).where(WeightLog.id == prior.id)
-            )
+            await stale_session.execute(select(WeightLog).where(WeightLog.id == prior.id))
         ).scalar_one()
         assert cached_prior.superseded is True
 
         async with factory() as other_session:
-            assert await weight_service.delete_weight_log(
-                other_session,
-                current.id,
-                identity=owner_write.identity,
-                prepared_weight_write=await _session_weight_write(other_session),
-            ) is True
+            assert (
+                await weight_domain.writes.delete_weight_log(
+                    other_session,
+                    current.id,
+                    identity=owner_write.identity,
+                    prepared_weight_write=await _session_weight_write(other_session),
+                )
+                is True
+            )
             await other_session.commit()
 
-        edited = await weight_service.update_weight_log(
+        edited = await weight_domain.writes.update_weight_log(
             stale_session,
             prior.id,
             on_date=DAY,
@@ -1906,7 +1997,7 @@ async def test_stale_inactive_cache_is_refreshed_before_same_date_edit(db_sessio
         await stale_session.commit()
 
     async with factory() as check_session:
-        active = await weight_service.get_active_weight(
+        active = await weight_domain.logs.get_active_weight(
             check_session,
             DAY,
             subject_id=owner_write.subject_id,
@@ -1930,27 +2021,28 @@ async def test_delete_hook_refreshes_newest_owned_sample_pk(db_session, owner_wr
     await garmin_export.set_enabled(True, now=NOW)
     await garmin_export.export_latest(FakeWeightClient(), now=NOW)
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
 
     async with factory() as stale_session:
         cached_outbox = await _outbox(stale_session)
         assert cached_outbox.remote_sample_pk == "100"
 
         async with factory() as finalizer_session:
-            await garmin_weight_service._acquire_operation_lock(finalizer_session)
+            await garmin_weight_outbox._acquire_operation_lock(finalizer_session)
             fresh = await _outbox(finalizer_session)
             fresh.remote_sample_pk = "101"
             fresh.remote_owned = True
             await finalizer_session.commit()
 
-        assert await weight_service.delete_weight_log(
-            stale_session,
-            local.id,
-            identity=owner_write.identity,
-            prepared_weight_write=await _session_weight_write(stale_session),
-        ) is True
+        assert (
+            await weight_domain.writes.delete_weight_log(
+                stale_session,
+                local.id,
+                identity=owner_write.identity,
+                prepared_weight_write=await _session_weight_write(stale_session),
+            )
+            is True
+        )
         await stale_session.commit()
 
     async with factory() as check_session:
@@ -1961,7 +2053,9 @@ async def test_delete_hook_refreshes_newest_owned_sample_pk(db_session, owner_wr
 
 
 @pytest.mark.integration
-async def test_reconcile_refreshes_cached_weight_after_concurrent_edit(db_session, owner_write, garmin_export):
+async def test_reconcile_refreshes_cached_weight_after_concurrent_edit(
+    db_session, owner_write, garmin_export
+):
     local = await _manual_weight(
         db_session,
         owner_write,
@@ -1969,20 +2063,16 @@ async def test_reconcile_refreshes_cached_weight_after_concurrent_edit(db_sessio
     )
     await garmin_export.set_enabled(True, now=NOW)
     await db_session.commit()
-    factory = async_sessionmaker(
-        db_session.bind, expire_on_commit=False, class_=AsyncSession
-    )
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
 
     async with factory() as stale_session:
         cached = (
-            await stale_session.execute(
-                select(WeightLog).where(WeightLog.id == local.id)
-            )
+            await stale_session.execute(select(WeightLog).where(WeightLog.id == local.id))
         ).scalar_one()
         assert cached.weight_kg == 85.0
 
         async with factory() as other_session:
-            edited = await weight_service.update_weight_log(
+            edited = await weight_domain.writes.update_weight_log(
                 other_session,
                 local.id,
                 on_date=DAY,
@@ -1995,11 +2085,11 @@ async def test_reconcile_refreshes_cached_weight_after_concurrent_edit(db_sessio
 
         # The stale session drives its own reconcile, so it mints its own
         # capability rather than borrowing the fixture's.
-        await garmin_weight_service.reconcile_latest_scoped(
+        await garmin_weight_reconciliation.reconcile_latest_scoped(
             stale_session,
-            prepared=await garmin_weight_service.prepare_scoped_export(
+            prepared=await garmin_weight_outbox.prepare_scoped_export(
                 stale_session,
-                context=await garmin_weight_service.resolve_legacy_export_context(
+                context=await garmin_weight_outbox.resolve_legacy_export_context(
                     stale_session,
                     actor_username=None,
                 ),
@@ -2014,7 +2104,9 @@ async def test_reconcile_refreshes_cached_weight_after_concurrent_edit(db_sessio
         assert outbox.weight_kg == 84.0
 
 
-async def test_cursor_survives_disable_and_blocks_exposed_older_manual_weight(db_session, owner_write, garmin_export):
+async def test_cursor_survives_disable_and_blocks_exposed_older_manual_weight(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -2025,19 +2117,24 @@ async def test_cursor_survives_disable_and_blocks_exposed_older_manual_weight(db
     await garmin_export.set_enabled(True, now=NOW)
     await garmin_export.set_enabled(False, now=NOW)
 
-    assert await weight_service.delete_weight_log(
-        db_session,
-        newest.id,
-        identity=owner_write.identity,
-        prepared_weight_write=await owner_write.weight_write(),
-    ) is True
+    assert (
+        await weight_domain.writes.delete_weight_log(
+            db_session,
+            newest.id,
+            identity=owner_write.identity,
+            prepared_weight_write=await owner_write.weight_write(),
+        )
+        is True
+    )
     await garmin_export.set_enabled(True, now=NOW)
 
     rows = (await db_session.execute(select(GarminWeightExport))).scalars().all()
     assert [(row.date, row.status) for row in rows] == [(DAY, WEIGHT_EXPORT_DELETED)]
 
 
-async def test_watermark_bootstraps_from_newer_historical_outbox(db_session, owner_write, garmin_export, *, garmin_connection_id):
+async def test_watermark_bootstraps_from_newer_historical_outbox(
+    db_session, owner_write, garmin_export, *, garmin_connection_id
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -2045,7 +2142,9 @@ async def test_watermark_bootstraps_from_newer_historical_outbox(db_session, own
         on_date=DAY - timedelta(days=1),
     )
     db_session.add(
-        GarminWeightExport(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id,
+        GarminWeightExport(
+            subject_id=owner_write.subject_id,
+            integration_connection_id=garmin_connection_id,
             date=DAY,
             weight_kg=84.5,
             measured_at=NOW,
@@ -2061,7 +2160,9 @@ async def test_watermark_bootstraps_from_newer_historical_outbox(db_session, own
     assert [(row.date, row.status) for row in rows] == [(DAY, WEIGHT_EXPORT_DELETED)]
 
 
-async def test_reactivating_skipped_intent_resets_the_entire_retry_state(db_session, owner_write, garmin_export):
+async def test_reactivating_skipped_intent_resets_the_entire_retry_state(
+    db_session, owner_write, garmin_export
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -2085,7 +2186,9 @@ async def test_reactivating_skipped_intent_resets_the_entire_retry_state(db_sess
     assert row.last_error is None
 
 
-async def test_status_card_prioritizes_unresolved_cleanup_over_newer_success(db_session, owner_write, garmin_export, *, garmin_connection_id):
+async def test_status_card_prioritizes_unresolved_cleanup_over_newer_success(
+    db_session, owner_write, garmin_export, *, garmin_connection_id
+):
     await _manual_weight(
         db_session,
         owner_write,
@@ -2094,7 +2197,9 @@ async def test_status_card_prioritizes_unresolved_cleanup_over_newer_success(db_
     client = FakeWeightClient()
     await garmin_export.export_latest(client, now=NOW)
     db_session.add(
-        GarminWeightExport(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id,
+        GarminWeightExport(
+            subject_id=owner_write.subject_id,
+            integration_connection_id=garmin_connection_id,
             date=DAY - timedelta(days=1),
             weight_kg=85.0,
             measured_at=NOW - timedelta(days=1),
@@ -2104,17 +2209,21 @@ async def test_status_card_prioritizes_unresolved_cleanup_over_newer_success(db_
     )
     await db_session.flush()
 
-    status = await garmin_weight_service.get_status(db_session)
+    status = await garmin_weight_jobs.get_status(db_session)
 
     assert status["status"] == WEIGHT_EXPORT_DELETE_FAILED
     assert status["date"] == DAY - timedelta(days=1)
     assert status["last_error"] == "cleanup failed"
 
 
-async def test_alert_keeps_the_highest_priority_outstanding_issue(db_session, owner_write, garmin_export, *, garmin_connection_id):
+async def test_alert_keeps_the_highest_priority_outstanding_issue(
+    db_session, owner_write, garmin_export, *, garmin_connection_id
+):
     older = DAY - timedelta(days=1)
     db_session.add(
-        GarminWeightExport(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id,
+        GarminWeightExport(
+            subject_id=owner_write.subject_id,
+            integration_connection_id=garmin_connection_id,
             date=older,
             weight_kg=85.0,
             measured_at=NOW - timedelta(days=1),
@@ -2124,24 +2233,30 @@ async def test_alert_keeps_the_highest_priority_outstanding_issue(db_session, ow
         )
     )
     await db_session.flush()
-    await garmin_weight_service._resolve_alert_if_clear(db_session)
+    await garmin_weight_reconciliation._resolve_alert_if_clear(db_session)
     await _manual_weight(
         db_session,
         owner_write,
         84.5,
     )
 
-    result = await garmin_export.export_latest(FakeWeightClient(fail_fetch=RuntimeError("new send failed")), now=NOW)
+    result = await garmin_export.export_latest(
+        FakeWeightClient(fail_fetch=RuntimeError("new send failed")), now=NOW
+    )
 
     assert result["status"] == WEIGHT_EXPORT_FAILED
-    alerts = await alerts_service.list_active(db_session, domain="garmin", subject_id=owner_write.subject_id)
+    alerts = await alerts_service_legacy.list_active(
+        db_session, domain="garmin", subject_id=owner_write.subject_id
+    )
     assert len(alerts) == 1
     assert older.isoformat() in alerts[0].message
     assert "owned cleanup failed" in alerts[0].message
     assert "new send failed" not in alerts[0].message
 
 
-async def test_deleting_a_conflicted_local_weight_resolves_its_alert(db_session, owner_write, garmin_export):
+async def test_deleting_a_conflicted_local_weight_resolves_its_alert(
+    db_session, owner_write, garmin_export
+):
     local = await _manual_weight(
         db_session,
         owner_write,
@@ -2150,20 +2265,30 @@ async def test_deleting_a_conflicted_local_weight_resolves_its_alert(db_session,
     client = FakeWeightClient([{"samplePk": "external", "weight": 85000}])
     result = await garmin_export.export_latest(client, now=NOW)
     assert result["status"] == WEIGHT_EXPORT_CONFLICT
-    assert await alerts_service.list_active(db_session, domain="garmin", subject_id=owner_write.subject_id)
+    assert await alerts_service_legacy.list_active(
+        db_session, domain="garmin", subject_id=owner_write.subject_id
+    )
 
-    assert await _delete_weight(
-        db_session,
-        owner_write,
-        local.id,
-    ) is True
+    assert (
+        await _delete_weight(
+            db_session,
+            owner_write,
+            local.id,
+        )
+        is True
+    )
 
-    assert await alerts_service.list_active(db_session, domain="garmin", subject_id=owner_write.subject_id) == []
+    assert (
+        await alerts_service_legacy.list_active(
+            db_session, domain="garmin", subject_id=owner_write.subject_id
+        )
+        == []
+    )
     assert (await _outbox(db_session)).status == WEIGHT_EXPORT_DELETED
 
 
 def test_daily_weigh_in_parser_uses_individual_grams_not_average():
-    rows = garmin_weight_service.parse_daily_weigh_ins(
+    rows = garmin_weight_dispatch.parse_daily_weigh_ins(
         {
             "dateWeightList": [
                 {"samplePk": 1, "weight": 84500},
@@ -2181,12 +2306,12 @@ def test_daily_weigh_in_parser_uses_individual_grams_not_average():
 @pytest.mark.parametrize("payload", [None, {"dateWeightList": [None]}])
 def test_daily_weigh_in_parser_rejects_ambiguous_empty_or_malformed_payload(payload):
     with pytest.raises(ValueError):
-        garmin_weight_service.parse_daily_weigh_ins(payload)
+        garmin_weight_dispatch.parse_daily_weigh_ins(payload)
 
 
 def test_daily_weigh_in_parser_accepts_explicit_empty_payloads():
-    assert garmin_weight_service.parse_daily_weigh_ins({}) == []
-    assert garmin_weight_service.parse_daily_weigh_ins([]) == []
+    assert garmin_weight_dispatch.parse_daily_weigh_ins({}) == []
+    assert garmin_weight_dispatch.parse_daily_weigh_ins([]) == []
 
 
 class _RawWeightGarmin:
@@ -2207,15 +2332,11 @@ class _RawWeightGarmin:
 
 async def test_garmin_client_weight_methods_preserve_local_date_and_contract():
     raw = _RawWeightGarmin()
-    client = GarminClient(
-        Config(database_url="", redis_url="", timezone="Asia/Almaty")
-    )
+    client = GarminClient(Config(database_url="", redis_url="", timezone="Asia/Almaty"))
     client._garmin = raw
 
     assert await client.fetch_daily_weigh_ins(DAY) == {"dateWeightList": []}
-    assert await client.add_weigh_in(84.5, datetime(2026, 8, 15, 23, 45)) == {
-        "samplePk": 9
-    }
+    assert await client.add_weigh_in(84.5, datetime(2026, 8, 15, 23, 45)) == {"samplePk": 9}
     await client.delete_weigh_in("9", DAY)
 
     assert raw.calls == [
@@ -2296,15 +2417,9 @@ def test_0034_quarantines_every_ambiguous_legacy_export(monkeypatch):
         context = MigrationContext.configure(connection)
         monkeypatch.setattr(migration, "op", Operations(context))
         migration.upgrade()
-        rows = {
-            row.id: row
-            for row in connection.execute(select(exports).order_by(exports.c.id))
-        }
+        rows = {row.id: row for row in connection.execute(select(exports).order_by(exports.c.id))}
         column_names = {
-            column["name"]
-            for column in sa.inspect(connection).get_columns(
-                "garmin_weight_exports"
-            )
+            column["name"] for column in sa.inspect(connection).get_columns("garmin_weight_exports")
         }
 
     assert rows[1].status == WEIGHT_EXPORT_UNVERIFIED

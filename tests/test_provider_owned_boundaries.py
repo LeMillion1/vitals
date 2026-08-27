@@ -20,13 +20,15 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import (
-    garmin_service,
-    hevy_service,
-    labs_service,
-    raw_payload_service,
-)
-from vitals.services.body_scan import scans
+from vitals.services import raw_payload_service
+from vitals.services.garmin import ingestion as garmin_ingestion
+from vitals.services.garmin import ownership as garmin_ownership
+from vitals.services.garmin import raw_payloads as garmin_raw_payloads
+from vitals.services.garmin import sync as garmin_sync
+from vitals.services.hevy import raw_payloads as hevy_raw_payloads
+from vitals.services.hevy import sync as hevy_sync
+from vitals.services.labs import ingestion as labs_ingestion
+from vitals.services.body_scan.scans import reparse as body_scan_reparse
 
 
 async def _legacy_roots(session):
@@ -71,11 +73,11 @@ async def test_nightly_raw_sweep_passes_exact_system_owned_roots(
         calls.append(("body_comp", identity, identity.subject_id))
         return 0
 
-    monkeypatch.setattr(garmin_service, "reparse_owned_pending", _garmin)
-    monkeypatch.setattr(hevy_service, "reparse_owned_pending", _hevy)
-    monkeypatch.setattr(labs_service, "reparse_owned_pending", _labs)
+    monkeypatch.setattr(garmin_raw_payloads, "reparse_owned_pending", _garmin)
+    monkeypatch.setattr(hevy_raw_payloads, "reparse_owned_pending", _hevy)
+    monkeypatch.setattr(labs_ingestion, "reparse_owned_pending", _labs)
     monkeypatch.setattr(
-        scans,
+        body_scan_reparse,
         "reparse_owned_pending",
         _body_comp,
     )
@@ -319,8 +321,8 @@ async def test_garmin_sync_takes_governance_before_provider_row_locks(
 ):
     owner, subject, connections = await _legacy_roots(db_session)
     events: list[str] = []
-    original_governance = garmin_service.acquire_identity_governance_lock
-    original_scope_lock = garmin_service._lock_owned_garmin_scope
+    original_governance = garmin_ingestion.acquire_identity_governance_lock
+    original_scope_lock = garmin_ownership._lock_owned_garmin_scope
 
     async def _governance(session):
         events.append("governance")
@@ -342,16 +344,16 @@ async def test_garmin_sync_takes_governance_before_provider_row_locks(
             return []
 
     monkeypatch.setattr(
-        garmin_service,
+        garmin_sync,
         "acquire_identity_governance_lock",
         _governance,
     )
     monkeypatch.setattr(
-        garmin_service,
+        garmin_ingestion,
         "_lock_owned_garmin_scope",
         _scope_lock,
     )
-    await garmin_service.sync_owned(
+    await garmin_sync.sync_owned(
         db_session,
         _Client(),
         identity=WriteIdentity(subject.id, owner.id),
@@ -375,8 +377,8 @@ async def test_hevy_sync_takes_governance_before_provider_row_locks(
 ):
     owner, subject, connections = await _legacy_roots(db_session)
     events: list[str] = []
-    original_governance = hevy_service.acquire_identity_governance_lock
-    original_scope_lock = hevy_service._lock_owned_hevy_scope
+    original_governance = hevy_sync.acquire_identity_governance_lock
+    original_scope_lock = hevy_sync._lock_owned_hevy_scope
 
     async def _governance(session):
         events.append("governance")
@@ -392,16 +394,16 @@ async def test_hevy_sync_takes_governance_before_provider_row_locks(
             return []
 
     monkeypatch.setattr(
-        hevy_service,
+        hevy_sync,
         "acquire_identity_governance_lock",
         _governance,
     )
     monkeypatch.setattr(
-        hevy_service,
+        hevy_sync,
         "_lock_owned_hevy_scope",
         _scope_lock,
     )
-    await hevy_service.sync_owned(
+    await hevy_sync.sync_owned(
         db_session,
         _Client(),
         identity=WriteIdentity(subject.id, owner.id),
@@ -449,7 +451,7 @@ async def test_postgres_provider_sync_waits_for_governance_before_root_lock(
         sync_waiting_for_governance.set()
         await acquire_identity_governance_lock(session)
 
-    service = garmin_service if provider == "garmin" else hevy_service
+    service = garmin_sync if provider == "garmin" else hevy_sync
     monkeypatch.setattr(
         service,
         "acquire_identity_governance_lock",
@@ -485,7 +487,7 @@ async def test_postgres_provider_sync_waits_for_governance_before_root_lock(
                     async def fetch_activities(self, start, end):
                         return []
 
-                await garmin_service.sync_owned(
+                await garmin_sync.sync_owned(
                     session,
                     _GarminClient(),
                     identity=identity,
@@ -498,7 +500,7 @@ async def test_postgres_provider_sync_waits_for_governance_before_root_lock(
                     async def fetch_workouts(self, *, max_pages=50):
                         return []
 
-                await hevy_service.sync_owned(
+                await hevy_sync.sync_owned(
                     session,
                     _HevyClient(),
                     identity=identity,

@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from vitals.services.milestones import goals as milestone_goals
+from vitals.services.milestones import governance as milestone_governance
+from vitals.services.milestones import progress as milestone_progress
+from vitals.services.milestones import queries as milestone_queries
+
+from vitals.services.digest import jobs as digest_jobs
+
 from tests.job_runner import run_job_for_every_subject
 
 import asyncio
@@ -17,10 +24,10 @@ from vitals.enums import Domain, UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.models.milestones import Milestone
 from vitals.ownership import WriteIdentity
-from vitals.services import milestones_service
+
 from vitals.services.conflicts import engine
 from vitals.services.conflicts.engine import ConflictLegacyBridgeError
-from vitals.services.digest_service import DigestOwnershipError
+from vitals.services.digest.ownership import DigestOwnershipError
 from vitals.services.scoped_settings_service import (
     LegacyScopedSettingBridgeClosedError,
 )
@@ -103,7 +110,7 @@ async def test_scoped_create_stamps_subject_actor_and_update_retains_origin(
     legacy_owner_roots,
 ):
     identity = _identity(legacy_owner_roots)
-    row = await milestones_service.create_milestone(
+    row = await milestone_goals.create_milestone(
         db_session,
         name="Synthetic goal",
         domain=Domain.WEIGHT.value,
@@ -117,7 +124,7 @@ async def test_scoped_create_stamps_subject_actor_and_update_retains_origin(
     )
 
     original_actor = row.actor_user_id
-    updated = await milestones_service.update_milestone(
+    updated = await milestone_goals.update_milestone(
         db_session,
         row.id,
         note="updated",
@@ -138,13 +145,13 @@ async def test_scoped_writer_capability_is_required_live_and_human(
 
     # A subject cannot be passed without its conflict decision at all now.
     with pytest.raises(TypeError):
-        await milestones_service.create_milestone(
+        await milestone_goals.create_milestone(
             db_session,
             name="missing token",
             identity=identity,
         )
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await milestones_service.create_milestone(
+        await milestone_goals.create_milestone(
             db_session,
             name="wrong actor",
             identity=WriteIdentity(identity.subject_id, None),
@@ -153,7 +160,7 @@ async def test_scoped_writer_capability_is_required_live_and_human(
 
     await db_session.commit()
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await milestones_service.create_milestone(
+        await milestone_goals.create_milestone(
             db_session,
             name="expired token",
             identity=identity,
@@ -165,7 +172,7 @@ async def test_scoped_writer_capability_is_required_live_and_human(
         engine.ConflictPreparedWriteError,
         match="human actor",
     ):
-        await milestones_service.create_milestone(
+        await milestone_goals.create_milestone(
             db_session,
             name="system goal",
             identity=system_identity,
@@ -197,21 +204,21 @@ async def test_subject_reads_are_isolated_and_foreign_ids_do_not_enumerate(
     db_session.add_all([own, other])
     await db_session.commit()
 
-    rows = await milestones_service.list_milestones(
+    rows = await milestone_queries.list_milestones(
         db_session,
         subject_id=identity.subject_id,
     )
     assert [row.id for row in rows] == [own.id]
 
     prepared = await _prepared(db_session, identity)
-    assert await milestones_service.update_milestone(
+    assert await milestone_goals.update_milestone(
         db_session,
         other.id,
         note="must not write",
         identity=identity,
         prepared_conflict_write=prepared,
     ) is None
-    assert await milestones_service.delete_milestone(
+    assert await milestone_goals.delete_milestone(
         db_session,
         other.id,
         identity=identity,
@@ -240,13 +247,13 @@ async def test_a_goal_without_a_subject_belongs_to_nobody(
 
     # A row with an actor but no subject is broken provenance, not merely
     # somebody else's, so it is reported rather than passed over.
-    with pytest.raises(milestones_service.MilestoneOwnershipError, match="partial"):
-        await milestones_service.list_milestones(
+    with pytest.raises(milestone_governance.MilestoneOwnershipError, match="partial"):
+        await milestone_queries.list_milestones(
             db_session,
             subject_id=identity.subject_id,
         )
-    with pytest.raises(milestones_service.MilestoneOwnershipError, match="partial"):
-        await milestones_service.update_milestone(
+    with pytest.raises(milestone_governance.MilestoneOwnershipError, match="partial"):
+        await milestone_goals.update_milestone(
             db_session,
             partial.id,
             note="must not adopt",
@@ -254,7 +261,7 @@ async def test_a_goal_without_a_subject_belongs_to_nobody(
             prepared_conflict_write=await _prepared(db_session, identity),
         )
     assert (
-        await milestones_service.update_milestone(
+        await milestone_goals.update_milestone(
             db_session,
             legacy.id,
             note="must not adopt",
@@ -269,7 +276,7 @@ async def test_a_goal_without_a_subject_belongs_to_nobody(
     await db_session.delete(partial)
     await db_session.flush()
     # With the broken row gone, an unowned goal is simply not this subject's.
-    assert await milestones_service.list_milestones(
+    assert await milestone_queries.list_milestones(
         db_session,
         subject_id=identity.subject_id,
     ) == []
@@ -280,8 +287,8 @@ async def test_progress_propagates_subject_to_weight_measurement_scan_and_settin
     legacy_owner_roots,
     monkeypatch,
 ):
-    from vitals.services import modules_service, weight_service
-    from vitals.services.body_scan import scans
+    from vitals.services import modules_service, weight as weight_domain
+    from vitals.services.body_scan.scans import queries as body_scan_queries
     from vitals.analytics import body_metrics
 
     identity = _identity(legacy_owner_roots)
@@ -307,9 +314,13 @@ async def test_progress_propagates_subject_to_weight_measurement_scan_and_settin
         seen.append(("modules", subject_id))
         return {"body_comp": True}
 
-    monkeypatch.setattr(weight_service, "list_active_weights", weights)
-    monkeypatch.setattr(weight_service, "list_body_measurements", measurements)
-    monkeypatch.setattr(scans, "list_scans", list_scans)
+    monkeypatch.setattr(weight_domain.logs, "list_active_weights", weights)
+    monkeypatch.setattr(
+        weight_domain.measurements,
+        "list_body_measurements",
+        measurements,
+    )
+    monkeypatch.setattr(body_scan_queries, "list_scans", list_scans)
     monkeypatch.setattr(modules_service, "get_enabled_modules", modules)
     monkeypatch.setattr(body_metrics, "body_fat_pct_from_scan", lambda metrics: 15.0)
 
@@ -331,12 +342,12 @@ async def test_progress_propagates_subject_to_weight_measurement_scan_and_settin
     db_session.add_all([weight_goal, body_goal])
     await db_session.flush()
 
-    await milestones_service.progress(
+    await milestone_progress.progress(
         db_session,
         weight_goal,
         subject_id=identity.subject_id,
     )
-    await milestones_service.progress(
+    await milestone_progress.progress(
         db_session,
         body_goal,
         subject_id=identity.subject_id,
@@ -389,7 +400,6 @@ async def test_exact_one_mcp_and_aggregate_scopes_close_with_second_subject(
 
     from vitals import config as config_module
     from vitals.integrations import llm_client as llm_client_module
-    from vitals.services import digest_service
 
     monkeypatch.setattr(
         config_module,
@@ -407,7 +417,7 @@ async def test_exact_one_mcp_and_aggregate_scopes_close_with_second_subject(
     # the monkeypatch above: nothing reaches the model on a run that stops. So
     # the assertion is that it does not, whether the run finishes or raises.
     try:
-        await run_job_for_every_subject(digest_service.digest_job, session_factory)
+        await run_job_for_every_subject(digest_jobs.digest_job, session_factory)
     except _CLOSED_IN_A_SHARED_INSTALLATION:
         pass
     except RlsSessionError:
@@ -501,10 +511,10 @@ async def test_whole_lake_mcp_and_digest_reject_partial_milestone_roots(
         mcp_router.get_data_overview,
         mcp_router.generate_digest_now,
     ):
-        with pytest.raises(milestones_service.MilestoneOwnershipError, match="partial"):
+        with pytest.raises(milestone_governance.MilestoneOwnershipError, match="partial"):
             await call()
 
-    with pytest.raises(milestones_service.MilestoneOwnershipError, match="partial"):
+    with pytest.raises(milestone_governance.MilestoneOwnershipError, match="partial"):
         await reports_router.generate_digest_now(
             request=None,
             db=db_session,
@@ -514,7 +524,6 @@ async def test_whole_lake_mcp_and_digest_reject_partial_milestone_roots(
 
     from vitals import config as config_module
     from vitals.integrations import llm_client as llm_client_module
-    from vitals.services import digest_service
 
     monkeypatch.setattr(
         config_module,
@@ -526,8 +535,8 @@ async def test_whole_lake_mcp_and_digest_reject_partial_milestone_roots(
         "LLMClient",
         lambda: pytest.fail("digest job reached the LLM after root rejection"),
     )
-    with pytest.raises(milestones_service.MilestoneOwnershipError, match="partial"):
-        await run_job_for_every_subject(digest_service.digest_job, session_factory)
+    with pytest.raises(milestone_governance.MilestoneOwnershipError, match="partial"):
+        await run_job_for_every_subject(digest_jobs.digest_job, session_factory)
 
 
 @pytest.mark.integration
@@ -553,7 +562,7 @@ async def test_postgres_concurrent_updates_wait_on_subject_governance(
     row_id = row.id
 
     session_a = factory()
-    await milestones_service.update_milestone(
+    await milestone_goals.update_milestone(
         session_a,
         row_id,
         note="writer-a",
@@ -563,7 +572,7 @@ async def test_postgres_concurrent_updates_wait_on_subject_governance(
 
     async def writer_b() -> None:
         async with factory() as session_b:
-            await milestones_service.update_milestone(
+            await milestone_goals.update_milestone(
                 session_b,
                 row_id,
                 note="writer-b",

@@ -11,6 +11,8 @@ INSERT, and ``func.date()`` over a timestamp column.
 """
 from __future__ import annotations
 
+from vitals.services.alerts import legacy as alerts_service_legacy
+
 from datetime import datetime, timedelta
 
 import pytest
@@ -19,7 +21,6 @@ from sqlalchemy.exc import IntegrityError
 
 from vitals.enums import Domain, Severity
 from vitals.models.system_alert import SystemAlert
-from vitals.services import alerts_service
 from vitals.utils.timeutils import now_local, today_local
 
 KEY = "weight.noisy_period_active"
@@ -30,7 +31,7 @@ async def _raise(
     message: str = "шумный период", domain: str = Domain.WEIGHT.value,
     overridden: bool = False,
 ):
-    return await alerts_service.raise_alert(
+    return await alerts_service_legacy.raise_alert(
         session, domain=domain, severity=severity, message=message,
         alert_key=key, entity_ref=entity, overridden=overridden,
     )
@@ -61,7 +62,7 @@ async def test_different_entity_ref_is_a_different_alert(db_session):
     await db_session.commit()
 
     assert a.id != b.id
-    assert len(await alerts_service.list_active(db_session, subject_id=None)) == 2
+    assert len(await alerts_service_legacy.list_active(db_session, subject_id=None)) == 2
 
 
 async def test_raise_overridden_stamps_override_once(db_session):
@@ -78,7 +79,7 @@ async def test_raise_overridden_stamps_override_once(db_session):
 
 async def test_resolve_by_key_frees_the_slot(db_session):
     first = await _raise(db_session)
-    resolved = await alerts_service.resolve_by_key(db_session, alert_key=KEY)
+    resolved = await alerts_service_legacy.resolve_by_key(db_session, alert_key=KEY)
     assert resolved is not None and resolved.id == first.id and resolved.resolved_at is not None
 
     # The condition comes back → a NEW active row, the old one stays as history.
@@ -86,11 +87,11 @@ async def test_resolve_by_key_frees_the_slot(db_session):
     await db_session.commit()
     assert second.id != first.id
     assert len(await _all_rows(db_session)) == 2
-    assert [a.id for a in await alerts_service.list_active(db_session, subject_id=None)] == [second.id]
+    assert [a.id for a in await alerts_service_legacy.list_active(db_session, subject_id=None)] == [second.id]
 
 
 async def test_resolve_by_key_is_a_noop_when_nothing_active(db_session):
-    assert await alerts_service.resolve_by_key(db_session, alert_key=KEY) is None
+    assert await alerts_service_legacy.resolve_by_key(db_session, alert_key=KEY) is None
 
 
 async def test_resolve_alert_touches_only_its_own_row(db_session):
@@ -98,10 +99,10 @@ async def test_resolve_alert_touches_only_its_own_row(db_session):
     are distinct alerts and must not be collapsed."""
     a = await _raise(db_session, entity="glucose:1", message="одинаковый текст")
     b = await _raise(db_session, entity="glucose:2", message="одинаковый текст")
-    await alerts_service.resolve_alert(db_session, a.id, subject_id=None)
+    await alerts_service_legacy.resolve_alert(db_session, a.id, subject_id=None)
     await db_session.commit()
 
-    assert [x.id for x in await alerts_service.list_active(db_session, subject_id=None)] == [b.id]
+    assert [x.id for x in await alerts_service_legacy.list_active(db_session, subject_id=None)] == [b.id]
 
 
 # ── resolve_superseded: prefix logic ──────────────────────────────────────────
@@ -111,7 +112,7 @@ async def test_resolve_superseded_keeps_current_row_only(db_session):
     """Singleton case (marker=None): everything for the key except keep_entity."""
     old = await _raise(db_session, entity="scan:1")
     current = await _raise(db_session, entity="scan:2")
-    await alerts_service.resolve_superseded(db_session, alert_key=KEY, keep_entity="scan:2")
+    await alerts_service_legacy.resolve_superseded(db_session, alert_key=KEY, keep_entity="scan:2")
     await db_session.commit()
 
     assert (await db_session.get(SystemAlert, old.id)).resolved_at is not None
@@ -126,7 +127,7 @@ async def test_resolve_superseded_scoped_to_one_marker(db_session):
     current = await _raise(db_session, entity="glucose:2")
     other_marker = await _raise(db_session, entity="ferritin:9")
 
-    await alerts_service.resolve_superseded(
+    await alerts_service_legacy.resolve_superseded(
         db_session, alert_key=KEY, keep_entity="glucose:2", marker="glucose"
     )
     await db_session.commit()
@@ -140,7 +141,7 @@ async def test_resolve_superseded_scoped_to_one_marker(db_session):
 async def test_resolve_superseded_with_no_keep_resolves_everything(db_session):
     a = await _raise(db_session, entity="scan:1")
     b = await _raise(db_session, entity="scan:2")
-    await alerts_service.resolve_superseded(db_session, alert_key=KEY, keep_entity=None)
+    await alerts_service_legacy.resolve_superseded(db_session, alert_key=KEY, keep_entity=None)
     await db_session.commit()
 
     assert (await db_session.get(SystemAlert, a.id)).resolved_at is not None
@@ -158,32 +159,32 @@ async def test_dismissed_today_vs_ever_dismissed(db_session):
     alert.resolved_at = now_local() - timedelta(days=1)
     await db_session.flush()
 
-    assert await alerts_service._was_dismissed_today(db_session, KEY, "glucose:1") is False
-    assert await alerts_service._was_ever_dismissed(db_session, KEY, "glucose:1") is True
+    assert await alerts_service_legacy._was_dismissed_today(db_session, KEY, "glucose:1") is False
+    assert await alerts_service_legacy._was_ever_dismissed(db_session, KEY, "glucose:1") is True
 
     # Same alert dismissed today → both say yes.
     alert.resolved_at = now_local()
     await db_session.flush()
-    assert await alerts_service._was_dismissed_today(db_session, KEY, "glucose:1") is True
-    assert await alerts_service._was_ever_dismissed(db_session, KEY, "glucose:1") is True
+    assert await alerts_service_legacy._was_dismissed_today(db_session, KEY, "glucose:1") is True
+    assert await alerts_service_legacy._was_ever_dismissed(db_session, KEY, "glucose:1") is True
 
 
 async def test_dismissed_today_is_per_entity(db_session):
     a = await _raise(db_session, entity="glucose:1")
-    await alerts_service.resolve_alert(db_session, a.id, subject_id=None)
+    await alerts_service_legacy.resolve_alert(db_session, a.id, subject_id=None)
     await db_session.flush()
 
-    assert await alerts_service._was_dismissed_today(db_session, KEY, "glucose:1") is True
-    assert await alerts_service._was_dismissed_today(db_session, KEY, "glucose:2") is False
+    assert await alerts_service_legacy._was_dismissed_today(db_session, KEY, "glucose:1") is True
+    assert await alerts_service_legacy._was_dismissed_today(db_session, KEY, "glucose:2") is False
 
 
 async def test_dismissed_today_accepts_an_explicit_date(db_session):
     a = await _raise(db_session)
-    await alerts_service.resolve_alert(db_session, a.id, subject_id=None)
+    await alerts_service_legacy.resolve_alert(db_session, a.id, subject_id=None)
     await db_session.flush()
 
     tomorrow = today_local() + timedelta(days=1)
-    assert await alerts_service._was_dismissed_today(db_session, KEY, "", tomorrow) is False
+    assert await alerts_service_legacy._was_dismissed_today(db_session, KEY, "", tomorrow) is False
 
 
 # ── resolve_all / list_active ─────────────────────────────────────────────────
@@ -192,7 +193,7 @@ async def test_dismissed_today_accepts_an_explicit_date(db_session):
 async def test_resolve_all_can_be_scoped_to_a_domain(db_session):
     w = await _raise(db_session, entity="w", domain=Domain.WEIGHT.value)
     labs_alert = await _raise(db_session, entity="l", domain=Domain.LABS.value)
-    await alerts_service.resolve_all(db_session, domain=Domain.WEIGHT.value)
+    await alerts_service_legacy.resolve_all(db_session, domain=Domain.WEIGHT.value)
     await db_session.commit()
 
     assert (await db_session.get(SystemAlert, w.id)).resolved_at is not None
@@ -200,11 +201,11 @@ async def test_resolve_all_can_be_scoped_to_a_domain(db_session):
 
 
 def test_is_blocking_only_for_block():
-    assert alerts_service.is_blocking(Severity.BLOCK.value) is True
-    assert alerts_service.is_blocking(Severity.WARN.value) is False
-    assert alerts_service.is_blocking(Severity.INFO.value) is False
+    assert alerts_service_legacy.is_blocking(Severity.BLOCK.value) is True
+    assert alerts_service_legacy.is_blocking(Severity.WARN.value) is False
+    assert alerts_service_legacy.is_blocking(Severity.INFO.value) is False
     # ``note`` is an interpretation of the data — it must never stop a save.
-    assert alerts_service.is_blocking(Severity.NOTE.value) is False
+    assert alerts_service_legacy.is_blocking(Severity.NOTE.value) is False
 
 
 async def test_note_tone_dedupes_like_every_other_severity(db_session):
@@ -215,7 +216,7 @@ async def test_note_tone_dedupes_like_every_other_severity(db_session):
     assert first.id == second.id
     assert second.severity == Severity.NOTE.value
     assert len(await _all_rows(db_session)) == 1
-    assert [a.id for a in await alerts_service.list_active(db_session, subject_id=None)] == [first.id]
+    assert [a.id for a in await alerts_service_legacy.list_active(db_session, subject_id=None)] == [first.id]
 
 
 # ── Postgres-only invariants (SQLite fakes these) ─────────────────────────────
@@ -242,7 +243,7 @@ async def test_partial_unique_index_allows_a_resolved_duplicate(db_session):
     """...and it must NOT block history: once resolved, the same (key, entity)
     can be raised again, which is exactly what the partial WHERE clause buys."""
     first = await _raise(db_session)
-    await alerts_service.resolve_by_key(db_session, alert_key=KEY)
+    await alerts_service_legacy.resolve_by_key(db_session, alert_key=KEY)
     second = await _raise(db_session)
     await db_session.commit()
 
@@ -260,12 +261,12 @@ async def test_func_date_over_resolved_at_matches_the_local_day(db_session):
 
     alert.resolved_at = datetime.combine(today, datetime.min.time()).replace(hour=23, minute=59)
     await db_session.flush()
-    assert await alerts_service._was_dismissed_today(db_session, KEY, "", today) is True
+    assert await alerts_service_legacy._was_dismissed_today(db_session, KEY, "", today) is True
 
     alert.resolved_at = datetime.combine(today + timedelta(days=1), datetime.min.time())
     await db_session.flush()
-    assert await alerts_service._was_dismissed_today(db_session, KEY, "", today) is False
-    assert await alerts_service._was_dismissed_today(
+    assert await alerts_service_legacy._was_dismissed_today(db_session, KEY, "", today) is False
+    assert await alerts_service_legacy._was_dismissed_today(
         db_session, KEY, "", today + timedelta(days=1)
     ) is True
 

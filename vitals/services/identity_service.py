@@ -141,6 +141,101 @@ def normalize_email(raw: str) -> NormalizedEmail:
     return NormalizedEmail(display=display, lookup_key=lookup_key)
 
 
+async def find_user_id_by_username(
+    session: AsyncSession,
+    *,
+    username: str,
+) -> uuid.UUID | None:
+    """Resolve a user ID through the canonical username normalization rule."""
+
+    lookup = normalize_username(username).lookup_key
+    return await session.scalar(
+        select(User.id).where(User.normalized_username == lookup)
+    )
+
+
+async def is_active_username(
+    session: AsyncSession,
+    *,
+    username: str,
+) -> bool:
+    """Whether a canonical username currently names an active account."""
+
+    lookup = normalize_username(username).lookup_key
+    return (
+        await session.scalar(
+            select(User.id)
+            .where(
+                User.normalized_username == lookup,
+                User.status == UserStatus.ACTIVE.value,
+            )
+            .limit(1)
+        )
+    ) is not None
+
+
+async def sole_active_subject_owner_username(
+    session: AsyncSession,
+) -> str | None:
+    """Return the sole record owner's username only when that owner is active."""
+
+    records = tuple(
+        (
+            await session.execute(
+                select(User.username, User.status)
+                .select_from(HealthSubject)
+                .join(User, User.id == HealthSubject.owner_user_id)
+                .limit(2)
+            )
+        ).all()
+    )
+    if len(records) != 1 or records[0].status != UserStatus.ACTIVE.value:
+        return None
+    return records[0].username
+
+
+async def installation_has_multiple_subjects(session: AsyncSession) -> bool:
+    """Whether an unattributed legacy credential would have to guess."""
+
+    subject_ids = tuple(
+        await session.scalars(select(HealthSubject.id).limit(2))
+    )
+    return len(subject_ids) > 1
+
+
+async def owned_subject_id(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """Return the health record owned by one user, if any."""
+
+    return await session.scalar(
+        select(HealthSubject.id).where(HealthSubject.owner_user_id == user_id)
+    )
+
+
+async def user_has_role(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    roles: tuple[UserRoleName | str, ...],
+) -> bool:
+    """Check role membership without leaking ORM rows into delivery code."""
+
+    values = tuple(role.value if isinstance(role, UserRoleName) else role for role in roles)
+    return (
+        await session.scalar(
+            select(UserRole.id)
+            .where(
+                UserRole.user_id == user_id,
+                UserRole.role.in_(values),
+            )
+            .limit(1)
+        )
+    ) is not None
+
+
 def bcrypt_cost(password_hash: str) -> int:
     """Validate a bcrypt hash envelope and return its work factor.
 
@@ -301,7 +396,7 @@ async def require_pre_identity_compatibility(session: AsyncSession) -> object:
     The one contract this cannot verify, and every caller must therefore honour,
     is lock order.  Call it *before* the Garmin outbox advisory and before any
     row lock, in the position
-    :func:`vitals.services.weight_service.prepare_weight_write` gives
+    :func:`vitals.services.weight.governance.prepare_weight_write` gives
     :func:`acquire_identity_governance_lock` on the scoped path.  Taking
     governance after a lock that the canonical order puts behind it is the
     inversion that deadlocks.

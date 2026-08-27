@@ -11,6 +11,9 @@ I/O in this control plane.
 """
 from __future__ import annotations
 
+from vitals.services.ai_gateway import config as ai_gateway_service_config
+from vitals.services.ai_gateway import quota as ai_gateway_service_quota
+
 import uuid
 from dataclasses import dataclass
 from datetime import date
@@ -23,7 +26,7 @@ from vitals.enums import IntegrationConnectionStatus
 from vitals.models.ai import AIPlatformQuotaPeriod, AISubjectQuotaPeriod
 from vitals.models.identity import HealthSubject
 from vitals.models.tenancy import PlatformIntegrationConnection
-from vitals.services import ai_gateway_service, platform_admin_service
+from vitals.services import platform_admin_service
 from vitals.services.platform_admin_service import PreparedPlatformAdmin
 
 OPENROUTER_CREDENTIAL_REF = "env:VITALS_OPENROUTER_API_KEY"
@@ -221,7 +224,7 @@ async def apply_gateway_configuration(
     if current is None:
         if desired_enabled is False and not configuration_changed:
             return GatewayTransition(action=action, status=None, config_version=None)
-        result = await ai_gateway_service.create_gateway(
+        result = await ai_gateway_service_config.create_gateway(
             session,
             prepared=prepared,
             external_account_discriminator=uuid.uuid4().hex,
@@ -230,14 +233,14 @@ async def apply_gateway_configuration(
         action = GatewayTransitionAction.CREATED
     elif configuration_changed:
         was_disabled = current.status == IntegrationConnectionStatus.DISABLED.value
-        result = await ai_gateway_service.rotate_gateway(
+        result = await ai_gateway_service_config.rotate_gateway(
             session,
             prepared=prepared,
             external_account_discriminator=uuid.uuid4().hex,
             credential_ref=OPENROUTER_CREDENTIAL_REF,
         )
         if desired_enabled is False or (desired_enabled is None and was_disabled):
-            result = await ai_gateway_service.disable_gateway(
+            result = await ai_gateway_service_config.disable_gateway(
                 session,
                 prepared=prepared,
             )
@@ -247,7 +250,7 @@ async def apply_gateway_configuration(
         else:
             action = GatewayTransitionAction.ROTATED
     elif desired_enabled is True and current.status == IntegrationConnectionStatus.DISABLED.value:
-        result = await ai_gateway_service.rotate_gateway(
+        result = await ai_gateway_service_config.rotate_gateway(
             session,
             prepared=prepared,
             external_account_discriminator=uuid.uuid4().hex,
@@ -255,7 +258,7 @@ async def apply_gateway_configuration(
         )
         action = GatewayTransitionAction.ENABLED
     elif desired_enabled is False and current.status == IntegrationConnectionStatus.ACTIVE.value:
-        result = await ai_gateway_service.disable_gateway(session, prepared=prepared)
+        result = await ai_gateway_service_config.disable_gateway(session, prepared=prepared)
         action = GatewayTransitionAction.DISABLED
 
     if action is not GatewayTransitionAction.NO_CHANGE:
@@ -347,7 +350,7 @@ async def configure_aligned_quota_period(
         or existing_subject.unit_limit != subject_unit_limit
     )
 
-    platform = await ai_gateway_service.configure_platform_quota_period(
+    platform = await ai_gateway_service_quota.configure_platform_quota_period(
         session,
         prepared=prepared,
         period_start=period_start,
@@ -355,7 +358,7 @@ async def configure_aligned_quota_period(
         cost_limit_microunits=platform_cost_limit_microunits,
         unit_limit=platform_unit_limit,
     )
-    subject = await ai_gateway_service.configure_subject_quota_period(
+    subject = await ai_gateway_service_quota.configure_subject_quota_period(
         session,
         prepared=prepared,
         subject_id=subject_id,

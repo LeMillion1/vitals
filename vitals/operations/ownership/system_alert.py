@@ -7,6 +7,9 @@ Callers own commit or rollback.
 """
 from __future__ import annotations
 
+from vitals.services.alerts import contracts as alerts_service_contracts
+from vitals.services.alerts import validation as alerts_service_validation
+
 import hashlib
 import json
 import math
@@ -35,7 +38,6 @@ from vitals.models.ai import AIInvocation
 from vitals.models.tenancy import IntegrationConnection
 from vitals.services.tenancy_bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
 from vitals.models.system_alert import SystemAlert
-from vitals.services import alerts_service
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
@@ -747,16 +749,16 @@ def _alert_class(alert_key: str) -> tuple[str, IntegrationProvider | None]:
     connection root to be null wherever a platform invocation funds the parse.
     """
 
-    if alert_key in alerts_service.HEALTH_ALERT_KEYS or _CONFLICT_KEY_RE.fullmatch(
+    if alert_key in alerts_service_contracts.HEALTH_ALERT_KEYS or _CONFLICT_KEY_RE.fullmatch(
         alert_key
     ):
         # A conflict alert names one subject-owned or curated rule; the writer
         # classifies it as health for exactly that reason.
         return "health", None
-    for provider, keys in alerts_service.PROVIDER_ALERT_KEYS.items():
+    for provider, keys in alerts_service_contracts.PROVIDER_ALERT_KEYS.items():
         if alert_key in keys:
             return "provider", provider
-    if alerts_service.is_platform_alert_key(alert_key):
+    if alerts_service_validation.is_platform_alert_key(alert_key):
         return "platform", None
     raise SystemAlertOwnershipBackfillProvenanceError(
         "system alert key is outside the reviewed ownership allowlist"
@@ -768,7 +770,7 @@ async def _reviewed_provider_root(
 ) -> Any:
     """Return the exact reviewed legacy connection one provider alert describes."""
 
-    connection_type = alerts_service.PROVIDER_ALERT_CONNECTION_TYPES[provider]
+    connection_type = alerts_service_contracts.PROVIDER_ALERT_CONNECTION_TYPES[provider]
     table = IntegrationConnection.__table__
     rows = list(
         await session.execute(
@@ -803,7 +805,7 @@ async def _reviewed_provider_root(
 def _validate_connection(
     connection: Any, *, scope: _Scope, provider: IntegrationProvider
 ) -> None:
-    connection_type = alerts_service.PROVIDER_ALERT_CONNECTION_TYPES[provider]
+    connection_type = alerts_service_contracts.PROVIDER_ALERT_CONNECTION_TYPES[provider]
     if (
         connection.subject_id != scope.subject_id
         or connection.provider != provider.value

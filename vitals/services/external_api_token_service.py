@@ -273,6 +273,23 @@ async def authenticate(
     return record
 
 
+async def any_token_exists(session: AsyncSession) -> bool:
+    """Whether the installation has issued any external API credential."""
+
+    return (
+        await session.scalar(select(ExternalApiToken.id).limit(1))
+    ) is not None
+
+
+async def sole_subject_id(session: AsyncSession) -> uuid.UUID | None:
+    """Return the only subject, or ``None`` when a legacy token is ambiguous."""
+
+    subject_ids = tuple(
+        await session.scalars(select(HealthSubject.id).limit(2))
+    )
+    return subject_ids[0] if len(subject_ids) == 1 else None
+
+
 def is_live(record: ExternalApiToken, *, at: datetime) -> bool:
     """Whether this row still authorizes anything, for a screen to say so."""
 
@@ -292,8 +309,10 @@ __all__ = [
     "TokenNotFound",
     "TooManyTokens",
     "authenticate",
+    "any_token_exists",
     "is_live",
     "issue",
     "list_for_subject",
     "revoke",
+    "sole_subject_id",
 ]

@@ -7,6 +7,12 @@ not.
 """
 from __future__ import annotations
 
+from vitals.services.alerts import legacy as alerts_service_legacy
+
+from vitals.services.digest.projection import assembly as digest_projection
+from vitals.services.digest import window as digest_window
+from vitals.services.digest import prompt as digest_prompt
+
 import json
 from datetime import date, datetime, time, timedelta
 
@@ -26,7 +32,7 @@ from vitals.models.skincare import SkincareLog, SkincareObservation, SkincarePro
 from vitals.models.system_alert import SystemAlert
 from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, WeightLog
-from vitals.services import alerts_service, digest_service, modules_service
+from vitals.services import modules_service
 from vitals.services.hrt import cycles
 
 pytestmark = pytest.mark.usefixtures("all_modules_on", "owned_by_legacy_subject")
@@ -35,11 +41,11 @@ DAY = date(2026, 8, 4)
 
 
 async def test_report_window_separates_closed_day_and_brief(monkeypatch):
-    monkeypatch.setattr(digest_service, "today_local", lambda: DAY)
+    monkeypatch.setattr(digest_window, "today_local", lambda: DAY)
 
-    closed = digest_service.report_window(period_days=1)
-    brief = digest_service.report_window(
-        period_days=1, mode=digest_service.REPORT_MODE_BRIEF
+    closed = digest_window.report_window(period_days=1)
+    brief = digest_window.report_window(
+        period_days=1, mode=digest_window.REPORT_MODE_BRIEF
     )
 
     assert closed.period_end == DAY - timedelta(days=1)
@@ -49,13 +55,13 @@ async def test_report_window_separates_closed_day_and_brief(monkeypatch):
 
     for invalid in (0, 91):
         with pytest.raises(ValueError, match="between 1 and 90"):
-            digest_service.report_window(period_days=invalid)
+            digest_window.report_window(period_days=invalid)
     with pytest.raises(ValueError, match="requires period_days=1"):
-        digest_service.report_window(
-            period_days=7, mode=digest_service.REPORT_MODE_BRIEF
+        digest_window.report_window(
+            period_days=7, mode=digest_window.REPORT_MODE_BRIEF
         )
     with pytest.raises(ValueError, match="future"):
-        digest_service.report_window(on_date=DAY + timedelta(days=1))
+        digest_window.report_window(on_date=DAY + timedelta(days=1))
 
 
 async def test_platform_scheduler_diagnostics_never_reach_report_context(
@@ -105,12 +111,12 @@ async def test_platform_scheduler_diagnostics_never_reach_report_context(
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         on_date=DAY,
         period_days=1,
-        mode=digest_service.REPORT_MODE_BRIEF,
+        mode=digest_window.REPORT_MODE_BRIEF,
     )
 
     messages = {row["message"] for row in ctx["alerts"]}
@@ -195,7 +201,7 @@ async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session, 
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7
     )
@@ -314,7 +320,7 @@ async def test_historical_context_excludes_future_rows_from_every_fixed_block(
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY)
 
@@ -369,7 +375,7 @@ async def test_disabled_module_is_absent_and_explicit_in_coverage(db_session, le
             ),
         ]
     )
-    alert = await alerts_service.raise_alert(
+    alert = await alerts_service_legacy.raise_alert(
         db_session,
         domain=Domain.HRT.value,
         severity="warn",
@@ -385,7 +391,7 @@ async def test_disabled_module_is_absent_and_explicit_in_coverage(db_session, le
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY)
 
@@ -434,7 +440,7 @@ async def test_lab_history_is_bounded_per_marker_and_reports_truncation(db_sessi
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY)
 
@@ -538,7 +544,7 @@ async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY)
 
@@ -694,7 +700,7 @@ async def test_supporting_domains_are_complete_but_compact(db_session, legacy_ow
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(
+    ctx = await digest_projection.assemble_context(
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=14
     )
@@ -740,7 +746,7 @@ async def test_supporting_domains_are_complete_but_compact(db_session, legacy_ow
 
 
 async def test_ru_and_en_prompts_describe_the_same_v2_contract():
-    for prompt in (digest_service.DIGEST_SYSTEM, digest_service.DIGEST_SYSTEM_EN):
+    for prompt in (digest_prompt.DIGEST_SYSTEM, digest_prompt.DIGEST_SYSTEM_EN):
         for key in (
             "schema_version=2",
             "coverage",

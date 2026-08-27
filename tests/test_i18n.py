@@ -6,7 +6,7 @@ import re
 
 import pytest
 from vitals.i18n import t, plural, current_lang
-from vitals.services.digest_service import build_prompt
+from vitals.services.digest.prompt import build_prompt
 
 
 def test_translation_basic():

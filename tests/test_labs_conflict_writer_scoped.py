@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from vitals.services.alerts import contracts as alerts_service_contracts
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
 import uuid
 from datetime import date, timedelta
 
@@ -14,8 +17,11 @@ from vitals.models.labs import LabMarker, LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import alerts_service, labs_service
 from vitals.services.conflicts import engine
+import vitals.services.labs.alerts as lab_alerts
+import vitals.services.labs.ingestion as lab_ingestion
+import vitals.services.labs.markers as lab_markers
+import vitals.services.labs.results as lab_results
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped
@@ -82,7 +88,7 @@ async def _blocking_rule(db_session, identity: WriteIdentity) -> ConflictRule:
     engine.register_domain_resolver(Domain.SUPPLEMENTS.value, supplements)
     engine.register_domain_resolver(
         Domain.LABS.value,
-        labs_service.resolve_latest_scoped,
+        lab_results.resolve_latest_scoped,
     )
     return row
 
@@ -96,7 +102,7 @@ async def test_scoped_add_blocks_before_marker_mutation_and_attributes_override(
     prepared = await _prepared(db_session, _context(identity))
 
     with pytest.raises(engine.ConflictBlocked):
-        await labs_service.add_result(
+        await lab_results.add_result(
             db_session,
             on_date=RESULT_DATE,
             marker="synthetic risk",
@@ -109,7 +115,7 @@ async def test_scoped_add_blocks_before_marker_mutation_and_attributes_override(
     assert await db_session.scalar(select(func.count()).select_from(LabMarker)) == 0
     assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == 0
 
-    result = await labs_service.add_result(
+    result = await lab_results.add_result(
         db_session,
         on_date=RESULT_DATE,
         marker="synthetic risk",
@@ -149,10 +155,10 @@ async def test_invalid_capability_fails_before_target_lock(
         calls += 1
         raise AssertionError("target row must not be locked")
 
-    monkeypatch.setattr(labs_service, "_get_result_for_update", target_probe)
+    monkeypatch.setattr(lab_results, "_get_result_for_update", target_probe)
     mismatched = WriteIdentity(identity.subject_id, uuid.uuid4())
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await labs_service.update_result(
+        await lab_results.update_result(
             db_session,
             1,
             value=4,
@@ -162,7 +168,7 @@ async def test_invalid_capability_fails_before_target_lock(
     # The signature now refuses a write with no capability at all, so what is
     # left to prove at runtime is a capability that does not match the writer.
     with pytest.raises(engine.ConflictPreparedWriteError):
-        await labs_service.delete_result(
+        await lab_results.delete_result(
             db_session,
             1,
             identity=mismatched,
@@ -216,7 +222,7 @@ async def test_update_replaces_exact_result_and_preserves_origin(
         return []
 
     monkeypatch.setattr(engine, "enforce_prepared", enforce_probe)
-    updated = await labs_service.update_result(
+    updated = await lab_results.update_result(
         db_session,
         row.id,
         value=55,
@@ -253,7 +259,7 @@ async def test_structured_mcp_batch_requires_exact_mcp_raw_roots(
     db_session.add(raw)
     await db_session.flush()
     prepared = await _prepared(db_session, _context(identity))
-    summary = await labs_service.ingest_structured_results(
+    summary = await lab_ingestion.ingest_structured_results(
         db_session,
         {"date": RESULT_DATE.isoformat(), "results": [{"marker": "TSH", "value": 2.1}]},
         raw_payload=raw,
@@ -275,7 +281,7 @@ async def test_structured_mcp_batch_requires_exact_mcp_raw_roots(
     db_session.add(parser_raw)
     await db_session.flush()
     with pytest.raises(engine.ConflictRawOwnershipError, match="source"):
-        await labs_service.ingest_structured_results(
+        await lab_ingestion.ingest_structured_results(
             db_session,
             {"date": RESULT_DATE.isoformat(), "results": []},
             raw_payload=parser_raw,
@@ -290,7 +296,7 @@ async def test_scoped_alerts_are_actorless_but_defer_is_human_attributed(
 ):
     identity = _identity(legacy_owner_roots)
     add_prepared = await _prepared(db_session, _context(identity))
-    row = await labs_service.add_result(
+    row = await lab_results.add_result(
         db_session,
         on_date=RESULT_DATE,
         marker="Ferritin",
@@ -300,7 +306,7 @@ async def test_scoped_alerts_are_actorless_but_defer_is_human_attributed(
         identity=identity,
         prepared_conflict_write=add_prepared,
     )
-    marker = await labs_service.get_marker(
+    marker = await lab_markers.get_marker(
         db_session,
         "Ferritin",
         subject_id=identity.subject_id,
@@ -310,7 +316,7 @@ async def test_scoped_alerts_are_actorless_but_defer_is_human_attributed(
     await db_session.commit()
 
     refresh_prepared = await _prepared(db_session, _context(identity, on_date=TODAY))
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         identity=identity,
         prepared_conflict_write=refresh_prepared,
@@ -322,20 +328,20 @@ async def test_scoped_alerts_are_actorless_but_defer_is_human_attributed(
         )
     )
     assert {alert.alert_key for alert in alerts} == {
-        labs_service.OUT_OF_RANGE_KEY,
-        labs_service.RETEST_DUE_KEY,
+        lab_alerts.OUT_OF_RANGE_KEY,
+        lab_alerts.RETEST_DUE_KEY,
     }
     assert all(alert.resolved_by_user_id is None for alert in alerts)
 
     outlier = next(
-        alert for alert in alerts if alert.alert_key == labs_service.OUT_OF_RANGE_KEY
+        alert for alert in alerts if alert.alert_key == lab_alerts.OUT_OF_RANGE_KEY
     )
-    await alerts_service.resolve_scoped_alert(
+    await alerts_service_lifecycle.resolve_scoped_alert(
         db_session,
         outlier.id,
-        context=alerts_service.HealthAlertContext(identity),
+        context=alerts_service_contracts.HealthAlertContext(identity),
     )
-    await labs_service.refresh_alerts(
+    await lab_alerts.refresh_alerts(
         db_session,
         identity=identity,
         prepared_conflict_write=refresh_prepared,
@@ -343,14 +349,14 @@ async def test_scoped_alerts_are_actorless_but_defer_is_human_attributed(
     )
     retest = await db_session.scalar(
         select(SystemAlert).where(
-            SystemAlert.alert_key == labs_service.RETEST_DUE_KEY,
+            SystemAlert.alert_key == lab_alerts.RETEST_DUE_KEY,
             SystemAlert.entity_ref == f"Ferritin:{row.id}",
             SystemAlert.resolved_at.is_(None),
         )
     )
     assert retest is not None
 
-    await labs_service.defer_retest(
+    await lab_alerts.defer_retest(
         db_session,
         "Ferritin",
         until=TODAY + timedelta(days=30),
@@ -390,7 +396,7 @@ async def test_scoped_list_rejects_unowned_raw_without_bridge(
     await db_session.flush()
 
     with pytest.raises(engine.ConflictRawOwnershipError):
-        await labs_service.list_results(
+        await lab_results.list_results(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -415,7 +421,7 @@ async def test_owned_reparse_requires_boundary_and_preserves_legacy_actor(
     boundary = _context(boundary_identity, on_date=TODAY, legacy=True)
     prepared = await _prepared(db_session, boundary)
 
-    assert await labs_service.reparse_owned_pending(
+    assert await lab_ingestion.reparse_owned_pending(
         db_session,
         identity=boundary_identity,
         prepared_conflict_write=prepared,
@@ -429,7 +435,7 @@ async def test_owned_reparse_requires_boundary_and_preserves_legacy_actor(
         legacy_owner_roots.subject_id,
         None,
     )
-    updated = await labs_service.update_result_note(
+    updated = await lab_results.update_result_note(
         db_session,
         result.id,
         note="legacy provenance remains writable through the bridge",
@@ -470,7 +476,7 @@ async def test_owned_reparse_does_not_duplicate_any_existing_normalized_fact(
         _context(boundary_identity, on_date=TODAY, legacy=True),
     )
 
-    assert await labs_service.reparse_owned_pending(
+    assert await lab_ingestion.reparse_owned_pending(
         db_session,
         identity=boundary_identity,
         prepared_conflict_write=prepared,
@@ -520,7 +526,7 @@ async def test_owned_reparse_rejects_partial_normalized_provenance(
         engine.ConflictRawOwnershipError,
         match="partial normalized provenance",
     ):
-        await labs_service.reparse_owned_pending(
+        await lab_ingestion.reparse_owned_pending(
             db_session,
             identity=boundary_identity,
             prepared_conflict_write=prepared,

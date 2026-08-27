@@ -1,6 +1,14 @@
 """Consumer compatibility after the Stage-3B manual ownership backfill."""
 from __future__ import annotations
 
+from vitals.services.milestones import queries as milestone_queries
+from vitals.services.supplements import queries as supplement_queries
+from vitals.services.timeline import annotations as timeline_annotations
+
+from vitals.services.glp1 import queries as glp1_queries
+from vitals.services.nutrition import queries as nutrition_queries
+from vitals.services.skincare import queries as skincare_queries
+
 from datetime import date
 
 import pytest
@@ -26,16 +34,8 @@ from vitals.models.skincare import (
 from vitals.models.supplements import Supplement
 from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, NoiseMarker
-from vitals.services import (
-    glp1_service,
-    labs_service,
-    milestones_service,
-    nutrition_service,
-    skincare_service,
-    supplements_service,
-    timeline_service,
-    weight_service,
-)
+from vitals.services import weight as weight_domain
+import vitals.services.labs.markers as lab_markers
 from vitals.services.hrt import cycles, records, templates
 from vitals.services.conflicts.engine import ConflictScopeError
 from vitals.operations.ownership.normalized import (
@@ -218,43 +218,43 @@ async def test_backfilled_actorless_history_is_visible_to_scoped_consumers(
     assert template_item.subject_id is None
 
     subject_id = legacy_owner_roots.subject_id
-    assert list(await timeline_service.list_annotations(
+    assert list(await timeline_annotations.list_annotations(
         db_session, subject_id=subject_id
     )) == [rows[0]]
-    assert list(await weight_service.list_body_measurements(
+    assert list(await weight_domain.measurements.list_body_measurements(
         db_session, subject_id=subject_id
     )) == [rows[1]]
-    assert list(await glp1_service.list_dose_phases(
+    assert list(await glp1_queries.list_dose_phases(
         db_session, subject_id=subject_id
     )) == [rows[2]]
-    assert list(await glp1_service.list_injections(
+    assert list(await glp1_queries.list_injections(
         db_session, subject_id=subject_id
     )) == [rows[3]]
-    assert list(await glp1_service.list_side_effects(
+    assert list(await glp1_queries.list_side_effects(
         db_session, subject_id=subject_id
     )) == [rows[4]]
-    assert list(await labs_service.list_markers(
+    assert list(await lab_markers.list_markers(
         db_session, subject_id=subject_id
     )) == [rows[5]]
-    assert list(await nutrition_service.list_meals(
+    assert list(await nutrition_queries.list_meals(
         db_session, subject_id=subject_id
     )) == [rows[6]]
-    assert list(await milestones_service.list_milestones(
+    assert list(await milestone_queries.list_milestones(
         db_session, subject_id=subject_id
     )) == [rows[7]]
-    assert list(await weight_service.list_noise_markers(
+    assert list(await weight_domain.noise.list_noise_markers(
         db_session, subject_id=subject_id
     )) == [rows[8]]
-    assert list(await skincare_service.list_logs(
+    assert list(await skincare_queries.list_logs(
         db_session, subject_id=subject_id
     )) == [rows[9]]
-    assert list(await skincare_service.list_observations(
+    assert list(await skincare_queries.list_observations(
         db_session, subject_id=subject_id
     )) == [rows[10]]
-    assert list(await skincare_service.list_products(
+    assert list(await skincare_queries.list_products(
         db_session, subject_id=subject_id
     )) == [rows[11]]
-    assert list(await supplements_service.list_supplements(
+    assert list(await supplement_queries.list_supplements(
         db_session, subject_id=subject_id
     )) == [rows[12]]
     # Stage-3B owns only the HRT parents. A cycle whose items are still unowned

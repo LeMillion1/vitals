@@ -477,13 +477,14 @@ async def legacy_owner_roots(db_session):
         scope_id=identity.subject_id,
         value=enabled_modules,
     )
-    from vitals.services.proactive import prefs
+    from vitals.services.proactive.preferences import queries as preference_queries
+    from vitals.services.proactive.preferences import writes as preference_writes
 
-    preference_scope = await prefs.resolve_legacy_preferences_scope(
+    preference_scope = await preference_queries.resolve_legacy_preferences_scope(
         db_session,
         actor_username=web_config.auth_username,
     )
-    await prefs.initialize_legacy_preferences(
+    await preference_writes.initialize_legacy_preferences(
         db_session,
         scope=preference_scope,
     )
@@ -927,12 +928,13 @@ async def owner_write(db_session, legacy_owner_roots):
 
         Body composition writes a weigh-in alongside the scan, and that path
         takes the Weight lock order rather than the generic one, so it needs the
-        capability weight_service issues. Like the router, it carries the Garmin
+        capability Weight governance issues. Like the router, it carries the Garmin
         destination when one is configured, so a weigh-in that changes reaches
         the export outbox instead of silently skipping it.
         """
 
-        from vitals.services import garmin_weight_service, weight_service
+        from vitals.services import weight as weight_domain
+        from vitals.services.garmin_weight import outbox as garmin_weight_outbox
 
         scoped = context
         if on_date is not None:
@@ -943,12 +945,12 @@ async def owner_write(db_session, legacy_owner_roots):
                 evaluation_date=on_date,
             )
         export_context = (
-            await garmin_weight_service.resolve_optional_legacy_export_context(
+            await garmin_weight_outbox.resolve_optional_legacy_export_context(
                 db_session,
                 actor_username=get_web_config().auth_username,
             )
         )
-        return await weight_service.prepare_weight_write(
+        return await weight_domain.governance.prepare_weight_write(
             db_session,
             context=scoped,
             garmin_weight_export_context=export_context,

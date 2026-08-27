@@ -14,12 +14,13 @@ fixture stays effective and jobs only exist when the app actually boots.
 """
 from __future__ import annotations
 
+
 from typing import Any, Optional
 
 from vitals.enums import IntegrationProvider
 from vitals.scheduler.fanout import for_each_connection, for_each_subject
 from vitals.scheduler.scheduler import JobFailureFamily, clear_jobs, register_job
-from vitals.services.proactive import prefs
+from vitals.services.proactive.preferences import codec as preference_codec
 
 
 def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
@@ -30,7 +31,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     registry first: re-registering has to be able to *remove* a job (the Garmin
     pulse switched off), not only replace one.
     """
-    settings = prefs.sanitize(settings)
+    settings = preference_codec.sanitize(settings)
     clear_jobs()
 
     # Every job below runs once per record. That took two removals and a
@@ -53,27 +54,29 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # ``for_each_subject``: a subject who has not connected a watch has nothing
     # for them to do, and enumerating them would mean four scheduled no-ops a
     # day per person.
-    from vitals.services.glp1_service import plateau_job
-    from vitals.services.hevy_service import sync_job as hevy_sync_job
-    from vitals.services.garmin_service import sync_job as garmin_sync_job
-    from vitals.services.garmin_weight_service import (
-        OPERATION_LOCK_TTL_SECONDS,
+    from vitals.services.glp1.jobs import plateau_job
+    from vitals.services.hevy.jobs import sync_job as hevy_sync_job
+    from vitals.services.garmin.jobs import sync_job as garmin_sync_job
+    from vitals.services.garmin_weight.contracts import OPERATION_LOCK_TTL_SECONDS
+    from vitals.services.garmin_weight.jobs import (
         export_job as garmin_weight_export_job,
     )
-    from vitals.services.digest_service import digest_job
-    from vitals.services.nutrition_service import day_end_job as nutrition_day_end_job
+    from vitals.services.digest.jobs import digest_job
+    from vitals.services.nutrition.jobs import day_end_job as nutrition_day_end_job
     from vitals.services.hrt.reminders import reminders_job as hrt_reminders_job
-    from vitals.services.garmin_service import pulse_job as garmin_pulse_job
-    from vitals.services.proactive.brief import brief_job, last_attempt_hour
+    from vitals.services.garmin.jobs import pulse_job as garmin_pulse_job
+    from vitals.services.proactive.brief.jobs import brief_job, last_attempt_hour
     from vitals.services.proactive.nudges import nudges_job
-    from vitals.services.proactive.delivery import delivery_reconciliation_job
+    from vitals.services.proactive.delivery.reconciliation import (
+        delivery_reconciliation_job,
+    )
     from vitals.services.notifications.care_push_dispatcher import dispatch_job
     from vitals.services.authentication.admission.retention import (
         maintenance_job as registration_admission_retention_job,
     )
     from vitals.services.raw_payload_service import sweep_pending_job as raw_payload_sweep_job
-    from vitals.services.share_service import purge_job as share_purge_job
-    from vitals.services.ai_gateway_service import (
+    from vitals.services.share.jobs import purge_job as share_purge_job
+    from vitals.services.ai_gateway.jobs import (
         reconciliation_job as ai_invocation_reconciliation_job,
     )
 
@@ -240,7 +243,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # the brief refuses to read recovery off a running night. Each later hour
     # looks again; the delivery journal keeps it to one message a day, and the job
     # returns before the Garmin pull once that message has gone.
-    brief_hour, brief_minute = prefs.hhmm(settings["brief_time"])
+    brief_hour, brief_minute = preference_codec.hhmm(settings["brief_time"])
     register_job(
         "daily_brief",
         for_each_subject(brief_job, job_id="daily_brief"),
@@ -273,7 +276,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
 
     # Nudges — hourly, at :05 so it never lands on top of the polls. Nothing is
     # sent unless a condition actually holds; quiet hours and the daily budget are
-    # enforced downstream by delivery.send.
+    # enforced downstream by delivery_legacy.send.
     register_job(
         "nudges",
         for_each_subject(nudges_job, job_id="nudges"),

@@ -1,0 +1,93 @@
+"""Public API for the subject-scoped conflict engine."""
+
+from vitals.services.conflicts.engine.contracts import (
+    CONFLICT_ENTITY_KEY,
+    ConflictActorInactive,
+    ConflictActorNotFound,
+    ConflictActorOwnershipError,
+    ConflictBlocked,
+    ConflictCatalogIntegrityError,
+    ConflictLegacyBridgeError,
+    ConflictOverrideActorRequired,
+    ConflictPreparedWriteError,
+    ConflictRawOwnershipError,
+    ConflictScope,
+    ConflictScopeError,
+    ConflictSubjectNotFound,
+    ConflictUnsupportedDatabaseError,
+    ConflictWriteContext,
+    ConflictWriteRuleError,
+    DomainResolver,
+    LegacyConflictBridge,
+    LegacyUnownedProbe,
+    PreparedConflictWrite,
+    Violation,
+)
+from vitals.services.conflicts.engine.enforcement import (
+    enforce_prepared,
+    enforce_scoped,
+    reconcile_day_end_scoped,
+)
+from vitals.services.conflicts.engine.evaluation import (
+    evaluate_legacy_single_subject,
+    evaluate_scoped,
+)
+from vitals.services.conflicts.engine.matching import _matches
+from vitals.services.conflicts.engine.registry import (
+    ConflictResolverUnavailable,
+    clear_domain_resolvers,
+    register_domain_resolver,
+)
+from vitals.services.conflicts.engine.rules import load_scoped_rules
+from vitals.services.conflicts.engine.scope import (
+    legacy_unowned_raw_present,
+    prepare_scoped_write,
+    raw_payload_scope_conditions,
+    require_prepared_identity,
+    resolve_legacy_conflict_scope,
+    resolve_legacy_conflict_write_context,
+    resolve_subject_conflict_write_context,
+    today_local,
+)
+
+__all__ = [
+    "CONFLICT_ENTITY_KEY",
+    "ConflictActorInactive",
+    "ConflictActorNotFound",
+    "ConflictActorOwnershipError",
+    "ConflictBlocked",
+    "ConflictCatalogIntegrityError",
+    "ConflictLegacyBridgeError",
+    "ConflictOverrideActorRequired",
+    "ConflictPreparedWriteError",
+    "ConflictRawOwnershipError",
+    "ConflictResolverUnavailable",
+    "ConflictScope",
+    "ConflictScopeError",
+    "ConflictSubjectNotFound",
+    "ConflictUnsupportedDatabaseError",
+    "ConflictWriteContext",
+    "ConflictWriteRuleError",
+    "DomainResolver",
+    "LegacyConflictBridge",
+    "LegacyUnownedProbe",
+    "PreparedConflictWrite",
+    "Violation",
+    "_matches",
+    "clear_domain_resolvers",
+    "enforce_prepared",
+    "enforce_scoped",
+    "evaluate_legacy_single_subject",
+    "evaluate_scoped",
+    "legacy_unowned_raw_present",
+    "load_scoped_rules",
+    "prepare_scoped_write",
+    "raw_payload_scope_conditions",
+    "reconcile_day_end_scoped",
+    "register_domain_resolver",
+    "require_prepared_identity",
+    "resolve_legacy_conflict_scope",
+    "resolve_legacy_conflict_write_context",
+    "resolve_subject_conflict_write_context",
+    "today_local",
+]

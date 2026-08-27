@@ -14,7 +14,7 @@ from vitals.enums import UserStatus
 from vitals.models.identity import User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.share import SharedReport
-from vitals.services import share_service
+from vitals.services.share import public_access
 from vitals.operations.ownership import shared_report as service
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
@@ -570,7 +570,7 @@ async def test_postgres_public_open_serializes_on_governance_lock(
 
     async def open_worker():
         async with factory() as session:
-            opened = await share_service.register_open(session, token)
+            opened = await public_access.register_open(session, token)
             await session.commit()
             return opened.id if opened is not None else None
 

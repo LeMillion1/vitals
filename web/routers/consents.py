@@ -16,28 +16,15 @@ import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.access import AccessScope, PolicyResourceType
 from vitals.services.legacy_ownership import NoPersonalRecordError
-from vitals.enums import (
-    CareRelationshipStatus,
-    ConsentStatus,
-    Domain,
-    ProfessionalInvitationStatus,
-    ProfessionalKind,
+from vitals.enums import ProfessionalKind
+from vitals.services.care import (
+    consent_centre as consent_projection,
+    invitations,
+    relationships,
 )
-from vitals.models.identity import User
-from vitals.models.professional import (
-    CareRelationship,
-    ConsentGrant,
-    ConsentScope,
-    ProfessionalInvitation,
-    ProfessionalProfile,
-)
-from vitals.services import modules_service
-from vitals.services.care import invitations, record_projection, records, relationships
 from vitals.services.access_resolution import (
     AccessContext,
     AccessResolutionError,
@@ -49,84 +36,6 @@ from web.deps import get_session, require_auth
 from web.templating import templates
 
 router = APIRouter(prefix="/settings/care", tags=["consents"])
-
-
-def _shared_domains(
-    scope_rows: set[tuple[str, str, str]],
-    *,
-    visible_domains: tuple[Domain, ...] = record_projection.CARE_DOMAINS,
-) -> list[str]:
-    """Collapse policy actions into the record sections a person chose.
-
-    A consent stores read, list and search as separate authorization facts.
-    Those are implementation details, not three copies of the same section on
-    the patient's screen. Following the care projection registry also gives the
-    summary the same stable order as the form instead of an alphabetical
-    accident. Stored history for a currently disabled module remains intact but
-    is not presented as access the professional can use now.
-    """
-
-    granted = {
-        key
-        for resource_type, key, _action in scope_rows
-        if resource_type == PolicyResourceType.DOMAIN.value
-    }
-    return [
-        domain.value
-        for domain in visible_domains
-        if domain.value in granted
-    ]
-
-
-def _selected_scopes(
-    domains: list[str],
-    *,
-    allowed_domains: frozenset[Domain],
-    allow_guidance: bool,
-    allow_messages: bool,
-) -> frozenset[AccessScope]:
-    """Translate the patient's form into exact policy vocabulary."""
-
-    try:
-        selected_domains = {Domain(value) for value in domains}
-    except ValueError as exc:
-        raise relationships.CareValidationError("unknown record section") from exc
-    if not selected_domains.issubset(allowed_domains):
-        raise relationships.CareValidationError("unknown record section")
-
-    scopes = {
-        AccessScope(
-            resource_type=PolicyResourceType.DOMAIN,
-            resource_key=domain.value,
-            action=action,
-        )
-        for domain in selected_domains
-        for action in relationships.READ_ONLY_ACTIONS
-    }
-    if allow_guidance:
-        scopes.update(
-            AccessScope(
-                resource_type=PolicyResourceType.ARTIFACT,
-                resource_key=artifact,
-                action=action,
-            )
-            for artifact in relationships.AUTHORED_ARTIFACTS
-            for action in relationships.AUTHORED_ACTIONS
-        )
-    if allow_messages:
-        scopes.update(
-            AccessScope(
-                resource_type=PolicyResourceType.OPERATION,
-                resource_key=relationships.MESSAGE_OPERATION,
-                action=action,
-            )
-            for action in relationships.MESSAGE_ACTIONS
-        )
-    if not scopes:
-        raise relationships.CareValidationError(
-            "choose at least one record section or collaboration feature"
-        )
-    return frozenset(scopes)
 
 
 async def _own_subject(
@@ -177,122 +86,9 @@ async def _render(
     request: Request, db: AsyncSession, *, username: str, issued_link: str | None
 ) -> HTMLResponse:
     _user_id, owner_access = await _own_subject(request, db)
-    subject_id = owner_access.subject_id
-    enabled_modules = await modules_service.get_enabled_modules(
-        db, subject_id=subject_id
-    )
-    shareable_domains = record_projection.enabled_care_domains(enabled_modules)
-
-    rows = (
-        await db.execute(
-            select(
-                CareRelationship.id,
-                CareRelationship.kind,
-                CareRelationship.status,
-                CareRelationship.established_at,
-                User.username,
-                ProfessionalProfile.display_name,
-                ProfessionalProfile.verification_status,
-                ConsentGrant.id.label("consent_id"),
-                ConsentGrant.status.label("consent_status"),
-                ConsentGrant.version,
-                ConsentGrant.expires_at,
-            )
-            .join(User, User.id == CareRelationship.professional_user_id)
-            .outerjoin(
-                ProfessionalProfile,
-                ProfessionalProfile.user_id == CareRelationship.professional_user_id,
-            )
-            .outerjoin(
-                ConsentGrant,
-                (ConsentGrant.relationship_id == CareRelationship.id)
-                & ConsentGrant.status.in_(
-                    (ConsentStatus.ACTIVE.value, ConsentStatus.PAUSED.value)
-                ),
-            )
-            .where(
-                CareRelationship.subject_id == subject_id,
-                CareRelationship.status != CareRelationshipStatus.ENDED.value,
-            )
-            .order_by(CareRelationship.established_at.desc())
-        )
-    ).all()
-
-    # One query for every live consent's domains rather than one per row.
-    consent_ids = [row.consent_id for row in rows if row.consent_id is not None]
-    scopes: dict[uuid.UUID, set[tuple[str, str, str]]] = {}
-    if consent_ids:
-        for scope in await db.execute(
-            select(
-                ConsentScope.consent_grant_id,
-                ConsentScope.resource_type,
-                ConsentScope.resource_key,
-                ConsentScope.action,
-            ).where(ConsentScope.consent_grant_id.in_(consent_ids))
-        ):
-            scopes.setdefault(scope.consent_grant_id, set()).add(
-                (scope.resource_type, scope.resource_key, scope.action)
-            )
-
-    professionals = [
-        {
-            "relationship_id": row.id,
-            "kind": row.kind,
-            "name": row.display_name or row.username,
-            "verified": row.verification_status == "verified",
-            "relationship_status": row.status,
-            "consent_status": row.consent_status,
-            "version": row.version,
-            "expires_at": row.expires_at,
-            "domains": _shared_domains(
-                scopes.get(row.consent_id, set()),
-                visible_domains=shareable_domains,
-            ),
-            "guidance": any(
-                resource_type == PolicyResourceType.ARTIFACT.value
-                for resource_type, _key, _action in scopes.get(row.consent_id, ())
-            ),
-            "messages": any(
-                resource_type == PolicyResourceType.OPERATION.value
-                and key == relationships.MESSAGE_OPERATION
-                for resource_type, key, _action in scopes.get(row.consent_id, ())
-            ),
-        }
-        for row in rows
-    ]
-    guidance = await records.care_guidance_summary(
+    projection = await consent_projection.build_projection(
         db,
-        context=owner_access,
-    )
-    guidance_author_ids = {
-        item.actor_user_id
-        for item in (*guidance.active_plans, *guidance.recent_notes)
-    }
-    guidance_author_names = (
-        dict(
-            (
-                await db.execute(
-                    select(
-                        ProfessionalProfile.user_id,
-                        ProfessionalProfile.display_name,
-                    ).where(ProfessionalProfile.user_id.in_(guidance_author_ids))
-                )
-            ).all()
-        )
-        if guidance_author_ids
-        else {}
-    )
-
-    pending = list(
-        await db.scalars(
-            select(ProfessionalInvitation)
-            .where(
-                ProfessionalInvitation.subject_id == subject_id,
-                ProfessionalInvitation.status
-                == ProfessionalInvitationStatus.PENDING.value,
-            )
-            .order_by(ProfessionalInvitation.created_at.desc())
-        )
+        owner_context=owner_access,
     )
 
     return templates.TemplateResponse(
@@ -302,13 +98,15 @@ async def _render(
             # See the note in web/routers/care.py: base.html hides the entire
             # chrome without it.
             "username": username,
-            "professionals": professionals,
-            "guidance": guidance,
-            "guidance_author_names": guidance_author_names,
-            "subject_id": subject_id,
-            "pending": pending,
+            "professionals": projection.professionals,
+            "guidance": projection.guidance,
+            "guidance_author_names": projection.guidance_author_names,
+            "subject_id": projection.subject_id,
+            "pending": projection.pending_invitations,
             "kinds": [kind.value for kind in ProfessionalKind],
-            "shareable_domains": [domain.value for domain in shareable_domains],
+            "shareable_domains": [
+                domain.value for domain in projection.shareable_domains
+            ],
             # Shown once, straight from the request that created it. Never
             # read back from the database, because it is not in the database.
             "issued_link": issued_link,
@@ -436,26 +234,13 @@ async def grant(
     user_id, owner_access = await _own_subject(request, db)
     subject_id = owner_access.subject_id
     try:
-        enabled_modules = await modules_service.get_enabled_modules(
-            db, subject_id=subject_id
-        )
-        allowed_domains = frozenset(
-            record_projection.enabled_care_domains(enabled_modules)
-        )
-        scopes = (
-            _selected_scopes(
-                domains,
-                allowed_domains=allowed_domains,
-                allow_guidance=bool(allow_guidance),
-                allow_messages=bool(allow_messages),
-            )
-            if custom
-            else _selected_scopes(
-                [domain.value for domain in allowed_domains],
-                allowed_domains=allowed_domains,
-                allow_guidance=True,
-                allow_messages=True,
-            )
+        scopes = await consent_projection.selected_scopes_for_subject(
+            db,
+            subject_id=subject_id,
+            domains=domains,
+            custom=bool(custom),
+            allow_guidance=bool(allow_guidance),
+            allow_messages=bool(allow_messages),
         )
         await relationships.grant_consent(
             db,

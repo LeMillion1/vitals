@@ -74,11 +74,9 @@ _WRITE_PREFIXES = ("log_", "add_", "create_", "update_", "upsert_", "delete_", "
 
 def _write_tool_names() -> set[str]:
     return {
-        name
-        for name in dir(mcp_router)
-        if name.startswith(_WRITE_PREFIXES)
-        and inspect.iscoroutinefunction(getattr(mcp_router, name))
-        and getattr(mcp_router, name).__module__ == mcp_router.__name__
+        tool.name
+        for tool in mcp_router.mcp._tool_manager.list_tools()
+        if tool.name.startswith(_WRITE_PREFIXES)
     }
 
 
@@ -127,9 +125,9 @@ async def test_delete_record_deletes_a_core_domain_row(db_session, owner_write):
     """Core domains have no gate — and a missing id is a clean ``deleted: false``."""
     from datetime import date
 
-    from vitals.services import weight_service
+    from vitals.services import weight as weight_domain
 
-    row = await weight_service.log_weight(
+    row = await weight_domain.writes.log_weight(
         db_session,
         on_date=date(2026, 7, 1),
         weight_kg=90.0,

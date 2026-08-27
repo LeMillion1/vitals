@@ -12,6 +12,9 @@ write path nor mutated.
 
 from __future__ import annotations
 
+from vitals.services.alerts import contracts as alerts_service_contracts
+from vitals.services.alerts import lifecycle as alerts_service_lifecycle
+
 from datetime import date
 
 import pytest
@@ -33,8 +36,8 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import alerts_service, garmin_service
 from vitals.services.conflicts import catalog as conflict_catalog
+from vitals.services.garmin import ingestion as garmin_ingestion
 from vitals.services.hrt import catalog
 
 
@@ -86,7 +89,7 @@ async def test_two_garmin_accounts_report_the_same_day(db_session):
     db_session.add(theirs)
     await db_session.flush()
 
-    mine = await garmin_service.ingest_owned_daily(
+    mine = await garmin_ingestion.ingest_owned_daily(
         db_session,
         DAY,
         {"summary": {"totalSteps": 4321}},
@@ -116,9 +119,9 @@ async def test_two_accounts_raise_the_same_provider_alert(db_session):
     db_session.add(theirs)
     await db_session.flush()
 
-    mine = await alerts_service.raise_scoped_alert(
+    mine = await alerts_service_lifecycle.raise_scoped_alert(
         db_session,
-        context=alerts_service.ProviderAlertContext(
+        context=alerts_service_contracts.ProviderAlertContext(
             identity=WriteIdentity(subject_b.id, owner_b.id),
             integration_connection_id=connection_b.id,
             provider=IntegrationProvider.GARMIN,

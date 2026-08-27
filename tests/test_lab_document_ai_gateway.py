@@ -1,6 +1,10 @@
 """Platform-funded, raw-first Labs document parser contracts."""
 from __future__ import annotations
 
+from vitals.services.ai_gateway import contracts as gateway_contracts
+from vitals.services.ai_gateway import dispatch as gateway_dispatch
+from vitals.services.ai_gateway import invocations as gateway_invocations
+
 import asyncio
 import hashlib
 import pickle
@@ -37,10 +41,9 @@ from vitals.models.tenancy import (
     IntegrationConnection,
     PlatformIntegrationConnection,
 )
-from vitals.services import ai_gateway_service as gateway
-from vitals.services import labs_service
+import vitals.services.labs.ai as lab_ai
+import vitals.services.labs.ingestion as lab_ingestion
 from vitals.services.conflicts import engine
-from vitals.services import lab_document_ai_service as lab_ai
 from vitals.services.legacy_ownership import LegacySubjectResolutionError
 from web.config import get_web_config
 
@@ -70,7 +73,8 @@ EXTRACTED = {
 
 @pytest.fixture(autouse=True)
 def _runtime(monkeypatch):
-    monkeypatch.setattr(gateway, "now_utc", lambda: NOW)
+    monkeypatch.setattr(gateway_dispatch, "now_utc", lambda: NOW)
+    monkeypatch.setattr(gateway_invocations, "now_utc", lambda: NOW)
     if hasattr(lab_ai, "now_utc"):
         monkeypatch.setattr(lab_ai, "now_utc", lambda: NOW)
     config = replace(
@@ -675,7 +679,7 @@ async def test_replay_normalizes_only_successful_platform_extraction(
     prepared_write = await engine.prepare_scoped_write(
         db_session, context=context
     )
-    done = await labs_service.reparse_owned_pending(
+    done = await lab_ingestion.reparse_owned_pending(
         db_session,
         identity=context.identity,
         prepared_conflict_write=prepared_write,
@@ -721,7 +725,7 @@ async def test_postgres_concurrent_start_issues_one_lease_and_one_provider_call(
                 )
                 await session.commit()
                 return lease
-            except gateway.AIInvocationStateError as exc:
+            except gateway_contracts.AIInvocationStateError as exc:
                 await session.rollback()
                 return exc
 
@@ -729,10 +733,10 @@ async def test_postgres_concurrent_start_issues_one_lease_and_one_provider_call(
         asyncio.gather(contender(), contender()),
         timeout=10,
     )
-    leases = [item for item in outcomes if isinstance(item, gateway.AIDispatchLease)]
+    leases = [item for item in outcomes if isinstance(item, gateway_contracts.AIDispatchLease)]
     assert len(leases) == 1
     assert (
-        sum(isinstance(item, gateway.AIInvocationStateError) for item in outcomes)
+        sum(isinstance(item, gateway_contracts.AIInvocationStateError) for item in outcomes)
         == 1
     )
 

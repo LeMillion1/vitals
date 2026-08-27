@@ -2,6 +2,9 @@
 derived), and per-domain chart overlays."""
 from __future__ import annotations
 
+from vitals.services.timeline import annotations as timeline_annotations
+from vitals.services.timeline import events as timeline_events
+
 from datetime import date, datetime
 
 from vitals.enums import AnnotationKind, Domain, MilestoneStatus
@@ -14,12 +17,12 @@ from vitals.models.skincare import DOMAIN as SKINCARE_DOMAIN, SkincareProduct
 from vitals.models.supplements import DOMAIN as SUPP_DOMAIN, Supplement
 from vitals.models.weight import DOMAIN as WEIGHT_DOMAIN, NoiseMarker, ProgressPhoto
 from vitals.ownership import WriteIdentity
-from vitals.services import timeline_service
+
 
 
 
 async def test_create_update_delete_annotation(db_session, owned_by_legacy_subject):
-    row = await timeline_service.create_annotation(
+    row = await timeline_annotations.create_annotation(
         db_session,
         title="Поездка в Грузию",
         on_date=date(2026, 6, 1),
@@ -35,12 +38,12 @@ async def test_create_update_delete_annotation(db_session, owned_by_legacy_subje
     assert row.id is not None
     assert row.kind == "travel"
 
-    fetched = await timeline_service.get_annotation(
+    fetched = await timeline_annotations.get_annotation(
         db_session, row.id, subject_id=owned_by_legacy_subject.subject_id
     )
     assert fetched is not None and fetched.title == "Поездка в Грузию"
 
-    updated = await timeline_service.update_annotation(
+    updated = await timeline_annotations.update_annotation(
         db_session,
         row.id,
         title="Поездка (изменено)",
@@ -57,16 +60,16 @@ async def test_create_update_delete_annotation(db_session, owned_by_legacy_subje
     assert updated.end_date is None
     assert updated.domain == Domain.WEIGHT.value
 
-    assert await timeline_service.delete_annotation(
+    assert await timeline_annotations.delete_annotation(
         db_session, row.id,
         identity=WriteIdentity(
             owned_by_legacy_subject.subject_id, owned_by_legacy_subject.user_id
         ),
     ) is True
-    assert await timeline_service.get_annotation(
+    assert await timeline_annotations.get_annotation(
         db_session, row.id, subject_id=owned_by_legacy_subject.subject_id
     ) is None
-    assert await timeline_service.delete_annotation(
+    assert await timeline_annotations.delete_annotation(
         db_session, row.id,
         identity=WriteIdentity(
             owned_by_legacy_subject.subject_id, owned_by_legacy_subject.user_id
@@ -75,19 +78,19 @@ async def test_create_update_delete_annotation(db_session, owned_by_legacy_subje
 
 
 async def test_list_annotations_filters_by_domain_and_range(db_session, owned_by_legacy_subject):
-    await timeline_service.create_annotation(
+    await timeline_annotations.create_annotation(
         db_session, title="Global", on_date=date(2026, 5, 1), domain=Domain.TIMELINE.value,
         identity=WriteIdentity(
             owned_by_legacy_subject.subject_id, owned_by_legacy_subject.user_id
         ),
     )
-    await timeline_service.create_annotation(
+    await timeline_annotations.create_annotation(
         db_session, title="Weight-only", on_date=date(2026, 5, 5), domain=Domain.WEIGHT.value,
         identity=WriteIdentity(
             owned_by_legacy_subject.subject_id, owned_by_legacy_subject.user_id
         ),
     )
-    await timeline_service.create_annotation(
+    await timeline_annotations.create_annotation(
         db_session,
         title="Ranged trip",
         on_date=date(2026, 5, 10),
@@ -99,27 +102,27 @@ async def test_list_annotations_filters_by_domain_and_range(db_session, owned_by
     )
     await db_session.commit()
 
-    weight_only = await timeline_service.list_annotations(
+    weight_only = await timeline_annotations.list_annotations(
         db_session, domain=Domain.WEIGHT.value, subject_id=owned_by_legacy_subject.subject_id
     )
     assert {a.title for a in weight_only} == {"Weight-only", "Ranged trip"}
 
     # A point in the middle of the ranged trip should match a range query.
-    in_range = await timeline_service.list_annotations(
+    in_range = await timeline_annotations.list_annotations(
         db_session, start=date(2026, 5, 15), end=date(2026, 5, 16),
         subject_id=owned_by_legacy_subject.subject_id,
     )
     assert {a.title for a in in_range} == {"Ranged trip"}
 
     # Newest first.
-    all_rows = await timeline_service.list_annotations(
+    all_rows = await timeline_annotations.list_annotations(
         db_session, subject_id=owned_by_legacy_subject.subject_id
     )
     assert [a.title for a in all_rows] == ["Ranged trip", "Weight-only", "Global"]
 
 
 async def test_list_events_merges_manual_and_derived(db_session, owned_by_legacy_subject):
-    await timeline_service.create_annotation(
+    await timeline_annotations.create_annotation(
         db_session, title="Болел", on_date=date(2026, 6, 5), kind=AnnotationKind.ILLNESS.value,
         identity=WriteIdentity(
             owned_by_legacy_subject.subject_id, owned_by_legacy_subject.user_id
@@ -144,7 +147,7 @@ async def test_list_events_merges_manual_and_derived(db_session, owned_by_legacy
     ))
     await db_session.commit()
 
-    events = await timeline_service.list_events(
+    events = await timeline_events.list_events(
         db_session, subject_id=owned_by_legacy_subject.subject_id
     )
     refs = {e.ref for e in events}
@@ -164,13 +167,13 @@ async def test_list_events_merges_manual_and_derived(db_session, owned_by_legacy
 
 
 async def test_list_events_domain_filter_always_includes_global(db_session, owned_by_legacy_subject):
-    await timeline_service.create_annotation(
+    await timeline_annotations.create_annotation(
         db_session, title="Global note", on_date=date(2026, 6, 1), domain=Domain.TIMELINE.value,
         identity=WriteIdentity(
             owned_by_legacy_subject.subject_id, owned_by_legacy_subject.user_id
         ),
     )
-    await timeline_service.create_annotation(
+    await timeline_annotations.create_annotation(
         db_session, title="Glp1 note", on_date=date(2026, 6, 1), domain=Domain.GLP1.value,
         identity=WriteIdentity(
             owned_by_legacy_subject.subject_id, owned_by_legacy_subject.user_id
@@ -178,7 +181,7 @@ async def test_list_events_domain_filter_always_includes_global(db_session, owne
     )
     await db_session.commit()
 
-    events = await timeline_service.list_events(
+    events = await timeline_events.list_events(
         db_session, domains=[Domain.WEIGHT.value], subject_id=owned_by_legacy_subject.subject_id
     )
     titles = {e.title for e in events}
@@ -187,20 +190,20 @@ async def test_list_events_domain_filter_always_includes_global(db_session, owne
 
 
 async def test_overlays_for_domain_includes_own_and_global_only(db_session, owned_by_legacy_subject):
-    await timeline_service.create_annotation(
+    await timeline_annotations.create_annotation(
         db_session, title="Global flag", on_date=date(2026, 6, 1), domain=Domain.TIMELINE.value,
         identity=WriteIdentity(
             owned_by_legacy_subject.subject_id, owned_by_legacy_subject.user_id
         ),
     )
-    await timeline_service.create_annotation(
+    await timeline_annotations.create_annotation(
         db_session, title="Weight flag", on_date=date(2026, 6, 5),
         end_date=date(2026, 6, 8), domain=Domain.WEIGHT.value,
         identity=WriteIdentity(
             owned_by_legacy_subject.subject_id, owned_by_legacy_subject.user_id
         ),
     )
-    await timeline_service.create_annotation(
+    await timeline_annotations.create_annotation(
         db_session, title="GLP-1 only flag", on_date=date(2026, 6, 1), domain=Domain.GLP1.value,
         identity=WriteIdentity(
             owned_by_legacy_subject.subject_id, owned_by_legacy_subject.user_id
@@ -208,7 +211,7 @@ async def test_overlays_for_domain_includes_own_and_global_only(db_session, owne
     )
     await db_session.commit()
 
-    overlays = await timeline_service.overlays_for(
+    overlays = await timeline_annotations.overlays_for(
         db_session, domain=Domain.WEIGHT.value, subject_id=owned_by_legacy_subject.subject_id
     )
     labels = {o["label"] for o in overlays}
@@ -233,7 +236,7 @@ async def test_derived_events_supplements_started_and_stopped(db_session, owned_
     ))
     await db_session.commit()
 
-    events = await timeline_service.list_events(
+    events = await timeline_events.list_events(
         db_session, subject_id=owned_by_legacy_subject.subject_id
     )
     started = [e for e in events if e.ref.startswith("supplement_started:")]
@@ -256,7 +259,7 @@ async def test_derived_events_skincare_added_and_removed(db_session, owned_by_le
     ))
     await db_session.commit()
 
-    events = await timeline_service.list_events(
+    events = await timeline_events.list_events(
         db_session, subject_id=owned_by_legacy_subject.subject_id
     )
     added = [e for e in events if e.ref.startswith("skincare_added:")]
@@ -284,7 +287,7 @@ async def test_derived_events_glp1_side_effect_severity_threshold(db_session, ow
     ))
     await db_session.commit()
 
-    events = await timeline_service.list_events(
+    events = await timeline_events.list_events(
         db_session, subject_id=owned_by_legacy_subject.subject_id
     )
     side_effects = [e for e in events if e.kind == "side_effect"]
@@ -306,7 +309,7 @@ async def test_derived_events_milestone_created_achieved_missed(db_session, owne
     ))
     await db_session.commit()
 
-    events = await timeline_service.list_events(
+    events = await timeline_events.list_events(
         db_session, subject_id=owned_by_legacy_subject.subject_id
     )
     created = [e for e in events if e.ref.startswith("milestone_created:")]
@@ -331,7 +334,7 @@ async def test_derived_events_genetics_import_grouped_by_day(db_session, owned_b
     ))
     await db_session.commit()
 
-    events = await timeline_service.list_events(
+    events = await timeline_events.list_events(
         db_session, subject_id=owned_by_legacy_subject.subject_id
     )
     imports = {e.date: e for e in events if e.ref.startswith("genetics_import:")}
@@ -368,7 +371,7 @@ async def test_derived_events_progress_photo_is_marker_only(db_session, owned_by
     ))
     await db_session.commit()
 
-    events = await timeline_service.list_events(
+    events = await timeline_events.list_events(
         db_session, subject_id=owned_by_legacy_subject.subject_id
     )
     photo_events = [e for e in events if e.kind == "photo"]
@@ -393,7 +396,7 @@ async def test_derived_events_labs_tone_reflects_worst_flag(db_session, owned_by
     ))
     await db_session.commit()
 
-    events = await timeline_service.list_events(
+    events = await timeline_events.list_events(
         db_session, subject_id=owned_by_legacy_subject.subject_id
     )
     labs_events = {e.date: e for e in events if e.domain == "labs"}

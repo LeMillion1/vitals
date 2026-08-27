@@ -14,7 +14,7 @@ Stop rule (both schemes): if the lifter fails to reach ``rep_min`` in a working
 set for ``stop_after_failures`` consecutive sessions → 🔴 deload (reduce the
 weight ~10%). The product is a navigator — this is a suggestion, never enforced.
 
-The caller (``hevy_service``) reduces DB rows to :class:`SessionResult` objects
+The caller (``hevy.queries``) reduces DB rows to :class:`SessionResult` objects
 (one per session: the top working weight and that weight's set reps); everything
 here is side-effect-free and unit-tested.
 """

@@ -3,6 +3,10 @@ normalization), list_conflict_rules, check_conflicts. Skipped where FastMCP
 can't import, same constraint as the other MCP tool tests."""
 from __future__ import annotations
 
+from vitals.services.genetics import writes as genetics_writes
+
+from vitals.services.supplements import writes as supplement_writes
+
 import pytest
 from sqlalchemy import select
 
@@ -10,7 +14,6 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.models.identity import HealthSubject
 from vitals.services.conflicts import activation, registrations
 from vitals.services.conflicts.engine import LegacyConflictBridge
-from vitals.services.genetics import variants
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
@@ -40,7 +43,7 @@ async def test_check_supplement_conflicts_normalizes_cyrillic_name(db_session, s
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
-    await variants.add_variant(
+    await genetics_writes.add_variant(
         db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
@@ -110,7 +113,7 @@ async def test_list_conflict_rules_returns_subject_activation_not_global_flag(
 async def test_check_conflicts_generic_domain_payload(db_session, session_factory, monkeypatch, owner_write):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     registrations.register_all_resolvers()
-    from vitals.services import supplements_service
+
 
     db_session.add(
         ConflictRule(
@@ -120,7 +123,7 @@ async def test_check_conflicts_generic_domain_payload(db_session, session_factor
             severity="block", message="Гиперкалиемия.", active=True,
         )
     )
-    await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+    await supplement_writes.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
     violations = await mcp_router.check_conflicts("labs", {"marker": "Калий", "value": 5.5})

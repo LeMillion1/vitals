@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -18,7 +19,16 @@ from vitals.models.labs import LabResult
 from vitals.models.supplements import Supplement
 from vitals.models.weight import ProgressPhoto, WeightLog
 from vitals.persistence.rls import bound_subject, in_platform_scope
-from vitals.services import share_service
+from vitals.services.share import jobs, ownership, public_access, queries, reports, snapshot
+
+share_service = SimpleNamespace(
+    **{
+        name: value
+        for module in (jobs, ownership, public_access, queries, reports, snapshot)
+        for name, value in vars(module).items()
+        if not name.startswith("_")
+    }
+)
 from vitals.services.modules_service import MODULE_REGISTRY
 from vitals.utils.timeutils import now_local
 from vitals.utils.passwords import verify_password

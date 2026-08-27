@@ -310,7 +310,7 @@ async def test_environment_write_failure_preserves_old_credential_and_rolls_back
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
     monkeypatch.setenv("VITALS_OPENROUTER_API_KEY", "synthetic-previous-secret")
     monkeypatch.setattr(
-        "web.routers.settings.write_keys",
+        "web.settings.platform.write_keys",
         lambda _updates: (_ for _ in ()).throw(OSError("synthetic write failure")),
     )
 

@@ -1,10 +1,14 @@
 """Nutrition service tests — meal logging, daily summary, period summary."""
 from __future__ import annotations
 
+from vitals.services.nutrition import analytics as nutrition_analytics
+from vitals.services.nutrition import queries as nutrition_queries
+from vitals.services.nutrition import writes as nutrition_writes
+
 from datetime import date, time
 
 
-from vitals.services import nutrition_service
+
 
 
 
@@ -22,7 +26,7 @@ def _make_cfg(**overrides):
 
 
 async def test_log_meal_creates_row(db_session, owner_write):
-    m = await nutrition_service.log_meal(
+    m = await nutrition_writes.log_meal(
         db_session,
         on_date=date(2026, 6, 1),
         name="2 eggs, toast",
@@ -44,38 +48,38 @@ async def test_log_meal_creates_row(db_session, owner_write):
 
 async def test_multiple_meals_same_day(db_session, owner_write):
     d = date(2026, 6, 2)
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=d, name="breakfast", calories=300,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d),
     )
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=d, name="lunch", calories=500,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d),
     )
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=d, name="dinner", calories=600,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d),
     )
     await db_session.commit()
 
-    meals = await nutrition_service.list_meals_for_date(
+    meals = await nutrition_queries.list_meals_for_date(
         db_session, d, subject_id=owner_write.subject_id
     )
     assert len(meals) == 3
 
 
 async def test_update_meal(db_session, owner_write):
-    m = await nutrition_service.log_meal(
+    m = await nutrition_writes.log_meal(
         db_session, on_date=date(2026, 6, 3), name="original", calories=100,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 3)),
     )
     await db_session.commit()
 
-    updated = await nutrition_service.update_meal(
+    updated = await nutrition_writes.update_meal(
         db_session, m.id, on_date=date(2026, 6, 3), name="updated", calories=200,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 3)),
@@ -87,14 +91,14 @@ async def test_update_meal(db_session, owner_write):
 
 
 async def test_delete_meal(db_session, owner_write):
-    m = await nutrition_service.log_meal(
+    m = await nutrition_writes.log_meal(
         db_session, on_date=date(2026, 6, 4), name="to delete",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 4)),
     )
     await db_session.commit()
 
-    result = await nutrition_service.delete_meal(
+    result = await nutrition_writes.delete_meal(
         db_session, m.id,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
@@ -102,14 +106,14 @@ async def test_delete_meal(db_session, owner_write):
     await db_session.commit()
     assert result is True
 
-    meals = await nutrition_service.list_meals_for_date(
+    meals = await nutrition_queries.list_meals_for_date(
         db_session, date(2026, 6, 4), subject_id=owner_write.subject_id
     )
     assert len(meals) == 0
 
 
 async def test_delete_nonexistent_returns_false(db_session, owner_write):
-    result = await nutrition_service.delete_meal(
+    result = await nutrition_writes.delete_meal(
         db_session, 9999,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
@@ -119,24 +123,24 @@ async def test_delete_nonexistent_returns_false(db_session, owner_write):
 
 async def test_daily_summary_totals_and_on_track(db_session, owner_write):
     d = date(2026, 6, 5)
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=d, name="meal1", calories=600, protein_g=50,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d),
     )
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=d, name="meal2", calories=700, protein_g=60,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d),
     )
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=d, name="meal3", calories=300, protein_g=50,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d),
     )
     await db_session.commit()
 
-    summary = await nutrition_service.daily_summary(
+    summary = await nutrition_analytics.daily_summary(
         db_session, d, subject_id=owner_write.subject_id
     )
 
@@ -149,14 +153,14 @@ async def test_daily_summary_totals_and_on_track(db_session, owner_write):
 
 async def test_daily_summary_under_target(db_session, owner_write):
     d = date(2026, 6, 6)
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=d, name="snack", calories=500, protein_g=20,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d),
     )
     await db_session.commit()
 
-    summary = await nutrition_service.daily_summary(
+    summary = await nutrition_analytics.daily_summary(
         db_session, d, subject_id=owner_write.subject_id
     )
 
@@ -166,14 +170,14 @@ async def test_daily_summary_under_target(db_session, owner_write):
 
 async def test_daily_summary_over_target(db_session, owner_write):
     d = date(2026, 6, 7)
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=d, name="feast", calories=2000, protein_g=200,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d),
     )
     await db_session.commit()
 
-    summary = await nutrition_service.daily_summary(
+    summary = await nutrition_analytics.daily_summary(
         db_session, d, subject_id=owner_write.subject_id
     )
 
@@ -183,19 +187,19 @@ async def test_daily_summary_over_target(db_session, owner_write):
 
 async def test_nutrition_summary_period(db_session, owner_write):
     d1, d2 = date(2026, 6, 10), date(2026, 6, 11)
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=d1, name="day1-meal", calories=1500, protein_g=100,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d1),
     )
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=d2, name="day2-meal", calories=1400, protein_g=120,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(d2),
     )
     await db_session.commit()
 
-    summary = await nutrition_service.nutrition_summary(
+    summary = await nutrition_analytics.nutrition_summary(
         db_session, d1, d2, subject_id=owner_write.subject_id
     )
 
@@ -222,7 +226,7 @@ async def test_goals_come_from_this_subjects_record(db_session, owner_write):
             "calories_max": "2000",
         },
     )
-    goals = await nutrition_service.get_goals(
+    goals = await nutrition_analytics.get_goals(
         db_session, subject_id=owner_write.subject_id
     )
 
@@ -232,7 +236,7 @@ async def test_goals_come_from_this_subjects_record(db_session, owner_write):
 
 
 async def test_eaten_at_defaults_to_now(db_session, owner_write):
-    m = await nutrition_service.log_meal(
+    m = await nutrition_writes.log_meal(
         db_session, on_date=date(2026, 6, 8), name="no time given",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 8)),
@@ -242,19 +246,19 @@ async def test_eaten_at_defaults_to_now(db_session, owner_write):
 
 
 async def test_list_meals_date_range(db_session, owner_write):
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=date(2026, 6, 1),
         name="a",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
     )
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=date(2026, 6, 5),
         name="b",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(date(2026, 6, 5)),
     )
-    await nutrition_service.log_meal(
+    await nutrition_writes.log_meal(
         db_session, on_date=date(2026, 6, 10),
         name="c",
         identity=owner_write.identity,
@@ -262,7 +266,7 @@ async def test_list_meals_date_range(db_session, owner_write):
     )
     await db_session.commit()
 
-    meals = await nutrition_service.list_meals(
+    meals = await nutrition_queries.list_meals(
         db_session,
         start=date(2026, 6, 3),
         end=date(2026, 6, 7),

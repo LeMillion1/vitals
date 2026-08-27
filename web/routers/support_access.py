@@ -2,7 +2,7 @@
 
 Deliberately one module and two routers, because the pair only makes sense
 together. Every rule about who may do what lives in
-:mod:`vitals.services.support_access_service`; these routes carry a form to it
+:mod:`vitals.services.support_access`; these routes carry a form to it
 and turn its refusals into pages.
 
 The administrator's console accepts one exact opaque record code and binds that
@@ -25,7 +25,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.access import PolicyAction, PolicyResourceType
 from vitals.enums import RECORD_SECTIONS, Domain, SupportAccessMode
 from vitals.persistence.rls import bind_session_subject
-from vitals.services import support_access_service as support
+from vitals.services.support_access import contracts as support_contracts
+from vitals.services.support_access import export as support_export
+from vitals.services.support_access import lifecycle as support_lifecycle
+from vitals.services.support_access import projections as support_projections
+from vitals.services.support_access import repair as support_repair
+from vitals.services.portability import v1_contract
 from vitals.services.access_resolution import (
     AccessDeniedError,
     AccessResolutionError,
@@ -122,12 +127,12 @@ async def console(
     try:
         if selected_subject_id is not None:
             await bind_session_subject(db, selected_subject_id)
-        state = await support.console_for_admin(
+        state = await support_projections.console_for_admin(
             db,
             admin_user_id=admin_user_id,
             subject_id=selected_subject_id,
         )
-    except support.NotAPlatformAdmin as exc:
+    except support_contracts.NotAPlatformAdmin as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Platform administrator access required",
@@ -142,9 +147,9 @@ async def console(
             "selected_subject_id": selected_subject_id,
             "domains": [domain.value for domain in RECORD_SECTIONS],
             "default_hours": int(
-                support.DEFAULT_GRANT_TTL.total_seconds() // 3600
+                support_contracts.DEFAULT_GRANT_TTL.total_seconds() // 3600
             ),
-            "max_hours": int(support.MAX_GRANT_TTL.total_seconds() // 3600),
+            "max_hours": int(support_contracts.MAX_GRANT_TTL.total_seconds() // 3600),
             "asked": asked,
             "error": error,
         },
@@ -176,21 +181,21 @@ async def ask_for_access(
     # boundary; the service's live platform-role check remains authorization.
     await bind_session_subject(db, subject_id)
     try:
-        await support.open_request(
+        await support_lifecycle.open_request(
             db,
             admin_user_id=admin_user_id,
             subject_id=subject_id,
             reason=reason,
-            scopes=support.read_scopes_for(chosen),
+            scopes=support_contracts.read_scopes_for(chosen),
             ttl=timedelta(hours=hours),
             ticket_reference=ticket_reference,
         )
-    except support.NotAPlatformAdmin as exc:
+    except support_contracts.NotAPlatformAdmin as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Platform administrator access required",
         ) from exc
-    except support.SupportAccessError:
+    except support_contracts.SupportAccessError:
         await db.rollback()
         return _console_back(subject_id, "error=refused")
     await db.commit()
@@ -211,22 +216,22 @@ async def ask_for_export(
     admin_user_id = await _admin_id(request, db)
     await bind_session_subject(db, subject_id)
     try:
-        await support.open_request(
+        await support_lifecycle.open_request(
             db,
             admin_user_id=admin_user_id,
             subject_id=subject_id,
             reason=reason,
-            scopes=support.export_scope(),
-            ttl=support.DEFAULT_GRANT_TTL,
+            scopes=support_contracts.export_scope(),
+            ttl=support_contracts.DEFAULT_GRANT_TTL,
             ticket_reference=ticket_reference,
             mode=SupportAccessMode.EXPORT,
         )
-    except support.NotAPlatformAdmin as exc:
+    except support_contracts.NotAPlatformAdmin as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Platform administrator access required",
         ) from exc
-    except support.SupportAccessError:
+    except support_contracts.SupportAccessError:
         await db.rollback()
         return _console_back(subject_id, "error=refused")
     await db.commit()
@@ -247,19 +252,19 @@ async def ask_for_repair(
     admin_user_id = await _admin_id(request, db)
     await bind_session_subject(db, subject_id)
     try:
-        await support.open_request(
+        await support_lifecycle.open_request(
             db,
             admin_user_id=admin_user_id,
             subject_id=subject_id,
             reason=reason,
-            scopes=support.repair_scope(),
-            ttl=support.DEFAULT_GRANT_TTL,
+            scopes=support_contracts.repair_scope(),
+            ttl=support_contracts.DEFAULT_GRANT_TTL,
             ticket_reference=ticket_reference,
             mode=SupportAccessMode.REPAIR,
         )
-    except support.NotAPlatformAdmin as exc:
+    except support_contracts.NotAPlatformAdmin as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN) from exc
-    except support.SupportAccessError:
+    except support_contracts.SupportAccessError:
         await db.rollback()
         return _console_back(subject_id, "error=refused")
     await db.commit()
@@ -302,7 +307,7 @@ async def _repair_context(
     require_access(
         context,
         resource_type=PolicyResourceType.OPERATION,
-        resource_key=support.REPAIR_OPERATION_KEY,
+        resource_key=support_contracts.REPAIR_OPERATION_KEY,
         action=PolicyAction.REPAIR,
     )
     return context
@@ -328,7 +333,7 @@ async def repair_workspace(
             subject_selector=subject_selector,
             grant_selector=grant_selector,
         )
-        measurements, actions = await support.repair_workspace(db, context=context)
+        measurements, actions = await support_repair.repair_workspace(db, context=context)
         response = templates.TemplateResponse(
             request,
             "settings/support_repair.html",
@@ -342,12 +347,12 @@ async def repair_workspace(
                 "error": error,
             },
         )
-        await support.record_record_opened(
+        await support_export.record_record_opened(
             db, context=context, domain_keys=(Domain.WEIGHT.value,)
         )
         await db.commit()
         return response
-    except (AccessResolutionError, AccessDeniedError, support.SupportAccessError):
+    except (AccessResolutionError, AccessDeniedError, support_contracts.SupportAccessError):
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
 
@@ -375,14 +380,14 @@ async def propose_repair(
             subject_selector=subject_selector,
             grant_selector=grant_selector,
         )
-        await support.propose_clear_derived_estimates(
+        await support_repair.propose_clear_derived_estimates(
             db,
             context=context,
             measurement_id=measurement_id,
             idempotency_key=idempotency_key,
         )
         await db.commit()
-    except (AccessResolutionError, AccessDeniedError, support.SupportAccessError):
+    except (AccessResolutionError, AccessDeniedError, support_contracts.SupportAccessError):
         await db.rollback()
         return _back(back, "error=refused")
     return _back(back, "saved=proposed")
@@ -411,7 +416,7 @@ async def execute_repair(
             subject_selector=subject_selector,
             grant_selector=grant_selector,
         )
-        action = await support.execute_repair(
+        action = await support_repair.execute_repair(
             db,
             context=context,
             action_id=action_id,
@@ -424,7 +429,7 @@ async def execute_repair(
             status_code=status.HTTP_409_CONFLICT,
             content={"violations": [row.to_dict() for row in exc.violations]},
         )
-    except (AccessResolutionError, AccessDeniedError, support.SupportAccessError):
+    except (AccessResolutionError, AccessDeniedError, support_contracts.SupportAccessError):
         await db.rollback()
         return _back(back, "error=refused")
     marker = "stale" if action.status == "stale" else "executed"
@@ -462,10 +467,10 @@ async def download_export(
         require_access(
             context,
             resource_type=PolicyResourceType.OPERATION,
-            resource_key=support.EXPORT_OPERATION_KEY,
+            resource_key=support_contracts.EXPORT_OPERATION_KEY,
             action=PolicyAction.EXPORT,
         )
-        payload = await support.consume_subject_export(db, context=context)
+        payload = await support_export.consume_subject_export(db, context=context)
         # Serialization is part of the release transaction. If it fails, the
         # grant and success audit roll back and the patient approval is retryable.
         body = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
@@ -473,11 +478,11 @@ async def download_export(
     except (
         AccessResolutionError,
         AccessDeniedError,
-        support.SupportAccessError,
+        support_contracts.SupportAccessError,
     ):
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
-    except support.data_portability_service.PortabilityError as exc:
+    except v1_contract.PortabilityError as exc:
         # A valid grant can outlive the v1 format's ability to represent the
         # record (for example after a provider connection was added). Keep the
         # one-shot approval retryable and return a controlled, non-PHI refusal.
@@ -505,10 +510,10 @@ async def withdraw(
     admin_user_id = await _admin_id(request, db)
     await bind_session_subject(db, subject_id)
     try:
-        await support.withdraw_request(
+        await support_lifecycle.withdraw_request(
             db, admin_user_id=admin_user_id, request_id=request_id
         )
-    except support.SupportAccessError:
+    except support_contracts.SupportAccessError:
         await db.rollback()
         return _console_back(subject_id, "error=refused")
     await db.commit()
@@ -528,13 +533,13 @@ async def hand_it_back(
     admin_user_id = await _admin_id(request, db)
     await bind_session_subject(db, subject_id)
     try:
-        await support.revoke_grant(
+        await support_lifecycle.revoke_grant(
             db,
             actor_user_id=admin_user_id,
             grant_id=grant_id,
             reason="Handed back by the administrator who held it.",
         )
-    except support.SupportAccessError:
+    except support_contracts.SupportAccessError:
         await db.rollback()
         return _console_back(subject_id, "error=refused")
     await db.commit()
@@ -562,10 +567,10 @@ async def access_history(
 
     _user_id, subject_id = await _own_subject(request, db)
     context = await resolve_access_context(db, user_id=_user_id, subject_id=None)
-    history = await support.list_for_subject(db, context=context)
-    repairs = await support.repair_actions_for_subject(db, context=context)
-    opened = await support.record_opened_history(db, subject_id=subject_id)
-    live_grants = await support.live_grants_for(db, context=context)
+    history = await support_lifecycle.list_for_subject(db, context=context)
+    repairs = await support_repair.repair_actions_for_subject(db, context=context)
+    opened = await support_projections.record_opened_history(db, subject_id=subject_id)
+    live_grants = await support_lifecycle.live_grants_for(db, context=context)
     emergency_history = await emergency_access.list_for_subject(
         db, owner_user_id=_user_id, subject_id=subject_id
     )
@@ -598,10 +603,10 @@ async def approve(
 ):
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await support.approve_request(
+        await support_lifecycle.approve_request(
             db, owner_user_id=user_id, request_id=request_id
         )
-    except support.SupportAccessError:
+    except support_contracts.SupportAccessError:
         await db.rollback()
         return _back("/settings/access", "error=refused")
     await db.commit()
@@ -617,10 +622,10 @@ async def decline(
 ):
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await support.decline_request(
+        await support_lifecycle.decline_request(
             db, owner_user_id=user_id, request_id=request_id
         )
-    except support.SupportAccessError:
+    except support_contracts.SupportAccessError:
         await db.rollback()
         return _back("/settings/access", "error=refused")
     await db.commit()
@@ -636,11 +641,11 @@ async def approve_repair(
 ):
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await support.review_repair(
+        await support_repair.review_repair(
             db, owner_user_id=user_id, action_id=action_id, approve=True
         )
         await db.commit()
-    except support.SupportAccessError:
+    except support_contracts.SupportAccessError:
         await db.rollback()
         return _back("/settings/access", "error=refused")
     return _back("/settings/access", "decided=repair-approved")
@@ -655,11 +660,11 @@ async def decline_repair(
 ):
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await support.review_repair(
+        await support_repair.review_repair(
             db, owner_user_id=user_id, action_id=action_id, approve=False
         )
         await db.commit()
-    except support.SupportAccessError:
+    except support_contracts.SupportAccessError:
         await db.rollback()
         return _back("/settings/access", "error=refused")
     return _back("/settings/access", "decided=repair-declined")
@@ -675,7 +680,7 @@ async def revert_repair(
 ):
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await support.revert_repair(
+        await support_repair.revert_repair(
             db,
             owner_user_id=user_id,
             action_id=action_id,
@@ -688,7 +693,7 @@ async def revert_repair(
             status_code=status.HTTP_409_CONFLICT,
             content={"violations": [row.to_dict() for row in exc.violations]},
         )
-    except support.SupportAccessError:
+    except support_contracts.SupportAccessError:
         await db.rollback()
         return _back("/settings/access", "error=refused")
     return _back("/settings/access", "decided=repair-reverted")
@@ -705,13 +710,13 @@ async def take_it_back(
 
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await support.revoke_grant(
+        await support_lifecycle.revoke_grant(
             db,
             actor_user_id=user_id,
             grant_id=grant_id,
             reason="Withdrawn by the person whose record it is.",
         )
-    except support.SupportAccessError:
+    except support_contracts.SupportAccessError:
         await db.rollback()
         return _back("/settings/access", "error=refused")
     await db.commit()

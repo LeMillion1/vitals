@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from vitals.services.genetics import queries as genetics_queries
+from vitals.services.genetics import validation as genetics_validation
+
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -34,8 +37,8 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.weight import WeightLog
 from vitals.services import modules_service
 from vitals.services.care import record_projection
-from vitals.services import labs_service, weight_service
-from vitals.services.genetics import variants
+import vitals.services.labs.results as lab_results
+from vitals.services import weight as weight_domain
 
 
 def test_care_consent_domains_come_from_the_projection_registry():
@@ -49,9 +52,7 @@ def test_care_consent_domains_come_from_the_projection_registry():
     assert Domain.TIMELINE not in domains
     assert Domain.MILESTONES not in domains
     assert domains == tuple(
-        section.domain
-        for section in record_projection.SECTIONS
-        if section.module != "skincare"
+        section.domain for section in record_projection.SECTIONS if section.module != "skincare"
     )
 
 
@@ -247,9 +248,7 @@ async def test_weight_consent_does_not_read_body_composition_tables(db_session):
     record_projection.SECTIONS,
     ids=lambda section: section.key,
 )
-async def test_each_record_card_uses_only_its_authorized_loader(
-    db_session, monkeypatch, section
-):
+async def test_each_record_card_uses_only_its_authorized_loader(db_session, monkeypatch, section):
     context = _professional_context(section.domain)
     enabled = {key: False for key in modules_service.MODULE_REGISTRY}
     enabled[section.module] = True
@@ -287,9 +286,7 @@ async def test_support_projection_does_not_name_ungranted_enabled_modules(db_ses
     assert projection.restricted is True
     assert projection.withheld_domains == ()
     assert projection.loaded_domains == (Domain.LABS.value,)
-    template = (
-        Path(__file__).parents[1] / "web/templates/care/_record.html"
-    ).read_text()
+    template = (Path(__file__).parents[1] / "web/templates/care/_record.html").read_text()
     assert "care.is_support and record_restricted" in template
     assert "care.record_withheld_support" not in template
 
@@ -339,7 +336,7 @@ async def test_weight_care_history_is_bounded_without_selecting_raw_payload_json
 
     history, statements = await _record_sql(
         db_session,
-        lambda: weight_service.care_weight_history(
+        lambda: weight_domain.queries.care_weight_history(
             db_session,
             subject_id=legacy_owner_roots.subject_id,
             end=date(2026, 1, 10),
@@ -392,13 +389,13 @@ async def test_labs_latest_per_marker_is_not_displaced_and_reports_truncation(
     )
     await db_session.flush()
 
-    full = await labs_service.bounded_latest_results_by_marker(
+    full = await lab_results.bounded_latest_results_by_marker(
         db_session,
         subject_id=subject_id,
         end=date(2026, 1, 3),
         marker_limit=2,
     )
-    bounded = await labs_service.bounded_latest_results_by_marker(
+    bounded = await lab_results.bounded_latest_results_by_marker(
         db_session,
         subject_id=subject_id,
         end=date(2026, 1, 3),
@@ -478,7 +475,7 @@ async def test_bounded_genetics_order_is_deterministic_with_null_rsid(
     )
     await db_session.flush()
 
-    page = await variants.bounded_variants(
+    page = await genetics_queries.bounded_variants(
         db_session,
         subject_id=subject_id,
         limit=2,
@@ -488,9 +485,7 @@ async def test_bounded_genetics_order_is_deterministic_with_null_rsid(
     assert page.truncated is False
 
 
-async def test_genetics_bounded_validation_caches_shared_raw_parse(
-    db_session, monkeypatch
-):
+async def test_genetics_bounded_validation_caches_shared_raw_parse(db_session, monkeypatch):
     subject_id = uuid.uuid4()
     owner_user_id = uuid.uuid4()
     payload = {
@@ -509,7 +504,7 @@ async def test_genetics_bounded_validation_caches_shared_raw_parse(
         file_asset_id=None,
         domain=Domain.GENETICS.value,
         source=Source.VCF_IMPORT.value,
-        external_id=variants._vcf_external_id(payload),
+        external_id=genetics_validation._vcf_external_id(payload),
         payload=payload,
     )
     rows = [
@@ -525,7 +520,7 @@ async def test_genetics_bounded_validation_caches_shared_raw_parse(
     ]
     raw_loads = 0
     raw_parses = 0
-    original_parse = variants._raw_normalization_variants
+    original_parse = genetics_validation._raw_normalization_variants
 
     async def load_raw(_session, _raw_payload_id, *, for_update):
         nonlocal raw_loads
@@ -538,12 +533,12 @@ async def test_genetics_bounded_validation_caches_shared_raw_parse(
         raw_parses += 1
         return original_parse(value)
 
-    monkeypatch.setattr(variants, "_load_raw", load_raw)
-    monkeypatch.setattr(variants, "_raw_normalization_variants", parse_raw)
+    monkeypatch.setattr(genetics_validation, "_load_raw", load_raw)
+    monkeypatch.setattr(genetics_validation, "_raw_normalization_variants", parse_raw)
     raw_cache = {}
     raw_rsid_cache = {}
     for row in rows:
-        await variants._validate_variant_graph(
+        await genetics_validation._validate_variant_graph(
             db_session,
             row=row,
             subject_id=subject_id,

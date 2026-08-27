@@ -1159,7 +1159,7 @@ def _shared_report_authorization_module():
 def test_authorization_bridges_name_the_exact_runtime_routines():
     from scripts.provision_runtime_db_role import RUNTIME_EXECUTE_ROUTINES
     from vitals.services.care.invitations import POSTGRES_AUTHORIZATION_ROUTINE
-    from vitals.services.share_service import (
+    from vitals.services.share.public_access import (
         POSTGRES_PUBLIC_AUTHORIZATION_ROUTINE,
     )
 
@@ -1764,7 +1764,7 @@ async def test_real_postgres_public_report_attestation_binds_only_a_live_subject
         enter_platform_scope,
         in_platform_scope,
     )
-    from vitals.services import share_service
+    from vitals.services.share import public_access as share_service
     from vitals.utils.timeutils import now_local, now_utc
 
     database_url = os.environ["VITALS_TEST_DATABASE_URL"]
@@ -2202,9 +2202,12 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
         # rollback before any scheduled job starts.
         ("vitals/scheduler/lifecycle.py", "load_worker_settings"),
         # Housekeeping across every subject, with no person to act as.
-        ("vitals/services/share_service.py", "purge_job"),
-        ("vitals/services/ai_gateway_service.py", "reconciliation_job"),
-        ("vitals/services/proactive/delivery.py", "delivery_reconciliation_job"),
+        ("vitals/services/share/jobs.py", "purge_job"),
+        ("vitals/services/ai_gateway/jobs.py", "reconciliation_job"),
+        (
+            "vitals/services/proactive/delivery/reconciliation.py",
+            "delivery_reconciliation_job",
+        ),
         ("vitals/services/notifications/care_push_dispatcher.py", "dispatch_job"),
         (
             "vitals/services/authentication/admission/retention.py",
@@ -2566,7 +2569,7 @@ async def test_real_postgres_support_disclosure_and_patient_history_bind_one_sub
     from vitals.enums import Domain, UserRoleName, UserStatus
     from vitals.models.identity import HealthSubject, User, UserRole
     from vitals.persistence.rls import bind_session_subject, in_platform_scope
-    from vitals.services import support_access_service as support
+    from vitals.services.support_access import contracts, export, lifecycle, projections
     from vitals.services.access_resolution import resolve_access_context
     from web.auth import create_federated_session
     from web.care_context import require_care_context
@@ -2617,24 +2620,24 @@ async def test_real_postgres_support_disclosure_and_patient_history_bind_one_sub
             )
             seed.add(subject)
             await seed.flush()
-            request = await support.open_request(
+            request = await lifecycle.open_request(
                 seed,
                 admin_user_id=operator.id,
                 subject_id=subject.id,
                 reason="Synthetic RLS support check.",
-                scopes=support.read_scopes_for((Domain.LABS,)),
+                scopes=contracts.read_scopes_for((Domain.LABS,)),
             )
-            grant = await support.approve_request(
+            grant = await lifecycle.approve_request(
                 seed, owner_user_id=owner.id, request_id=request.id
             )
-            second_request = await support.open_request(
+            second_request = await lifecycle.open_request(
                 seed,
                 admin_user_id=operator.id,
                 subject_id=subject.id,
                 reason="Second synthetic RLS support check.",
-                scopes=support.read_scopes_for((Domain.NUTRITION,)),
+                scopes=contracts.read_scopes_for((Domain.NUTRITION,)),
             )
-            await support.approve_request(
+            await lifecycle.approve_request(
                 seed, owner_user_id=owner.id, request_id=second_request.id
             )
             owner_id = owner.id
@@ -2683,7 +2686,7 @@ async def test_real_postgres_support_disclosure_and_patient_history_bind_one_sub
                 Domain.LABS.value
             }
             assert not in_platform_scope(disclosure)
-            await support.record_record_opened(
+            await export.record_record_opened(
                 disclosure,
                 context=context,
                 domain_keys=(Domain.LABS.value,),
@@ -2695,7 +2698,7 @@ async def test_real_postgres_support_disclosure_and_patient_history_bind_one_sub
                 patient, user_id=owner_id, subject_id=None
             )
             await bind_session_subject(patient, owner_context.subject_id)
-            history = await support.record_opened_history(
+            history = await projections.record_opened_history(
                 patient, subject_id=subject_id
             )
             assert len(history.events) == 1
@@ -2705,19 +2708,19 @@ async def test_real_postgres_support_disclosure_and_patient_history_bind_one_sub
 
         async with restricted_factory() as asking:
             await bind_session_subject(asking, subject_id)
-            pending = await support.open_request(
+            pending = await lifecycle.open_request(
                 asking,
                 admin_user_id=operator_id,
                 subject_id=subject_id,
                 reason="Synthetic request to withdraw under RLS.",
-                scopes=support.read_scopes_for((Domain.LABS,)),
+                scopes=contracts.read_scopes_for((Domain.LABS,)),
             )
             pending_id = pending.id
             await asking.commit()
 
         async with restricted_factory() as withdrawing:
             await bind_session_subject(withdrawing, subject_id)
-            await support.withdraw_request(
+            await lifecycle.withdraw_request(
                 withdrawing,
                 admin_user_id=operator_id,
                 request_id=pending_id,
@@ -2726,7 +2729,7 @@ async def test_real_postgres_support_disclosure_and_patient_history_bind_one_sub
 
         async with restricted_factory() as handing_back:
             await bind_session_subject(handing_back, subject_id)
-            await support.revoke_grant(
+            await lifecycle.revoke_grant(
                 handing_back,
                 actor_user_id=operator_id,
                 grant_id=grant_id,

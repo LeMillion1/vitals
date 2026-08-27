@@ -11,11 +11,22 @@ safety catalog would be a way to overwrite somebody else's.
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from vitals.enums import Domain, Source, UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.operations.ownership import portability_v1
-from vitals.services import data_portability_service as portability
+from vitals.services.portability import v1_contract, v1_export
+
+portability = SimpleNamespace(
+    GENERIC_OUTPUT_SUPPRESSED_COLUMNS=v1_contract.GENERIC_OUTPUT_SUPPRESSED_COLUMNS,
+    KIND_FULL=v1_contract.KIND_FULL,
+    KIND_SUBJECT=v1_export.KIND_SUBJECT,
+    MultiSubjectBackupError=v1_contract.MultiSubjectBackupError,
+    PortabilityError=v1_contract.PortabilityError,
+    export_full=v1_export.export_full,
+    export_subject=v1_export.export_subject,
+)
 
 
 async def _subject(session, slug: str) -> HealthSubject:
@@ -275,7 +286,7 @@ async def test_the_route_reports_an_unrepresentable_v1_record_without_a_500(
             "This record cannot be represented by portability v1."
         )
 
-    monkeypatch.setattr(portability, "export_subject", unrepresentable)
+    monkeypatch.setattr(v1_export, "export_subject", unrepresentable)
     response = await auth_client.get("/settings/export-subject")
 
     assert response.status_code == 409

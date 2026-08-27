@@ -2,6 +2,8 @@
 conversation that dealt with an alert ended with "теперь нажми кнопку в приложении"."""
 from __future__ import annotations
 
+from vitals.services.alerts import legacy as alerts_service_legacy
+
 import pytest
 from sqlalchemy import select
 
@@ -13,7 +15,6 @@ from vitals.enums import (  # noqa: E402
     IntegrationConnectionType,
     IntegrationProvider,
 )
-from vitals.services import alerts_service  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -22,7 +23,7 @@ def _use_test_factory(session_factory, monkeypatch, legacy_owner_roots):
 
 
 async def _raise(db_session, alert_key="labs.out_of_range"):
-    alert = await alerts_service.raise_alert(
+    alert = await alerts_service_legacy.raise_alert(
         db_session,
         domain="labs",
         severity="warning",
@@ -68,14 +69,14 @@ async def test_alert_tools_include_provider_roots_but_exclude_platform(
     db_session,
     legacy_owner_roots,
 ):
-    provider = await alerts_service.raise_alert(
+    provider = await alerts_service_legacy.raise_alert(
         db_session,
         domain="garmin",
         severity="warning",
         message="Garmin authentication failed",
         alert_key="garmin.auth",
     )
-    platform = await alerts_service.raise_alert(
+    platform = await alerts_service_legacy.raise_alert(
         db_session,
         domain="system",
         severity="warning",

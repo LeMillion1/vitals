@@ -26,7 +26,7 @@ import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.ownership_deploy import OWNERSHIP_BACKFILL_SEQUENCE
 from vitals.operations.ownership import portability_v1
-from vitals.services import data_portability_service
+from vitals.services.portability import v1_export
 from vitals.services.conflicts import catalog as conflict_catalog
 from vitals.services.hrt import catalog
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
@@ -328,7 +328,7 @@ async def _phase_statuses(engine: AsyncEngine, phase: str) -> tuple[str, ...]:
 async def _round_trip_portability_v1(engine: AsyncEngine) -> None:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
-        snapshot = await data_portability_service.export_full(session)
+        snapshot = await v1_export.export_full(session)
         await portability_v1.import_full(session, snapshot)
         await session.commit()
 

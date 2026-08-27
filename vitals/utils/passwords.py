@@ -1,7 +1,7 @@
 """Password hashing and verification (bcrypt).
 
 Lives in the core because both the web layer (login, shared-report access) and
-``share_service`` need it — the core must never import ``web``. No FastAPI
+shared-report services need it — the core must never import ``web``. No FastAPI
 imports here, so it is trivially unit-testable.
 """
 from __future__ import annotations

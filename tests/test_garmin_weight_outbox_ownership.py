@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from vitals.services.garmin_weight import contracts as garmin_weight_contracts
+from vitals.services.garmin_weight import jobs as garmin_weight_jobs
+from vitals.services.garmin_weight import outbox as garmin_weight_outbox
+from vitals.services.garmin_weight import reconciliation as garmin_weight_reconciliation
+from vitals.services.garmin_weight import settings as garmin_weight_settings
+
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -22,7 +28,6 @@ from vitals.models.scoped_settings import IntegrationConnectionSetting
 from vitals.models.tenancy import IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import garmin_weight_service
 from vitals.services.conflicts import engine
 from vitals.services.scoped_settings_service import ScopedSettingKey
 
@@ -43,8 +48,7 @@ async def _garmin_connection(session, subject_id):
         select(IntegrationConnection).where(
             IntegrationConnection.subject_id == subject_id,
             IntegrationConnection.provider == IntegrationProvider.GARMIN.value,
-            IntegrationConnection.connection_type
-            == IntegrationConnectionType.ACCOUNT.value,
+            IntegrationConnection.connection_type == IntegrationConnectionType.ACCOUNT.value,
         )
     )
 
@@ -61,7 +65,7 @@ async def _context(
         legacy_owner_roots.subject_id,
     )
     assert connection is not None
-    return garmin_weight_service.GarminWeightExportContext(
+    return garmin_weight_contracts.GarminWeightExportContext(
         identity=WriteIdentity(
             legacy_owner_roots.subject_id,
             None if system else legacy_owner_roots.user_id,
@@ -139,16 +143,16 @@ async def test_capability_is_opaque_session_and_transaction_bound(
 ):
     context = await _context(db_session, legacy_owner_roots)
 
-    with pytest.raises(garmin_weight_service.GarminWeightExportPreparedError):
-        garmin_weight_service.PreparedGarminWeightExport()
+    with pytest.raises(garmin_weight_contracts.GarminWeightExportPreparedError):
+        garmin_weight_contracts.PreparedGarminWeightExport()
 
-    prepared = await garmin_weight_service.prepare_scoped_export(
+    prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=context,
     )
     await db_session.commit()
-    with pytest.raises(garmin_weight_service.GarminWeightExportPreparedError):
-        await garmin_weight_service.get_status_scoped(
+    with pytest.raises(garmin_weight_contracts.GarminWeightExportPreparedError):
+        await garmin_weight_jobs.get_status_scoped(
             db_session,
             prepared=prepared,
         )
@@ -160,17 +164,20 @@ async def test_scoped_enable_projects_exact_roots_and_requester(
 ):
     context = await _context(db_session, legacy_owner_roots, bridge=True)
     weight = await _weight(db_session, identity=context.identity)
-    prepared = await garmin_weight_service.prepare_scoped_export(
+    prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=context,
     )
 
-    assert await garmin_weight_service.set_enabled_scoped(
-        db_session,
-        True,
-        prepared=prepared,
-        now=NOW,
-    ) is True
+    assert (
+        await garmin_weight_settings.set_enabled_scoped(
+            db_session,
+            True,
+            prepared=prepared,
+            now=NOW,
+        )
+        is True
+    )
 
     outbox = await db_session.scalar(select(GarminWeightExport))
     assert outbox is not None
@@ -222,12 +229,12 @@ async def test_reconcile_ignores_foreign_newer_weight(
         value=63.0,
     )
     await _enable_direct(db_session, context.integration_connection_id)
-    prepared = await garmin_weight_service.prepare_scoped_export(
+    prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=context,
     )
 
-    outbox = await garmin_weight_service.reconcile_latest_scoped(
+    outbox = await garmin_weight_reconciliation.reconcile_latest_scoped(
         db_session,
         prepared=prepared,
         now=NOW,
@@ -266,14 +273,14 @@ async def test_another_accounts_intent_for_the_same_date_is_left_alone(
     db_session.add(foreign)
     await _enable_direct(db_session, context.integration_connection_id)
     await db_session.flush()
-    prepared = await garmin_weight_service.prepare_scoped_export(
+    prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=context,
     )
 
     # One queued export per destination account per date: the other account's
     # intent is neither read into this reconciliation nor changed by it.
-    mine = await garmin_weight_service.reconcile_latest_scoped(
+    mine = await garmin_weight_reconciliation.reconcile_latest_scoped(
         db_session,
         prepared=prepared,
         now=NOW,
@@ -313,13 +320,13 @@ async def test_partial_outbox_roots_fail_closed(
         )
     )
     await db_session.flush()
-    prepared = await garmin_weight_service.prepare_scoped_export(
+    prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=context,
     )
 
-    with pytest.raises(garmin_weight_service.GarminWeightExportOwnershipError):
-        await garmin_weight_service.get_status_scoped(
+    with pytest.raises(garmin_weight_contracts.GarminWeightExportOwnershipError):
+        await garmin_weight_jobs.get_status_scoped(
             db_session,
             prepared=prepared,
         )
@@ -327,11 +334,15 @@ async def test_partial_outbox_roots_fail_closed(
 
 async def test_fully_null_legacy_outbox_adopts_without_inventing_requester(
     db_session,
-    legacy_owner_roots, *, garmin_connection_id,
+    legacy_owner_roots,
+    *,
+    garmin_connection_id,
 ):
     context = await _context(db_session, legacy_owner_roots, bridge=True)
     weight = await _weight(db_session, identity=context.identity)
-    legacy = GarminWeightExport(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
+    legacy = GarminWeightExport(
+        subject_id=legacy_owner_roots.subject_id,
+        integration_connection_id=garmin_connection_id,
         date=DAY,
         weight_log_id=weight.id,
         weight_kg=weight.weight_kg,
@@ -340,12 +351,12 @@ async def test_fully_null_legacy_outbox_adopts_without_inventing_requester(
     )
     db_session.add(legacy)
     await db_session.flush()
-    prepared = await garmin_weight_service.prepare_scoped_export(
+    prepared = await garmin_weight_outbox.prepare_scoped_export(
         db_session,
         context=context,
     )
 
-    await garmin_weight_service.set_enabled_scoped(
+    await garmin_weight_settings.set_enabled_scoped(
         db_session,
         True,
         prepared=prepared,
@@ -367,7 +378,7 @@ async def test_legacy_context_resolves_owner_and_explicit_garmin_connection(
     db_session,
     legacy_owner_roots,
 ):
-    context = await garmin_weight_service.resolve_legacy_export_context(
+    context = await garmin_weight_outbox.resolve_legacy_export_context(
         db_session,
         actor_username="tester",
     )
@@ -379,7 +390,4 @@ async def test_legacy_context_resolves_owner_and_explicit_garmin_connection(
         legacy_owner_roots.user_id,
     )
     assert context.integration_connection_id == connection.id
-    assert (
-        context.legacy_bridge
-        is engine.LegacyConflictBridge.FULLY_UNOWNED
-    )
+    assert context.legacy_bridge is engine.LegacyConflictBridge.FULLY_UNOWNED

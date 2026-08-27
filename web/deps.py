@@ -15,14 +15,11 @@ from typing import TYPE_CHECKING, AsyncIterator, Callable, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from redis.asyncio import Redis
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from web.config import SESSION_COOKIE
 
 from vitals.i18n import current_lang
-from vitals.models.identity import HealthSubject, User
-
 if TYPE_CHECKING:
     pass
 
@@ -98,10 +95,7 @@ async def require_auth(
     db: AsyncSession = Depends(get_session),
 ) -> str:
     """Guard every protected route and revalidate federated sessions."""
-    # Lazy import breaks the web.auth ↔ web.deps cycle: auth.py imports the login
-    # rate-limiter (web.ratelimit → web.deps), so deps must not import auth at
-    # module-load time.
-    from web.auth import (
+    from web.authentication.tokens import (
         decode_session,
         session_allowed_in_current_auth_mode,
         session_issued_at,
@@ -200,26 +194,25 @@ async def get_request_chrome_scope(
     scope: ChromeScope | None = None
     signed_in_user_id: uuid.UUID | None = None
     try:
-        from web.auth import decode_session
+        from web.authentication.tokens import decode_session
 
         claims = decode_session(request.cookies.get(SESSION_COOKIE))
         if claims is not None:
             user_id = claims.user_id
             if user_id is None:
-                from vitals.services.identity_service import normalize_username
+                from vitals.services import identity_service
 
-                normalized = normalize_username(claims.username)
-                user_id = await session.scalar(
-                    select(User.id).where(
-                        User.normalized_username == normalized.lookup_key
-                    )
+                user_id = await identity_service.find_user_id_by_username(
+                    session,
+                    username=claims.username,
                 )
             if user_id is not None:
                 signed_in_user_id = user_id
-                subject_id = await session.scalar(
-                    select(HealthSubject.id).where(
-                        HealthSubject.owner_user_id == user_id
-                    )
+                from vitals.services import identity_service
+
+                subject_id = await identity_service.owned_subject_id(
+                    session,
+                    user_id=user_id,
                 )
                 if subject_id is not None:
                     scope = ChromeScope(user_id=user_id, subject_id=subject_id)
@@ -250,36 +243,19 @@ async def get_request_chrome_scope(
     request.state.is_professional = False
     if signed_in_user_id is not None:
         try:
-            from vitals.enums import CareRelationshipStatus, UserRoleName
-            from vitals.models.identity import UserRole
-            from vitals.models.professional import CareRelationship
+            from vitals.enums import UserRoleName
+            from vitals.services import identity_service
+            from vitals.services.care import workspace as care_workspace
 
-            request.state.is_professional = bool(
-                await session.scalar(
-                    select(UserRole.id)
-                    .where(
-                        UserRole.user_id == signed_in_user_id,
-                        UserRole.role.in_(
-                            (
-                                UserRoleName.DOCTOR.value,
-                                UserRoleName.TRAINER.value,
-                            )
-                        ),
-                    )
-                    .limit(1)
-                )
+            request.state.is_professional = await identity_service.user_has_role(
+                session,
+                user_id=signed_in_user_id,
+                roles=(UserRoleName.DOCTOR, UserRoleName.TRAINER),
             )
-
-            request.state.holds_patients = bool(
-                await session.scalar(
-                    select(CareRelationship.id)
-                    .where(
-                        CareRelationship.professional_user_id
-                        == signed_in_user_id,
-                        CareRelationship.status
-                        != CareRelationshipStatus.ENDED.value,
-                    )
-                    .limit(1)
+            request.state.holds_patients = (
+                await care_workspace.has_live_professional_relationship(
+                    session,
+                    professional_user_id=signed_in_user_id,
                 )
             )
         except Exception:
@@ -295,17 +271,12 @@ async def get_request_chrome_scope(
     if signed_in_user_id is not None:
         try:
             from vitals.enums import UserRoleName
-            from vitals.models.identity import UserRole
+            from vitals.services import identity_service
 
-            request.state.is_platform_admin = bool(
-                await session.scalar(
-                    select(UserRole.id)
-                    .where(
-                        UserRole.user_id == signed_in_user_id,
-                        UserRole.role == UserRoleName.PLATFORM_SUPERADMIN.value,
-                    )
-                    .limit(1)
-                )
+            request.state.is_platform_admin = await identity_service.user_has_role(
+                session,
+                user_id=signed_in_user_id,
+                roles=(UserRoleName.PLATFORM_SUPERADMIN,),
             )
         except Exception:
             logger.exception("platform-admin check failed; hiding the link")
@@ -429,13 +400,13 @@ async def load_support_banner(
         scope = await get_request_chrome_scope(request, db)
         if scope is None:
             return
-        from vitals.services import support_access_service
+        from vitals.services.support_access import lifecycle as support_lifecycle
         from vitals.services.access_resolution import resolve_access_context
 
         context = await resolve_access_context(
             db, user_id=scope.user_id, subject_id=scope.subject_id
         )
-        grants = await support_access_service.live_grants_for(db, context=context)
+        grants = await support_lifecycle.live_grants_for(db, context=context)
         if grants:
             # Shared chrome says only that access exists and how many doors are
             # open. Operator names and approved health categories stay on the
@@ -574,10 +545,11 @@ async def load_subject_timezone(
         scope = await get_request_chrome_scope(request, db)
         if scope is None:
             return
-        zone = await db.scalar(
-            select(HealthSubject.timezone).where(
-                HealthSubject.id == scope.subject_id
-            )
+        from vitals.services import health_profile_service
+
+        zone = await health_profile_service.get_subject_timezone(
+            db,
+            subject_id=scope.subject_id,
         )
         set_subject_timezone(zone)
     except Exception:

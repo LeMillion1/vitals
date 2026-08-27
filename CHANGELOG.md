@@ -8,6 +8,81 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — application workflows have explicit boundaries
+
+Digest projection and ownership, proactive preferences, daily briefs, durable
+delivery, alerts, AI gateway accounting, Garmin weight export, sharing, support
+access, and data portability now live in responsibility-focused packages. The
+scoped conflict engine likewise separates contracts, resolver registration,
+matching, scope validation, rule loading, evaluation, and enforcement. Old flat
+module paths are removed instead of retained as forwarding shims; transaction,
+provenance, legacy-bridge, locking, and override behavior remain unchanged.
+
+### Changed — delivery adapters delegate application behavior
+
+Settings and MCP are explicit adapter registries, Reports delegates its workflow
+to the proactive service, and Labs and Body Scan share one bounded medical-AI
+upload coordinator. Care and consent screens use subject-scoped core projections,
+and delivery code no longer constructs SQLAlchemy queries. Architecture tests
+cap the remaining flat-service root at 21 focused files, every flat file at 800
+lines, and every service leaf at 1,300 lines.
+
+### Changed — health domains have consistent bounded boundaries
+
+Weight, Garmin, Hevy, GLP-1, Nutrition, Skincare, Timeline, Supplements, and
+Milestones now join Labs as explicit bounded-context packages. Commands,
+queries, ownership, normalization, raw-first ingestion, analytics, conflicts,
+alerts, progress projections, and job orchestration are separated by
+responsibility where each domain needs them; the former flat service paths are
+removed. Timeline annotation records are independent from its derived
+cross-domain event projection. BodyScan projection and Garmin weight export
+remain explicit workflow ports rather than hidden cross-domain callbacks.
+Subject ownership, provider provenance, conflict capability, lock order,
+scheduler identities, module gates, and boundary-owned commits retain their
+existing behavior.
+
+### Changed — MCP is a delivery registry instead of a business-logic router
+
+MCP authentication, access, arguments, serialization, transport, resources,
+module gates, record dispatch, and domain/provider tools now live in focused
+delivery modules. The router only composes those adapters and keeps the frozen
+69-tool protocol surface; it no longer owns tool implementations or domain ORM
+queries. Common reads use subject-scoped core projections while share, care,
+emergency, digest, LLM, and portability output/privacy contracts remain
+independent.
+
+### Changed — Labs has one bounded context
+
+Reference-range classification, marker identity, scoped result persistence,
+derived alerts, raw-first ingestion, and paid document parsing now live in
+separate Labs modules. The old flat service paths are removed; web, MCP,
+scheduled replay, care, sharing, charts, digests, HRT reminders, and tests use
+the owning leaf API. Provenance, conflict overrides, lock order, and transaction
+ownership remain unchanged. Lab-document finalization now follows the canonical
+`RawPayload` then `FileAsset` lock order used by upload confirmation.
+
+### Changed — domain vocabulary is explicit
+
+All fourteen domains now have one surface-independent taxonomy for canonical
+names, module keys, aliases, record-section membership, and `domain`-field
+semantics. Contract tests keep the intentionally different share, care, chart,
+MCP, digest, conflict, and portability policies explicit.
+
+### Changed — platform settings have an installation boundary
+
+OpenRouter gateway configuration, quota control, and MCP client authority now
+live in an installation-settings router separate from personal profile,
+provider, 2FA, and portability routes. Platform-admin and recent-auth checks,
+legacy aliases, environment compensation, commits, and redirects are unchanged.
+
+### Changed — browser authentication has explicit boundaries
+
+Signed session and handoff credentials, legacy password/2FA routes, and OIDC
+routes now live in separate delivery modules. The federated account, bootstrap,
+registration-request, and invitation decision now belongs to the authentication
+service, while the callback retains the commit and HTTP response boundary.
+Existing routes, cookie formats, salts, and authentication behavior are unchanged.
+
 ### Fixed — operator tooling reads quoted runtime values correctly
 
 Owner-only migration tools now interpret valid single- and double-quoted

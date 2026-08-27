@@ -216,7 +216,7 @@ async def test_both_together_open_exactly_what_was_agreed(db_session):
 async def test_professional_path_is_not_shadowed_by_ambiguous_support_grants(
     db_session,
 ):
-    from vitals.services import support_access_service as support
+    from vitals.services.support_access import contracts, lifecycle
 
     owner, subject, professional, relationship = await _in_care(
         db_session, "care-support-dual-role"
@@ -234,14 +234,14 @@ async def test_professional_path_is_not_shadowed_by_ambiguous_support_grants(
 
     support_grants = {}
     for domain in (Domain.LABS, Domain.NUTRITION):
-        request = await support.open_request(
+        request = await lifecycle.open_request(
             db_session,
             admin_user_id=professional.id,
             subject_id=subject.id,
             reason=f"Synthetic dual-role {domain.value} check.",
-            scopes=support.read_scopes_for((domain,)),
+            scopes=contracts.read_scopes_for((domain,)),
         )
-        support_grants[domain] = await support.approve_request(
+        support_grants[domain] = await lifecycle.approve_request(
             db_session, owner_user_id=owner.id, request_id=request.id
         )
     await db_session.commit()

@@ -2,19 +2,25 @@
 plateau detection, and the weight-chart phase overlay link."""
 from __future__ import annotations
 
+from vitals.services.alerts import legacy as alerts_service_legacy
+
+from vitals.services.glp1 import plateau as glp1_plateau
+from vitals.services.glp1 import queries as glp1_queries
+from vitals.services.glp1 import writes as glp1_writes
+
 from datetime import date, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from vitals.enums import Drug, InjectionSite, Severity
-from vitals.services import alerts_service, glp1_service, weight_service
+from vitals.services import weight as weight_domain
 
 
 
 # ── Injections ────────────────────────────────────────────────────────────────
 async def test_log_and_list_injection(db_session, owner_write, owned_by_legacy_subject):
-    inj = await glp1_service.log_injection(
+    inj = await glp1_writes.log_injection(
         db_session,
         on_date=date(2026, 6, 1),
         drug=Drug.SEMAGLUTIDE.value,
@@ -25,13 +31,13 @@ async def test_log_and_list_injection(db_session, owner_write, owned_by_legacy_s
     )
     await db_session.commit()
     assert inj.id is not None
-    rows = await glp1_service.list_injections(
+    rows = await glp1_queries.list_injections(
         db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(rows) == 1
     assert rows[0].drug == "semaglutide"
-    last = await glp1_service.last_injection(
+    last = await glp1_queries.last_injection(
         db_session,
         subject_id=owner_write.subject_id,
     )
@@ -46,16 +52,16 @@ def test_site_frequency_counts_by_site():
         SimpleNamespace(site=InjectionSite.THIGH_RIGHT.value),
         SimpleNamespace(site=None),  # logged without a site — must not crash/count
     ]
-    counts = glp1_service.site_frequency(rows)
+    counts = glp1_queries.site_frequency(rows)
     assert counts == {"abdomen_left": 2, "thigh_right": 1}
 
 
 def test_site_frequency_empty_when_no_injections():
-    assert glp1_service.site_frequency([]) == {}
+    assert glp1_queries.site_frequency([]) == {}
 
 
 async def test_update_and_delete_injection(db_session, owner_write, owned_by_legacy_subject):
-    inj = await glp1_service.log_injection(
+    inj = await glp1_writes.log_injection(
         db_session,
         on_date=date(2026, 6, 1),
         drug=Drug.SEMAGLUTIDE.value,
@@ -65,7 +71,7 @@ async def test_update_and_delete_injection(db_session, owner_write, owned_by_leg
     )
     await db_session.commit()
 
-    await glp1_service.update_injection(
+    await glp1_writes.update_injection(
         db_session,
         inj.id,
         on_date=date(2026, 6, 2),
@@ -79,14 +85,14 @@ async def test_update_and_delete_injection(db_session, owner_write, owned_by_leg
     assert inj.drug == "tirzepatide"
     assert inj.dose_mg == 2.5
 
-    assert await glp1_service.delete_injection(
+    assert await glp1_writes.delete_injection(
         db_session,
         inj.id,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     ) is True
     await db_session.commit()
-    assert len(await glp1_service.list_injections(
+    assert len(await glp1_queries.list_injections(
         db_session,
         subject_id=owner_write.subject_id,
     )) == 0
@@ -95,7 +101,7 @@ async def test_update_and_delete_injection(db_session, owner_write, owned_by_leg
 # ── Dose phases ───────────────────────────────────────────────────────────────
 async def test_open_phase_closes_previous(db_session, owner_write, owned_by_legacy_subject):
     """A second open-ended phase closes the first the day before it starts."""
-    p1 = await glp1_service.add_dose_phase(
+    p1 = await glp1_writes.add_dose_phase(
         db_session,
         start_date=date(2026, 5, 1),
         drug=Drug.SEMAGLUTIDE.value,
@@ -106,7 +112,7 @@ async def test_open_phase_closes_previous(db_session, owner_write, owned_by_lega
     await db_session.commit()
     assert p1.end_date is None
 
-    p2 = await glp1_service.add_dose_phase(
+    p2 = await glp1_writes.add_dose_phase(
         db_session,
         start_date=date(2026, 6, 1),
         drug=Drug.SEMAGLUTIDE.value,
@@ -120,7 +126,7 @@ async def test_open_phase_closes_previous(db_session, owner_write, owned_by_lega
     assert p1.end_date == date(2026, 5, 31)
     assert p2.end_date is None
 
-    active = await glp1_service.active_dose_phase(
+    active = await glp1_queries.active_dose_phase(
         db_session,
         on_date=date(2026, 6, 15),
         subject_id=owner_write.subject_id,
@@ -130,7 +136,7 @@ async def test_open_phase_closes_previous(db_session, owner_write, owned_by_lega
 
 
 async def test_dose_phase_overlays(db_session, owner_write, owned_by_legacy_subject):
-    await glp1_service.add_dose_phase(
+    await glp1_writes.add_dose_phase(
         db_session,
         start_date=date(2026, 5, 1),
         end_date=date(2026, 5, 31),
@@ -140,7 +146,7 @@ async def test_dose_phase_overlays(db_session, owner_write, owned_by_legacy_subj
         prepared_conflict_write=await owner_write.write(date(2026, 5, 1)),
     )
     await db_session.commit()
-    overlays = await glp1_service.dose_phase_overlays(
+    overlays = await glp1_queries.dose_phase_overlays(
         db_session,
         subject_id=owner_write.subject_id,
     )
@@ -151,7 +157,7 @@ async def test_dose_phase_overlays(db_session, owner_write, owned_by_legacy_subj
 
 # ── Side effects ──────────────────────────────────────────────────────────────
 async def test_side_effect_crud(db_session, owner_write, owned_by_legacy_subject):
-    se = await glp1_service.log_side_effect(
+    se = await glp1_writes.log_side_effect(
         db_session,
         on_date=date(2026, 6, 1),
         effect_type="Тошнота",
@@ -160,20 +166,20 @@ async def test_side_effect_crud(db_session, owner_write, owned_by_legacy_subject
         prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
     )
     await db_session.commit()
-    rows = await glp1_service.list_side_effects(
+    rows = await glp1_queries.list_side_effects(
         db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(rows) == 1 and rows[0].severity == 3
 
-    assert await glp1_service.delete_side_effect(
+    assert await glp1_writes.delete_side_effect(
         db_session,
         se.id,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     ) is True
     await db_session.commit()
-    assert len(await glp1_service.list_side_effects(
+    assert len(await glp1_queries.list_side_effects(
         db_session,
         subject_id=owner_write.subject_id,
     )) == 0
@@ -183,7 +189,7 @@ async def test_side_effect_crud(db_session, owner_write, owned_by_legacy_subject
 async def _seed_phase_and_weights(
     db_session, owner_write, weights_by_offset, *, start=date(2026, 5, 1)
 ):
-    await glp1_service.add_dose_phase(
+    await glp1_writes.add_dose_phase(
         db_session,
         start_date=start,
         drug=Drug.SEMAGLUTIDE.value,
@@ -192,7 +198,7 @@ async def _seed_phase_and_weights(
         prepared_conflict_write=await owner_write.write(start),
     )
     for offset, kg in weights_by_offset:
-        await weight_service.log_weight(
+        await weight_domain.writes.log_weight(
             db_session,
             on_date=start + timedelta(days=offset),
             weight_kg=kg,
@@ -206,7 +212,7 @@ async def test_no_plateau_before_min_days(db_session, owner_write, owned_by_lega
     start = date(2026, 5, 1)
     await _seed_phase_and_weights(db_session, owner_write, [(0, 88.0), (5, 88.0)], start=start)
     # Only 5 days in → below PLATEAU_MIN_DAYS, no verdict.
-    result = await glp1_service.evaluate_plateau(
+    result = await glp1_plateau.evaluate_plateau(
         db_session,
         on_date=start + timedelta(days=5),
         subject_id=owner_write.subject_id,
@@ -221,7 +227,7 @@ async def test_plateau_detected_when_flat(db_session, owner_write, owned_by_lega
         start=start,
     )
     today = start + timedelta(days=18)
-    result = await glp1_service.evaluate_plateau(
+    result = await glp1_plateau.evaluate_plateau(
         db_session,
         on_date=today,
         subject_id=owner_write.subject_id,
@@ -237,7 +243,7 @@ async def test_no_plateau_when_losing(db_session, owner_write, owned_by_legacy_s
         db_session, owner_write, [(0, 90.0), (7, 88.5), (14, 87.0), (18, 86.0)], start=start
     )
     today = start + timedelta(days=18)
-    result = await glp1_service.evaluate_plateau(
+    result = await glp1_plateau.evaluate_plateau(
         db_session,
         on_date=today,
         subject_id=owner_write.subject_id,
@@ -252,7 +258,7 @@ async def test_refresh_plateau_raises_and_resolves(db_session, owner_write, owne
     )
     today = start + timedelta(days=18)
 
-    alert = await glp1_service.refresh_plateau_alert(
+    alert = await glp1_plateau.refresh_plateau_alert(
         db_session,
         on_date=today,
         identity=owner_write.identity,
@@ -263,13 +269,13 @@ async def test_refresh_plateau_raises_and_resolves(db_session, owner_write, owne
     # A plateau is an interpretation of the trend, not a failure — the quiet
     # ``note`` tone, and it must never be treated as blocking.
     assert alert.severity == Severity.NOTE.value
-    assert alerts_service.is_blocking(alert.severity) is False
+    assert alerts_service_legacy.is_blocking(alert.severity) is False
 
-    active = await alerts_service.list_active(db_session, domain="glp1", subject_id=owner_write.subject_id)
-    assert any(a.alert_key == glp1_service.PLATEAU_ALERT_KEY for a in active)
+    active = await alerts_service_legacy.list_active(db_session, domain="glp1", subject_id=owner_write.subject_id)
+    assert any(a.alert_key == glp1_plateau.PLATEAU_ALERT_KEY for a in active)
 
     # Now add strong loss → plateau clears.
-    await weight_service.log_weight(
+    await weight_domain.writes.log_weight(
         db_session,
         on_date=today,
         weight_kg=84.0,
@@ -277,20 +283,20 @@ async def test_refresh_plateau_raises_and_resolves(db_session, owner_write, owne
         prepared_weight_write=await owner_write.weight_write(today),
     )
     await db_session.commit()
-    await glp1_service.refresh_plateau_alert(
+    await glp1_plateau.refresh_plateau_alert(
         db_session,
         on_date=today,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(today),
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="glp1", subject_id=owner_write.subject_id)
-    assert not any(a.alert_key == glp1_service.PLATEAU_ALERT_KEY for a in active)
+    active = await alerts_service_legacy.list_active(db_session, domain="glp1", subject_id=owner_write.subject_id)
+    assert not any(a.alert_key == glp1_plateau.PLATEAU_ALERT_KEY for a in active)
 
 
 # ── Weight chart overlay link ─────────────────────────────────────────────────
 async def test_weight_chart_series_includes_glp1_phases(db_session, owner_write, owned_by_legacy_subject):
-    await glp1_service.add_dose_phase(
+    await glp1_writes.add_dose_phase(
         db_session,
         start_date=date(2026, 5, 1),
         end_date=date(2026, 5, 31),
@@ -300,7 +306,7 @@ async def test_weight_chart_series_includes_glp1_phases(db_session, owner_write,
         prepared_conflict_write=await owner_write.write(date(2026, 5, 1)),
     )
     await db_session.commit()
-    series = await weight_service.chart_series(
+    series = await weight_domain.analytics.chart_series(
         db_session, subject_id=owner_write.subject_id
     )
     assert "phases" in series
@@ -315,7 +321,7 @@ async def test_log_injection_rejects_nonpositive_dose(db_session, owner_write, o
     """A hallucinated non-positive dose from an MCP call is rejected cleanly at the
     service boundary, not left to surface as a raw DB IntegrityError."""
     with pytest.raises(ValueError):
-        await glp1_service.log_injection(
+        await glp1_writes.log_injection(
             db_session,
             on_date=date(2026, 6, 1),
             drug=Drug.SEMAGLUTIDE.value,
@@ -324,7 +330,7 @@ async def test_log_injection_rejects_nonpositive_dose(db_session, owner_write, o
             prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
         )
     with pytest.raises(ValueError):
-        await glp1_service.log_injection(
+        await glp1_writes.log_injection(
             db_session,
             on_date=date(2026, 6, 1),
             drug=Drug.SEMAGLUTIDE.value,
@@ -338,7 +344,7 @@ async def test_log_injection_rejects_unknown_site(db_session, owner_write, owned
     """A garbage injection site (not an InjectionSite) is rejected so it can't
     pollute the body-map rotation data."""
     with pytest.raises(ValueError):
-        await glp1_service.log_injection(
+        await glp1_writes.log_injection(
             db_session,
             on_date=date(2026, 6, 1),
             drug=Drug.SEMAGLUTIDE.value,
@@ -359,7 +365,7 @@ async def test_update_injection_runs_conflict_engine(db_session, owner_write, ow
     from vitals.services.conflicts.engine import ConflictBlocked
 
     registrations.register_all_resolvers()
-    inj = await glp1_service.log_injection(
+    inj = await glp1_writes.log_injection(
         db_session,
         on_date=date(2026, 6, 1),
         drug=Drug.SEMAGLUTIDE.value,
@@ -379,7 +385,7 @@ async def test_update_injection_runs_conflict_engine(db_session, owner_write, ow
     await db_session.commit()
 
     with pytest.raises(ConflictBlocked):
-        await glp1_service.update_injection(
+        await glp1_writes.update_injection(
             db_session,
             inj.id,
             on_date=date(2026, 6, 2),
