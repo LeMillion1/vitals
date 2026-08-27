@@ -82,6 +82,44 @@ else:
     TEST_ENGINE = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
 
 
+async def _grant_test_operator_platform_capability(conn) -> None:
+    """Let the disposable database's admin session exercise worker-only paths.
+
+    Revision 0083 intentionally stopped treating a custom setting as authority.
+    The production worker receives a database-OID-scoped NOLOGIN marker role
+    during role provisioning. ``scripts/test_postgres.sh`` uses one admin URL
+    for schema setup and service tests, so its disposable operator needs the
+    same marker; tests of refused web roles still create their own restricted
+    logins and remain fail-closed.
+    """
+
+    database_oid = int(
+        await conn.scalar(
+            sa_text(
+                "SELECT oid FROM pg_catalog.pg_database "
+                "WHERE datname = pg_catalog.current_database()"
+            )
+        )
+    )
+    role_name = f"vitals_platform_scope_db_{database_oid}"
+    current_user = str(await conn.scalar(sa_text("SELECT current_user")))
+    quote = conn.dialect.identifier_preparer.quote
+    role_ident = quote(role_name)
+    user_ident = quote(current_user)
+    exists = bool(
+        await conn.scalar(
+            sa_text("SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=:name)"),
+            {"name": role_name},
+        )
+    )
+    if not exists:
+        await conn.exec_driver_sql(
+            f"CREATE ROLE {role_ident} NOLOGIN NOSUPERUSER NOCREATEDB "
+            "NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS"
+        )
+    await conn.exec_driver_sql(f"GRANT {role_ident} TO {user_ident}")
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Dispose the shared engine so the process actually exits.
 
@@ -232,6 +270,7 @@ async def db_session(request):
                 "REVOKE ALL ON FUNCTION "
                 f"{shared_report_auth.ROUTINE_SIGNATURE} FROM PUBLIC"
             )
+            await _grant_test_operator_platform_capability(conn)
         elif _SQLITE_SCHEMA_READY and _SQLITE_SCHEMA_MODE == mode:
             await conn.run_sync(_empty_every_table)
         else:
