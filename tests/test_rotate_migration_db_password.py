@@ -169,6 +169,12 @@ async def test_real_postgres_role_and_operator_file_rotate_together(tmp_path):
             await connection.exec_driver_sql(
                 f"CREATE ROLE {role_ident} LOGIN PASSWORD {old_literal}"
             )
+            database_ident = admin.dialect.identifier_preparer.quote(
+                admin_url.database
+            )
+            await connection.exec_driver_sql(
+                f"GRANT CONNECT ON DATABASE {database_ident} TO {role_ident}"
+            )
 
         result = await rotate_migration_password(
             env_path,
@@ -199,5 +205,11 @@ async def test_real_postgres_role_and_operator_file_rotate_together(tmp_path):
                 {"role": role},
             )
             if exists:
+                database_ident = admin.dialect.identifier_preparer.quote(
+                    admin_url.database
+                )
+                await connection.exec_driver_sql(
+                    f"REVOKE CONNECT ON DATABASE {database_ident} FROM {role_ident}"
+                )
                 await connection.exec_driver_sql(f"DROP ROLE {role_ident}")
         await admin.dispose()
