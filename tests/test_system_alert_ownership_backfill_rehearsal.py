@@ -36,6 +36,9 @@ from vitals.operations.ownership.normalized import (
 from vitals.operations.ownership.raw import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
 )
+from vitals.operations.ownership.retired_signals import (
+    RETIRED_SIGNAL_OWNERSHIP_BACKFILL_PHASE,
+)
 from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
 from vitals.operations.ownership.system_alert import (
     SYSTEM_ALERT_OWNERSHIP_BACKFILL_PHASE,
@@ -88,6 +91,24 @@ RAW_CLI_KEYS = AGGREGATE_CLI_KEYS - {
     "completed_tables",
     "snapshot_rows",
     "tables_total",
+}
+RETIRED_SIGNAL_CLI_KEYS = {
+    "batch_size",
+    "batch_table",
+    "batches_processed",
+    "completed",
+    "format_version",
+    "max_batches",
+    "mode",
+    "operation",
+    "phase",
+    "remaining_rows",
+    "result",
+    "scanned_rows",
+    "snapshot_rows",
+    "status",
+    "tables_total",
+    "updated_rows",
 }
 
 
@@ -396,6 +417,8 @@ async def test_real_postgres_0034_system_alert_stop_resume_volatility_and_restor
                 (
                     RAW_CLI_KEYS
                     if step.phase == RAW_OWNERSHIP_BACKFILL_PHASE
+                    else RETIRED_SIGNAL_CLI_KEYS
+                    if step.phase == RETIRED_SIGNAL_OWNERSHIP_BACKFILL_PHASE
                     else AGGREGATE_CLI_KEYS
                 ),
             )
