@@ -1126,7 +1126,7 @@ async def test_postgres_rotation_and_revocation_win_before_fresh_start(
             await original(session)
 
         monkeypatch.setattr(
-            gateway_dispatch,
+            gateway_config,
             "acquire_identity_governance_lock",
             observed_lock,
         )
@@ -1203,7 +1203,7 @@ async def test_postgres_actor_revocation_serializes_before_fresh_start(
             await original(session)
 
         monkeypatch.setattr(
-            gateway_dispatch,
+            gateway_config,
             "acquire_identity_governance_lock",
             observed_lock,
         )
