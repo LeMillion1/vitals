@@ -15,8 +15,9 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, genetics_service
-from vitals.services.genetics_vcf import ParsedVariant
+from vitals.services import conflict_engine
+from vitals.services.genetics import variants as variant_records
+from vitals.services.genetics.vcf import ParsedVariant
 from vitals.utils.timeutils import now_local
 
 
@@ -88,7 +89,7 @@ async def _ingest(
     only_interpreted: bool = False,
     legacy: bool = False,
 ):
-    return await genetics_service.ingest_vcf_batch(
+    return await variant_records.ingest_vcf_batch(
         session,
         filename=filename,
         raw_variants=[variant],
@@ -107,7 +108,7 @@ async def test_scoped_manual_write_and_list_stamp_owner(
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity)
 
-    row = await genetics_service.add_variant(
+    row = await variant_records.add_variant(
         db_session,
         gene="COMT",
         rsid="rs4680",
@@ -122,7 +123,7 @@ async def test_scoped_manual_write_and_list_stamp_owner(
     assert row.actor_user_id == identity.actor_user_id
     assert row.source == Source.MANUAL.value
     assert row.raw_payload_id is None
-    assert [item.id for item in await genetics_service.list_variants(
+    assert [item.id for item in await variant_records.list_variants(
         db_session,
         subject_id=identity.subject_id,
     )] == [row.id]
@@ -134,7 +135,7 @@ async def test_rsid_case_normalization_prevents_duplicate_facts(
 ):
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity)
-    first = await genetics_service.upsert_by_rsid(
+    first = await variant_records.upsert_by_rsid(
         db_session,
         gene="HFE",
         rsid="RS1800562",
@@ -143,7 +144,7 @@ async def test_rsid_case_normalization_prevents_duplicate_facts(
         identity=identity,
         prepared_conflict_write=prepared,
     )
-    second = await genetics_service.upsert_by_rsid(
+    second = await variant_records.upsert_by_rsid(
         db_session,
         gene="HFE",
         rsid="rs1800562",
@@ -177,8 +178,8 @@ async def test_partial_actor_root_fails_closed(
     )
     await db_session.flush()
 
-    with pytest.raises(genetics_service.GeneticsOwnershipError):
-        await genetics_service.list_variants(
+    with pytest.raises(variant_records.GeneticsOwnershipError):
+        await variant_records.list_variants(
             db_session,
             subject_id=legacy_owner_roots.subject_id,
         )
@@ -200,8 +201,8 @@ async def test_partial_legacy_fact_fails_closed_in_conflict_resolver(
     )
     await db_session.flush()
 
-    with pytest.raises(genetics_service.GeneticsOwnershipError, match="partial"):
-        await genetics_service.resolve_variants_scoped(
+    with pytest.raises(variant_records.GeneticsOwnershipError, match="partial"):
+        await variant_records.resolve_variants_scoped(
             db_session,
             scope=conflict_engine.ConflictScope(
                 subject_id=legacy_owner_roots.subject_id,
@@ -229,19 +230,19 @@ async def test_foreign_id_is_non_enumerating_and_both_subjects_keep_the_rsid(
 
     owner_identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, owner_identity)
-    assert await genetics_service.get_variant(
+    assert await variant_records.get_variant(
         db_session,
         foreign.id,
         subject_id=owner_identity.subject_id,
     ) is None
-    assert not await genetics_service.delete_variant(
+    assert not await variant_records.delete_variant(
         db_session,
         foreign.id,
         identity=owner_identity,
         prepared_conflict_write=prepared,
     )
     # An rsID names a locus, not a person: both subjects hold their own row.
-    mine = await genetics_service.upsert_by_rsid(
+    mine = await variant_records.upsert_by_rsid(
         db_session,
         gene="HFE",
         rsid="rs1800562",
@@ -333,7 +334,7 @@ async def test_same_filename_reimport_preserves_prior_raw_evidence(
 ):
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity, legacy=True)
-    first = await genetics_service.ingest_vcf_batch(
+    first = await variant_records.ingest_vcf_batch(
         db_session,
         filename="reused-name.vcf",
         raw_variants=[RISK, MTHFR],
@@ -362,7 +363,7 @@ async def test_same_filename_reimport_preserves_prior_raw_evidence(
     ]
     rows = {
         row.rsid: row
-        for row in await genetics_service.list_variants(
+        for row in await variant_records.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -380,7 +381,7 @@ async def test_mcp_patch_preserves_vcf_origin_and_omitted_fields(
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity, legacy=True)
     summary = await _ingest(db_session, identity, prepared, MTHFR, legacy=True)
-    row = await genetics_service.upsert_by_rsid(
+    row = await variant_records.upsert_by_rsid(
         db_session,
         gene="MTHFR",
         rsid=MTHFR.rsid,
@@ -433,8 +434,8 @@ async def test_wrong_shape_raw_link_fails_before_read(
     )
     await db_session.flush()
 
-    with pytest.raises(genetics_service.GeneticsRawProvenanceError):
-        await genetics_service.list_variants(
+    with pytest.raises(variant_records.GeneticsRawProvenanceError):
+        await variant_records.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -472,20 +473,20 @@ async def test_manual_fact_cannot_use_raw_bridge_and_raw_flags_are_typed(
     await db_session.flush()
 
     with pytest.raises(
-        genetics_service.GeneticsRawProvenanceError,
+        variant_records.GeneticsRawProvenanceError,
         match="manual and MCP",
     ):
-        await genetics_service.list_variants(
+        await variant_records.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
 
     manual.source = Source.VCF_IMPORT.value
     with pytest.raises(
-        genetics_service.GeneticsRawProvenanceError,
+        variant_records.GeneticsRawProvenanceError,
         match="truncation flag",
     ):
-        await genetics_service.list_variants(
+        await variant_records.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -499,10 +500,10 @@ async def test_truncated_curated_hit_must_agree_with_retained_raw_evidence(
     prepared = await _prepared(db_session, identity)
 
     with pytest.raises(
-        genetics_service.GeneticsRawProvenanceError,
+        variant_records.GeneticsRawProvenanceError,
         match="contradicts",
     ):
-        await genetics_service.ingest_vcf_batch(
+        await variant_records.ingest_vcf_batch(
             db_session,
             filename="contradictory.vcf",
             raw_variants=[RISK],
@@ -559,7 +560,7 @@ async def test_replay_fills_missing_curated_children_and_is_idempotent(
 
     system = WriteIdentity(owner.subject_id, None)
     prepared = await _prepared(db_session, system, legacy=True)
-    assert await genetics_service.reparse_owned_pending(
+    assert await variant_records.reparse_owned_pending(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
@@ -569,7 +570,7 @@ async def test_replay_fills_missing_curated_children_and_is_idempotent(
         RISK.rsid,
         MTHFR.rsid,
     }
-    assert await genetics_service.reparse_owned_pending(
+    assert await variant_records.reparse_owned_pending(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
@@ -600,7 +601,7 @@ async def test_replay_accepts_exact_stage3a_subject_only_vcf_history(
     system = WriteIdentity(owner.subject_id, None)
     prepared = await _prepared(db_session, system, legacy=True)
 
-    assert await genetics_service.reparse_owned_pending(
+    assert await variant_records.reparse_owned_pending(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
@@ -672,7 +673,7 @@ async def test_replay_cannot_roll_fact_back_to_older_pending_raw(
 
     system = WriteIdentity(owner.subject_id, None)
     prepared = await _prepared(db_session, system, legacy=True)
-    assert await genetics_service.reparse_owned_pending(
+    assert await variant_records.reparse_owned_pending(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
@@ -717,7 +718,7 @@ async def test_replay_uses_durable_only_interpreted_policy(
 
     system = WriteIdentity(owner.subject_id, None)
     prepared = await _prepared(db_session, system, legacy=True)
-    assert await genetics_service.reparse_owned_pending(
+    assert await variant_records.reparse_owned_pending(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
@@ -737,7 +738,7 @@ async def test_header_only_batch_is_write_free(
 ):
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity)
-    summary = await genetics_service.ingest_vcf_batch(
+    summary = await variant_records.ingest_vcf_batch(
         db_session,
         filename="header-only.vcf",
         raw_variants=[],
@@ -759,7 +760,7 @@ async def test_truncated_same_name_tail_change_creates_distinct_raw_revision(
     prepared = await _prepared(db_session, identity, legacy=True)
     retained_prefix = ParsedVariant("rs-retained-prefix", "A", "G", "A/G")
 
-    first = await genetics_service.ingest_vcf_batch(
+    first = await variant_records.ingest_vcf_batch(
         db_session,
         filename="same-truncated.vcf",
         raw_variants=[retained_prefix],
@@ -768,7 +769,7 @@ async def test_truncated_same_name_tail_change_creates_distinct_raw_revision(
         identity=identity,
         prepared_conflict_write=prepared,
     )
-    second = await genetics_service.ingest_vcf_batch(
+    second = await variant_records.ingest_vcf_batch(
         db_session,
         filename="same-truncated.vcf",
         raw_variants=[retained_prefix],
@@ -783,7 +784,7 @@ async def test_truncated_same_name_tail_change_creates_distinct_raw_revision(
     assert first.raw.id != second.raw.id
     rows = {
         row.rsid: row
-        for row in await genetics_service.list_variants(
+        for row in await variant_records.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -801,7 +802,7 @@ async def test_truncated_curated_tail_child_can_be_rebuilt_from_pending_raw(
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity, legacy=True)
     retained_prefix = ParsedVariant("rs-retained-prefix", "A", "G", "A/G")
-    summary = await genetics_service.ingest_vcf_batch(
+    summary = await variant_records.ingest_vcf_batch(
         db_session,
         filename="tail-replay.vcf",
         raw_variants=[retained_prefix],
@@ -821,7 +822,7 @@ async def test_truncated_curated_tail_child_can_be_rebuilt_from_pending_raw(
 
     system = WriteIdentity(identity.subject_id, None)
     replay_prepared = await _prepared(db_session, system, legacy=True)
-    assert await genetics_service.reparse_owned_pending(
+    assert await variant_records.reparse_owned_pending(
         db_session,
         identity=system,
         prepared_conflict_write=replay_prepared,
@@ -850,7 +851,7 @@ async def test_partial_raw_candidate_rejects_before_adoption_or_mutation(
         actor_user_id=identity.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=genetics_service._vcf_external_id(payload),
+        external_id=variant_records._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(raw)
@@ -858,8 +859,8 @@ async def test_partial_raw_candidate_rejects_before_adoption_or_mutation(
     original_fetched_at = raw.fetched_at
     prepared = await _prepared(db_session, identity, legacy=True)
 
-    with pytest.raises(genetics_service.GeneticsRawProvenanceError, match="partial"):
-        await genetics_service.ingest_vcf_batch(
+    with pytest.raises(variant_records.GeneticsRawProvenanceError, match="partial"):
+        await variant_records.ingest_vcf_batch(
             db_session,
             filename="partial-candidate.vcf",
             raw_variants=[RISK],
@@ -891,7 +892,7 @@ async def test_pending_partial_raw_fails_preflight_instead_of_silent_zero(
         actor_user_id=owner.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=genetics_service._vcf_external_id(payload),
+        external_id=variant_records._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(raw)
@@ -899,8 +900,8 @@ async def test_pending_partial_raw_fails_preflight_instead_of_silent_zero(
 
     system = WriteIdentity(owner.subject_id, None)
     prepared = await _prepared(db_session, system, legacy=True)
-    with pytest.raises(genetics_service.GeneticsRawProvenanceError, match="partial"):
-        await genetics_service.reparse_owned_pending(
+    with pytest.raises(variant_records.GeneticsRawProvenanceError, match="partial"):
+        await variant_records.reparse_owned_pending(
             db_session,
             identity=system,
             prepared_conflict_write=prepared,
@@ -918,7 +919,7 @@ async def test_disappeared_truncated_tail_child_keeps_prior_raw_revision(
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity, legacy=True)
     retained_prefix = ParsedVariant("rs-stable-prefix", "A", "G", "A/G")
-    first = await genetics_service.ingest_vcf_batch(
+    first = await variant_records.ingest_vcf_batch(
         db_session,
         filename="stable-prefix.vcf",
         raw_variants=[retained_prefix],
@@ -927,7 +928,7 @@ async def test_disappeared_truncated_tail_child_keeps_prior_raw_revision(
         identity=identity,
         prepared_conflict_write=prepared,
     )
-    second = await genetics_service.ingest_vcf_batch(
+    second = await variant_records.ingest_vcf_batch(
         db_session,
         filename="stable-prefix.vcf",
         raw_variants=[retained_prefix],
@@ -968,7 +969,7 @@ async def test_vcf_v2_format_version_requires_exact_integer_two(
         actor_user_id=identity.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=genetics_service._vcf_external_id(payload),
+        external_id=variant_records._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(raw)
@@ -989,10 +990,10 @@ async def test_vcf_v2_format_version_requires_exact_integer_two(
     await db_session.flush()
 
     with pytest.raises(
-        genetics_service.GeneticsRawProvenanceError,
+        variant_records.GeneticsRawProvenanceError,
         match="format version",
     ):
-        await genetics_service.list_variants(
+        await variant_records.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -1016,7 +1017,7 @@ async def test_scoped_list_limit_validates_corrupt_graph_beyond_return_window(
                 source=Source.MANUAL.value,
                 gene=f"AAA-{number:03d}",
             )
-            for number in range(genetics_service.MAX_LIST_LIMIT)
+            for number in range(variant_records.MAX_LIST_LIMIT)
         ]
     )
     payload = {
@@ -1029,7 +1030,7 @@ async def test_scoped_list_limit_validates_corrupt_graph_beyond_return_window(
         actor_user_id=foreign_identity.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=genetics_service._vcf_external_id(payload),
+        external_id=variant_records._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(foreign_raw)
@@ -1049,8 +1050,8 @@ async def test_scoped_list_limit_validates_corrupt_graph_beyond_return_window(
     )
     await db_session.flush()
 
-    with pytest.raises(genetics_service.GeneticsRawProvenanceError):
-        await genetics_service.list_variants(
+    with pytest.raises(variant_records.GeneticsRawProvenanceError):
+        await variant_records.list_variants(
             db_session,
             subject_id=owner.subject_id,
             limit=1,
@@ -1148,15 +1149,15 @@ def test_vcf_v2_raw_evidence_is_canonical(payload, message):
     raw = RawPayload(
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=genetics_service._vcf_external_id(payload),
+        external_id=variant_records._vcf_external_id(payload),
         payload=payload,
     )
 
     with pytest.raises(
-        genetics_service.GeneticsRawProvenanceError,
+        variant_records.GeneticsRawProvenanceError,
         match=message,
     ):
-        genetics_service._raw_normalization_variants(raw)
+        variant_records._raw_normalization_variants(raw)
 
 
 def test_vcf_v2_history_is_not_reinterpreted_as_malformed_after_catalog_change(
@@ -1173,12 +1174,12 @@ def test_vcf_v2_history_is_not_reinterpreted_as_malformed_after_catalog_change(
     raw = RawPayload(
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=genetics_service._vcf_external_id(payload),
+        external_id=variant_records._vcf_external_id(payload),
         payload=payload,
     )
-    monkeypatch.delitem(genetics_service.INTERPRETATIONS, RISK.rsid)
+    monkeypatch.delitem(variant_records.INTERPRETATIONS, RISK.rsid)
 
-    assert genetics_service._raw_normalization_variants(raw) == [RISK]
+    assert variant_records._raw_normalization_variants(raw) == [RISK]
 
 
 
@@ -1205,7 +1206,7 @@ async def test_replay_propagates_current_fact_provenance_corruption(
         actor_user_id=owner.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=genetics_service._vcf_external_id(payload),
+        external_id=variant_records._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(raw)
@@ -1223,8 +1224,8 @@ async def test_replay_propagates_current_fact_provenance_corruption(
     system = WriteIdentity(owner.subject_id, None)
     prepared = await _prepared(db_session, system)
 
-    with pytest.raises(genetics_service.GeneticsOwnershipError):
-        await genetics_service.reparse_owned_pending(
+    with pytest.raises(variant_records.GeneticsOwnershipError):
+        await variant_records.reparse_owned_pending(
             db_session,
             identity=system,
             prepared_conflict_write=prepared,
@@ -1250,7 +1251,7 @@ async def test_replay_propagates_inner_conflict_scope_error(
         actor_user_id=owner.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=genetics_service._vcf_external_id(payload),
+        external_id=variant_records._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(raw)
@@ -1271,7 +1272,7 @@ async def test_replay_propagates_inner_conflict_scope_error(
         conflict_engine.ConflictActorInactive,
         match="inactive actor",
     ):
-        await genetics_service.reparse_owned_pending(
+        await variant_records.reparse_owned_pending(
             db_session,
             identity=system,
             prepared_conflict_write=prepared,
@@ -1298,7 +1299,7 @@ async def test_replay_propagates_malformed_v2_evidence(
         actor_user_id=owner.actor_user_id,
         domain="genetics",
         source=Source.VCF_IMPORT.value,
-        external_id=genetics_service._vcf_external_id(payload),
+        external_id=variant_records._vcf_external_id(payload),
         payload=payload,
     )
     db_session.add(raw)
@@ -1307,10 +1308,10 @@ async def test_replay_propagates_malformed_v2_evidence(
     prepared = await _prepared(db_session, system)
 
     with pytest.raises(
-        genetics_service.GeneticsRawProvenanceError,
+        variant_records.GeneticsRawProvenanceError,
         match="malformed variant evidence",
     ):
-        await genetics_service.reparse_owned_pending(
+        await variant_records.reparse_owned_pending(
             db_session,
             identity=system,
             prepared_conflict_write=prepared,
@@ -1350,8 +1351,8 @@ async def test_scoped_list_refreshes_preloaded_raw_provenance(
     )
     assert summary.raw.actor_user_id == identity.actor_user_id
 
-    with pytest.raises(genetics_service.GeneticsRawProvenanceError, match="foreign"):
-        await genetics_service.list_variants(
+    with pytest.raises(variant_records.GeneticsRawProvenanceError, match="foreign"):
+        await variant_records.list_variants(
             db_session,
             subject_id=identity.subject_id,
         )
@@ -1399,7 +1400,7 @@ async def test_same_key_ingest_refreshes_raw_owner_before_mutation(
     assert summary.raw.actor_user_id == identity.actor_user_id
     assert variant.raw_payload_id == summary.raw.id
 
-    with pytest.raises(genetics_service.GeneticsRawProvenanceError, match="foreign"):
+    with pytest.raises(variant_records.GeneticsRawProvenanceError, match="foreign"):
         await _ingest(
             db_session,
             identity,
@@ -1439,7 +1440,7 @@ async def test_postgres_scoped_list_revalidates_page_after_preflight_change(
 
     preflight_validated = asyncio.Event()
     release_final_query = asyncio.Event()
-    original_validate = genetics_service._validate_variant_graph
+    original_validate = variant_records._validate_variant_graph
     validation_attempts = 0
 
     async def validation_barrier(*args, **kwargs):
@@ -1453,14 +1454,14 @@ async def test_postgres_scoped_list_revalidates_page_after_preflight_change(
         return await original_validate(*args, **kwargs)
 
     monkeypatch.setattr(
-        genetics_service,
+        variant_records,
         "_validate_variant_graph",
         validation_barrier,
     )
 
     async def read_page():
         async with factory() as session:
-            return await genetics_service.list_variants(
+            return await variant_records.list_variants(
                 session,
                 subject_id=identity.subject_id,
                 limit=1,
@@ -1477,7 +1478,7 @@ async def test_postgres_scoped_list_revalidates_page_after_preflight_change(
         await writer.commit()
     release_final_query.set()
 
-    with pytest.raises(genetics_service.GeneticsRawProvenanceError, match="foreign"):
+    with pytest.raises(variant_records.GeneticsRawProvenanceError, match="foreign"):
         await asyncio.wait_for(reader, timeout=10)
     assert validation_attempts == 2
 
@@ -1499,7 +1500,7 @@ async def test_postgres_concurrent_same_subject_rsid_upserts_serialize(
 
     session_a = factory()
     prepared_a = await _prepared(session_a, identity)
-    await genetics_service.upsert_by_rsid(
+    await variant_records.upsert_by_rsid(
         session_a,
         gene="HFE",
         rsid=RISK.rsid,
@@ -1513,7 +1514,7 @@ async def test_postgres_concurrent_same_subject_rsid_upserts_serialize(
         async with factory() as session_b:
             writer_b_attempted.set()
             prepared_b = await _prepared(session_b, identity)
-            await genetics_service.upsert_by_rsid(
+            await variant_records.upsert_by_rsid(
                 session_b,
                 gene="HFE",
                 rsid=RISK.rsid,
@@ -1581,7 +1582,7 @@ async def test_postgres_legacy_write_holds_exact_one_governance_through_commit(
                 session,
                 context=context,
             )
-            await genetics_service.upsert_by_rsid(
+            await variant_records.upsert_by_rsid(
                 session,
                 gene="HFE",
                 rsid=RISK.rsid,
@@ -1660,7 +1661,7 @@ async def test_postgres_concurrent_owned_replay_claims_one_raw_exactly_once(
     first_replacement_started = asyncio.Event()
     release_first_replacement = asyncio.Event()
     worker_b_attempted = asyncio.Event()
-    original_replace = genetics_service._replace_vcf_rows
+    original_replace = variant_records._replace_vcf_rows
     replacements = 0
 
     async def replacement_barrier(*args, **kwargs):
@@ -1671,14 +1672,14 @@ async def test_postgres_concurrent_owned_replay_claims_one_raw_exactly_once(
             await asyncio.wait_for(release_first_replacement.wait(), timeout=5)
         return await original_replace(*args, **kwargs)
 
-    monkeypatch.setattr(genetics_service, "_replace_vcf_rows", replacement_barrier)
+    monkeypatch.setattr(variant_records, "_replace_vcf_rows", replacement_barrier)
 
     async def worker(*, attempted: asyncio.Event | None = None) -> int:
         async with factory() as session:
             if attempted is not None:
                 attempted.set()
             prepared = await _prepared(session, system, legacy=True)
-            done = await genetics_service.reparse_owned_pending(
+            done = await variant_records.reparse_owned_pending(
                 session,
                 identity=system,
                 prepared_conflict_write=prepared,
@@ -1758,7 +1759,7 @@ async def test_postgres_newer_ingest_wins_race_with_older_pending_replay(
     first_replacement_started = asyncio.Event()
     release_first_replacement = asyncio.Event()
     second_writer_attempted = asyncio.Event()
-    original_replace = genetics_service._replace_vcf_rows
+    original_replace = variant_records._replace_vcf_rows
     paused = False
 
     async def replacement_barrier(*args, **kwargs):
@@ -1776,14 +1777,14 @@ async def test_postgres_newer_ingest_wins_race_with_older_pending_replay(
             await asyncio.wait_for(release_first_replacement.wait(), timeout=5)
         return await original_replace(*args, **kwargs)
 
-    monkeypatch.setattr(genetics_service, "_replace_vcf_rows", replacement_barrier)
+    monkeypatch.setattr(variant_records, "_replace_vcf_rows", replacement_barrier)
 
     async def replay(*, attempted: bool = False) -> int:
         async with factory() as session:
             if attempted:
                 second_writer_attempted.set()
             prepared = await _prepared(session, system, legacy=True)
-            done = await genetics_service.reparse_owned_pending(
+            done = await variant_records.reparse_owned_pending(
                 session,
                 identity=system,
                 prepared_conflict_write=prepared,

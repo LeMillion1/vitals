@@ -31,8 +31,8 @@ from vitals.services import (
     conflict_catalog,
     conflict_engine,
     conflict_registrations,
-    genetics_service,
 )
+from vitals.services.genetics import variants
 from vitals.services.legacy_ownership import (
     LegacyOwnerResolutionError,
     LegacySubjectResolutionError,
@@ -599,7 +599,7 @@ async def test_legacy_adapter_accepts_only_fully_unowned_facts(
     conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
     if fact_domain == Domain.GENETICS.value:
-        with pytest.raises(genetics_service.GeneticsOwnershipError, match="partial"):
+        with pytest.raises(variants.GeneticsOwnershipError, match="partial"):
             await conflict_engine.evaluate_legacy_single_subject(
                 db_session,
                 domain=PROBE_DOMAIN,

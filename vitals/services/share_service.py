@@ -1010,9 +1010,9 @@ async def _skincare_block(
 async def _genetics_block(
     session, ctx, stats, start, end, flagged_only, *, subject_id
 ) -> dict:
-    from vitals.services import genetics_service
+    from vitals.services.genetics import variants as variant_records
 
-    variants = await genetics_service.list_variants(session, subject_id=subject_id)
+    variants = await variant_records.list_variants(session, subject_id=subject_id)
     rows = [
         {
             "gene": v.gene,

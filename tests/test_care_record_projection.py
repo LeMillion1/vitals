@@ -34,7 +34,8 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.weight import WeightLog
 from vitals.services import modules_service
 from vitals.services.care import record_projection
-from vitals.services import genetics_service, labs_service, weight_service
+from vitals.services import labs_service, weight_service
+from vitals.services.genetics import variants
 
 
 def test_care_consent_domains_come_from_the_projection_registry():
@@ -477,7 +478,7 @@ async def test_bounded_genetics_order_is_deterministic_with_null_rsid(
     )
     await db_session.flush()
 
-    page = await genetics_service.bounded_variants(
+    page = await variants.bounded_variants(
         db_session,
         subject_id=subject_id,
         limit=2,
@@ -508,7 +509,7 @@ async def test_genetics_bounded_validation_caches_shared_raw_parse(
         file_asset_id=None,
         domain=Domain.GENETICS.value,
         source=Source.VCF_IMPORT.value,
-        external_id=genetics_service._vcf_external_id(payload),
+        external_id=variants._vcf_external_id(payload),
         payload=payload,
     )
     rows = [
@@ -524,7 +525,7 @@ async def test_genetics_bounded_validation_caches_shared_raw_parse(
     ]
     raw_loads = 0
     raw_parses = 0
-    original_parse = genetics_service._raw_normalization_variants
+    original_parse = variants._raw_normalization_variants
 
     async def load_raw(_session, _raw_payload_id, *, for_update):
         nonlocal raw_loads
@@ -537,12 +538,12 @@ async def test_genetics_bounded_validation_caches_shared_raw_parse(
         raw_parses += 1
         return original_parse(value)
 
-    monkeypatch.setattr(genetics_service, "_load_raw", load_raw)
-    monkeypatch.setattr(genetics_service, "_raw_normalization_variants", parse_raw)
+    monkeypatch.setattr(variants, "_load_raw", load_raw)
+    monkeypatch.setattr(variants, "_raw_normalization_variants", parse_raw)
     raw_cache = {}
     raw_rsid_cache = {}
     for row in rows:
-        await genetics_service._validate_variant_graph(
+        await variants._validate_variant_graph(
             db_session,
             row=row,
             subject_id=subject_id,

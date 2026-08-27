@@ -9,10 +9,10 @@ from vitals.services import (
     alerts_service,
     conflict_engine,
     conflict_registrations,
-    genetics_service,
     supplements_service,
 )
 from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services.genetics import variants
 from vitals.utils.identifiers import slugify
 from vitals.utils.timeutils import today_local
 
@@ -142,7 +142,7 @@ async def _seed_iron_rule(db_session):
 async def test_iron_blocked_for_hemochromatosis_carrier(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
-    await genetics_service.add_variant(
+    await variants.add_variant(
         db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
@@ -164,7 +164,7 @@ async def test_cyrillic_name_no_explicit_key_still_blocked(db_session, owner_wri
     the iron rule. It must now resolve to "iron" via the dictionary and block."""
     conflict_registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
-    await genetics_service.add_variant(
+    await variants.add_variant(
         db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
@@ -179,7 +179,7 @@ async def test_cyrillic_name_no_explicit_key_still_blocked(db_session, owner_wri
 async def test_iron_override_saves_and_stamps_alert(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
-    await genetics_service.add_variant(
+    await variants.add_variant(
         db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
@@ -203,7 +203,7 @@ async def test_inactive_iron_not_blocked(db_session, owner_write):
     """An archived (inactive) iron row must not trip the active-only condition."""
     conflict_registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
-    await genetics_service.add_variant(
+    await variants.add_variant(
         db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),

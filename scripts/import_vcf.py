@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Genotek (and generic) VCF importer for the genetics reference table — CLI.
 
-The parsing core now lives in :mod:`vitals.services.genetics_vcf` (so the web
+The parsing core now lives in :mod:`vitals.services.genetics.vcf` (so the web
 router and this CLI share one implementation and ``web/`` never imports
 ``scripts/``). This module is the thin command-line + DB wrapper around it and
 re-exports the core names for backward compatibility.
@@ -17,7 +17,7 @@ import asyncio
 from pathlib import Path
 
 # Re-export the pure parsing core (kept for backward-compat imports).
-from vitals.services.genetics_vcf import (  # noqa: F401
+from vitals.services.genetics.vcf import (  # noqa: F401
     INTERPRETATIONS,
     ParsedVariant,
     interpret,
@@ -29,7 +29,8 @@ from vitals.services.genetics_vcf import (  # noqa: F401
 async def _import(path: str, only_interpreted: bool, actor_username: str) -> int:
     from vitals.config import load_config
     from vitals.database import create_session_factory
-    from vitals.services import conflict_engine, genetics_service
+    from vitals.services import conflict_engine
+    from vitals.services.genetics import variants as variant_records
 
     raw_variants: list[ParsedVariant] = []
     curated_variants: list[ParsedVariant] = []
@@ -39,7 +40,7 @@ async def _import(path: str, only_interpreted: bool, actor_username: str) -> int
             variant = parse_vcf_line(line)
             if variant is None:
                 continue
-            if len(raw_variants) < genetics_service.MAX_RAW_VARIANTS:
+            if len(raw_variants) < variant_records.MAX_RAW_VARIANTS:
                 raw_variants.append(variant)
             else:
                 truncated = True
@@ -59,7 +60,7 @@ async def _import(path: str, only_interpreted: bool, actor_username: str) -> int
                 session,
                 context=context,
             )
-            summary = await genetics_service.ingest_vcf_batch(
+            summary = await variant_records.ingest_vcf_batch(
                 session,
                 filename=Path(path).name,
                 curated_variants=curated_variants,

@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-from vitals.services.genetics_vcf import ParsedVariant, interpret, iter_parsed, parse_vcf_line
+from vitals.services.genetics.vcf import ParsedVariant, interpret, iter_parsed, parse_vcf_line
 from vitals.enums import Source
-from vitals.services import genetics_service
+from vitals.services.genetics import variants
 
 # No module-level asyncio mark: this file mixes async DB tests (auto-detected via
 # asyncio_mode=auto) with pure sync parsing tests.
@@ -13,41 +13,41 @@ from vitals.services import genetics_service
 
 # ── Service ───────────────────────────────────────────────────────────────────
 async def test_add_and_resolver(db_session, owner_write):
-    await genetics_service.add_variant(
+    await variants.add_variant(
         db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    items = await genetics_service.resolve_variants_scoped(
+    items = await variants.resolve_variants_scoped(
         db_session, scope=owner_write.context.scope
     )
     assert {"marker": "hemochromatosis_carrier", "gene": "HFE", "genotype": None} in items
 
 
 async def test_resolver_skips_markerless(db_session, owner_write):
-    await genetics_service.add_variant(db_session, gene="ACTN3", rsid="rs1815739",
+    await variants.add_variant(db_session, gene="ACTN3", rsid="rs1815739",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    items = await genetics_service.resolve_variants_scoped(
+    items = await variants.resolve_variants_scoped(
         db_session, scope=owner_write.context.scope
     )
     assert items == []
 
 
 async def test_upsert_by_rsid_updates(db_session, owner_write):
-    await genetics_service.upsert_by_rsid(db_session, gene="HFE", rsid="rs1800562", genotype="G/G", source=Source.MANUAL.value,
+    await variants.upsert_by_rsid(db_session, gene="HFE", rsid="rs1800562", genotype="G/G", source=Source.MANUAL.value,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
-    await genetics_service.upsert_by_rsid(db_session, gene="HFE", rsid="rs1800562", genotype="A/G", source=Source.MANUAL.value,
+    await variants.upsert_by_rsid(db_session, gene="HFE", rsid="rs1800562", genotype="A/G", source=Source.MANUAL.value,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    rows = await genetics_service.list_variants(db_session,
+    rows = await variants.list_variants(db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(rows) == 1
@@ -83,16 +83,16 @@ async def test_duplicate_rsid_rejected_within_one_subject(
 async def test_null_rsid_rows_coexist(db_session, owner_write):
     """The uniqueness is partial (WHERE rsid IS NOT NULL), so multiple manual
     rows without an rsID are still allowed."""
-    await genetics_service.add_variant(db_session, gene="GeneA", rsid=None,
+    await variants.add_variant(db_session, gene="GeneA", rsid=None,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
-    await genetics_service.add_variant(db_session, gene="GeneB", rsid=None,
+    await variants.add_variant(db_session, gene="GeneB", rsid=None,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    rows = await genetics_service.list_variants(db_session,
+    rows = await variants.list_variants(db_session,
         subject_id=owner_write.subject_id,
     )
     assert len(rows) == 2

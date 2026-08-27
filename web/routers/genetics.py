@@ -8,8 +8,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, Source
-from vitals.services import alerts_service, conflict_engine, genetics_service
-from vitals.services.genetics_vcf import INTERPRETATIONS, ParsedVariant, parse_vcf_line
+from vitals.services import alerts_service, conflict_engine
+from vitals.services.genetics import variants as variant_records
+from vitals.services.genetics.vcf import INTERPRETATIONS, ParsedVariant, parse_vcf_line
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -53,7 +54,7 @@ async def genetics_dashboard(
         actor_username=username,
         evaluation_date=today_local(),
     )
-    variants = await genetics_service.list_variants(
+    variants = await variant_records.list_variants(
         db,
         subject_id=context.identity.subject_id,
     )
@@ -109,7 +110,7 @@ async def import_vcf(
         variant = parse_vcf_line(line)
         if variant is None:
             continue
-        if len(raw_variants) < genetics_service.MAX_RAW_VARIANTS:
+        if len(raw_variants) < variant_records.MAX_RAW_VARIANTS:
             raw_variants.append(variant)
         else:
             truncated = True
@@ -120,7 +121,7 @@ async def import_vcf(
 
     context, prepared = await _prepared_owner_write(db, username=username)
     try:
-        summary = await genetics_service.ingest_vcf_batch(
+        summary = await variant_records.ingest_vcf_batch(
             db,
             filename=file.filename,
             curated_variants=curated_variants,
@@ -172,13 +173,13 @@ async def save_variant(
         if rsid:
             # An rsID is a globally-unique dbSNP id: re-saving the same one
             # updates only the exact owner's row under the locked write boundary.
-            await genetics_service.upsert_by_rsid(
+            await variant_records.upsert_by_rsid(
                 db,
                 rsid=rsid,
                 **fields,
             )
         else:
-            await genetics_service.add_variant(
+            await variant_records.add_variant(
                 db,
                 rsid=None,
                 **fields,
@@ -199,7 +200,7 @@ async def delete_variant(
 ):
     context, prepared = await _prepared_owner_write(db, username=username)
     try:
-        await genetics_service.delete_variant(
+        await variant_records.delete_variant(
             db,
             id,
             identity=context.identity,

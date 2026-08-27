@@ -17,7 +17,7 @@ boundaries rather than alternative business-service implementations.
 
 Within `vitals/services/`, new code is grouped by bounded domain instead of
 adding another `<noun>_service.py` to the root. A package exposes concepts, not
-a service locator. The extracted multi-user and authentication boundaries are:
+a service locator. The extracted boundaries are:
 
 ```text
 vitals/services/care/
@@ -43,6 +43,10 @@ vitals/services/authentication/
 ├── connector_authorization.py # one OAuth account-to-subject choice
 ├── mcp_tokens.py      # connector credential lifecycle
 └── legacy_two_factor.py # local-password cutover path only
+
+vitals/services/genetics/
+├── variants.py        # scoped variant facts and raw-first ingestion
+└── vcf.py             # pure VCF parsing and curated interpretation
 
 vitals/operations/ownership/
 ├── portability_v1.py # destructive full-v1 restore coordinator

@@ -28,7 +28,6 @@ from vitals.enums import Domain
 from vitals.services import conflict_engine
 from vitals.services import (
     body_scan_service,
-    genetics_service,
     glp1_service,
     hrt_service,
     labs_service,
@@ -37,6 +36,7 @@ from vitals.services import (
     supplements_service,
     weight_service,
 )
+from vitals.services.genetics import variants
 
 
 def register_all_resolvers() -> None:
@@ -49,8 +49,8 @@ def register_all_resolvers() -> None:
     )
     conflict_engine.register_domain_resolver(
         Domain.GENETICS.value,
-        genetics_service.resolve_variants_scoped,
-        legacy_probe=genetics_service.legacy_unowned_present,
+        variants.resolve_variants_scoped,
+        legacy_probe=variants.legacy_unowned_present,
     )
     conflict_engine.register_domain_resolver(
         Domain.SKINCARE.value,

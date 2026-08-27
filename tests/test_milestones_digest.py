@@ -313,10 +313,10 @@ async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db
     → skin reacted') had no data to work with."""
     from vitals.services import (
         alerts_service,
-        genetics_service,
         skincare_service,
         supplements_service,
     )
+    from vitals.services.genetics import variants
 
     await supplements_service.add_supplement(
         db_session, name="Creatine", dose="5 g", timing="morning", evidence="A",
@@ -328,7 +328,7 @@ async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(DAY),
     )
-    await genetics_service.add_variant(
+    await variants.add_variant(
         db_session, gene="HFE", rsid="rs1800562", genotype="GG", marker="hemochromatosis_carrier",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),

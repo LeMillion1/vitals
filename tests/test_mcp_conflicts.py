@@ -11,9 +11,9 @@ from vitals.models.identity import HealthSubject
 from vitals.services import (
     conflict_activation_service,
     conflict_registrations,
-    genetics_service,
 )
 from vitals.services.conflict_engine import LegacyConflictBridge
+from vitals.services.genetics import variants
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
@@ -43,7 +43,7 @@ async def test_check_supplement_conflicts_normalizes_cyrillic_name(db_session, s
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     conflict_registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
-    await genetics_service.add_variant(
+    await variants.add_variant(
         db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),

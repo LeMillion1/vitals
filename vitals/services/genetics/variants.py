@@ -29,7 +29,7 @@ from vitals.models.identity import HealthSubject
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
 from vitals.services import conflict_engine, raw_payload_service
-from vitals.services.genetics_vcf import INTERPRETATIONS, ParsedVariant, interpret
+from vitals.services.genetics.vcf import INTERPRETATIONS, ParsedVariant, interpret
 from vitals.utils.timeutils import now_local
 
 logger = logging.getLogger(__name__)

@@ -1518,7 +1518,7 @@ Hevy's `sync` / `reparse_from_raw` / `reparse_pending` had no callers left at
 all, and `_upsert_workout` went with them.
 
 `raw_payload_service.upsert_raw_payload` itself is deleted. Its last two callers
-were the Hevy sync and `genetics_service.store_raw_vcf`, which already refused
+were the Hevy sync and `genetics.variants.store_raw_vcf`, which already refused
 every scoped caller — what remained underneath was the zero-subject arm storing
 an uploaded VCF as a payload belonging to nobody. A genome is the most
 identifying record the application holds, so that arm was removed rather than

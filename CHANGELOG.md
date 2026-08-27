@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — genetics services form one bounded context
+
+Genetic variant persistence, raw-first VCF ingestion, and the shared pure VCF
+parser now live under `vitals.services.genetics`. All callers use the semantic
+package directly, with no forwarding modules left in the flat service root; the
+guarded flat-service ceiling falls from 54 modules to 52 without behavior or
+schema changes.
+
 ### Fixed — ZITADEL proxy headers cannot change the issuer authority
 
 Both identity gateways now replace the forwarded and ZITADEL public-host

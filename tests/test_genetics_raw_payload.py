@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from vitals.enums import Source
 from vitals.models.raw_payload import RawPayload
-from vitals.services import genetics_service
+from vitals.services.genetics import variants
 
 VCF = (
     "##fileformat=VCFv4.2\n"
@@ -69,7 +69,7 @@ async def test_header_only_vcf_stores_nothing(auth_client, db_session):
 async def test_payload_capped(auth_client, db_session, monkeypatch):
     """Past the ceiling the import keeps going (catalog rows are still written)
     but flags the payload as truncated instead of blowing up the JSON blob."""
-    monkeypatch.setattr(genetics_service, "MAX_RAW_VARIANTS", 1)
+    monkeypatch.setattr(variants, "MAX_RAW_VARIANTS", 1)
     await _import(auth_client, VCF)
 
     raw = (await _raw_rows(db_session))[0]

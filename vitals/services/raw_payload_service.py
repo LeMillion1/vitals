@@ -577,10 +577,10 @@ async def sweep_pending_job(
         body_scan_service,
         conflict_engine,
         garmin_service,
-        genetics_service,
         hevy_service,
         labs_service,
     )
+    from vitals.services.genetics import variants
     from vitals.services.legacy_ownership import resolve_subject_ownership_context
     from vitals.utils.timeutils import today_local
 
@@ -650,7 +650,7 @@ async def sweep_pending_job(
                 session,
                 context=context,
             )
-            return await genetics_service.reparse_owned_pending(
+            return await variants.reparse_owned_pending(
                 session,
                 identity=context.identity,
                 prepared_conflict_write=prepared,

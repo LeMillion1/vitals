@@ -417,9 +417,9 @@ async def _load_genetics(
     session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
 ) -> _LoadedSection:
     del window
-    from vitals.services import genetics_service
+    from vitals.services.genetics import variants
 
-    page = await genetics_service.bounded_variants(
+    page = await variants.bounded_variants(
         session,
         subject_id=subject_id,
         limit=_GENETICS_LIMIT,

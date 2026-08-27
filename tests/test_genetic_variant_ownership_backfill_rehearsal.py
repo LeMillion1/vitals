@@ -32,8 +32,8 @@ from vitals.services import (
     conflict_registrations,
     data_portability_service,
     hrt_catalog,
-    genetics_service,
 )
+from vitals.services.genetics import variants
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,
 )
@@ -580,7 +580,7 @@ async def test_real_postgres_0034_genetic_variant_stop_resume_volatility_and_res
             # Migrated history keeps its unknown actor null, which the genetics
             # reader still reaches through the legacy compatibility bridge; its
             # retirement is a separate later gate.
-            listed = await genetics_service.list_variants(
+            listed = await variants.list_variants(
                 session,
                 subject_id=identity.subject_id,
             )
@@ -611,7 +611,7 @@ async def test_real_postgres_0034_genetic_variant_stop_resume_volatility_and_res
                     legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
                 ),
             )
-            live = await genetics_service.add_variant(
+            live = await variants.add_variant(
                 session,
                 gene="SYNTHETIC",
                 rsid="rs-synthetic-live",

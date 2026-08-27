@@ -2,9 +2,9 @@
 
 Parses a ``.vcf`` line into a :class:`ParsedVariant`, derives the genotype from the
 sample column, and maps clinically actionable rsIDs to conflict-engine ``marker``
-slugs via the curated :data:`INTERPRETATIONS` table. This lives in
-``vitals/services`` (not ``scripts/``) so both the web router and the CLI importer
-call the same domain logic — ``web/`` must never depend on ``scripts/``.
+slugs via the curated :data:`INTERPRETATIONS` table. This lives in the genetics
+service package (not ``scripts/``) so both the web router and the CLI importer call
+the same domain logic — ``web/`` must never depend on ``scripts/``.
 
 The CLI wrapper (``scripts/import_vcf.py``) re-exports these names and adds the
 DB/argparse layer; ``web/routers/genetics.py`` imports directly from here.

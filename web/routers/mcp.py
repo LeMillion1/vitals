@@ -84,9 +84,10 @@ from vitals.models import (
     WeightLog,
     WeeklyDigest,
 )
-from vitals.services import conflict_engine, genetics_service, modules_service
+from vitals.services import conflict_engine, modules_service
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.services.data_portability_service import GENERIC_OUTPUT_SUPPRESSED_COLUMNS
+from vitals.services.genetics import variants as variant_records
 from vitals.services.legacy_ownership import (
     LegacyOwnershipContext,
     resolve_legacy_ownership_context,
@@ -1369,7 +1370,7 @@ async def get_genetics_snps(
     session_factory = get_session_factory()
     async with session_factory() as session:
         scope = await _mcp_v1_conflict_scope(session)
-        variants = await genetics_service.list_variants(
+        variants = await variant_records.list_variants(
             session,
             subject_id=scope.subject_id,
             gene=gene,
@@ -1423,7 +1424,7 @@ async def upsert_genetic_variant(
         if name in clear:
             patch_fields[name] = None
         elif value is None:
-            patch_fields[name] = genetics_service.PATCH_UNSET
+            patch_fields[name] = variant_records.PATCH_UNSET
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -1433,7 +1434,7 @@ async def upsert_genetic_variant(
             context=context,
         )
         try:
-            row = await genetics_service.upsert_by_rsid(
+            row = await variant_records.upsert_by_rsid(
                 session,
                 gene=gene,
                 rsid=rsid,
@@ -2835,7 +2836,7 @@ _DELETE_TARGETS: dict[str, tuple[Optional[str], str, str]] = {
     "timeline": ("timeline", "timeline_service", "delete_annotation"),
     "skincare_observation": ("skincare", "skincare_service", "delete_observation"),
     "supplements": ("supplements", "supplements_service", "delete_supplement"),
-    "genetics": ("genetics", "genetics_service", "delete_variant"),
+    "genetics": ("genetics", "genetics.variants", "delete_variant"),
 }
 
 
