@@ -168,6 +168,20 @@ def test_core_dotenv_loader_uses_exact_vitals_env_file(tmp_path):
     assert result.stdout.strip() == "sqlite+aiosqlite:///synthetic-runtime.db"
 
 
+def test_read_env_key_matches_dotenv_quote_semantics(tmp_path):
+    from vitals.runtime_env import read_env_key
+
+    runtime = tmp_path / "vitals.env"
+    runtime.write_text(
+        "VITALS_AUTH_PASSWORD_HASH='$2b$12$synthetic'\n"
+        'VITALS_PUBLIC_URL="https://vitals.example.test"\n',
+        encoding="utf-8",
+    )
+
+    assert read_env_key(runtime, "VITALS_AUTH_PASSWORD_HASH") == "$2b$12$synthetic"
+    assert read_env_key(runtime, "VITALS_PUBLIC_URL") == "https://vitals.example.test"
+
+
 def test_all_direct_dotenv_loaders_honor_vitals_env_file():
     for relative_path in (
         "vitals/config.py",

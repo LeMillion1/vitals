@@ -16,7 +16,10 @@ import secrets
 import stat
 import threading
 from collections.abc import Mapping
+from io import StringIO
 from pathlib import Path
+
+from dotenv import dotenv_values
 
 
 RUNTIME_ENV_KEYS = frozenset(
@@ -298,7 +301,13 @@ def read_env_key(
             continue
         match = _ASSIGNMENT.match(stripped)
         if match is not None and match.group("key") == key:
-            return stripped[match.end() :].strip()
+            parsed = dotenv_values(stream=StringIO(stripped), interpolate=False)
+            value = parsed.get(key)
+            if value is None:
+                raise RuntimeEnvIsolationError(
+                    f"application runtime environment has an invalid value for {key}"
+                )
+            return value
     return ""
 
 
