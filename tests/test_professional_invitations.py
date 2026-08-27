@@ -472,7 +472,7 @@ async def test_accepting_reaches_nothing_by_itself(db_session):
         PolicyResourceType,
         is_allowed,
     )
-    from vitals.services.access_resolution import resolve_access_context
+    from vitals.services.authorization.subject_access import resolve_access_context
 
     _owner, subject, issued = await _offer(db_session, slug="inv-not-access")
     doctor = await _user(

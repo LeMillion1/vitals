@@ -24,7 +24,7 @@ from vitals.models.ai import (
     AIInvocation,
 )
 from vitals.models.identity import HealthSubject
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.utils.timeutils import now_utc
 
 from vitals.services.ai_gateway.contracts import (

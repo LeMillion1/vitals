@@ -197,7 +197,7 @@ async def _seed_conversation(
     """
 
     from vitals.services.care import threads
-    from vitals.services.access_resolution import resolve_access_context
+    from vitals.services.authorization.subject_access import resolve_access_context
 
     patient_context = await resolve_access_context(
         session, user_id=owner.id, subject_id=subject.id

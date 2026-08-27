@@ -36,7 +36,7 @@ from vitals.i18n import current_lang, t
 from vitals.models.hrt import DOMAIN, HrtCycle, HrtCycleItem
 from vitals.models.identity import HealthSubject
 from vitals.ownership import WriteIdentity
-from vitals.services import modules_service
+from vitals.services.modules import preferences as modules_service
 from vitals.services.conflicts import engine
 from vitals.services.hrt import cycles, records
 from vitals.services.labs.markers import (
@@ -517,7 +517,7 @@ async def reminders_job(
             return
 
         from vitals.i18n import current_lang
-        from vitals.services.language_service import get_language
+        from vitals.services.preferences.language import get_language
 
         owner_user_id = await session.scalar(
             select(HealthSubject.owner_user_id).where(

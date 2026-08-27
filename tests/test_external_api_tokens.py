@@ -15,7 +15,7 @@ import pytest
 
 from vitals.enums import ExternalApiTokenStatus, UserStatus
 from vitals.models.identity import ExternalApiToken, HealthSubject, User
-from vitals.services import external_api_token_service as tokens
+from vitals.services.external_api import tokens
 
 ENVIRONMENT_TOKEN = "environment-token"
 

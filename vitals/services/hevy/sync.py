@@ -12,7 +12,7 @@ from vitals.services.hevy.ownership import (
     _lock_owned_hevy_scope,
     _require_owned_hevy_connection,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 
 async def _fetch_provider_workouts(client: Any, *, max_pages: int) -> list[Any]:

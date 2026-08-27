@@ -64,8 +64,8 @@ verdict:
 | Domain enum | 14 values: 13 record sections plus internal `system` | Verified |
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
 | Web routers | 37 tracked non-`__init__` modules under `web/routers` | Verified |
-| Application services | 232 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
-| Flat service debt | 21 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 53 |
+| Application services | 246 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
+| Flat service debt | 0 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 74 |
 | Scheduled jobs | 16 registered jobs; 11 fan out per subject or provider connection | Verified |
 | Platform-scope callers | the AST contract in `tests/test_row_level_security.py` enumerates 9 exact permitted functions; invitation acceptance is no longer one of them | Verified and shrinking |
 | Browser scenarios | `pytest tests/ui -m ui -q` → 43 passed in 138.35s | Verified on the current runtime tree |
@@ -432,8 +432,8 @@ The care domain now owns six related services, authentication owns its protocol,
 admission, session, provisioning, and credential boundaries, analytics moved out
 of the application-service layer, and RLS/transaction primitives moved to
 `vitals.persistence`. Static
-tests prevent core→web, services→operations, pure-analytics→I/O, flat-service
-growth, and import-time cycles.
+tests prevent core→web, services→operations, pure-analytics→I/O, any tracked
+root service module, retired flat-path imports, and import-time cycles.
 
 The ownership correction is now delivered. Eighteen resumable backfill programs,
 ownership validation, and scoped-key audit live in
@@ -442,13 +442,15 @@ those programs in an operational coordinator. Share and weight read the two
 remaining historical checkpoint projections through a non-mutating
 `vitals/ownership_transition` seam, so no application service imports an
 operation and no compatibility forwarding modules preserve the old flat paths.
-The architecture tests fix that direction and lower the flat-service ceiling
-from 74 modules to 21, with an 800-line ceiling for those remaining integration
-facades and a 1,300-line ceiling for every service leaf. Genetics, HRT, Weight,
-Garmin, Hevy, Labs, Body Scan, GLP-1, Nutrition, Skincare, Supplements,
-Timeline, Milestones, digest, proactive delivery/preferences/briefs, alerts,
-AI gateway, sharing, support access, and portability now have named
-responsibility leaves rather than 1,500–5,000-line service monoliths.
+The architecture tests fix that direction and reduce the flat-service root from
+74 modules to zero. The final 21 infrastructure/application facades now belong
+to identity, authorization, tenancy, platform, files, data-lake, external-API,
+charts, dashboard, profile, preferences, modules, settings, and alerts packages;
+their retired paths cannot be imported as a second API. A 1,300-line ceiling
+still applies to every service leaf. Genetics, HRT, Weight, Garmin, Hevy, Labs,
+Body Scan, GLP-1, Nutrition, Skincare, Supplements, Timeline, Milestones,
+digest, proactive delivery/preferences/briefs, alerts, AI gateway, sharing,
+support access, and portability retain their named responsibility leaves.
 
 MCP and Settings are composition registries with explicit child adapters; the
 Reports router delegates application workflow to core services; Labs and Body

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.ownership import WriteIdentity
 from vitals.services.conflicts import engine
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 from .contracts import (
     GarminWeightExportContextProtocol,

@@ -23,7 +23,7 @@ from vitals.services.authentication.admission._shared import (
     expire_invitation,
     expire_request,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 logger = logging.getLogger(__name__)
 

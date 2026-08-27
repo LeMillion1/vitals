@@ -32,9 +32,11 @@ from vitals.enums import (
     IntegrationProvider,
 )
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.legacy_ownership import (
+from vitals.services.tenancy.contracts import (
     LegacyOwnershipContext,
     LegacySubjectResolutionError,
+)
+from vitals.services.tenancy.ownership import (
     resolve_legacy_ownership_context,
 )
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
@@ -318,7 +320,7 @@ async def resolve_subject_channel_ownership(
     codebase keeps out.
     """
 
-    from vitals.services.legacy_ownership import resolve_subject_ownership_context
+    from vitals.services.tenancy.ownership import resolve_subject_ownership_context
 
     ownership = await resolve_subject_ownership_context(
         session,
@@ -341,4 +343,3 @@ async def resolve_legacy_channel_ownership(
         required_connections=(IntegrationProvider.TELEGRAM,),
     )
     return ownership_from_legacy(ownership)
-

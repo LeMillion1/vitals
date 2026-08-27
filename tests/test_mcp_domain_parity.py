@@ -21,7 +21,7 @@ def _use_test_factory(session_factory, monkeypatch):
 
 @pytest.fixture(autouse=True)
 async def _optional_modules_on(session_factory, legacy_owner_roots):
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as modules_service
 
     async with session_factory() as session:
         for key in sorted(modules_service.OPTIONAL_KEYS):

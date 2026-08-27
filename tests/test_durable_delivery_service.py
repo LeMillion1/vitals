@@ -2196,10 +2196,8 @@ async def test_zero_subject_send_starts_governance_guard_before_policy_reads(
     # This path is about a database with no subjects at all, so the module
     # state is the legacy installation-wide row rather than anybody's.
     from vitals.models.app_settings import AppSetting
-    from vitals.services.modules_service import (
-        DEFAULT_STATE,
-        SETTINGS_KEY as MODULES_KEY,
-    )
+    from vitals.services.modules.preferences import SETTINGS_KEY as MODULES_KEY
+    from vitals.services.modules.registry import DEFAULT_STATE
 
     await db_session.merge(
         AppSetting(key=MODULES_KEY, value={**DEFAULT_STATE, "signals": True})

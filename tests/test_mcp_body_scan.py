@@ -11,7 +11,7 @@ from sqlalchemy import select
 mcp_router = pytest.importorskip("web.routers.mcp")
 
 from vitals.models.identity import HealthSubject  # noqa: E402
-from vitals.services import modules_service  # noqa: E402
+from vitals.services.modules import preferences as modules_service  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

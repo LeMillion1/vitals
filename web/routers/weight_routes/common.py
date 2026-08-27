@@ -18,7 +18,7 @@ from vitals.config import load_config
 from vitals.enums import (
     Domain,
 )
-from vitals.services import file_asset_service
+from vitals.services.files import queries as file_queries
 from vitals.services.garmin_weight import outbox as garmin_weight_outbox
 from vitals.services.conflicts import engine
 from vitals.services.body_scan.ai import projection as body_scan_ai_projection
@@ -296,7 +296,7 @@ async def _section_context(request: Request, db: AsyncSession, username: str) ->
     # rows carry an asset id; the link needs the rotatable key, and an id with
     # no entry here is deleted, purged, or not this subject's — in every case
     # the template renders no link rather than a link that 404s.
-    file_keys = await file_asset_service.opaque_keys_for(
+    file_keys = await file_queries.opaque_keys_for(
         db,
         subject_id=identity.subject_id,
         file_asset_ids=[p.file_asset_id for p in photos] + [s.file_asset_id for s in bc_scans],

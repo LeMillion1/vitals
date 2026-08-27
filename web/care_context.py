@@ -34,11 +34,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.access import AccessContext, PolicyAction, PolicyResourceType, is_allowed
 from vitals.enums import ProfessionalKind
 from vitals.persistence.rls import bind_session_subject
-from vitals.services.access_resolution import (
+from vitals.services.authorization.subject_access import (
     AccessResolutionError,
     resolve_access_context,
 )
-from vitals.services import identity_service
+from vitals.services.identity import queries as identity_queries
 from vitals.services.care import workspace as care_workspace
 from web.config import SESSION_COOKIE
 from web.deps import get_session, require_auth
@@ -131,7 +131,7 @@ async def principal_user_id(request: Request, session: AsyncSession) -> uuid.UUI
     if claims.user_id is not None:
         return claims.user_id
 
-    user_id = await identity_service.find_user_id_by_username(
+    user_id = await identity_queries.find_user_id_by_username(
         session,
         username=claims.username,
     )

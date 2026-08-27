@@ -567,7 +567,7 @@ async def test_mcp_skincare_provenance_scoped_reads_notes_and_delete(
     legacy_owner_roots,
     monkeypatch,
 ):
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as modules_service
     from web.routers import mcp as mcp_router
 
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
@@ -740,7 +740,7 @@ async def test_postgres_legacy_bridge_write_serializes_against_subject_creation(
     db_session,
     legacy_owner_roots,
 ):
-    from vitals.services.identity_service import acquire_identity_governance_lock
+    from vitals.services.identity.governance import acquire_identity_governance_lock
 
     assert db_session.bind is not None
     factory = async_sessionmaker(
@@ -801,7 +801,7 @@ async def test_postgres_destructive_seed_serializes_before_identity_creation(
     monkeypatch,
 ):
     from scripts import seed_skincare as seed_module
-    from vitals.services.identity_service import (
+    from vitals.services.identity.governance import (
         acquire_identity_governance_lock as real_governance_lock,
     )
 

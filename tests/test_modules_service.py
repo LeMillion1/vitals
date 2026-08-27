@@ -11,12 +11,12 @@ import json
 import pytest
 
 from vitals.models.scoped_settings import SubjectSetting
-from vitals.services import modules_service
-from vitals.services.modules_service import (
-    DEFAULT_STATE,
+from vitals.services.modules import preferences as modules_service
+from vitals.services.modules.preferences import (
     SETTINGS_KEY,
     ModuleToggleError,
 )
+from vitals.services.modules.registry import DEFAULT_STATE
 
 
 
@@ -293,12 +293,8 @@ async def test_concurrent_toggles_do_not_lose_updates(db_session, legacy_owner_r
 def test_bottom_bar_is_five_fixed_columns_whatever_is_enabled():
     """The phone bar is Today + three slots + More, always — the grid used to be
     sized from the enabled-module count, so every toggle shifted every icon."""
-    from vitals.services.modules_service import (
-        BOTTOM_SLOT_COUNT,
-        MODULE_REGISTRY,
-        OPTIONAL_KEYS,
-        bottom_slots,
-    )
+    from vitals.services.modules.navigation import BOTTOM_SLOT_COUNT, bottom_slots
+    from vitals.services.modules.registry import MODULE_REGISTRY, OPTIONAL_KEYS
 
     enabled = {k: True for k in MODULE_REGISTRY}
     assert [s.key for s in bottom_slots(enabled)] == ["health", "nutrition", "lifestyle"]

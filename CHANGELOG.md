@@ -8,6 +8,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — every application service has an owning context
+
+The final 21 root-level service modules now live in explicit identity,
+authorization, tenancy, platform, file, data-lake, external-API, chart,
+dashboard, profile, preference, module, settings, or alerts packages. Identity
+governance is separated from normalization, credentials, roles, queries, and
+bootstrap; raw payload persistence is separated from reparse scheduling; and
+file lifecycle is separated from read queries and upload references. Internal
+callers use the owning leaf directly, with no forwarding modules left behind.
+Static architecture contracts keep the tracked service root at zero and reject
+imports of every retired path. Still-required compatibility behavior is
+explicitly localized in `identity.bootstrap`, `tenancy.ownership`,
+`settings.legacy`, and `alerts.legacy_subject`, with fail-closed contracts and
+documented retirement conditions.
+
 ### Changed — application workflows have explicit boundaries
 
 Digest projection and ownership, proactive preferences, daily briefs, durable

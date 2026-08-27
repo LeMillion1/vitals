@@ -20,7 +20,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import raw_payload_service
+from vitals.services.data_lake import sweep as raw_sweep
 from vitals.services.garmin import ingestion as garmin_ingestion
 from vitals.services.garmin import ownership as garmin_ownership
 from vitals.services.garmin import raw_payloads as garmin_raw_payloads
@@ -82,7 +82,7 @@ async def test_nightly_raw_sweep_passes_exact_system_owned_roots(
         _body_comp,
     )
 
-    await run_job_for_every_subject(raw_payload_service.sweep_pending_job, session_factory)
+    await run_job_for_every_subject(raw_sweep.sweep_pending_job, session_factory)
 
     owned = {name: (identity, connection_id) for name, identity, connection_id in calls[:2]}
     garmin_identity, garmin_connection_id = owned["garmin"]
@@ -421,7 +421,7 @@ async def test_postgres_provider_sync_waits_for_governance_before_root_lock(
     monkeypatch,
     provider,
 ):
-    from vitals.services.identity_service import acquire_identity_governance_lock
+    from vitals.services.identity.governance import acquire_identity_governance_lock
 
     assert db_session.bind is not None
     factory = async_sessionmaker(

@@ -32,8 +32,8 @@ from vitals.services.authentication.registration import (
     RegistrationMode,
     effective_mode,
 )
-from vitals.services.identity_service import (
-    IdentityValidationError,
+from vitals.services.identity.contracts import IdentityValidationError
+from vitals.services.identity.normalization import (
     NormalizedEmail,
     normalize_email,
     normalize_username,

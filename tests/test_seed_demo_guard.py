@@ -298,7 +298,7 @@ async def test_postgres_seed_check_and_delete_serialize_identity_creation(
     db_session,
     monkeypatch,
 ):
-    from vitals.services.identity_service import (
+    from vitals.services.identity.governance import (
         acquire_identity_governance_lock as real_governance_lock,
     )
 
@@ -372,7 +372,7 @@ async def test_postgres_identity_creation_wins_race_and_seed_preserves_data(
     db_session,
     monkeypatch,
 ):
-    from vitals.services.identity_service import (
+    from vitals.services.identity.governance import (
         acquire_identity_governance_lock as real_governance_lock,
     )
 

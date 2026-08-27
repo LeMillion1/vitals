@@ -17,7 +17,7 @@ from vitals.enums import (
     SupportScopeResourceType,
 )
 from vitals.models.identity import AuditEvent, SupportAccessGrant, SupportAccessScope
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.services.portability import v1_export
 from vitals.services.support_access.contracts import (
     EVENT_RECORD_EXPORTED,

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.services.conflicts import engine
 from vitals.services.labs.flags import is_out_of_range
 from vitals.services.labs.results import latest_per_marker
-from vitals.services.modules_service import MODULE_REGISTRY
+from vitals.services.modules.registry import MODULE_REGISTRY
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates

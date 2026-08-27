@@ -33,8 +33,8 @@ _NOT_REQUEST_REACHABLE = {
     # Raised while reconciling the ``.env`` owner during lifespan startup, which
     # has its own handling: the app logs and carries on without a legacy
     # identity rather than refusing to boot.
-    "vitals.services.identity_bootstrap": "startup-only owner reconciliation",
-    "vitals.services.tenancy_bootstrap": "startup-only resource-root creation",
+    "vitals.services.identity.bootstrap": "startup-only owner reconciliation",
+    "vitals.services.tenancy.bootstrap": "startup-only resource-root creation",
 }
 
 

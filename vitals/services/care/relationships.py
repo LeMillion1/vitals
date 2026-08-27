@@ -47,7 +47,7 @@ from vitals.models.professional import (
     ProfessionalInvitation,
     ProfessionalProfile,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 #: How long a consent stands before the patient has to say so again. Consent
 #: that never lapses is consent nobody revisits, and a professional who stopped

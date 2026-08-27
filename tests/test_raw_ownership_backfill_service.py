@@ -34,7 +34,7 @@ from vitals.operations.ownership.raw import (
     preflight_raw_ownership_backfill,
     run_raw_ownership_backfill_batch,
 )
-from vitals.services.tenancy_bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
+from vitals.services.tenancy.bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
 from vitals.operations.ownership import raw as backfill_service
 
 

@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import AIInvocationSource, AIInvocationStatus
 from vitals.services.digest import generation as digest_generation
 from vitals.services.digest import ownership as digest_ownership
-from vitals.services.legacy_ownership import LegacyOwnershipError
+from vitals.services.tenancy.contracts import LegacyOwnershipError
 from vitals.services.proactive import channels
 from vitals.services.proactive.brief import contracts as brief_contracts
 from vitals.services.proactive.brief import persistence as brief_persistence

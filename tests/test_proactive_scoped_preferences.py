@@ -21,7 +21,7 @@ from vitals.models.scoped_settings import (
     SubjectSetting,
 )
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.identity_service import (
+from vitals.services.identity.governance import (
     authorize_pre_identity_compatibility_transaction,
 )
 from vitals.services.proactive.preferences import codec as preference_codec
@@ -591,7 +591,7 @@ async def test_postgres_absent_scoped_rows_serialize_on_subject_root(
 async def test_postgres_pre_identity_read_serializes_identity_bootstrap(
     db_session,
 ):
-    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+    from vitals.services.identity.bootstrap import bootstrap_legacy_owner
 
     assert db_session.bind is not None
     await db_session.commit()

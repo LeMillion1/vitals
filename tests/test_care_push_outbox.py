@@ -20,7 +20,7 @@ from vitals.enums import (
 from vitals.models.care_thread import CareMessage, CareThread, CareThreadParticipant
 from vitals.models.identity import HealthSubject, User
 from vitals.models.web_push import CarePushDelivery
-from vitals.services.access_resolution import resolve_access_context
+from vitals.services.authorization.subject_access import resolve_access_context
 from vitals.services.care import threads
 from vitals.services.notifications import web_push_subscriptions
 from vitals.utils.timeutils import now_utc

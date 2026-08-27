@@ -28,7 +28,7 @@ from vitals.models.identity import HealthSubject
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import file_asset_service
+from vitals.services.files import contracts as file_contracts
 from vitals.services.conflicts import engine
 from vitals.services.weight import writes as weight_writes
 from vitals.services.weight.contracts import PreparedWeightWrite
@@ -107,7 +107,7 @@ async def _validate_upload_chain(
         or raw.source != Source.BODY_SCAN.value
         or raw.file_asset_id != asset.id
         or asset.purpose != FileAssetPurpose.BODY_SCAN_DOCUMENT.value
-        or not file_asset_service.local_asset_is_live(asset)
+        or not file_contracts.local_asset_is_live(asset)
         or raw.external_id != asset.storage_ref
     ):
         raise engine.ConflictRawOwnershipError(

@@ -26,7 +26,7 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import ProgressPhoto
 from vitals.operations import file_storage_relocation as relocation
 from vitals.persistence import file_storage
-from vitals.services import file_asset_service
+from vitals.services.files import lifecycle as file_lifecycle
 from scripts import relocate_private_files as relocation_cli
 
 
@@ -42,7 +42,7 @@ async def _legacy_photo(
     source = static_dir / "uploads" / f"{name}.png"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(body)
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         session,
         subject_id=roots.subject_id,
         uploaded_by_user_id=roots.user_id,
@@ -235,7 +235,7 @@ async def _legacy_body_scan_alias(
     source = static_dir / "uploads" / storage_ref
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(body)
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         session,
         subject_id=roots.subject_id,
         uploaded_by_user_id=roots.user_id,

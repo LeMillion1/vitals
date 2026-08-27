@@ -32,7 +32,7 @@ from vitals.models.skincare import SkincareLog, SkincareObservation, SkincarePro
 from vitals.models.system_alert import SystemAlert
 from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, WeightLog
-from vitals.services import modules_service
+from vitals.services.modules import preferences as modules_service
 from vitals.services.hrt import cycles
 
 pytestmark = pytest.mark.usefixtures("all_modules_on", "owned_by_legacy_subject")

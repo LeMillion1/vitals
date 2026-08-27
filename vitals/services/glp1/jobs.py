@@ -6,7 +6,7 @@ import uuid
 
 from sqlalchemy import select
 
-from vitals.services import modules_service
+from vitals.services.modules import preferences as modules_service
 from vitals.services.conflicts import engine
 from vitals.services.glp1.plateau import refresh_plateau_alert
 from vitals.utils.timeutils import today_local
@@ -37,7 +37,7 @@ async def plateau_job(
             await session.commit()
             return
 
-        from vitals.services.language_service import get_language
+        from vitals.services.preferences.language import get_language
         from vitals.i18n import current_lang
         from vitals.models.identity import HealthSubject
 

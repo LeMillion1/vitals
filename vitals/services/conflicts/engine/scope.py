@@ -39,10 +39,8 @@ def _domain_value(domain: Domain | str) -> str:
 
 
 async def _acquire_legacy_governance_lock(session: AsyncSession) -> None:
-    from vitals.services.identity_service import (
-        UnsupportedIdentityDatabaseError,
-        acquire_identity_governance_lock,
-    )
+    from vitals.services.identity.contracts import UnsupportedIdentityDatabaseError
+    from vitals.services.identity.governance import acquire_identity_governance_lock
 
     try:
         await acquire_identity_governance_lock(session)
@@ -394,7 +392,7 @@ async def resolve_legacy_conflict_write_context(
     an authenticated owner action; ``None`` denotes a trusted system/job action.
     """
 
-    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+    from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 
     await _acquire_legacy_governance_lock(session)
     ownership = await resolve_legacy_ownership_context(
@@ -427,7 +425,7 @@ async def resolve_subject_conflict_write_context(
     old refusal back within reach of a caller who simply forgot.
     """
 
-    from vitals.services.legacy_ownership import resolve_subject_ownership_context
+    from vitals.services.tenancy.ownership import resolve_subject_ownership_context
 
     await _acquire_legacy_governance_lock(session)
     ownership = await resolve_subject_ownership_context(
@@ -449,7 +447,7 @@ async def resolve_legacy_conflict_scope(
 ) -> ConflictScope:
     """Resolve and authenticate the exact-one owner under one governance lock."""
 
-    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+    from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 
     # Lock before sampling subject cardinality, owner lifecycle, or actor
     # identity. The transaction retains it through the caller's subsequent rule

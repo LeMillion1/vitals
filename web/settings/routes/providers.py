@@ -15,7 +15,7 @@ from vitals.services.garmin_weight import jobs as garmin_weight_jobs
 from vitals.services.garmin_weight import outbox as garmin_weight_outbox
 from vitals.services.garmin_weight import settings as garmin_weight_settings
 from vitals.services.credentials import providers, vault
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from web.deps import get_redis, get_session, require_auth
 from web.ratelimit import rate_limit
 from web.settings.forms import is_secret_sentinel
@@ -93,7 +93,7 @@ async def revoke_connector(
     """
 
     from vitals.services.authentication import mcp_tokens
-    from vitals.services.identity_service import find_user_id_by_username
+    from vitals.services.identity.queries import find_user_id_by_username
 
     user_id = await find_user_id_by_username(
         db,

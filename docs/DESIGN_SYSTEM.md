@@ -298,7 +298,7 @@ the one thing a rail is for.
 The rail's contents, the in-content tab row, the phone's bottom bar and the
 «Ещё» screen all derive from **one registry** — `MODULE_REGISTRY` /
 `nav_modules()` / `bottom_slots()` / `more_rubrics()` in
-[`modules_service.py`](../vitals/services/modules_service.py), exposed as Jinja
+[`modules/registry.py`](../vitals/services/modules/registry.py), exposed as Jinja
 globals — so no two surfaces can drift apart. Sections are grouped into three
 rubrics: Health (weight, garmin, hevy, nutrition, timeline, reports, charts),
 Markers (glp1, hrt, labs, genetics), Lifestyle (supplements, skincare,
@@ -327,7 +327,7 @@ the masthead eyebrow.
 today's numbers, one row per enabled domain — weight with the week's direction,
 last night's sleep with readiness, today's intake against the ceiling, when the
 last session was. From
-[`nav_status_service.py`](../vitals/services/nav_status_service.py) via the
+[`dashboard/nav_status.py`](../vitals/services/dashboard/nav_status.py) via the
 `load_nav_status` global dependency (HTML GETs only).
 
 It reports **numbers, not plumbing**. The first version reported how fresh each
@@ -766,7 +766,7 @@ readability, independent of the card's own width.
 
 The rail, the phone's bottom bar, the «Ещё» screen and the "section N" numbering
 all read `MODULE_REGISTRY` / `nav_modules()` from
-`vitals/services/modules_service.py` (see [3.1](#31-masthead-canonical)). When
+`vitals/services/modules/registry.py` (see [3.1](#31-masthead-canonical)). When
 adding a module, register it there once — resist the urge to add a section to
 just one surface. The single exception is «Сегодня», written out by hand in the
 rail and the bottom bar precisely because it is not a module.
@@ -778,7 +778,7 @@ opens the app, so it carries its own compact hero: a stable localized page name
 in `<h1>`, the complete daily narrative as secondary body text, then five key
 figures (`.v-today-figure`). Generated health interpretation must not become a
 heading, be truncated, or push the figures below the first mobile viewport.
-Everything it renders is composed in `vitals/services/today_service.py` from
+Everything it renders is composed in `vitals/services/dashboard/today.py` from
 services the domain pages already use; no analytics live there. Two rules the
 screen depends on:
 

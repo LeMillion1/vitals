@@ -276,7 +276,7 @@ async def test_settings_save_profile(
     answer that disagrees with the row is worse than a stale one nothing reads.
     """
 
-    from vitals.services import health_profile_service
+    from vitals.services.profile import health as health_profile_service
 
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_HEIGHT_CM=190\nVITALS_SEX=male\n", encoding="utf-8")
@@ -752,7 +752,7 @@ async def test_settings_change_password_preserves_stronger_bcrypt_cost(
     from sqlalchemy import select
 
     from vitals.models.identity import User
-    from vitals.services.identity_service import bcrypt_cost
+    from vitals.services.identity.credentials import bcrypt_cost
     from vitals.utils.passwords import hash_password
 
     stronger_hash = hash_password("password", minimum_rounds=5)

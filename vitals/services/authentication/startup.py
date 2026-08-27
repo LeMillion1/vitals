@@ -21,7 +21,7 @@ from vitals.models.identity import (
     UserFederatedIdentity,
     UserRole,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 
 class OidcStartupStateError(RuntimeError):

@@ -23,7 +23,7 @@ from vitals.models.identity import HealthSubject
 from vitals.models.tenancy import FileAsset
 from vitals.persistence import file_storage
 from vitals.persistence.rls import bind_session_subject
-from vitals.services import file_asset_service
+from vitals.services.files import lifecycle as file_lifecycle
 
 
 _MAX_RETIREMENT_ASSETS: Final = 10_000
@@ -268,7 +268,7 @@ async def prepare_old_file_retirement(
         if row.status == FileAssetStatus.PURGED.value:
             already_purged.append(row.id)
             continue
-        retired = await file_asset_service.mark_local_deleted(
+        retired = await file_lifecycle.mark_local_deleted(
             session,
             file_asset_id=row.id,
             subject_id=subject_id,
@@ -344,7 +344,7 @@ async def _purge_one(
                 static_dir=static_dir,
                 private_root=private_root,
             )
-            await file_asset_service.mark_local_deleted(
+            await file_lifecycle.mark_local_deleted(
                 session,
                 file_asset_id=item.file_asset_id,
                 subject_id=item.subject_id,

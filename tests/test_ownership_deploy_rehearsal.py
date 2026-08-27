@@ -45,9 +45,9 @@ from vitals.ownership import (
 from vitals.ownership_deploy import OWNERSHIP_BACKFILL_SEQUENCE
 from vitals.services.conflicts import catalog as conflict_catalog
 from vitals.services.hrt import catalog
-from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+from vitals.services.identity.bootstrap import bootstrap_legacy_owner
 from vitals.persistence.rls import SUBJECT_SETTING
-from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
 
 from tests.test_row_level_security import restricted_engine
 

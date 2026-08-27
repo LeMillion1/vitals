@@ -14,14 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, IntegrationProvider, Severity
 from vitals.integrations.hevy_client import HevyAPIError, HevyClient, HevyNotConfigured
-from vitals.services import (
-    legacy_subject_alerts,
-)
+from vitals.services.alerts import legacy_subject as legacy_subject_alerts
 from vitals.services.credentials import providers
 from vitals.services.hevy import ownership as hevy_ownership
 import vitals.services.hevy.queries as hevy_queries
 import vitals.services.hevy.sync as hevy_sync
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from web.deps import get_redis, get_session, require_auth
 from web.templating import templates
 

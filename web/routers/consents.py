@@ -18,14 +18,14 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services.legacy_ownership import NoPersonalRecordError
+from vitals.services.tenancy.contracts import NoPersonalRecordError
 from vitals.enums import ProfessionalKind
 from vitals.services.care import (
     consent_centre as consent_projection,
     invitations,
     relationships,
 )
-from vitals.services.access_resolution import (
+from vitals.services.authorization.subject_access import (
     AccessContext,
     AccessResolutionError,
     enter_subject_scope,

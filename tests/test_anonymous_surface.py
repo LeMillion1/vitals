@@ -165,10 +165,11 @@ async def an_owned_asset(db_session, owner_write, an_uploaded_file):
     from datetime import date
 
     from vitals.enums import FileAssetPurpose
-    from vitals.services import file_asset_service, weight as weight_domain
+    from vitals.services import weight as weight_domain
+    from vitals.services.files import lifecycle as file_lifecycle
 
     file_key = f"uploads/{an_uploaded_file}"
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=owner_write.subject_id,
         uploaded_by_user_id=owner_write.identity.actor_user_id,
@@ -239,7 +240,7 @@ async def test_the_generic_download_supports_private_local_assets(
     import uuid
 
     from vitals.enums import FileAssetPurpose
-    from vitals.services import file_asset_service
+    from vitals.services.files import lifecycle as file_lifecycle
     from web.uploads import write_private_file
 
     private_root = tmp_path / "private-medical-files"
@@ -247,7 +248,7 @@ async def test_the_generic_download_supports_private_local_assets(
     payload = b"\x89PNG\r\n\x1a\nprivate-photo"
     storage_ref = f"uploads/{uuid.uuid4().hex}.png"
     write_private_file(str(private_root), storage_ref, payload)
-    asset = await file_asset_service.register_private_local(
+    asset = await file_lifecycle.register_private_local(
         db_session,
         subject_id=owner_write.subject_id,
         uploaded_by_user_id=owner_write.identity.actor_user_id,
@@ -300,9 +301,9 @@ async def test_a_deleted_asset_stops_being_downloadable(
     auth_client, db_session, an_owned_asset
 ):
     """Lifecycle decides, and it decides in the same voice as a missing key."""
-    from vitals.services import file_asset_service
+    from vitals.services.files import lifecycle as file_lifecycle
 
-    await file_asset_service.mark_legacy_local_deleted(
+    await file_lifecycle.mark_legacy_local_deleted(
         db_session,
         file_asset_id=an_owned_asset.id,
         subject_id=an_owned_asset.subject_id,

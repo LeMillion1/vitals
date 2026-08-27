@@ -13,7 +13,8 @@ from vitals.enums import IntegrationConnectionStatus, IntegrationProvider, UserR
 from vitals.models.ai import AIPlatformQuotaPeriod, AISubjectQuotaPeriod
 from vitals.models.identity import AuditEvent, HealthSubject, UserRole
 from vitals.models.tenancy import IntegrationConnection, PlatformIntegrationConnection
-from vitals.services import platform_admin_service, platform_ai_control_service
+from vitals.services.platform import ai_control as platform_ai_control
+from vitals.services.platform import authorization as platform_authorization
 from web.config import get_web_config
 
 
@@ -55,7 +56,7 @@ def _configuration_form(*, key: str = "", digest: str = "anthropic/claude-sonnet
 
 
 async def _prepared_admin(session):
-    return await platform_admin_service.prepare_platform_admin(
+    return await platform_authorization.prepare_platform_admin(
         session,
         actor_username=get_web_config().auth_username,
     )
@@ -72,14 +73,14 @@ async def test_control_service_snapshot_is_redacted_and_quota_is_opaque_s_only(
     await db_session.commit()
 
     prepared = await _prepared_admin(db_session)
-    transition = await platform_ai_control_service.apply_gateway_configuration(
+    transition = await platform_ai_control.apply_gateway_configuration(
         db_session,
         prepared=prepared,
         configuration_changed=False,
         credential_available=True,
     )
-    assert transition.action is platform_ai_control_service.GatewayTransitionAction.CREATED
-    quota = await platform_ai_control_service.configure_aligned_quota_period(
+    assert transition.action is platform_ai_control.GatewayTransitionAction.CREATED
+    quota = await platform_ai_control.configure_aligned_quota_period(
         db_session,
         prepared=prepared,
         subject_id=legacy_owner_roots.subject_id,
@@ -94,7 +95,7 @@ async def test_control_service_snapshot_is_redacted_and_quota_is_opaque_s_only(
     await db_session.commit()
 
     prepared = await _prepared_admin(db_session)
-    snapshot = await platform_ai_control_service.get_platform_ai_control_snapshot(
+    snapshot = await platform_ai_control.get_platform_ai_control_snapshot(
         db_session,
         prepared=prepared,
     )
@@ -144,7 +145,7 @@ async def test_configuration_create_noop_disabled_rotation_and_enable(
     assert root is not None
     assert root.status == IntegrationConnectionStatus.ACTIVE.value
     assert root.config_version == 1
-    assert root.credential_ref == platform_ai_control_service.OPENROUTER_CREDENTIAL_REF
+    assert root.credential_ref == platform_ai_control.OPENROUTER_CREDENTIAL_REF
     assert "synthetic-control-secret" not in repr(root.__dict__)
 
     audit_count = await db_session.scalar(
@@ -331,7 +332,7 @@ async def test_service_rejects_unaudited_configuration_rotation_shape(
     legacy_owner_roots,
 ):
     prepared = await _prepared_admin(db_session)
-    await platform_ai_control_service.apply_gateway_configuration(
+    await platform_ai_control.apply_gateway_configuration(
         db_session,
         prepared=prepared,
         configuration_changed=False,
@@ -341,10 +342,10 @@ async def test_service_rejects_unaudited_configuration_rotation_shape(
 
     prepared = await _prepared_admin(db_session)
     with pytest.raises(
-        platform_ai_control_service.PlatformAIControlError,
+        platform_ai_control.PlatformAIControlError,
         match="reviewed changed fields",
     ):
-        await platform_ai_control_service.apply_gateway_configuration(
+        await platform_ai_control.apply_gateway_configuration(
             db_session,
             prepared=prepared,
             configuration_changed=True,
@@ -419,7 +420,7 @@ async def test_subject_quota_cannot_exceed_platform_limit(
 ):
     prepared = await _prepared_admin(db_session)
     with pytest.raises(ValueError, match="cannot exceed"):
-        await platform_ai_control_service.configure_aligned_quota_period(
+        await platform_ai_control.configure_aligned_quota_period(
             db_session,
             prepared=prepared,
             subject_id=legacy_owner_roots.subject_id,

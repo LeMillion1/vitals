@@ -20,7 +20,7 @@ from vitals.models.hevy import DOMAIN as HEVY_DOMAIN, HevyWorkout
 from vitals.models.identity import HealthSubject, User
 from vitals.models.tenancy import IntegrationConnection
 from vitals.models.weight import DOMAIN as WEIGHT_DOMAIN, WeightLog
-from vitals.services import nav_status_service
+from vitals.services.dashboard import nav_status as nav_status_service
 from vitals.utils.timeutils import today_local
 
 
@@ -31,7 +31,7 @@ async def test_more_screen_lists_every_visible_section(auth_client):
     reach their siblings through the masthead chips, which is a fine way to
     switch and a terrible way to find — half the app looked missing on a phone.
     """
-    from vitals.services.modules_service import nav_modules
+    from vitals.services.modules.navigation import nav_modules
 
     response = await auth_client.get("/more", headers={"Accept": "text/html"})
     assert response.status_code == 200
@@ -55,7 +55,7 @@ async def test_more_screen_has_one_account_row_not_a_second_settings_link(auth_c
 
 
 async def test_more_screen_reports_how_many_modules_are_on(auth_client):
-    from vitals.services.modules_service import MODULE_REGISTRY
+    from vitals.services.modules.registry import MODULE_REGISTRY
 
     response = await auth_client.get("/more", headers={"Accept": "text/html"})
     assert f"из {len(MODULE_REGISTRY)}" in response.text

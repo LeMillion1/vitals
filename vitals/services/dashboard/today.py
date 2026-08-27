@@ -411,3 +411,6 @@ async def _goal(
             "deadline": card["deadline"],
         }
     return None
+
+
+__all__ = ["build"]

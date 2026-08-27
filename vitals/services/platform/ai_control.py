@@ -26,8 +26,8 @@ from vitals.enums import IntegrationConnectionStatus
 from vitals.models.ai import AIPlatformQuotaPeriod, AISubjectQuotaPeriod
 from vitals.models.identity import HealthSubject
 from vitals.models.tenancy import PlatformIntegrationConnection
-from vitals.services import platform_admin_service
-from vitals.services.platform_admin_service import PreparedPlatformAdmin
+from vitals.services.platform import authorization as platform_authorization
+from vitals.services.platform.authorization import PreparedPlatformAdmin
 
 OPENROUTER_CREDENTIAL_REF = "env:VITALS_OPENROUTER_API_KEY"
 
@@ -139,7 +139,7 @@ async def get_platform_ai_control_snapshot(
 ) -> PlatformAIControlSnapshot:
     """Return redacted control state after an exact live admin check."""
 
-    platform_admin_service.require_prepared_platform_admin(session, prepared)
+    platform_authorization.require_prepared_platform_admin(session, prepared)
     current = await session.scalar(
         select(PlatformIntegrationConnection)
         .where(PlatformIntegrationConnection.status != IntegrationConnectionStatus.RETIRED.value)
@@ -188,7 +188,7 @@ async def apply_gateway_configuration(
     root is therefore rotated and immediately disabled when configuration changes.
     """
 
-    platform_admin_service.require_prepared_platform_admin(session, prepared)
+    platform_authorization.require_prepared_platform_admin(session, prepared)
     if not isinstance(configuration_changed, bool):
         raise TypeError("configuration_changed must be a bool")
     if not isinstance(credential_available, bool):
@@ -196,7 +196,7 @@ async def apply_gateway_configuration(
     if desired_enabled is not None and not isinstance(desired_enabled, bool):
         raise TypeError("desired_enabled must be a bool or None")
     reviewed_fields = frozenset(
-        platform_admin_service.validate_openrouter_changed_fields(changed_fields)
+        platform_authorization.validate_openrouter_changed_fields(changed_fields)
     )
     if configuration_changed != bool(reviewed_fields):
         raise PlatformAIControlError(
@@ -269,7 +269,7 @@ async def apply_gateway_configuration(
             GatewayTransitionAction.ENABLED: "gateway_enabled",
             GatewayTransitionAction.DISABLED: "gateway_disabled",
         }[action]
-        await platform_admin_service.record_openrouter_configuration_change(
+        await platform_authorization.record_openrouter_configuration_change(
             session,
             prepared=prepared,
             changed_fields=reviewed_fields,
@@ -298,7 +298,7 @@ async def configure_aligned_quota_period(
 ) -> AlignedQuotaResult:
     """Configure one platform period and an exactly aligned opaque-S budget."""
 
-    platform_admin_service.require_prepared_platform_admin(session, prepared)
+    platform_authorization.require_prepared_platform_admin(session, prepared)
     if not isinstance(subject_id, uuid.UUID):
         raise TypeError("subject_id must be a UUID")
     if (
@@ -368,7 +368,7 @@ async def configure_aligned_quota_period(
         unit_limit=subject_unit_limit,
     )
     if changed:
-        await platform_admin_service.record_openrouter_configuration_change(
+        await platform_authorization.record_openrouter_configuration_change(
             session,
             prepared=prepared,
             changed_fields=("platform_quota", "subject_quota"),

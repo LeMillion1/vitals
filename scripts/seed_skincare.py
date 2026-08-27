@@ -10,7 +10,7 @@ from vitals.database import create_session_factory
 from vitals.models.identity import HealthSubject
 from vitals.enums import Source
 from vitals.models.skincare import DOMAIN, SkincareLog
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 
 async def seed_skincare(session: AsyncSession) -> None:

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 from vitals.enums import Domain, Source
-from vitals.services import raw_payload_service
+from vitals.services.data_lake import raw_payloads
 from vitals.services.body_scan.scans import alerts as body_scan_alerts
 from vitals.services.body_scan.scans import ingestion as body_scan_ingestion
 from vitals.services.body_scan.scans import queries as body_scan_queries
@@ -150,7 +150,7 @@ def register_body_composition_tools(
                     session,
                     evaluation_date=parsed_date,
                 )
-                raw = await raw_payload_service.upsert_owned_raw_payload(
+                raw = await raw_payloads.upsert_owned_raw_payload(
                     session,
                     identity=conflict_context.identity,
                     integration_connection_id=None,

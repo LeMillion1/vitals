@@ -140,7 +140,7 @@ async def _owned_garmin_weight(db_session, owner_write, *, on_date, weight_kg):
         IntegrationProvider,
     )
     from vitals.models.tenancy import IntegrationConnection
-    from vitals.services import raw_payload_service
+    from vitals.services.data_lake import raw_payloads
 
     on_date = _clock_date(on_date)
     connection = await db_session.scalar(
@@ -159,7 +159,7 @@ async def _owned_garmin_weight(db_session, owner_write, *, on_date, weight_kg):
         )
         db_session.add(connection)
         await db_session.flush()
-    raw = await raw_payload_service.upsert_owned_raw_payload(
+    raw = await raw_payloads.upsert_owned_raw_payload(
         db_session,
         identity=owner_write.identity,
         integration_connection_id=connection.id,

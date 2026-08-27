@@ -22,10 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import AuditOutcome, UserRoleName, UserStatus
 from vitals.models.identity import AuditEvent, User, UserRole
-from vitals.services.identity_service import (
-    acquire_identity_governance_lock,
-    normalize_username,
-)
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.identity.normalization import normalize_username
 
 _OPENROUTER_CHANGED_FIELDS = frozenset(
     {

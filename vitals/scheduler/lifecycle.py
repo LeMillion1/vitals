@@ -27,7 +27,7 @@ async def load_worker_settings(
     the existing web lifespan's fallback to registry defaults.
     """
 
-    from vitals.services.legacy_ownership import (
+    from vitals.services.tenancy.contracts import (
         LegacyOwnershipError,
         NoPersonalRecordError,
     )

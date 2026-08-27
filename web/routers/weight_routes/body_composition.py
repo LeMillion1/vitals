@@ -19,7 +19,8 @@ from vitals.enums import (
     FileStorageBackend,
 )
 from vitals.i18n import t
-from vitals.services import file_asset_service
+from vitals.services.files import lifecycle as file_lifecycle
+from vitals.services.files import queries as file_queries
 from vitals.services.body_scan.ai import contracts as body_scan_ai_contracts
 from vitals.services.body_scan.ai import workflow as body_scan_ai_workflow
 from vitals.services.body_scan.scans import alerts as body_scan_alerts
@@ -268,14 +269,14 @@ async def delete_body_scan_entry(
             prepared_weight_write=prepared_weight_write,
         )
     if deleted and file_asset_id is not None:
-        asset = await file_asset_service.resolve_local_asset(
+        asset = await file_queries.resolve_local_asset(
             db,
             file_asset_id=file_asset_id,
             subject_id=identity.subject_id,
         )
         physical_backend = asset.storage_backend
         physical_ref = asset.storage_ref
-        await file_asset_service.mark_local_deleted(
+        await file_lifecycle.mark_local_deleted(
             db,
             file_asset_id=file_asset_id,
             subject_id=identity.subject_id,
@@ -301,7 +302,7 @@ async def delete_body_scan_entry(
             logger.warning("Could not remove body-scan bytes: %s", e)
 
     if bytes_purged and file_asset_id is not None:
-        await file_asset_service.mark_local_deleted(
+        await file_lifecycle.mark_local_deleted(
             db,
             file_asset_id=file_asset_id,
             subject_id=identity.subject_id,

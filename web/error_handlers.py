@@ -10,8 +10,8 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from vitals.i18n import current_lang, t
-from vitals.services.access_resolution import AccessDeniedError
-from vitals.services.legacy_ownership import NoPersonalRecordError
+from vitals.services.authorization.subject_access import AccessDeniedError
+from vitals.services.tenancy.contracts import NoPersonalRecordError
 from web.app_lifecycle import LEGACY_BOOTSTRAP_CLOSED
 from web.deps import (
     ModuleDisabled,
@@ -111,11 +111,13 @@ async def _populate_state_for_error_page(request: Request) -> None:
     fresh session/redis, mirroring each dependency's fail-safe default so the page
     renders no matter what.
     """
-    from vitals.services import language_service, modules_service
+    from vitals.services.modules import preferences as modules_service
+    from vitals.services.modules.registry import DEFAULT_STATE
+    from vitals.services.preferences import language as language_service
     from web.deps import get_request_chrome_scope
 
     lang = "en"
-    enabled = dict(modules_service.DEFAULT_STATE)
+    enabled = dict(DEFAULT_STATE)
     try:
         redis = get_redis_client()
         async with get_session_factory()() as db:

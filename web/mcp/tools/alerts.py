@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from vitals.services import legacy_subject_alerts
+from vitals.services.alerts import legacy_subject as legacy_subject_alerts
 
 
 @dataclass(frozen=True)

@@ -24,7 +24,7 @@ from vitals.integrations.llm_client import LLMCallResult, LLMClient
 from vitals.models.ai import AIInvocation
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
-from vitals.services import file_asset_service
+from vitals.services.files import lifecycle as file_lifecycle
 from vitals.services.ai_gateway import contracts as ai_gateway_service_contracts
 from vitals.services.ai_gateway import dispatch as ai_gateway_service_dispatch
 from vitals.services.ai_gateway import invocations as ai_gateway_service_invocations
@@ -95,9 +95,9 @@ async def prepare_body_scan_parse(
             "body-scan document storage backend is invalid"
         )
     register = (
-        file_asset_service.register_private_local
+        file_lifecycle.register_private_local
         if normalized_backend is FileStorageBackend.PRIVATE_LOCAL
-        else file_asset_service.register_legacy_local
+        else file_lifecycle.register_legacy_local
     )
     asset = await register(
         session,

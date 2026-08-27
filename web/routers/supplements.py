@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Domain, Evidence
 from vitals.services.conflicts import engine
 from vitals.services.conflicts.engine import ConflictBlocked
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from web.deps import get_session, require_auth
 from web.templating import templates
 

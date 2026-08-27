@@ -215,7 +215,7 @@ async def test_nutrition_summary_period(db_session, owner_write):
 async def test_goals_come_from_this_subjects_record(db_session, owner_write):
     """They came from ``.env``, so every patient was measured against one set."""
 
-    from vitals.services import health_profile_service
+    from vitals.services.profile import health as health_profile_service
 
     await health_profile_service.set_profile(
         db_session,

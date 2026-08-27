@@ -46,13 +46,13 @@ from vitals.models.identity import User
 from vitals.models.professional import CareRelationship, ProfessionalProfile
 from vitals.models.web_push import CarePushDelivery
 from vitals.persistence.rls import enter_platform_scope
-from vitals.services.access_resolution import (
+from vitals.services.authorization.subject_access import (
     AccessResolutionError,
     require_access,
     resolve_access_context,
 )
 from vitals.services.care.threads import MESSAGE_OPERATION
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.services.notifications import web_push_config, web_push_subscriptions
 from vitals.services.notifications.web_push_subscriptions import (
     SubscriptionGeneration,

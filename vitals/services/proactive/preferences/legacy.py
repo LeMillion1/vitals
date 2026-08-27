@@ -7,8 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.app_settings import AppSetting
-from vitals.services.identity_service import (
-    PreIdentityCompatibilityError,
+from vitals.services.identity.contracts import PreIdentityCompatibilityError
+from vitals.services.identity.governance import (
     authorize_pre_identity_compatibility_transaction,
     require_pre_identity_compatibility,
 )
@@ -52,7 +52,7 @@ async def get_pre_identity_legacy_prefs_in_transaction(
     :func:`get_pre_identity_legacy_prefs`; it adopts the open transaction rather
     than demanding a fresh root, because a hook cannot own the boundary. The
     caller owes the lock-order contract described on
-    :func:`vitals.services.identity_service.require_pre_identity_compatibility`.
+    :func:`vitals.services.identity.governance.require_pre_identity_compatibility`.
     """
 
     with session.no_autoflush:

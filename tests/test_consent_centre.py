@@ -418,7 +418,7 @@ async def test_recommended_consent_grants_only_enabled_care_view_domains(
     in_care, db_session
 ):
     from vitals.models.professional import ConsentScope
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as modules_service
     from vitals.services.care import record_projection
 
     _owner_client, _doctor_client, subject_id, _relationship_id = in_care

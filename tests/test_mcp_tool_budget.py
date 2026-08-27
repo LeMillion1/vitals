@@ -112,7 +112,7 @@ async def test_disabled_modules_drop_out_of_the_tool_list(
     assert "get_weight_logs" in listed  # core, never hidden
     assert "log_hrt_dose" not in listed and "get_hrt_cycles" not in listed
 
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as modules_service
 
     await modules_service.set_module_enabled(
         db_session,

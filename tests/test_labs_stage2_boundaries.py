@@ -32,7 +32,9 @@ from vitals.models.labs import LabMarker, LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import file_asset_service, raw_payload_service
+from vitals.services.files import lifecycle as file_lifecycle
+from vitals.services.data_lake import raw_payloads
+from vitals.services.data_lake import sweep as raw_sweep
 from vitals.services.conflicts import engine, registrations
 from vitals.services.garmin import raw_payloads as garmin_raw_payloads
 from vitals.services.body_scan.scans import reparse as body_scan_reparse
@@ -472,7 +474,7 @@ async def test_nightly_labs_sweep_receives_system_identity_and_live_capability(
     monkeypatch.setattr(body_scan_reparse, "reparse_owned_pending", no_op)
     monkeypatch.setattr(labs_ingestion, "reparse_owned_pending", labs_probe)
 
-    await run_job_for_every_subject(raw_payload_service.sweep_pending_job, session_factory)
+    await run_job_for_every_subject(raw_sweep.sweep_pending_job, session_factory)
 
     assert calls == [
         (
@@ -532,7 +534,7 @@ async def _owned_parser_raw(
     marker: str,
 ) -> RawPayload:
     storage_ref = f"labs/synthetic-{suffix}.png"
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         session,
         subject_id=identity.subject_id,
         uploaded_by_user_id=identity.actor_user_id,
@@ -542,7 +544,7 @@ async def _owned_parser_raw(
         size_bytes=24,
         content_sha256=suffix[0] * 64,
     )
-    return await raw_payload_service.upsert_owned_raw_payload(
+    return await raw_payloads.upsert_owned_raw_payload(
         session,
         identity=identity,
         integration_connection_id=connection.id,
@@ -639,7 +641,7 @@ async def test_owned_raw_replay_scans_past_full_malformed_head_batch(
     human = _identity(legacy_owner_roots)
     connection = await _openrouter_connection(db_session, human.subject_id)
     malformed = []
-    for index in range(raw_payload_service.REPARSE_BATCH + 1):
+    for index in range(raw_sweep.REPARSE_BATCH + 1):
         row = RawPayload(
             subject_id=human.subject_id,
             actor_user_id=human.actor_user_id,
@@ -678,7 +680,7 @@ async def test_owned_raw_replay_scans_past_full_malformed_head_batch(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
-        limit=raw_payload_service.REPARSE_BATCH,
+        limit=raw_sweep.REPARSE_BATCH,
     )
 
     assert done == 1

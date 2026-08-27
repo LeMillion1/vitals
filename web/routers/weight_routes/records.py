@@ -19,7 +19,8 @@ from vitals.enums import (
     Source,
 )
 from vitals.i18n import t
-from vitals.services import file_asset_service
+from vitals.services.files import lifecycle as file_lifecycle
+from vitals.services.files import queries as file_queries
 from vitals.services.weight import measurements as weight_measurements
 from vitals.services.weight import noise as weight_noise
 from vitals.services.weight import photos as weight_photos
@@ -307,7 +308,7 @@ async def add_photo_entry(
         )
         identity = conflict_context.identity
         for file_key, document in prepared_files:
-            asset = await file_asset_service.register_private_local(
+            asset = await file_lifecycle.register_private_local(
                 db,
                 subject_id=identity.subject_id,
                 uploaded_by_user_id=identity.actor_user_id,
@@ -456,7 +457,7 @@ async def delete_photo_entry(
         prepared_conflict_write=prepared,
     )
     if receipt is not None and receipt.file_asset_id is not None:
-        asset = await file_asset_service.resolve_local_asset(
+        asset = await file_queries.resolve_local_asset(
             db,
             file_asset_id=receipt.file_asset_id,
             subject_id=conflict_context.identity.subject_id,
@@ -492,7 +493,7 @@ async def delete_photo_entry(
             raise ProgressPhotoOwnershipError(
                 "progress-photo identity changed during physical purge"
             )
-        await file_asset_service.mark_local_deleted(
+        await file_lifecycle.mark_local_deleted(
             db,
             file_asset_id=receipt.file_asset_id,
             subject_id=purge_context.identity.subject_id,

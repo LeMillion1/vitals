@@ -36,7 +36,7 @@ from vitals.services.credentials import providers, vault
 async def second_patient(db_session, legacy_owner_roots):
     """Somebody who is not the installation owner, with their own roots."""
 
-    from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+    from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
     from vitals.persistence import rls as rls_session
 
     user = User(

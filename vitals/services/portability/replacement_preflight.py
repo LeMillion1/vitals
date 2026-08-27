@@ -29,7 +29,7 @@ from vitals.models.proactive import NotificationDeliveryIntent
 from vitals.models.support_repair import SupportRepairAction
 from vitals.models.system_alert import SystemAlert
 from vitals.services.garmin_weight.outbox import lock_active_weight_change
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 
 _TERMINAL_GARMIN_STATUSES: Final = frozenset(

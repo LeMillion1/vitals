@@ -13,7 +13,7 @@ from vitals.analytics.navy import lean_body_mass_kg, navy_body_fat_pct
 from vitals.enums import Domain, Source
 from vitals.models.weight import DOMAIN, BodyMeasurement
 from vitals.ownership import WriteIdentity
-from vitals.services import health_profile_service
+from vitals.services.profile import health as health_profile_service
 from vitals.services.conflicts import engine
 
 from .contracts import BodyMeasurementDateOccupiedError, WeightOwnershipError

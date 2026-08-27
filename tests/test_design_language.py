@@ -270,8 +270,8 @@ def test_one_decimal_mark_per_language():
     go through `decimal()` now, so a weight cannot read two ways on one screen.
     """
     from vitals.i18n import STRINGS, current_lang
-    from vitals.services.nav_status_service import decimal as nav_decimal
-    from vitals.services.today_service import _num, _signed
+    from vitals.services.dashboard.nav_status import decimal as nav_decimal
+    from vitals.services.dashboard.today import _num, _signed
     from web.templating import format_number
 
     assert STRINGS["ru"]["common.decimal_sep"] == ","

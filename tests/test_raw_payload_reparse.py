@@ -1,7 +1,7 @@
 """Raw-payload reparse sweep.
 
 ``upsert_owned_raw_payload`` leaves ``processed_at = None`` whenever it refreshes an
-existing row ("re-parse pending"). ``raw_payload_service.sweep_domain`` is the
+existing row ("re-parse pending"). ``raw_sweep.sweep_domain`` is the
 generic sweep that picks those rows back up; garmin/hevy/labs/body_comp each
 wire it in with their own ``reparse`` callback + ``has_normalized`` clause.
 
@@ -21,7 +21,7 @@ from vitals.models.garmin import DOMAIN as GARMIN_DOMAIN
 from vitals.models.garmin import GarminActivity, GarminDaily
 from vitals.models.hevy import DOMAIN, HevyWorkout
 from vitals.models.raw_payload import RawPayload
-from vitals.services import raw_payload_service
+from vitals.services.data_lake import sweep as raw_sweep
 from vitals.services.garmin import raw_payloads as garmin_raw_payloads
 from vitals.services.hevy import raw_payloads as hevy_raw_payloads
 
@@ -69,7 +69,7 @@ async def test_sweep_domain_reparses_a_pending_row_with_no_normalized_child(db_s
     async def _reparse(session, raw_row):
         calls.append(raw_row.id)
 
-    done = await raw_payload_service.sweep_domain(
+    done = await raw_sweep.sweep_domain(
         db_session, domain=DOMAIN, reparse=_reparse, has_normalized=_has_hevy_child(),
     )
     assert done == 1
@@ -91,7 +91,7 @@ async def test_sweep_domain_skips_a_row_that_already_has_a_normalized_child(db_s
     async def _reparse(session, raw_row):
         calls.append(raw_row.id)
 
-    done = await raw_payload_service.sweep_domain(
+    done = await raw_sweep.sweep_domain(
         db_session, domain=DOMAIN, reparse=_reparse, has_normalized=_has_hevy_child(),
     )
     assert done == 0
@@ -113,7 +113,7 @@ async def test_sweep_domain_one_failure_does_not_abort_the_batch(db_session):
         if raw_row.external_id == "w-bad":
             raise ValueError("boom")
 
-    done = await raw_payload_service.sweep_domain(
+    done = await raw_sweep.sweep_domain(
         db_session, domain=DOMAIN, reparse=_reparse, has_normalized=_has_hevy_child(),
     )
     assert done == 1

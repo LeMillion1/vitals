@@ -62,7 +62,7 @@ from vitals.operations.ownership.raw import RAW_OWNERSHIP_BACKFILL_PHASE
 from vitals.operations.ownership.shared_report import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.tenancy_bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
+from vitals.services.tenancy.bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
 from vitals.operations.ownership.weight_log import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )

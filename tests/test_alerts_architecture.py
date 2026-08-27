@@ -15,6 +15,7 @@ LEAVES = {
     "queries",
     "lifecycle",
     "legacy",
+    "legacy_subject",
 }
 RANK = {
     "contracts": 0,
@@ -23,6 +24,7 @@ RANK = {
     "context": 2,
     "queries": 3,
     "lifecycle": 4,
+    "legacy_subject": 5,
 }
 
 

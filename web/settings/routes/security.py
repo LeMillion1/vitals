@@ -11,7 +11,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.services.authentication import legacy_two_factor as twofa_service
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from web.config import get_web_config
 from web.deps import get_redis, get_session, require_auth
 from web.ratelimit import rate_limit
@@ -40,7 +40,7 @@ async def issue_external_api_token(
 
     from datetime import timedelta
 
-    from vitals.services import external_api_token_service as external_tokens
+    from vitals.services.external_api import tokens as external_tokens
 
     identity = await resolve_legacy_ownership_context(db, actor_username=username)
     try:
@@ -77,7 +77,7 @@ async def revoke_external_api_token(
     username: str = Depends(require_auth),
     db: AsyncSession = Depends(get_session),
 ):
-    from vitals.services import external_api_token_service as external_tokens
+    from vitals.services.external_api import tokens as external_tokens
 
     identity = await resolve_legacy_ownership_context(db, actor_username=username)
     try:
@@ -169,8 +169,8 @@ async def change_password(
     new_password_confirm: str = Form(""),
 ):
     from vitals.config import load_config
-    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
-    from vitals.services.identity_service import bcrypt_cost, rotate_password_hash
+    from vitals.services.identity.bootstrap import bootstrap_legacy_owner
+    from vitals.services.identity.credentials import bcrypt_cost, rotate_password_hash
     from vitals.utils.passwords import hash_password
     from web.authentication.legacy import authenticate
     from web.authentication.tokens import create_session, set_session_cookie

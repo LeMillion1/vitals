@@ -24,7 +24,7 @@ from vitals.models.scoped_settings import (
     UserSetting,
 )
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.scoped_settings_service import (
+from vitals.services.settings.contracts import (
     SCOPED_SETTING_REGISTRY,
     ForbiddenScopedSettingKeyError,
     LegacyScopedSettingBridgeClosedError,
@@ -36,6 +36,8 @@ from vitals.services.scoped_settings_service import (
     ScopedSettingValidationError,
     SettingScope,
     UnknownScopedSettingKeyError,
+)
+from vitals.services.settings.scoped_store import (
     get_scoped_setting,
     mirror_legacy_setting,
     set_scoped_setting,
@@ -585,7 +587,7 @@ async def test_retired_connection_can_read_scoped_but_cannot_touch_legacy(db_ses
 def test_service_has_no_cache_or_existing_service_dependencies():
     """Keep this bridge low-level until each product caller migrates explicitly."""
 
-    import vitals.services.scoped_settings_service as service
+    import vitals.services.settings.scoped_store as service
 
     names = set(vars(service))
     assert not any("redis" in name.casefold() for name in names)

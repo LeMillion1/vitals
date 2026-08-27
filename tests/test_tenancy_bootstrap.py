@@ -16,7 +16,7 @@ from vitals.enums import (
 )
 from vitals.models.identity import AuditEvent, HealthSubject, User
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.tenancy_bootstrap import (
+from vitals.services.tenancy.bootstrap import (
     LEGACY_ACCOUNT_DISCRIMINATOR,
     LegacySubjectNotFoundError,
     bootstrap_legacy_resource_roots,

@@ -6,7 +6,7 @@ import functools
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from vitals.services import modules_service
+from vitals.services.modules import preferences as modules_service
 from web.mcp.server import TOOL_MODULES
 
 

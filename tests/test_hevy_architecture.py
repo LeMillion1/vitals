@@ -81,7 +81,7 @@ def test_hevy_ingestion_leaves_do_not_own_network_or_outer_transactions() -> Non
 def test_hevy_ingestion_leaves_do_not_depend_on_delivery_or_provider_client() -> None:
     forbidden_roots = (
         "vitals.integrations",
-        "vitals.services.identity_service",
+        "vitals.services.identity",
         "web",
     )
     offenders: dict[str, set[str]] = {}

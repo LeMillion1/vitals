@@ -516,7 +516,7 @@ async def test_import_name_clash_gets_numbered_name(db_session, owner_write):
 
 async def test_hrt_page_renders_in_english(auth_client, db_session, redis, owner_write):
     """The ru-only fixture hid EN regressions — render the page in English."""
-    from vitals.services import language_service
+    from vitals.services.preferences import language as language_service
 
     cycle = await _build_staggered_cycle(db_session, owner_write)
     await templates.save_cycle_as_template(db_session, cycle.id, name="EN tpl",

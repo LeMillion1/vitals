@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from vitals.enums import IntegrationProvider
-from vitals.services import identity_service
-from vitals.services.legacy_ownership import (
-    LegacyOwnershipContext,
+from vitals.services.identity import queries as identity_queries
+from vitals.services.tenancy.contracts import LegacyOwnershipContext
+from vitals.services.tenancy.ownership import (
     resolve_legacy_ownership_context,
     resolve_subject_ownership_context,
 )
@@ -23,7 +23,7 @@ async def require_live_account(session, username: str) -> None:
     """Reject a token whose named account is no longer active."""
 
     async def _alive(active_session) -> bool:
-        return await identity_service.is_active_username(
+        return await identity_queries.is_active_username(
             active_session,
             username=username,
         )
@@ -46,7 +46,7 @@ async def actor_username(session=None) -> str:
         config = get_web_config()
         if not config.oidc_enabled:
             return config.auth_username
-        username = await identity_service.sole_active_subject_owner_username(
+        username = await identity_queries.sole_active_subject_owner_username(
             active_session
         )
         if username is None:
@@ -68,11 +68,11 @@ async def actor_username(session=None) -> str:
         return await _configured_or_single_owner(session)
     if session is None:
         async with get_session_factory()() as counting:
-            multiple_subjects = await identity_service.installation_has_multiple_subjects(
+            multiple_subjects = await identity_queries.installation_has_multiple_subjects(
                 counting
             )
     else:
-        multiple_subjects = await identity_service.installation_has_multiple_subjects(
+        multiple_subjects = await identity_queries.installation_has_multiple_subjects(
             session
         )
     if multiple_subjects:
@@ -101,7 +101,7 @@ async def legacy_owner(session) -> LegacyOwnershipContext:
         session,
         subject_id=binding.subject_id,
     )
-    from vitals.services.access_resolution import resolve_access_context
+    from vitals.services.authorization.subject_access import resolve_access_context
 
     access = await resolve_access_context(
         session,

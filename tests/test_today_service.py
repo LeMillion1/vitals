@@ -21,7 +21,8 @@ from vitals.enums import DigestKind, Domain, Severity, Source
 from vitals.models.milestones import DOMAIN as INSIGHTS_DOMAIN, WeeklyDigest
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity
-from vitals.services import today_service, weight as weight_domain
+from vitals.services import weight as weight_domain
+from vitals.services.dashboard import today as today_service
 from vitals.utils.timeutils import today_local
 
 ALL_OFF: dict[str, bool] = {}

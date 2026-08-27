@@ -1655,7 +1655,7 @@ async def test_the_conversation_list_renders(doctor_client, db_session):
 async def test_old_topic_threads_remain_history_without_a_new_topic_form(
     doctor_client, db_session
 ):
-    from vitals.services.access_resolution import resolve_access_context
+    from vitals.services.authorization.subject_access import resolve_access_context
     from vitals.services.care import threads
 
     client, doctor, (_owner_a, subject_a), _b = doctor_client

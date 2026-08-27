@@ -18,7 +18,7 @@ from vitals.i18n import t
 from vitals.models.base import Base
 from vitals.ownership_transition.portability_v1 import PortabilityV1OwnershipHooks
 from vitals.services.conflicts.catalog import sync_catalog as sync_conflict_catalog
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.services.portability.v1_contract import (
     BACKUP_VERSION,
     GENERIC_OUTPUT_SUPPRESSED_COLUMNS,

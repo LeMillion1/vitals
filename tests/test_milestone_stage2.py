@@ -28,10 +28,8 @@ from vitals.ownership import WriteIdentity
 from vitals.services.conflicts import engine
 from vitals.services.conflicts.engine import ConflictLegacyBridgeError
 from vitals.services.digest.ownership import DigestOwnershipError
-from vitals.services.scoped_settings_service import (
-    LegacyScopedSettingBridgeClosedError,
-)
-from vitals.services.legacy_ownership import LegacySubjectResolutionError
+from vitals.services.settings.contracts import LegacyScopedSettingBridgeClosedError
+from vitals.services.tenancy.contracts import LegacySubjectResolutionError
 
 #: The several sole-subject bridges that each refuse in a shared installation.
 #: They share no base class, which is itself the finding: there are 36 of them
@@ -287,7 +285,8 @@ async def test_progress_propagates_subject_to_weight_measurement_scan_and_settin
     legacy_owner_roots,
     monkeypatch,
 ):
-    from vitals.services import modules_service, weight as weight_domain
+    from vitals.services import weight as weight_domain
+    from vitals.services.modules import preferences as modules_service
     from vitals.services.body_scan.scans import queries as body_scan_queries
     from vitals.analytics import body_metrics
 

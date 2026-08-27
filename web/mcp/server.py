@@ -10,7 +10,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 
-from vitals.services import modules_service
+from vitals.services.modules import preferences as modules_service
 from web.config import get_web_config
 from web.deps import get_session_factory
 import web.mcp.identity as identity

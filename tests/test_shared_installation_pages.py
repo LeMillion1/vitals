@@ -655,8 +655,8 @@ async def patient_client(client, db_session, legacy_owner_roots):
 
     from vitals.models.scoped_settings import SubjectSetting
     from vitals.persistence import rls as rls_session
-    from vitals.services import modules_service
-    from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+    from vitals.services.modules import preferences as modules_service
+    from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
     from web.auth import create_session
     from web.deps import SESSION_COOKIE
 

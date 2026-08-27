@@ -152,8 +152,48 @@ vitals/services/proactive/
 ├── brief/             # context, preparation, rendering, persistence and jobs
 └── delivery/          # contracts, policy, preparation, dispatch, reconciliation
 
+vitals/services/charts/
+├── configuration.py   # subject-scoped saved charts and cache
+└── data.py            # catalog and render-ready metric series
+
+vitals/services/profile/ / preferences/
+├── health.py          # subject-owned body facts, goals and timezone projection
+└── language.py        # user-owned language and cache
+
+vitals/services/modules/
+├── registry.py        # pure module manifest and safe defaults
+├── navigation.py      # pure rail/mobile navigation projections
+└── preferences.py     # subject-scoped enablement and cache
+
+vitals/services/dashboard/
+├── today.py           # Today page composition
+└── nav_status.py      # fail-safe navigation status projection
+
+vitals/services/settings/
+├── contracts.py       # allowlisted scopes, keys and validation errors
+├── legacy.py          # exact-one-subject compatibility policy
+└── scoped_store.py    # caller-committed scoped reads and writes
+
 vitals/services/alerts/ / ai_gateway/
 └── typed lifecycle and paid-provider workflow boundaries
+
+vitals/services/{identity,authorization,tenancy,platform}/
+├── identity/              # normalization, credentials, roles and governance
+├── authorization/         # installation and subject-access decisions
+├── tenancy/              # bootstrap and the explicit legacy ownership bridge
+└── platform/             # platform-admin and installation AI control
+
+vitals/services/{files,data_lake,external_api}/
+├── files/                 # private asset lifecycle, queries and upload references
+├── data_lake/             # raw-first contracts, persistence and reparse sweep
+└── external_api/          # hashed capability-token lifecycle
+
+vitals/services/{charts,dashboard,profile,preferences,modules,settings}/
+├── charts/                # chart configuration and subject-scoped series data
+├── dashboard/             # Today projection and navigation status
+├── profile/ / preferences/# health profile and locale preferences
+├── modules/               # registry, navigation and per-subject visibility
+└── settings/              # scoped storage primitive
 
 vitals/services/share/ / support_access/
 └── ownership, policy, projections, lifecycle and boundary-owned jobs
@@ -187,9 +227,23 @@ removed rather than kept as permanent forwarding shims: internal imports are
 updated in the same commit, which prevents the obsolete structure from becoming
 a second supported API. Pure computation lives in `vitals/analytics/`, and
 persistence primitives live in `vitals/persistence/`; neither is an application
-service. The architecture ratchets cap the remaining flat root at 21 focused
-modules (each at most 800 lines) and every application-service leaf at 1,300
-lines, so a bounded directory cannot quietly become a renamed monolith.
+service. The tracked service root now contains only its package marker: every
+application-service module has an owning bounded context. Architecture ratchets
+reject both a new root module and any import of the 21 retired paths, while every
+application-service leaf is capped at 1,300 lines so a bounded directory cannot
+quietly become a renamed monolith.
+
+Compatibility responsibilities remain deliberately visible inside their owners,
+not as root-level facades. `tenancy.ownership` resolves the historical
+single-owner/system call shape without mutating identity state; callers retire
+it by supplying explicit subject, actor, and provider roots. `settings.legacy`
+maintains reviewed singleton keys only while exactly one active owner makes
+those keys unambiguous. The `alerts.legacy_subject` aggregate is valid only
+while registration is disabled and fully unowned historical alerts can still
+exist; the scoped alert lifecycle is its replacement. `identity.bootstrap`
+similarly isolates the environment-backed owner cutover. Their names,
+fail-closed checks, and removal conditions make transitional cost inspectable
+instead of turning it into a permanent API.
 At the web boundary, signed credentials are likewise independent from request
 dependencies, rate limiting, templates, and domain services. OIDC verification
 stays in the core provider adapter; `authentication.federation` decides whether
@@ -253,7 +307,7 @@ page needs the same edit:
 | migration count | `migrations/versions/` | 84, head `0084` |
 | RLS table count | table coverage from revisions `0050` through `0079`, plus the `0083` worker-capability policy rewrite, asserted in `tests/test_row_level_security.py` | 71 |
 | platform-scope functions | the permitted list in `tests/test_row_level_security.py` | 9 |
-| routers, tracked application-service modules | tracked non-`__init__` files in `web/routers/`, `vitals/services/` | 37 and 232 |
+| routers, tracked application-service modules | tracked non-`__init__` files in `web/routers/`, `vitals/services/` | 37 and 246 |
 
 The **39 columns** the timeline attributes to revision `0049` is deliberately
 *not* in that table: it is the length of that revision's own

@@ -531,9 +531,10 @@ async def _lab_upload(
     )
     from vitals.models.ai import AIInvocation
     from vitals.utils.timeutils import now_local
-    from vitals.services import file_asset_service, raw_payload_service
+    from vitals.services.files import lifecycle as file_lifecycle
+    from vitals.services.data_lake import raw_payloads
 
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=owner_write.subject_id,
         uploaded_by_user_id=owner_write.identity.actor_user_id,
@@ -543,7 +544,7 @@ async def _lab_upload(
         size_bytes=19,
         content_sha256="d" * 64,
     )
-    raw = await raw_payload_service.upsert_owned_raw_payload(
+    raw = await raw_payloads.upsert_owned_raw_payload(
         db_session,
         identity=owner_write.identity,
         file_asset_id=asset.id,

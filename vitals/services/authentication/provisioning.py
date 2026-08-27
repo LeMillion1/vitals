@@ -36,13 +36,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import UserRoleName, UserStatus
 from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.models.scoped_settings import SubjectSetting
-from vitals.services.identity_bootstrap import validate_timezone
-from vitals.services.identity_service import (
-    IdentityValidationError,
-    acquire_identity_governance_lock,
-    normalize_email,
-    normalize_username,
-)
+from vitals.services.identity.bootstrap import validate_timezone
+from vitals.services.identity.contracts import IdentityValidationError
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.identity.normalization import normalize_email, normalize_username
 from vitals.utils.timeutils import DEFAULT_TIMEZONE
 
 
@@ -351,15 +348,16 @@ async def _materialize_subject_roots(
     a copy of that default with an earlier timestamp.
     """
 
-    from vitals.services import modules_service
-    from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+    from vitals.services.modules import preferences as module_preferences
+    from vitals.services.modules.registry import MODULE_REGISTRY
+    from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
 
     await bootstrap_legacy_resource_roots(session, subject_id=subject_id)
     session.add(
         SubjectSetting(
             subject_id=subject_id,
-            key=modules_service.SETTINGS_KEY,
-            value={key: True for key in modules_service.MODULE_REGISTRY},
+            key=module_preferences.SETTINGS_KEY,
+            value={key: True for key in MODULE_REGISTRY},
         )
     )
     await session.flush()

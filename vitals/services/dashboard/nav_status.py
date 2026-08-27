@@ -26,7 +26,7 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.i18n import decimal, plural, t
-from vitals.services.modules_service import CORE_KEYS
+from vitals.services.modules.registry import CORE_KEYS
 from vitals.utils.timeutils import today_local
 
 logger = logging.getLogger(__name__)
@@ -180,3 +180,6 @@ async def rail_stats(
         if row is not None:
             rows.append(row)
     return rows
+
+
+__all__ = ["StatRow", "rail_stats"]

@@ -8,7 +8,7 @@ import pytest
 from vitals.enums import UserRoleName, UserStatus
 from vitals.models.app_settings import AppSetting
 from vitals.models.identity import User, UserRole
-from vitals.services import language_service
+from vitals.services.preferences import language as language_service
 from web.auth import create_session
 from web.config import SESSION_COOKIE
 

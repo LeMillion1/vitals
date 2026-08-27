@@ -24,7 +24,7 @@ async def digest_job(
     """Generate one idempotent platform-funded weekly digest."""
     del redis
     from vitals.i18n import current_lang
-    from vitals.services.language_service import get_language
+    from vitals.services.preferences.language import get_language
 
     try:
         async with session_factory() as session:

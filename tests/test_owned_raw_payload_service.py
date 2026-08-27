@@ -20,14 +20,16 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import raw_payload_service
-from vitals.services.raw_payload_service import (
+from vitals.services.data_lake import raw_payloads
+from vitals.services.data_lake.contracts import (
     RawPayloadAmbiguityError,
     RawPayloadConflictError,
     RawPayloadReferenceLifecycleError,
     RawPayloadReferenceNotFoundError,
     RawPayloadReferenceOwnershipError,
     RawPayloadValidationError,
+)
+from vitals.services.data_lake.raw_payloads import (
     upsert_owned_raw_payload,
 )
 from vitals.utils.timeutils import now_local
@@ -249,7 +251,7 @@ async def test_refresh_is_idempotent_and_preserves_historical_actor(
     row.processed_at = now_local() - timedelta(hours=1)
     await db_session.flush()
     refreshed_at = now_local() + timedelta(minutes=1)
-    monkeypatch.setattr(raw_payload_service, "now_local", lambda: refreshed_at)
+    monkeypatch.setattr(raw_payloads, "now_local", lambda: refreshed_at)
 
     refreshed = await upsert_owned_raw_payload(
         db_session,
@@ -781,5 +783,3 @@ async def test_owned_upsert_flushes_but_rollback_removes_the_row(db_session):
 
     assert await db_session.get(HealthSubject, subject_id) is not None
     assert await _raw_count(db_session) == 0
-
-

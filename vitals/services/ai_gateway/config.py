@@ -32,8 +32,8 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.platform_admin_service import (
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.platform.authorization import (
     PreparedPlatformAdmin,
     require_prepared_platform_admin,
 )

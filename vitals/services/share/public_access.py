@@ -21,7 +21,7 @@ from vitals.persistence.rls import (
     bound_subject,
     in_platform_scope,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.services.share.ownership import (
     POSTGRES_PUBLIC_AUTHORIZATION_ROUTINE,
     _PublicReportOwnershipError,
@@ -54,10 +54,8 @@ async def _public_subject_owner(
             raise _PublicReportOwnershipError(
                 "public report has partial legacy ownership roots"
             )
-        from vitals.services.legacy_ownership import (
-            LegacyOwnershipError,
-            resolve_legacy_ownership_context,
-        )
+        from vitals.services.tenancy.contracts import LegacyOwnershipError
+        from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 
         try:
             ownership = await resolve_legacy_ownership_context(

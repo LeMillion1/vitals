@@ -44,7 +44,7 @@ from vitals.operations.ownership.hrt_child import (
 from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_PHASE,
 )
-from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+from vitals.services.identity.bootstrap import bootstrap_legacy_owner
 from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_BACKFILL_PHASE,
 )
@@ -60,7 +60,7 @@ from vitals.operations.ownership.raw import (
 from vitals.operations.ownership.shared_report import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_PHASE,
 )
-from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
 from vitals.operations.ownership.weight_log import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_PHASE,
 )

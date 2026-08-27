@@ -44,7 +44,7 @@ from vitals.models.hrt import (
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )

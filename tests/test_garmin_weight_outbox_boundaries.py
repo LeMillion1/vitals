@@ -37,7 +37,7 @@ from vitals.services.garmin_weight import outbox as garmin_weight_outbox
 from vitals.services.garmin_weight import settings as garmin_weight_settings
 from vitals.services.conflicts import engine
 from vitals.services.garmin import alerts as garmin_alerts
-from vitals.services.scoped_settings_service import ScopedSettingKey
+from vitals.services.settings.contracts import ScopedSettingKey
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped

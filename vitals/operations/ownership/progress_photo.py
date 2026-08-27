@@ -39,7 +39,7 @@ from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset
 from vitals.models.weight import ProgressPhoto
-from vitals.services import file_asset_service
+from vitals.services.files import lifecycle as file_lifecycle
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
@@ -52,7 +52,7 @@ from vitals.operations.ownership.hrt_child import (
 from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
@@ -1466,7 +1466,7 @@ async def _retire_linked_assets_bounded(
         for raw in rows:
             row = _row_values(raw)
             if row.file_asset_id is not None:
-                await file_asset_service.mark_legacy_local_deleted(
+                await file_lifecycle.mark_legacy_local_deleted(
                     session,
                     file_asset_id=row.file_asset_id,
                     subject_id=scope.subject_id,

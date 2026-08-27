@@ -229,7 +229,7 @@ the same 88 live tables as `OWNERSHIP_REGISTRY`.
 
 ### Raw-first ingestion
 
-`vitals/services/raw_payload_service.py` treats
+`vitals/services/data_lake/raw_payloads.py` treats
 `(domain, source, external_id)` as an upsert key, but `raw_payloads` currently has
 only a non-unique index. Pending sweeps are global by domain. PR-03 must establish
 S/C before normalization, use the scoped key, and prevent normalized/raw subject

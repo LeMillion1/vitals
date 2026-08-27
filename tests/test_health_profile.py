@@ -22,7 +22,7 @@ import pytest
 
 from vitals.enums import UserStatus
 from vitals.models.identity import HealthSubject, User
-from vitals.services import health_profile_service
+from vitals.services.profile import health as health_profile_service
 
 
 @pytest.fixture

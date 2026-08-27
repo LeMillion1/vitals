@@ -25,7 +25,7 @@ from sqlalchemy.pool import NullPool
 
 import vitals.models  # noqa: F401 -- register the complete metadata graph
 from vitals.models.base import Base
-from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+from vitals.services.identity.bootstrap import bootstrap_legacy_owner
 from vitals.ownership import (
     OWNERSHIP_REGISTRY,
     PRE_OWNERSHIP_CONTRACT_REVISION,

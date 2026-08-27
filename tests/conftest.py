@@ -333,7 +333,8 @@ async def all_modules_on(db_session, legacy_owner_roots):
     from vitals.models.app_settings import AppSetting
     from vitals.models.identity import HealthSubject
     from vitals.models.scoped_settings import SubjectSetting
-    from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY
+    from vitals.services.modules.preferences import SETTINGS_KEY
+    from vitals.services.modules.registry import MODULE_REGISTRY
     from sqlalchemy import select
 
     enabled = {key: True for key in MODULE_REGISTRY}
@@ -373,8 +374,9 @@ async def client(db_session, redis):
     from vitals.models.app_settings import AppSetting
     from vitals.models.identity import HealthSubject
     from vitals.models.scoped_settings import SubjectSetting
-    from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY
-    from vitals.services.language_service import SETTINGS_KEY as LANG_SETTINGS_KEY
+    from vitals.services.modules.preferences import SETTINGS_KEY
+    from vitals.services.modules.registry import MODULE_REGISTRY
+    from vitals.services.preferences.language import SETTINGS_KEY as LANG_SETTINGS_KEY
     from sqlalchemy import select
 
     # merge(), not add(): another fixture may already have written these rows
@@ -441,8 +443,8 @@ async def legacy_owner_roots(db_session):
     # before serving requests or jobs, so focused tests that cross one of those
     # boundaries opt into the same invariant explicitly.
     from vitals.config import load_config
-    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
-    from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+    from vitals.services.identity.bootstrap import bootstrap_legacy_owner
+    from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
     from web.config import get_web_config
 
     web_config = get_web_config()
@@ -459,12 +461,9 @@ async def legacy_owner_roots(db_session):
         # say that ``.env``'s Garmin and Hevy values describe this record.
         adopt_environment_credentials=True,
     )
-    from vitals.services import modules_service
-    from vitals.services.scoped_settings_service import (
-        ScopedSettingKey,
-        SettingScope,
-        set_scoped_setting,
-    )
+    from vitals.services.modules import preferences as modules_service
+    from vitals.services.settings.contracts import ScopedSettingKey, SettingScope
+    from vitals.services.settings.scoped_store import set_scoped_setting
 
     enabled_modules = await modules_service.get_enabled_modules(
         db_session,
@@ -488,7 +487,7 @@ async def legacy_owner_roots(db_session):
         db_session,
         scope=preference_scope,
     )
-    from vitals.services import health_profile_service
+    from vitals.services.profile import health as health_profile_service
 
     # The same adoption startup performs: the ``.env`` profile is this owner's
     # while they are the only subject, and every other subject starts empty.

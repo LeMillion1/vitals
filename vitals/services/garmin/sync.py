@@ -38,7 +38,7 @@ from vitals.services.garmin.ownership import (
     _require_legacy_adoption_subject,
     _row_scope_is_compatible,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.services.weight import governance as weight_governance
 from vitals.utils.timeutils import now_local
 

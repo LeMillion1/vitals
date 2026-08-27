@@ -660,7 +660,7 @@ async def test_a_verified_profile_reaches_nobodys_record(db_session):
         is_allowed,
     )
     from vitals.models.identity import HealthSubject
-    from vitals.services.access_resolution import resolve_access_context
+    from vitals.services.authorization.subject_access import resolve_access_context
 
     doctor = await _user(db_session, "prof-stranger", roles=(UserRoleName.DOCTOR,))
     operator = await _operator(db_session, "prof-stranger-op")

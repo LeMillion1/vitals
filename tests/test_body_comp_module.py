@@ -3,7 +3,7 @@ that defaults off and behaves as if absent when disabled (data is hidden, not
 deleted; that 'kept in DB' guarantee is covered by the service/delete tests)."""
 from __future__ import annotations
 
-from vitals.services import modules_service
+from vitals.services.modules import preferences as modules_service
 
 
 def test_body_comp_registered_as_optional():

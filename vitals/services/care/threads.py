@@ -62,7 +62,7 @@ from vitals.models.care_thread import (
 from vitals.models.identity import HealthSubject, UserRole
 from vitals.models.tenancy import FileAsset
 from vitals.models.professional import CareRelationship, ProfessionalProfile
-from vitals.services import file_asset_service
+from vitals.services.files import lifecycle as file_lifecycle
 from vitals.services.notifications import care_push_outbox
 
 #: The operation key a consent carries for this feature. It matches what
@@ -397,7 +397,7 @@ async def open_relationship_thread(
 
     # The professional must still have the exact live consent, role, profile,
     # and message scopes. A participant row cannot resurrect withdrawn access.
-    from vitals.services.access_resolution import resolve_access_context
+    from vitals.services.authorization.subject_access import resolve_access_context
 
     professional_context = await resolve_access_context(
         session,
@@ -685,7 +685,7 @@ async def attach_file(
     )
     await _live_relationship_or_none(session, context=context)
 
-    asset = await file_asset_service.register_private_local(
+    asset = await file_lifecycle.register_private_local(
         session,
         subject_id=context.subject_id,
         uploaded_by_user_id=context.principal.user_id,

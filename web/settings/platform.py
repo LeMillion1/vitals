@@ -17,10 +17,8 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services import (
-    platform_admin_service,
-    platform_ai_control_service,
-)
+from vitals.services.platform import ai_control as platform_ai_control
+from vitals.services.platform import authorization as platform_authorization
 from web.deps import get_session, require_auth, require_recent_auth
 from web.services.env_writer import read_key, write_keys
 from web.settings.forms import is_secret_sentinel
@@ -165,13 +163,13 @@ async def _prepare_platform_admin_or_403(
     db: AsyncSession,
     *,
     username: str,
-) -> platform_admin_service.PreparedPlatformAdmin:
+) -> platform_authorization.PreparedPlatformAdmin:
     try:
-        return await platform_admin_service.prepare_platform_admin(
+        return await platform_authorization.prepare_platform_admin(
             db,
             actor_username=username,
         )
-    except platform_admin_service.PlatformAdminAuthorizationError as exc:
+    except platform_authorization.PlatformAdminAuthorizationError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Platform administrator access required",
@@ -210,7 +208,7 @@ async def platform_ai_page(
     error: Optional[str] = None,
 ):
     prepared_admin = await _prepare_platform_admin_or_403(db, username=username)
-    snapshot = await platform_ai_control_service.get_platform_ai_control_snapshot(
+    snapshot = await platform_ai_control.get_platform_ai_control_snapshot(
         db,
         prepared=prepared_admin,
     )
@@ -306,7 +304,7 @@ async def save_ai(
             changed_fields.add(field_names[key])
 
     try:
-        transition = await platform_ai_control_service.apply_gateway_configuration(
+        transition = await platform_ai_control.apply_gateway_configuration(
             db,
             prepared=prepared_admin,
             configuration_changed=bool(changed_fields),
@@ -317,13 +315,13 @@ async def save_ai(
         if (
             updates
             or transition.action
-            is not platform_ai_control_service.GatewayTransitionAction.NO_CHANGE
+            is not platform_ai_control.GatewayTransitionAction.NO_CHANGE
         ):
             await _commit_ai_control_change(db, updates=updates)
     except (
         ValueError,
-        platform_ai_control_service.PlatformAIControlError,
-        platform_admin_service.PlatformAdminValidationError,
+        platform_ai_control.PlatformAIControlError,
+        platform_authorization.PlatformAdminValidationError,
     ):
         await db.rollback()
         return _platform_ai_redirect(error="configuration_invalid")
@@ -349,7 +347,7 @@ async def enable_platform_ai(
             _effective_ai_value("VITALS_LLM_MODEL_BRIEF"),
             allow_empty=True,
         )
-        transition = await platform_ai_control_service.apply_gateway_configuration(
+        transition = await platform_ai_control.apply_gateway_configuration(
             db,
             prepared=prepared_admin,
             configuration_changed=False,
@@ -358,10 +356,10 @@ async def enable_platform_ai(
         )
         if (
             transition.action
-            is not platform_ai_control_service.GatewayTransitionAction.NO_CHANGE
+            is not platform_ai_control.GatewayTransitionAction.NO_CHANGE
         ):
             await db.commit()
-    except (ValueError, platform_ai_control_service.PlatformAIControlError):
+    except (ValueError, platform_ai_control.PlatformAIControlError):
         await db.rollback()
         error = (
             "credential_missing"
@@ -379,7 +377,7 @@ async def disable_platform_ai(
 ):
     prepared_admin = await _prepare_platform_admin_or_403(db, username=username)
     try:
-        transition = await platform_ai_control_service.apply_gateway_configuration(
+        transition = await platform_ai_control.apply_gateway_configuration(
             db,
             prepared=prepared_admin,
             configuration_changed=False,
@@ -390,10 +388,10 @@ async def disable_platform_ai(
         )
         if (
             transition.action
-            is not platform_ai_control_service.GatewayTransitionAction.NO_CHANGE
+            is not platform_ai_control.GatewayTransitionAction.NO_CHANGE
         ):
             await db.commit()
-    except platform_ai_control_service.PlatformAIControlError:
+    except platform_ai_control.PlatformAIControlError:
         await db.rollback()
         return _platform_ai_redirect(error="gateway_invalid")
     return _platform_ai_redirect(saved="disabled")
@@ -414,7 +412,7 @@ async def configure_platform_ai_quota(
     prepared_admin = await _prepare_platform_admin_or_403(db, username=username)
     try:
         parsed_subject_id = uuid.UUID(subject_id)
-        result = await platform_ai_control_service.configure_aligned_quota_period(
+        result = await platform_ai_control.configure_aligned_quota_period(
             db,
             prepared=prepared_admin,
             subject_id=parsed_subject_id,
@@ -430,7 +428,7 @@ async def configure_platform_ai_quota(
     except (
         TypeError,
         ValueError,
-        platform_ai_control_service.PlatformAIControlError,
+        platform_ai_control.PlatformAIControlError,
         ai_gateway_service_contracts.AIGatewayError,
     ):
         await db.rollback()
@@ -482,7 +480,7 @@ async def save_mcp(
     revoked_connectors = 0
     if "client_id" in changed_fields:
         revoked_connectors = await mcp_tokens.revoke_all_live(db)
-    await platform_admin_service.record_mcp_configuration_change(
+    await platform_authorization.record_mcp_configuration_change(
         db,
         prepared=prepared_admin,
         changed_fields=changed_fields,

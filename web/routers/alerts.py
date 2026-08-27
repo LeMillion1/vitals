@@ -6,8 +6,8 @@ from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, IntegrationProvider
-from vitals.services import legacy_subject_alerts
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.alerts import legacy_subject as legacy_subject_alerts
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from web.deps import get_session, require_auth
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])

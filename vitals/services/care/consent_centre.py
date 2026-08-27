@@ -29,8 +29,8 @@ from vitals.models.professional import (
     ProfessionalInvitation,
     ProfessionalProfile,
 )
-from vitals.services import modules_service
-from vitals.services.access_resolution import AccessContext
+from vitals.services.modules import preferences as modules_service
+from vitals.services.authorization.subject_access import AccessContext
 from vitals.services.care import record_projection, records, relationships
 
 

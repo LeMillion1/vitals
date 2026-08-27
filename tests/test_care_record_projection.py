@@ -35,7 +35,7 @@ from vitals.models.labs import LabResult
 from vitals.models.nutrition import MealLog
 from vitals.models.raw_payload import RawPayload
 from vitals.models.weight import WeightLog
-from vitals.services import modules_service
+from vitals.services.modules import preferences as modules_service
 from vitals.services.care import record_projection
 import vitals.services.labs.results as lab_results
 from vitals.services import weight as weight_domain

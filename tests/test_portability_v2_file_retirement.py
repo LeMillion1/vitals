@@ -14,7 +14,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset
 from vitals.persistence import file_storage
-from vitals.services import file_asset_service
+from vitals.services.files import lifecycle as file_lifecycle
 from vitals.services.portability.file_retirement import (
     FileRetirementError,
     prepare_old_file_retirement,
@@ -53,7 +53,7 @@ async def _private_asset(
 ) -> tuple[FileAsset, str]:
     storage_ref = f"labs/{suffix[:2]}/{suffix}.pdf"
     path = file_storage.write_private_file(private_root, storage_ref, _BODY)
-    asset = await file_asset_service.register_private_local(
+    asset = await file_lifecycle.register_private_local(
         db_session,
         subject_id=roots.subject_id,
         uploaded_by_user_id=roots.user_id,

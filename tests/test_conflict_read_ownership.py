@@ -29,7 +29,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.skincare import SkincareLog
 from vitals.models.supplements import Supplement
 from vitals.services.conflicts import activation, catalog, engine, registrations
-from vitals.services.legacy_ownership import (
+from vitals.services.tenancy.contracts import (
     LegacyOwnerResolutionError,
     LegacySubjectResolutionError,
 )
@@ -1275,7 +1275,7 @@ async def test_mcp_missing_resolver_returns_explicit_fail_closed_error(
 
 @pytest.mark.integration
 async def test_postgres_exact_one_bridge_serializes_subject_creation(db_session):
-    from vitals.services.identity_service import acquire_identity_governance_lock
+    from vitals.services.identity.governance import acquire_identity_governance_lock
 
     subject_a, _ = await _add_subject(db_session, label="subject-a")
     db_session.add(
@@ -1364,7 +1364,7 @@ async def test_postgres_mcp_conflict_read_serializes_owner_suspension(
     monkeypatch,
     legacy_owner_roots,
 ):
-    from vitals.services.identity_service import assign_role, change_user_status
+    from vitals.services.identity.roles import assign_role, change_user_status
 
     mcp_router = pytest.importorskip("web.routers.mcp")
     backup_admin = User(

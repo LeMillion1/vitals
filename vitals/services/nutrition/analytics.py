@@ -9,7 +9,7 @@ from typing import Any, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.nutrition import MealLog
-from vitals.services import health_profile_service
+from vitals.services.profile import health as health_profile_service
 from vitals.services.nutrition.queries import list_meals, list_meals_for_date
 
 _KCAL_PER_G = {"protein_g": 4.0, "fat_g": 9.0, "carbs_g": 4.0}

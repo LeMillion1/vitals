@@ -3,6 +3,11 @@
 This bootstrap records ownership boundaries only.  It deliberately does not
 read environment configuration, resolve credentials, inspect files, construct a
 provider client, or perform network I/O.  The caller owns commit or rollback.
+
+This legacy bootstrap remains required while startup adopts pre-tenancy Garmin,
+Hevy, OpenRouter, and Telegram roots. It may be removed only when migrations or
+operator workflows create every supported connection root and startup no longer
+calls :func:`bootstrap_legacy_resource_roots`.
 """
 from __future__ import annotations
 
@@ -22,7 +27,7 @@ from vitals.enums import (
 )
 from vitals.models.identity import AuditEvent, HealthSubject
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 LEGACY_ACCOUNT_DISCRIMINATOR = "legacy_singleton_v1"
 

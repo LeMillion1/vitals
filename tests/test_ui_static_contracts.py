@@ -12,14 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from vitals.services.modules_service import (
-    MODULE_REGISTRY,
-    NAV_RUBRICS,
-    OPTIONAL_KEYS,
+from vitals.services.modules.navigation import (
     bottom_slots,
     more_rubrics,
     nav_modules,
 )
+from vitals.services.modules.registry import MODULE_REGISTRY, NAV_RUBRICS, OPTIONAL_KEYS
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "web/static"

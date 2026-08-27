@@ -32,8 +32,8 @@ async def bootstrap(
 
     from vitals.services.conflicts import catalog as conflict_catalog
     from vitals.services.hrt import catalog
-    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
-    from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+    from vitals.services.identity.bootstrap import bootstrap_legacy_owner
+    from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
 
     identity = await bootstrap_legacy_owner(
         session,

@@ -11,11 +11,11 @@ from vitals.models.glp1 import Injection, SideEffect
 from vitals.models.nutrition import MealLog
 from vitals.models.weight import WeightLog
 import vitals.services.labs.results as lab_results
-from vitals.services import chart_data_service
+from vitals.services.charts import data as chart_data_service
 from vitals.services.body_scan.scans import ingestion as body_scan_ingestion
 from vitals.services.hevy import queries as hevy_queries
 from vitals.services.hevy import sync as hevy_sync
-from vitals.services.modules_service import MODULE_REGISTRY
+from vitals.services.modules.registry import MODULE_REGISTRY
 
 
 DAY1 = date(2026, 6, 1)

@@ -27,7 +27,7 @@ from vitals.services.hevy import jobs as hevy_jobs
 from vitals.services.hevy import ownership as hevy_ownership
 from vitals.services.hevy import raw_payloads as hevy_raw_payloads
 from vitals.services.hevy import sync as hevy_sync
-from vitals.services.legacy_ownership import LegacySubjectResolutionError
+from vitals.services.tenancy.contracts import LegacySubjectResolutionError
 
 from tests.conftest import legacy_unenforced_write
 

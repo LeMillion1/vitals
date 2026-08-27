@@ -32,7 +32,9 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import ProgressPhoto, WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.persistence.file_storage import private_file_disk_path
-from vitals.services import file_asset_service, raw_payload_service, weight as weight_domain
+from vitals.services import weight as weight_domain
+from vitals.services.files import lifecycle as file_lifecycle
+from vitals.services.data_lake import raw_payloads
 from vitals.services.ai_gateway import invocations as ai_gateway_invocations
 from vitals.services.labs import alerts as labs_alerts
 from vitals.services.labs import ai as lab_document_ai_service
@@ -43,7 +45,7 @@ from vitals.services.body_scan.scans import ingestion as body_scan_ingestion
 from vitals.services.body_scan.scans import normalization as body_scan_normalization
 from vitals.services.body_scan.scans import queries as body_scan_queries
 from vitals.services.body_scan.scans import reparse as body_scan_reparse
-from vitals.services.upload_ownership_service import UploadOwnershipError
+from vitals.services.files.upload_references import UploadOwnershipError
 from web.templating import STATIC_DIR
 from web.routers.labs import LabConfirm
 from web.routers.weight import BodyScanConfirm
@@ -107,7 +109,7 @@ async def _owned_document(
         session.add(connection)
         await session.flush()
         connection_id = connection.id
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         session,
         subject_id=subject.id,
         uploaded_by_user_id=user.id,
@@ -117,7 +119,7 @@ async def _owned_document(
         size_bytes=8,
         content_sha256="a" * 64,
     )
-    raw = await raw_payload_service.upsert_owned_raw_payload(
+    raw = await raw_payloads.upsert_owned_raw_payload(
         session,
         identity=identity,
         integration_connection_id=connection_id,
@@ -327,14 +329,14 @@ async def test_progress_photo_reads_and_deletes_are_strictly_subject_scoped(
     foreign, foreign_subject, foreign_identity = await _identity_graph(
         db_session, "photo-foreign"
     )
-    owner_asset = await file_asset_service.register_legacy_local(
+    owner_asset = await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=owner_subject.id,
         uploaded_by_user_id=owner.id,
         purpose=FileAssetPurpose.PROGRESS_PHOTO,
         storage_ref="uploads/owner.png",
     )
-    foreign_asset = await file_asset_service.register_legacy_local(
+    foreign_asset = await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=foreign_subject.id,
         uploaded_by_user_id=foreign.id,

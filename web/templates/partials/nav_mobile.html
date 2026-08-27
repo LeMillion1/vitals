@@ -1,7 +1,7 @@
 {# Phone navigation — the bottom bar.
 
    Five columns, always: "Today", three slots from `bottom_slots()`
-   (vitals/services/modules_service.py) and "More". The grid used to be sized
+   (vitals/services/modules/registry.py) and "More". The grid used to be sized
    from the number of enabled modules — `repeat({{ bottom|length + 2 }}, …)` —
    so every module toggle shifted every icon and clipped the captions. A slot is
    a rubric (or the one module that earns its own column); the sections inside it

@@ -7,7 +7,7 @@ from typing import Any, Optional, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services import health_profile_service
+from vitals.services.profile import health as health_profile_service
 from vitals.services.digest.window import ReportWindow, _period_name
 
 

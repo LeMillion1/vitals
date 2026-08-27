@@ -19,7 +19,7 @@ from vitals.models.ai import AIInvocation
 from vitals.models.body_scan import DOMAIN, BodyScan
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
-from vitals.services import raw_payload_service
+from vitals.services.data_lake import sweep as raw_sweep
 from vitals.services.conflicts import engine
 from vitals.services.weight import governance as weight_governance
 from vitals.utils.timeutils import now_local, today_local
@@ -39,8 +39,8 @@ async def reparse_owned_pending(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
-    limit: int = raw_payload_service.REPARSE_BATCH,
-    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+    limit: int = raw_sweep.REPARSE_BATCH,
+    since_days: int = raw_sweep.REPARSE_WINDOW_DAYS,
 ) -> int:
     """Replay pending upload raws in isolated per-raw savepoints."""
 

@@ -11,7 +11,7 @@ from vitals.enums import UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.models.share import SharedReport
 from vitals.ownership import WriteIdentity
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ async def prepare_legacy_owner(
     actor_username: str,
 ) -> PreparedShareOwner:
     """Lock and authenticate the exact-one legacy owner for one transaction."""
-    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+    from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 
     await acquire_identity_governance_lock(session)
     ownership = await resolve_legacy_ownership_context(

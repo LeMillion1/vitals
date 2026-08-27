@@ -1,5 +1,10 @@
 """Aggregate subject-visible alerts for the registration-disabled owner bridge.
 
+This leaf stays only while the HTTP and MCP alert surfaces still compose the
+legacy provider-specific alert stores. It may be removed only after those surfaces
+consume the scoped alerts lifecycle directly and parity tests prove equivalent
+deduplication, override, resolve, and resolve-all behavior.
+
 This module is a compatibility boundary, not a second alert implementation. It
 validates one authoritative :class:`LegacyOwnershipContext`, expands it to the
 health scope plus every current and retired provider connection for the same
@@ -33,8 +38,8 @@ from vitals.services.alerts.contracts import (
     LegacyAlertBridge,
     ProviderAlertContext,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.legacy_ownership import LegacyOwnershipContext
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.tenancy.contracts import LegacyOwnershipContext
 
 
 class LegacySubjectAlertsError(Exception):

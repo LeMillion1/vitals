@@ -19,14 +19,14 @@ from vitals.models.garmin import (
     SERIES_STRESS,
     SLEEP_SERIES_TYPES,
 )
-from vitals.services import legacy_subject_alerts
+from vitals.services.alerts import legacy_subject as legacy_subject_alerts
 from vitals.services.credentials import providers
 from vitals.services.garmin import advice as garmin_advice
 from vitals.services.garmin import ingestion as garmin_ingestion
 from vitals.services.garmin import queries as garmin_queries
 from vitals.services.garmin import sync as garmin_sync
 from vitals.services.garmin.errors import GarminConnectionInactiveError
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
 from web.templating import templates

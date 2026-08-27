@@ -49,7 +49,8 @@ from vitals.models.tenancy import (
 )
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import file_asset_service, weight as weight_domain
+from vitals.services import weight as weight_domain
+from vitals.services.files import lifecycle as file_lifecycle
 from vitals.services.conflicts import engine
 from vitals.services.body_scan.ai import contracts as body_ai_contracts
 from vitals.services.body_scan.ai import projection as body_ai_projection
@@ -57,7 +58,7 @@ from vitals.services.body_scan.ai import workflow as body_ai_workflow
 from vitals.services.body_scan.scans import normalization as scan_normalization
 from vitals.services.body_scan.scans import queries as body_scan_queries
 from vitals.services.body_scan.scans import reparse as body_scan_reparse
-from vitals.services.legacy_ownership import LegacySubjectResolutionError
+from vitals.services.tenancy.contracts import LegacySubjectResolutionError
 from web.config import get_web_config
 
 
@@ -1171,7 +1172,7 @@ async def test_retained_weight_accepts_monotonically_retired_scan_file(
     )
     assert raw.file_asset_id is not None
     await db_session.delete(scan)
-    await file_asset_service.mark_legacy_local_deleted(
+    await file_lifecycle.mark_legacy_local_deleted(
         db_session,
         file_asset_id=raw.file_asset_id,
         subject_id=legacy_owner_roots.subject_id,

@@ -37,9 +37,9 @@ from vitals.enums import (
 )
 from vitals.models.identity import HealthSubject, User
 from vitals.models.professional import ProfessionalInvitation
-from vitals.services.identity_service import (
-    IdentityValidationError,
-    acquire_identity_governance_lock,
+from vitals.services.identity.contracts import IdentityValidationError
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.identity.normalization import (
     normalize_email as normalize_identity_email,
 )
 from vitals.persistence.rls import bind_session_subject

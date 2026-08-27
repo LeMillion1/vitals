@@ -35,7 +35,7 @@ def test_canonical_names_and_aliases_are_globally_unambiguous() -> None:
 
 
 def test_module_keys_exist_without_making_system_a_user_module() -> None:
-    from vitals.services.modules_service import MODULE_REGISTRY
+    from vitals.services.modules.registry import MODULE_REGISTRY
 
     without_module = {
         spec.domain for spec in DOMAIN_TAXONOMY.values() if spec.module_key is None

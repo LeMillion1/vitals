@@ -58,9 +58,9 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import file_asset_service
-from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.files import lifecycle as file_lifecycle
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import now_utc
 
 from . import ingestion
@@ -754,9 +754,9 @@ async def prepare_lab_document_parse(
     }:
         raise LabDocumentAIValidationError("lab document storage backend is invalid")
     register = (
-        file_asset_service.register_private_local
+        file_lifecycle.register_private_local
         if normalized_backend is FileStorageBackend.PRIVATE_LOCAL
-        else file_asset_service.register_legacy_local
+        else file_lifecycle.register_legacy_local
     )
     asset = await register(
         session,

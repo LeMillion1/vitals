@@ -11,12 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
 from vitals.integrations.garmin_client import login_breaker_state
-from vitals.services import health_profile_service
+from vitals.services.profile import health as health_profile_service
 from vitals.services.garmin_weight import jobs as garmin_weight_jobs
 from vitals.services.garmin_weight import outbox as garmin_weight_outbox
 from vitals.services.authentication import legacy_two_factor as twofa_service
 from vitals.services.credentials import providers, vault
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from vitals.services.proactive.preferences import contracts as preference_contracts
 from vitals.services.proactive.preferences import queries as preference_queries
 from web.config import get_web_config
@@ -287,7 +287,7 @@ async def _external_token_rows(db: AsyncSession, *, subject_id) -> list[dict]:
     from datetime import timezone as _timezone
 
     from vitals.enums import ExternalApiTokenStatus
-    from vitals.services import external_api_token_service as external_tokens
+    from vitals.services.external_api import tokens as external_tokens
 
     now = datetime.now(_timezone.utc)
     rows = await external_tokens.list_for_subject(db, subject_id=subject_id)
@@ -323,7 +323,7 @@ async def _connector_rows(db: AsyncSession, *, actor_username: str) -> list[dict
     from datetime import timezone as _timezone
 
     from vitals.services.authentication import mcp_tokens
-    from vitals.services.identity_service import find_user_id_by_username
+    from vitals.services.identity.queries import find_user_id_by_username
 
     user_id = await find_user_id_by_username(
         db,

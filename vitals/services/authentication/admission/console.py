@@ -23,7 +23,7 @@ from vitals.services.authentication.registration import (
     effective_mode,
     get_stored_mode,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.utils.timeutils import to_local_naive
 
 CONSOLE_PAGE_SIZE = 100

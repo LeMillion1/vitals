@@ -200,17 +200,17 @@ async def get_request_chrome_scope(
         if claims is not None:
             user_id = claims.user_id
             if user_id is None:
-                from vitals.services import identity_service
+                from vitals.services.identity import queries as identity_queries
 
-                user_id = await identity_service.find_user_id_by_username(
+                user_id = await identity_queries.find_user_id_by_username(
                     session,
                     username=claims.username,
                 )
             if user_id is not None:
                 signed_in_user_id = user_id
-                from vitals.services import identity_service
+                from vitals.services.identity import queries as identity_queries
 
-                subject_id = await identity_service.owned_subject_id(
+                subject_id = await identity_queries.owned_subject_id(
                     session,
                     user_id=user_id,
                 )
@@ -244,10 +244,10 @@ async def get_request_chrome_scope(
     if signed_in_user_id is not None:
         try:
             from vitals.enums import UserRoleName
-            from vitals.services import identity_service
+            from vitals.services.identity import queries as identity_queries
             from vitals.services.care import workspace as care_workspace
 
-            request.state.is_professional = await identity_service.user_has_role(
+            request.state.is_professional = await identity_queries.user_has_role(
                 session,
                 user_id=signed_in_user_id,
                 roles=(UserRoleName.DOCTOR, UserRoleName.TRAINER),
@@ -271,9 +271,9 @@ async def get_request_chrome_scope(
     if signed_in_user_id is not None:
         try:
             from vitals.enums import UserRoleName
-            from vitals.services import identity_service
+            from vitals.services.identity import queries as identity_queries
 
-            request.state.is_platform_admin = await identity_service.user_has_role(
+            request.state.is_platform_admin = await identity_queries.user_has_role(
                 session,
                 user_id=signed_in_user_id,
                 roles=(UserRoleName.PLATFORM_SUPERADMIN,),
@@ -308,14 +308,15 @@ async def load_enabled_modules(
 
     Fail-safe: any error yields the safe defaults — the chrome must always render.
     """
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as modules_service
+    from vitals.services.modules.registry import DEFAULT_STATE
 
     try:
         # The module map is one person's; an anonymous request has no subject
         # to read it for and keeps the safe defaults.
         scope = await get_request_chrome_scope(request, db)
         if scope is None:
-            request.state.enabled_modules = dict(modules_service.DEFAULT_STATE)
+            request.state.enabled_modules = dict(DEFAULT_STATE)
             return
         request.state.enabled_modules = await modules_service.get_enabled_modules(
             db,
@@ -324,7 +325,7 @@ async def load_enabled_modules(
         )
     except Exception:
         logger.exception("module-state load failed; using safe defaults")
-        request.state.enabled_modules = dict(modules_service.DEFAULT_STATE)
+        request.state.enabled_modules = dict(DEFAULT_STATE)
 
 
 async def load_nav_status(
@@ -354,7 +355,7 @@ async def load_nav_status(
         return
     if accept and "text/html" not in accept and "*/*" not in accept:
         return
-    from vitals.services import nav_status_service
+    from vitals.services.dashboard import nav_status as nav_status_service
 
     try:
         # The card is the signed-in account's own day, so it needs their subject.
@@ -401,7 +402,7 @@ async def load_support_banner(
         if scope is None:
             return
         from vitals.services.support_access import lifecycle as support_lifecycle
-        from vitals.services.access_resolution import resolve_access_context
+        from vitals.services.authorization.subject_access import resolve_access_context
 
         context = await resolve_access_context(
             db, user_id=scope.user_id, subject_id=scope.subject_id
@@ -480,7 +481,7 @@ async def load_care_unread_count(
         scope = await get_request_chrome_scope(request, db)
         if scope is None:
             return
-        from vitals.services.access_resolution import resolve_access_context
+        from vitals.services.authorization.subject_access import resolve_access_context
         from vitals.services.care import threads
 
         context = await resolve_access_context(
@@ -506,7 +507,7 @@ async def load_language(
 
     Fail-safe: any error yields ``"en"`` — the UI must always render.
     """
-    from vitals.services import language_service
+    from vitals.services.preferences import language as language_service
 
     try:
         scope = await get_request_chrome_scope(request, db)
@@ -545,7 +546,7 @@ async def load_subject_timezone(
         scope = await get_request_chrome_scope(request, db)
         if scope is None:
             return
-        from vitals.services import health_profile_service
+        from vitals.services.profile import health as health_profile_service
 
         zone = await health_profile_service.get_subject_timezone(
             db,

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Source
 from vitals.models.hevy import DOMAIN
 from vitals.ownership import WriteIdentity
-from vitals.services import raw_payload_service
+from vitals.services.data_lake import raw_payloads
 from vitals.services.hevy.normalization import _parse_dt
 from vitals.services.hevy.ownership import (
     _adopt_owned_workout_children,
@@ -67,7 +67,7 @@ async def ingest_owned_workouts(
             if workout is not None
             else False
         )
-        raw_row = await raw_payload_service.upsert_owned_raw_payload(
+        raw_row = await raw_payloads.upsert_owned_raw_payload(
             session,
             identity=identity,
             integration_connection_id=integration_connection_id,

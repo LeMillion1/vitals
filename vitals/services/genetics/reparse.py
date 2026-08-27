@@ -12,7 +12,7 @@ from vitals.enums import Source
 from vitals.models.genetics import DOMAIN, GeneticVariant
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
-from vitals.services import raw_payload_service
+from vitals.services.data_lake import sweep as raw_sweep
 from vitals.services.conflicts import engine
 from vitals.utils.timeutils import now_local
 
@@ -43,8 +43,8 @@ async def reparse_owned_pending(
     *,
     identity: WriteIdentity,
     prepared_conflict_write: engine.PreparedConflictWrite,
-    limit: int = raw_payload_service.REPARSE_BATCH,
-    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+    limit: int = raw_sweep.REPARSE_BATCH,
+    since_days: int = raw_sweep.REPARSE_WINDOW_DAYS,
 ) -> int:
     """Replay pending VCF raws, including partially normalized batches.
 

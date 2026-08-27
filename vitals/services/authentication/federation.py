@@ -39,12 +39,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import AuditOutcome, UserStatus
 from vitals.models.identity import AuditEvent, User, UserFederatedIdentity
-from vitals.services.identity_service import (
-    IdentityValidationError,
-    acquire_identity_governance_lock,
-    normalize_email,
-    normalize_username,
-)
+from vitals.services.identity.contracts import IdentityValidationError
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.identity.normalization import normalize_email, normalize_username
 from vitals.utils.timeutils import now_utc
 
 if TYPE_CHECKING:

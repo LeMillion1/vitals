@@ -16,8 +16,8 @@ from vitals.enums import (
 from vitals.models.identity import HealthSubject, User
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services.identity_service import normalize_username
-from vitals.services.legacy_ownership import (
+from vitals.services.identity.normalization import normalize_username
+from vitals.services.tenancy.contracts import (
     LegacyConnectionAmbiguousError,
     LegacyConnectionMissingError,
     LegacyConnectionNotResolvedError,
@@ -26,9 +26,11 @@ from vitals.services.legacy_ownership import (
     LegacyOwnershipContext,
     LegacyOwnershipValidationError,
     LegacySubjectResolutionError,
+)
+from vitals.services.tenancy.ownership import (
     resolve_legacy_ownership_context,
 )
-from vitals.services.tenancy_bootstrap import LEGACY_CONNECTION_TYPES
+from vitals.services.tenancy.bootstrap import LEGACY_CONNECTION_TYPES
 
 _EXPECTED_CONNECTION_TYPES = {
     IntegrationProvider.GARMIN: IntegrationConnectionType.ACCOUNT,

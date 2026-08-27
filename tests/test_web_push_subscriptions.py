@@ -12,7 +12,7 @@ from vitals.enums import UserStatus
 from vitals.models.identity import User
 from vitals.models.web_push import WebPushSubscription
 from vitals.services.credentials import vault
-from vitals.services.identity_service import change_user_status
+from vitals.services.identity.roles import change_user_status
 from vitals.services.notifications import web_push_subscriptions as service
 
 

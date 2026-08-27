@@ -74,7 +74,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.authentication.admission.retention import (
         maintenance_job as registration_admission_retention_job,
     )
-    from vitals.services.raw_payload_service import sweep_pending_job as raw_payload_sweep_job
+    from vitals.services.data_lake.sweep import sweep_pending_job as raw_payload_sweep_job
     from vitals.services.share.jobs import purge_job as share_purge_job
     from vitals.services.ai_gateway.jobs import (
         reconciliation_job as ai_invocation_reconciliation_job,
@@ -118,7 +118,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # quiet hour clear of every other registered job. Re-derives normalized rows
     # for anything upsert_owned_raw_payload left at processed_at IS NULL: a refreshed
     # Garmin/Hevy row, or a labs/body-comp upload the owner extracted but never
-    # confirmed. See raw_payload_service.sweep_pending_job for why this is one
+    # confirmed. See raw_sweep.sweep_pending_job for why this is one
     # shared job rather than four.
     register_job(
         "raw_payload_sweep",

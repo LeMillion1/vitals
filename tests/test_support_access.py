@@ -59,7 +59,7 @@ support = SimpleNamespace(
 )
 from vitals.services.portability import v1_contract
 from vitals.services.conflicts import engine
-from vitals.services.access_resolution import resolve_access_context
+from vitals.services.authorization.subject_access import resolve_access_context
 
 
 async def _user(session, slug: str, *, roles=()) -> User:
@@ -1783,7 +1783,7 @@ async def test_same_admin_grants_stay_exact_from_console_link_through_audit(
 ):
     from sqlalchemy import func, select
 
-    from vitals.services.access_resolution import SupportGrantSelectionError
+    from vitals.services.authorization.subject_access import SupportGrantSelectionError
 
     admin = await _admin(db_session, "care-support-multi-admin")
     grants = {}
@@ -2184,7 +2184,7 @@ async def test_role_revocation_that_commits_first_refuses_the_disclosure(
     from sqlalchemy import func, select
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from vitals.services import identity_service
+    from vitals.services.identity import roles as identity_roles
 
     owner, subject = await _patient(db_session, "support-role-race-revoke-first")
     operator = await _admin(db_session, "support-role-race-operator")
@@ -2207,7 +2207,7 @@ async def test_role_revocation_that_commits_first_refuses_the_disclosure(
         )
         assert stale_context.support_grant is not None
 
-        assert await identity_service.revoke_role(
+        assert await identity_roles.revoke_role(
             revoker,
             user_id=operator_id,
             role=UserRoleName.PLATFORM_SUPERADMIN,
@@ -2243,7 +2243,7 @@ async def test_disclosure_that_holds_the_governance_lock_precedes_role_revocatio
     from sqlalchemy import func, select
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from vitals.services import identity_service
+    from vitals.services.identity import roles as identity_roles
 
     owner, subject = await _patient(db_session, "support-role-race-read-first")
     operator = await _admin(db_session, "support-role-race-read-operator")
@@ -2274,7 +2274,7 @@ async def test_disclosure_that_holds_the_governance_lock_precedes_role_revocatio
 
         async def _revoke_role() -> bool:
             started.set()
-            changed = await identity_service.revoke_role(
+            changed = await identity_roles.revoke_role(
                 revoker,
                 user_id=operator_id,
                 role=UserRoleName.PLATFORM_SUPERADMIN,
@@ -2426,7 +2426,7 @@ async def test_owner_reads_do_not_create_support_use_events(
 async def test_patient_access_centre_shows_actual_support_openings(
     client, db_session, legacy_owner_roots, redis
 ):
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as modules_service
 
     await modules_service.set_module_enabled(
         db_session,

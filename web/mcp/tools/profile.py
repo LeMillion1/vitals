@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from vitals.config import load_config
-from vitals.services import health_profile_service
+from vitals.services.profile import health as health_profile_service
 
 
 @dataclass(frozen=True)

@@ -21,7 +21,7 @@ import pytest
 from vitals.access import PolicyAction, PolicyResourceType
 from vitals.enums import UserRoleName, UserStatus
 from vitals.models.identity import HealthSubject, User, UserRole
-from vitals.services.access_resolution import (
+from vitals.services.authorization.subject_access import (
     AccessDeniedError,
     NoAccessibleSubjectError,
     PrincipalNotFoundError,
@@ -254,7 +254,7 @@ async def test_the_personal_export_routes_decide_rather_than_assume(
     test that trips its own limiter proves nothing about authorization.
     """
 
-    from vitals.services import access_resolution
+    from vitals.services.authorization import subject_access as access_resolution
 
     asked: list[tuple[str, str]] = []
 

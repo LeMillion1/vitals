@@ -440,7 +440,7 @@ async def test_export_excludes_secret_settings(garmin_connection_id, hevy_connec
 async def test_full_backup_excludes_identity_control_plane(db_session):
     """A user backup carries health history, never login or access-control state."""
     from vitals.models.identity import User
-    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+    from vitals.services.identity.bootstrap import bootstrap_legacy_owner
 
     password_hash = "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
     result = await bootstrap_legacy_owner(
@@ -462,7 +462,7 @@ async def test_import_cannot_delete_or_replace_identity_control_plane(db_session
     from sqlalchemy import select as sa_select
 
     from vitals.models.identity import AuditEvent, HealthSubject, User, UserRole
-    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+    from vitals.services.identity.bootstrap import bootstrap_legacy_owner
 
     password_hash = "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
     result = await bootstrap_legacy_owner(

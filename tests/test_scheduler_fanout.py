@@ -282,7 +282,7 @@ async def test_provider_discovery_explicitly_enters_platform_scope(
 async def _connected(session, subject_id, *, provider):
     from vitals.enums import IntegrationProvider
     from vitals.services.credentials import providers
-    from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+    from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
 
     await bootstrap_legacy_resource_roots(session, subject_id=subject_id)
     if provider is IntegrationProvider.GARMIN:
@@ -335,7 +335,7 @@ async def test_a_subject_who_connected_nothing_is_absent_rather_than_failing(
     from vitals.scheduler.fanout import for_each_connection
 
     bare = await _subject(db_session, "no-watch")
-    from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+    from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
 
     await bootstrap_legacy_resource_roots(db_session, subject_id=bare.id)
     await db_session.commit()

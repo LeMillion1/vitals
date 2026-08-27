@@ -16,8 +16,8 @@ from vitals.enums import (
 from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.models.professional import ProfessionalProfile
 from vitals.models.professional import CareRelationship
-from vitals.services import modules_service
-from vitals.services.access_resolution import AccessContext
+from vitals.services.modules import preferences as modules_service
+from vitals.services.authorization.subject_access import AccessContext
 from vitals.services.care import professionals, record_projection, relationships
 
 

@@ -26,11 +26,11 @@ async def pulse_job(
     """Run the lightweight Garmin pulse for one scheduled subject."""
 
     from vitals.integrations.garmin_client import GarminClient
-    from vitals.services.legacy_ownership import (
+    from vitals.services.tenancy.contracts import (
         LegacyOwnershipError,
         LegacySubjectResolutionError,
-        resolve_subject_ownership_context,
     )
+    from vitals.services.tenancy.ownership import resolve_subject_ownership_context
     from vitals.services.proactive.preferences import contracts as preference_contracts
     from vitals.services.proactive.preferences import queries as preference_queries
 
@@ -106,7 +106,7 @@ async def sync_now_for_actor(
 ) -> Optional[dict]:
     """Resolve an actor-owned record, then run a Garmin sync."""
 
-    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+    from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 
     async with session_factory() as session:
         ownership = await resolve_legacy_ownership_context(
@@ -138,8 +138,8 @@ async def sync_job(
 
     from vitals.i18n import current_lang
     from vitals.integrations.garmin_client import GarminClient
-    from vitals.services.language_service import get_language
-    from vitals.services.legacy_ownership import resolve_subject_ownership_context
+    from vitals.services.preferences.language import get_language
+    from vitals.services.tenancy.ownership import resolve_subject_ownership_context
 
     del integration_connection_id  # named by fan-out; resolved under ownership
 

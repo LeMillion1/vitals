@@ -171,7 +171,7 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
     assert card["remaining"] == pytest.approx(14.52 - 12.0, abs=0.1)
 
     # 2. Enable body_comp module and save a scan with 15.5% fat on DAY + 1 day
-    from vitals.services.modules_service import set_module_enabled
+    from vitals.services.modules.preferences import set_module_enabled
     await set_module_enabled(
         db_session,
         key="body_comp",

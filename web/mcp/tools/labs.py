@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 from vitals.enums import Domain, Source
-from vitals.services import raw_payload_service
+from vitals.services.data_lake import raw_payloads
 from vitals.services.conflicts import engine
 from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.services.labs import alerts as lab_alerts
@@ -96,7 +96,7 @@ def register_labs_tools(server: Any, deps: LabsToolDependencies) -> RegisteredLa
                 context=conflict_context,
             )
             try:
-                raw = await raw_payload_service.upsert_owned_raw_payload(
+                raw = await raw_payloads.upsert_owned_raw_payload(
                     session,
                     identity=conflict_context.identity,
                     integration_connection_id=None,
@@ -258,7 +258,7 @@ def register_labs_tools(server: Any, deps: LabsToolDependencies) -> RegisteredLa
                 session,
                 context=conflict_context,
             )
-            raw = await raw_payload_service.upsert_owned_raw_payload(
+            raw = await raw_payloads.upsert_owned_raw_payload(
                 session,
                 identity=conflict_context.identity,
                 integration_connection_id=None,

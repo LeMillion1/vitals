@@ -47,7 +47,7 @@ async def test_a_provisioned_subject_is_not_one_row(db_session, legacy_owner_roo
     installation-wide default happens to name.
     """
 
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as modules_service
 
     provisioned = await account_provisioning_service.provision_account(
         db_session,
@@ -94,7 +94,7 @@ async def test_web_member_provisioning_binds_before_subject_roots(
     """The runtime path narrows to its new subject before any RLS-owned insert."""
 
     from vitals.persistence.rls import bound_subject, in_platform_scope
-    from vitals.services import tenancy_bootstrap
+    from vitals.services.tenancy import bootstrap as tenancy_bootstrap
 
     original = tenancy_bootstrap.bootstrap_legacy_resource_roots
     observed: list[object] = []
@@ -867,7 +867,7 @@ async def test_postgres_duplicate_unknown_oidc_callbacks_share_one_account_graph
         pytest.skip("PostgreSQL advisory-lock semantics")
 
     from vitals.services.authentication import federation
-    from vitals.services.identity_service import acquire_identity_governance_lock
+    from vitals.services.identity.governance import acquire_identity_governance_lock
 
     monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
     await registration_service.set_stored_mode(

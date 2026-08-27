@@ -83,7 +83,7 @@ async def test_sync_hevy_refuses_a_disabled_module_without_spending_quota(
     legacy_owner_roots,
     monkeypatch,
 ):
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as modules_service
     from vitals.services.hevy import jobs as hevy_jobs
 
     called = []

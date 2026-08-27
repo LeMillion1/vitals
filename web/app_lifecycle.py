@@ -10,21 +10,19 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI
 
 from vitals.process_mode import ProcessMode, load_process_mode
-from vitals.services import health_profile_service
+from vitals.services.profile import health as health_profile_service
 from vitals.services.alerts.contracts import AlertLegacyBridgeError
 from vitals.services.conflicts.activation import ConflictActivationLegacyBridgeError
 from vitals.services.conflicts.engine import ConflictLegacyBridgeError
 from vitals.services.digest.ownership import DigestOwnershipError
 from vitals.services.garmin_weight.contracts import GarminWeightExportLegacyBridgeError
-from vitals.services.legacy_ownership import LegacyOwnershipError
+from vitals.services.tenancy.contracts import LegacyOwnershipError
 from vitals.services.proactive.preferences import queries as preference_queries
 from vitals.services.proactive.preferences import writes as preference_writes
 from vitals.services.proactive.preferences.contracts import (
     LegacyProactivePreferencesBridgeClosedError,
 )
-from vitals.services.scoped_settings_service import (
-    LegacyScopedSettingBridgeClosedError,
-)
+from vitals.services.settings.contracts import LegacyScopedSettingBridgeClosedError
 from vitals.services.share.ownership import ShareOwnershipError
 from web.deps import get_redis_client, get_session_factory
 
@@ -47,14 +45,11 @@ async def _bootstrap_legacy_identity(
     synchronized.
     """
 
-    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
-    from vitals.services import modules_service
-    from vitals.services.scoped_settings_service import (
-        ScopedSettingKey,
-        SettingScope,
-        set_scoped_setting,
-    )
-    from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+    from vitals.services.identity.bootstrap import bootstrap_legacy_owner
+    from vitals.services.modules import preferences as modules_service
+    from vitals.services.settings.contracts import ScopedSettingKey, SettingScope
+    from vitals.services.settings.scoped_store import set_scoped_setting
+    from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
     from web.config import get_web_config
 
     web_config = get_web_config()

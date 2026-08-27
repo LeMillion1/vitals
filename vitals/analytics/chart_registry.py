@@ -4,7 +4,7 @@ Declares every time-series metric a user can plot, across every domain, as a
 flat ``REGISTRY`` keyed by a globally unique ``key``. Two shapes of entry:
 
   * **Simple** (``param_kind="none"``) — one column on one model, resolved
-    generically by ``chart_data_service._simple_series`` via a plain
+    generically by ``services.charts.data._simple_series`` via a plain
     ``GROUP BY date`` + aggregate query. Covers weight, garmin, glp1,
     nutrition, skincare.
   * **Parametrized** (``param_kind != "none"``) — the metric needs a
@@ -15,7 +15,7 @@ flat ``REGISTRY`` keyed by a globally unique ``key``. Two shapes of entry:
     (marker aliasing, segment canonicalization, working-set filtering) aren't
     duplicated here.
 
-``domain`` values double as ``vitals.services.modules_service.MODULE_REGISTRY``
+``domain`` values double as ``vitals.services.modules.registry.MODULE_REGISTRY``
 keys (for gating) and as the catalog's grouping key in the builder UI — they
 are NOT always the same string as ``vitals.enums.Domain`` (e.g. Hevy's module
 key is ``"hevy"``, while ``Domain.WORKOUTS == "workouts"``).

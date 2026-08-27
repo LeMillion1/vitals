@@ -290,8 +290,8 @@ def test_pure_analytics_do_not_depend_on_io_layers() -> None:
     assert not violations, "Pure analytics depend on I/O layers:\n" + "\n".join(violations)
 
 
-def test_no_new_flat_service_modules() -> None:
-    """Turn the current flat directory into an explicit, shrinking debt ledger."""
+def test_service_root_contains_only_the_package_marker() -> None:
+    """Keep every application service inside an explicit bounded context."""
 
     legacy = {
         path.name
@@ -300,24 +300,75 @@ def test_no_new_flat_service_modules() -> None:
         and path.name != "__init__.py"
         and (ROOT / path).is_file()
     }
-    baseline = 21
-
-    assert len(legacy) <= baseline, (
-        f"Flat service module count grew from the guarded ceiling {baseline} to {len(legacy)}. "
-        "Put new behavior in a bounded-context package instead."
+    assert not legacy, (
+        "Application services must live in a bounded-context package; "
+        f"move these root modules: {sorted(legacy)}"
     )
 
-    oversized = {
-        path.name: len((ROOT / path).read_text(encoding="utf-8").splitlines())
-        for path in _tracked_python_paths(SERVICES)
-        if path.parent == Path("vitals/services")
-        and path.name != "__init__.py"
-        and (ROOT / path).is_file()
-        and len((ROOT / path).read_text(encoding="utf-8").splitlines()) > 800
+
+def test_removed_flat_service_imports_do_not_return() -> None:
+    """Do not preserve the retired root layout as a second internal API."""
+
+    retired = {
+        "access_resolution",
+        "chart_data_service",
+        "custom_charts_service",
+        "external_api_token_service",
+        "file_asset_service",
+        "health_profile_service",
+        "identity_bootstrap",
+        "identity_service",
+        "installation_operator",
+        "language_service",
+        "legacy_ownership",
+        "legacy_subject_alerts",
+        "modules_service",
+        "nav_status_service",
+        "platform_admin_service",
+        "platform_ai_control_service",
+        "raw_payload_service",
+        "scoped_settings_service",
+        "tenancy_bootstrap",
+        "today_service",
+        "upload_ownership_service",
     }
-    assert not oversized, (
-        "Flat services must stay focused or move into a bounded-context package: "
-        f"{oversized}"
+    source_paths = (
+        _python_files(VITALS)
+        + _python_files(ROOT / "web")
+        + _python_files(ROOT / "tests")
+        + _python_files(ROOT / "scripts")
+    )
+    violations: list[str] = []
+    for path in source_paths:
+        if "static" in path.parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            imported: set[str] = set()
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module)
+                if node.module == "vitals.services":
+                    imported.update(
+                        f"vitals.services.{alias.name}" for alias in node.names
+                    )
+            forbidden = sorted(
+                name
+                for name in imported
+                if any(
+                    name == f"vitals.services.{module}"
+                    or name.startswith(f"vitals.services.{module}.")
+                    for module in retired
+                )
+            )
+            if forbidden:
+                violations.append(
+                    f"{path.relative_to(ROOT)}:{node.lineno}: {', '.join(forbidden)}"
+                )
+
+    assert not violations, "Retired flat service imports returned:\n" + "\n".join(
+        violations
     )
 
 
@@ -547,3 +598,200 @@ def test_platform_settings_do_not_depend_on_the_personal_settings_monolith() -> 
         text=True,
     )
     assert isolated_import.returncode == 0, isolated_import.stderr
+
+
+def test_product_configuration_contexts_have_an_exact_leaf_manifest() -> None:
+    """Keep the extracted dashboard/configuration services explicit and bounded."""
+
+    expected = {
+        "charts": {"configuration.py", "data.py"},
+        "dashboard": {"nav_status.py", "today.py"},
+        "modules": {"navigation.py", "preferences.py", "registry.py"},
+        "preferences": {"language.py"},
+        "profile": {"health.py"},
+        "settings": {"contracts.py", "legacy.py", "scoped_store.py"},
+    }
+    for package, leaves in expected.items():
+        directory = SERVICES / package
+        assert (directory / "__init__.py").is_file(), package
+        assert {
+            path.name
+            for path in directory.glob("*.py")
+            if path.name != "__init__.py"
+        } == leaves
+
+
+def test_identity_authorization_tenancy_and_platform_have_exact_leaf_manifests() -> None:
+    """Keep the security-sensitive extraction explicit and shim-free."""
+
+    expected = {
+        "authorization": {"installation.py", "subject_access.py"},
+        "identity": {
+            "bootstrap.py",
+            "contracts.py",
+            "credentials.py",
+            "governance.py",
+            "normalization.py",
+            "queries.py",
+            "roles.py",
+        },
+        "platform": {"ai_control.py", "authorization.py"},
+        "tenancy": {"bootstrap.py", "contracts.py", "ownership.py"},
+    }
+    for package, leaves in expected.items():
+        directory = SERVICES / package
+        assert (directory / "__init__.py").is_file(), package
+        assert {
+            path.name
+            for path in directory.glob("*.py")
+            if path.name != "__init__.py"
+        } == leaves
+
+    assert (SERVICES / "alerts" / "legacy_subject.py").is_file()
+
+
+def test_identity_authorization_tenancy_platform_leaf_dag_is_exact() -> None:
+    """Contracts point inward and orchestration depends on focused leaves."""
+
+    selected = {
+        "vitals.services.alerts.legacy_subject",
+        "vitals.services.authorization.installation",
+        "vitals.services.authorization.subject_access",
+        "vitals.services.identity.bootstrap",
+        "vitals.services.identity.contracts",
+        "vitals.services.identity.credentials",
+        "vitals.services.identity.governance",
+        "vitals.services.identity.normalization",
+        "vitals.services.identity.queries",
+        "vitals.services.identity.roles",
+        "vitals.services.platform.ai_control",
+        "vitals.services.platform.authorization",
+        "vitals.services.tenancy.bootstrap",
+        "vitals.services.tenancy.contracts",
+        "vitals.services.tenancy.ownership",
+    }
+    graph = _import_time_graph()
+    actual = {module: graph[module] & selected for module in selected}
+    assert actual == {
+        "vitals.services.alerts.legacy_subject": {
+            "vitals.services.identity.governance",
+            "vitals.services.tenancy.contracts",
+        },
+        "vitals.services.authorization.installation": set(),
+        "vitals.services.authorization.subject_access": set(),
+        "vitals.services.identity.bootstrap": {
+            "vitals.services.identity.credentials",
+            "vitals.services.identity.governance",
+            "vitals.services.identity.normalization",
+        },
+        "vitals.services.identity.contracts": set(),
+        "vitals.services.identity.credentials": {
+            "vitals.services.identity.contracts",
+            "vitals.services.identity.governance",
+        },
+        "vitals.services.identity.governance": {
+            "vitals.services.identity.contracts",
+        },
+        "vitals.services.identity.normalization": {
+            "vitals.services.identity.contracts",
+        },
+        "vitals.services.identity.queries": {
+            "vitals.services.identity.normalization",
+        },
+        "vitals.services.identity.roles": {
+            "vitals.services.identity.contracts",
+            "vitals.services.identity.governance",
+            "vitals.services.identity.queries",
+        },
+        "vitals.services.platform.ai_control": {
+            "vitals.services.platform.authorization",
+        },
+        "vitals.services.platform.authorization": {
+            "vitals.services.identity.governance",
+            "vitals.services.identity.normalization",
+        },
+        "vitals.services.tenancy.bootstrap": {
+            "vitals.services.identity.governance",
+        },
+        "vitals.services.tenancy.contracts": set(),
+        "vitals.services.tenancy.ownership": {
+            "vitals.services.identity.contracts",
+            "vitals.services.identity.normalization",
+            "vitals.services.tenancy.bootstrap",
+            "vitals.services.tenancy.contracts",
+        },
+    }
+
+
+def test_legacy_identity_and_tenancy_bridges_publish_exit_contracts() -> None:
+    """Compatibility leaves must say exactly what permits their retirement."""
+
+    bridge_paths = (
+        SERVICES / "alerts" / "legacy_subject.py",
+        SERVICES / "identity" / "bootstrap.py",
+        SERVICES / "identity" / "governance.py",
+        SERVICES / "settings" / "legacy.py",
+        SERVICES / "tenancy" / "bootstrap.py",
+        SERVICES / "tenancy" / "ownership.py",
+    )
+    for path in bridge_paths:
+        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        docstring = ast.get_docstring(module) or ""
+        assert "may be removed only" in " ".join(docstring.lower().split()), path
+
+
+def test_product_configuration_leaf_dag_is_exact() -> None:
+    """Registry/contracts stay pure and storage points inward without cycles."""
+
+    selected = {
+        "vitals.services.charts.configuration",
+        "vitals.services.charts.data",
+        "vitals.services.dashboard.nav_status",
+        "vitals.services.dashboard.today",
+        "vitals.services.modules.navigation",
+        "vitals.services.modules.preferences",
+        "vitals.services.modules.registry",
+        "vitals.services.preferences.language",
+        "vitals.services.profile.health",
+        "vitals.services.settings.contracts",
+        "vitals.services.settings.legacy",
+        "vitals.services.settings.scoped_store",
+    }
+    graph = _import_time_graph()
+    actual = {
+        module: graph[module] & selected
+        for module in selected
+    }
+    assert actual == {
+        "vitals.services.charts.configuration": {
+            "vitals.services.settings.contracts",
+            "vitals.services.settings.scoped_store",
+        },
+        "vitals.services.charts.data": set(),
+        "vitals.services.dashboard.nav_status": {
+            "vitals.services.modules.registry",
+        },
+        "vitals.services.dashboard.today": set(),
+        "vitals.services.modules.navigation": {
+            "vitals.services.modules.registry",
+        },
+        "vitals.services.modules.preferences": {
+            "vitals.services.modules.registry",
+            "vitals.services.settings.contracts",
+            "vitals.services.settings.scoped_store",
+        },
+        "vitals.services.modules.registry": set(),
+        "vitals.services.preferences.language": {
+            "vitals.services.settings.contracts",
+            "vitals.services.settings.scoped_store",
+        },
+        "vitals.services.profile.health": set(),
+        "vitals.services.settings.contracts": set(),
+        "vitals.services.settings.legacy": {
+            "vitals.services.settings.contracts",
+        },
+        "vitals.services.settings.scoped_store": {
+            "vitals.services.settings.contracts",
+            "vitals.services.settings.legacy",
+        },
+    }

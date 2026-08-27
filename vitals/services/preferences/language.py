@@ -1,7 +1,8 @@
-"""UI language preference — stored in ``app_settings``, cached in Redis.
+"""User-scoped UI language with a bounded legacy installation fallback.
 
-Mirrors the ``modules_service`` pattern exactly: DB is source of truth, Redis is a
-read-through cache with 300 s TTL.  Supported codes: ``"en"`` (default), ``"ru"``.
+The database is authoritative and Redis is a UUID-namespaced read-through
+cache. Calls without a user remain the explicit legacy ``app_settings`` path.
+Supported codes are ``"en"`` (default) and ``"ru"``.
 """
 from __future__ import annotations
 
@@ -13,9 +14,8 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.app_settings import AppSetting
-from vitals.services.scoped_settings_service import (
-    ScopedSettingKey,
-    SettingScope,
+from vitals.services.settings.contracts import ScopedSettingKey, SettingScope
+from vitals.services.settings.scoped_store import (
     get_scoped_setting,
     set_scoped_setting,
 )
@@ -119,3 +119,16 @@ async def prime_cache(
         await redis.set(cache_key(user_id), lang, ex=REDIS_TTL)
     except Exception:
         logger.warning("language: Redis prime failed", exc_info=True)
+
+
+__all__ = [
+    "DEFAULT",
+    "REDIS_KEY",
+    "REDIS_TTL",
+    "SETTINGS_KEY",
+    "SUPPORTED",
+    "cache_key",
+    "get_language",
+    "prime_cache",
+    "set_language",
+]

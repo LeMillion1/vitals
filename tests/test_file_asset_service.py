@@ -18,13 +18,16 @@ from vitals.enums import (
 )
 from vitals.models.identity import HealthSubject, User
 from vitals.models.tenancy import FileAsset
-from vitals.services import file_asset_service
-from vitals.services.file_asset_service import (
+from vitals.services.files import lifecycle as file_lifecycle
+from vitals.services.files import queries as file_queries
+from vitals.services.files.contracts import (
     FileAssetConflictError,
     FileAssetNotFoundError,
     FileAssetSubjectNotFoundError,
     FileAssetUploaderNotFoundError,
     FileAssetValidationError,
+)
+from vitals.services.files.lifecycle import (
     mark_legacy_local_deleted,
     register_legacy_local,
 )
@@ -563,7 +566,7 @@ async def test_service_does_not_read_files_hash_config_env_or_network(
     subject_id = subject.id
     await db_session.commit()
 
-    source_tree = ast.parse(inspect.getsource(file_asset_service))
+    source_tree = ast.parse(inspect.getsource(file_lifecycle))
     forbidden_modules = {"hashlib", "os", "pathlib", "socket", "vitals.config"}
     imported_modules: set[str] = set()
     forbidden_calls: list[str] = []
@@ -591,7 +594,7 @@ async def test_service_does_not_read_files_hash_config_env_or_network(
     # A module-local sentinel catches future unqualified calls without replacing
     # process-global helpers that SQLAlchemy, asyncpg, or pytest legitimately use.
     for name in ("getenv", "load_config", "open", "sha256", "stat"):
-        monkeypatch.setattr(file_asset_service, name, forbidden, raising=False)
+        monkeypatch.setattr(file_lifecycle, name, forbidden, raising=False)
 
     asset = await register_legacy_local(
         db_session,
@@ -627,7 +630,7 @@ async def test_postgres_concurrent_same_key_returns_one_authoritative_asset(
         class_=AsyncSession,
     )
 
-    original_find = file_asset_service._find_existing_legacy_local
+    original_find = file_lifecycle._find_existing_legacy_local
     first_reads = 0
     first_reads_lock = asyncio.Lock()
     both_read_missing = asyncio.Event()
@@ -649,7 +652,7 @@ async def test_postgres_concurrent_same_key_returns_one_authoritative_asset(
         return row
 
     monkeypatch.setattr(
-        file_asset_service,
+        file_lifecycle,
         "_find_existing_legacy_local",
         synchronized_find,
     )
@@ -720,19 +723,19 @@ async def test_a_download_key_only_resolves_inside_its_own_subject(db_session):
         content_sha256=_SHA256,
     )
 
-    found = await file_asset_service.resolve_for_download(
+    found = await file_queries.resolve_for_download(
         db_session, opaque_key=ours.opaque_key, subject_id=mine.id
     )
     assert found.id == ours.id
 
     # The real key of a real file, asked for by the wrong subject.
     with pytest.raises(FileAssetNotFoundError):
-        await file_asset_service.resolve_for_download(
+        await file_queries.resolve_for_download(
             db_session, opaque_key=hers.opaque_key, subject_id=mine.id
         )
     # And a key that never existed, which must be indistinguishable from it.
     with pytest.raises(FileAssetNotFoundError):
-        await file_asset_service.resolve_for_download(
+        await file_queries.resolve_for_download(
             db_session, opaque_key=uuid.uuid4(), subject_id=mine.id
         )
 
@@ -761,7 +764,7 @@ async def test_a_retired_asset_resolves_to_nothing(db_session, purged):
     )
 
     with pytest.raises(FileAssetNotFoundError):
-        await file_asset_service.resolve_for_download(
+        await file_queries.resolve_for_download(
             db_session, opaque_key=asset.opaque_key, subject_id=subject.id
         )
 
@@ -812,17 +815,17 @@ async def test_the_page_lookup_returns_only_this_subjects_live_assets(db_session
         content_sha256=_SHA256,
     )
 
-    resolved = await file_asset_service.opaque_keys_for(
+    resolved = await file_queries.opaque_keys_for(
         db_session,
         subject_id=mine.id,
         file_asset_ids=[live.id, retired.id, hers.id, None, uuid.uuid4()],
     )
     assert resolved == {live.id: live.opaque_key}
 
-    assert await file_asset_service.opaque_keys_for(
+    assert await file_queries.opaque_keys_for(
         db_session, subject_id=mine.id, file_asset_ids=[]
     ) == {}
-    assert await file_asset_service.opaque_keys_for(
+    assert await file_queries.opaque_keys_for(
         db_session, subject_id=mine.id, file_asset_ids=[None, None]
     ) == {}
 
@@ -834,6 +837,6 @@ async def test_the_download_lookup_refuses_a_value_that_is_not_a_uuid(db_session
     _, subject = await _identity_graph(db_session, "download-malformed")
     for value in ("not-a-uuid", 7, None, ""):
         with pytest.raises(FileAssetValidationError):
-            await file_asset_service.resolve_for_download(
+            await file_queries.resolve_for_download(
                 db_session, opaque_key=value, subject_id=subject.id
             )

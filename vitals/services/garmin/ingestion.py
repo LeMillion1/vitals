@@ -17,7 +17,7 @@ from vitals.models.garmin import (
 )
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
-from vitals.services import raw_payload_service
+from vitals.services.data_lake import raw_payloads
 from vitals.services.conflicts import engine
 from vitals.services.garmin.errors import (
     GarminOwnershipAmbiguityError,
@@ -49,7 +49,7 @@ from vitals.services.garmin.raw_payloads import (
     _validate_intraday_raw_reference,
     _validate_owned_raw_row,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.services.weight.contracts import PreparedWeightWrite
 from vitals.services.weight import governance as weight_governance
 from vitals.services.weight import writes as weight_writes
@@ -444,7 +444,7 @@ async def ingest_owned_daily(
         key_label=f"daily:{on_date.isoformat()}",
     )
     external_id = f"daily:{on_date.isoformat()}"
-    raw_row = await raw_payload_service.upsert_owned_raw_payload(
+    raw_row = await raw_payloads.upsert_owned_raw_payload(
         session,
         identity=identity,
         integration_connection_id=integration_connection_id,
@@ -578,7 +578,7 @@ async def ingest_owned_activities(
     written = 0
     for raw, external_id in prepared:
         raw_external_id = f"activity:{external_id}"
-        raw_row = await raw_payload_service.upsert_owned_raw_payload(
+        raw_row = await raw_payloads.upsert_owned_raw_payload(
             session,
             identity=identity,
             integration_connection_id=integration_connection_id,
@@ -683,7 +683,7 @@ async def ingest_owned_health_auto_export(
 
     for day, fields, candidate in prepared:
         external_id = f"hae:{day.isoformat()}"
-        raw_row = await raw_payload_service.upsert_owned_raw_payload(
+        raw_row = await raw_payloads.upsert_owned_raw_payload(
             session,
             identity=identity,
             integration_connection_id=integration_connection_id,

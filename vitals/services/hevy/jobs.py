@@ -21,7 +21,7 @@ async def sync_now_for_actor(
 ) -> Optional[dict]:
     """Sync Hevy for the health record owned by the named actor."""
 
-    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+    from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 
     async with session_factory() as session:
         ownership = await resolve_legacy_ownership_context(
@@ -55,7 +55,7 @@ async def sync_job(
 
     async with session_factory() as session:
         from vitals.services.credentials import providers
-        from vitals.services.legacy_ownership import (
+        from vitals.services.tenancy.ownership import (
             resolve_subject_ownership_context,
         )
 

@@ -495,7 +495,7 @@ async def test_mcp_create_uses_scoped_block_payload(
     legacy_owner_roots,
     monkeypatch,
 ):
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as modules_service
     from web.routers import mcp as mcp_router
 
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)

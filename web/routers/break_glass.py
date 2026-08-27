@@ -10,15 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain
 from vitals.persistence.rls import bind_session_subject
-from vitals.services import modules_service
-from vitals.services.access_resolution import (
+from vitals.services.modules import preferences as modules_service
+from vitals.services.authorization.subject_access import (
     AccessResolutionError,
     enter_subject_scope,
     resolve_access_context,
 )
 from vitals.services.emergency import access as emergency
 from vitals.services.emergency import projection as record_projection
-from vitals.services.legacy_ownership import NoPersonalRecordError
+from vitals.services.tenancy.contracts import NoPersonalRecordError
 from web.care_context import principal_user_id
 from web.deps import get_session, require_recent_auth
 from web.templating import templates

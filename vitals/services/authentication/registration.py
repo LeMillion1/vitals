@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import AuditOutcome
 from vitals.models.identity import AuditEvent
 from vitals.models.scoped_settings import PlatformSetting
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 #: The ``platform_settings`` key this module owns.
 REGISTRATION_MODE_KEY = "registration_mode"

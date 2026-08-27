@@ -189,7 +189,7 @@ async def issue(
     reached for it would be a second place that knows how a token is made.
     """
 
-    from vitals.services.identity_service import normalize_username
+    from vitals.services.identity.normalization import normalize_username
 
     lookup = normalize_username(username).lookup_key
     user = await session.scalar(
@@ -201,7 +201,7 @@ async def issue(
     if user is None:
         raise McpTokenError("a connector token needs an active account behind it")
 
-    from vitals.services.access_resolution import resolve_access_context
+    from vitals.services.authorization.subject_access import resolve_access_context
 
     if not isinstance(subject_id, uuid.UUID) or subject_id.int == 0:
         raise McpTokenError("a connector token must name one health subject")
@@ -461,7 +461,7 @@ async def verify(
         if owner_id != record.user_id:
             return None
     else:
-        from vitals.services.access_resolution import (
+        from vitals.services.authorization.subject_access import (
             AccessResolutionError,
             resolve_access_context,
         )
@@ -521,7 +521,7 @@ async def _adopt(
     when somebody first noticed it.
     """
 
-    from vitals.services.identity_service import normalize_username
+    from vitals.services.identity.normalization import normalize_username
 
     key = _legacy_key(token)
     if not username:

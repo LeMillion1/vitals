@@ -60,9 +60,13 @@ their audience-specific output contracts.
 
 The follow-through also decomposed Body Scan, Genetics, conflicts, digest,
 proactive preferences/brief/delivery, alerts, AI gateway, Garmin weight export,
-sharing, support access, and portability. The service root is now a bounded
-legacy ledger of 21 focused infrastructure modules (maximum 800 lines), while
-every recursive application-service leaf is guarded at 1,300 lines. Large
+sharing, support access, portability, identity, authorization, tenancy, platform
+control, private files, the raw data lake, external API tokens, charts,
+dashboard projections, profile/preferences, optional modules, and scoped
+settings. The tracked `vitals/services` root now contains only `__init__.py`;
+all 74 historical flat modules have an owning bounded context. Static tests
+reject both new root modules and imports of the final 21 retired paths. Every
+recursive application-service leaf remains guarded at 1,300 lines. Large
 ownership backfill programs remain under `vitals.operations`: they are cohesive,
 resumable, commit-bound operator workflows rather than request-time domain
 services, so their explicit phase contracts are preserved.

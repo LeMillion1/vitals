@@ -11,7 +11,7 @@
 {# ── Section registry ────────────────────────────────────────────────────────
    There isn't one here any more: `module_registry` / `module_rubrics` /
    `nav_modules(enabled, rubric=…, bottom=…)` are Jinja globals fed by
-   vitals/services/modules_service.py, so the rail, the tab bar and the mobile
+   vitals/services/modules/registry.py, so the rail, the tab bar and the mobile
    nav in base.html can no longer drift apart. Labels are `t("nav." + key)`. #}
 
 {# ── Section icons — Tabler outline set (stroke width set to 1.5 in CSS on
@@ -67,7 +67,7 @@
 {# ── Status card rows ──────────────────────────────────────────
    Today's numbers, shared by the rail's card and the phone's "More" screen so
    the two never tell different stories. Rows come from
-   ``request.state.nav_status`` (vitals/services/nav_status_service.py); an empty
+   ``request.state.nav_status`` (vitals/services/dashboard/nav_status.py); an empty
    list renders nothing. #}
 {% macro mh_stat_rows() %}
 {% for row in request.state.nav_status or [] %}

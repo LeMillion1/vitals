@@ -23,7 +23,7 @@ from vitals.models.support_repair import SupportRepairAction
 from vitals.models.weight import BodyMeasurement
 from vitals.ownership import WriteIdentity
 from vitals.services.conflicts import engine
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.services.support_access.contracts import (
     AUDIT_SURFACE,
     EVENT_REPAIR_APPROVED,

@@ -37,12 +37,9 @@ from vitals.services.authentication.admission._shared import (
     verified_email as validate_verified_email,
 )
 from vitals.services.authentication.registration import RegistrationMode
-from vitals.services.identity_service import (
-    IdentityValidationError,
-    NormalizedEmail,
-    acquire_identity_governance_lock,
-    normalize_email,
-)
+from vitals.services.identity.contracts import IdentityValidationError
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.identity.normalization import NormalizedEmail, normalize_email
 
 
 async def issue_invitation(

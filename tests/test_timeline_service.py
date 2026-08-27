@@ -351,9 +351,9 @@ async def test_derived_events_progress_photo_is_marker_only(db_session, owned_by
     # A photo is uploaded by a person and lives in a durable file asset, and
     # the scoped reader checks both before it will surface the row.
     from vitals.enums import FileAssetPurpose
-    from vitals.services import file_asset_service
+    from vitals.services.files import lifecycle as file_lifecycle
 
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=owned_by_legacy_subject.subject_id,
         uploaded_by_user_id=owned_by_legacy_subject.user_id,

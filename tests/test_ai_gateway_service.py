@@ -32,9 +32,9 @@ from vitals.models.ai import (
 from vitals.models.identity import User
 from vitals.models.tenancy import PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import platform_admin_service
 from vitals.persistence import transactions as transaction_outcome
-from vitals.services.identity_service import assign_role, change_user_status
+from vitals.services.identity.roles import assign_role, change_user_status
+from vitals.services.platform import authorization as platform_authorization
 from web.config import get_web_config
 
 FIXED_NOW = datetime(2026, 8, 20, 12, tzinfo=UTC)
@@ -50,7 +50,7 @@ def _identity(roots) -> WriteIdentity:
 
 
 async def _prepared_admin(session):
-    return await platform_admin_service.prepare_platform_admin(
+    return await platform_authorization.prepare_platform_admin(
         session,
         actor_username=get_web_config().auth_username,
     )
@@ -471,7 +471,7 @@ async def test_revoked_owner_and_rotated_root_fail_before_credential_resolution(
 
     # System authorization is still exact-S but independent of the suspended
     # human. Rotate the root under the surviving platform admin.
-    prepared = await platform_admin_service.prepare_platform_admin(
+    prepared = await platform_authorization.prepare_platform_admin(
         db_session,
         actor_username="Second Admin",
     )
@@ -502,7 +502,7 @@ async def test_revoked_owner_and_rotated_root_fail_before_credential_resolution(
         reserved_units=500,
     )
     await db_session.commit()
-    prepared = await platform_admin_service.prepare_platform_admin(
+    prepared = await platform_authorization.prepare_platform_admin(
         db_session,
         actor_username="Second Admin",
     )
@@ -1059,14 +1059,14 @@ async def test_postgres_concurrent_overlap_configuration_is_serialized(
             unit_limit=100,
         )
         attempted = asyncio.Event()
-        original = platform_admin_service.acquire_identity_governance_lock
+        original = platform_authorization.acquire_identity_governance_lock
 
         async def observed_lock(session):
             attempted.set()
             await original(session)
 
         monkeypatch.setattr(
-            platform_admin_service,
+            platform_authorization,
             "acquire_identity_governance_lock",
             observed_lock,
         )

@@ -30,7 +30,7 @@ from vitals.services.garmin_weight.contracts import (
     PreparedGarminWeightExport,
     _require_prepared_export,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 _DB_OPERATION_LOCK_ID = 0x564954414C535747
 _SCOPED_EXPORT: ContextVar[PreparedGarminWeightExport | None] = ContextVar(
@@ -143,7 +143,7 @@ async def resolve_legacy_export_context(
 ) -> GarminWeightExportContext:
     """Resolve the registration-off S+A+Garmin-C graph under governance."""
 
-    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+    from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 
     await acquire_identity_governance_lock(session)
     ownership = await resolve_legacy_ownership_context(
@@ -172,7 +172,7 @@ async def resolve_scoped_export_context(
     position to say whose weight it is exporting, once per configured account.
     """
 
-    from vitals.services.legacy_ownership import resolve_subject_ownership_context
+    from vitals.services.tenancy.ownership import resolve_subject_ownership_context
 
     await acquire_identity_governance_lock(session)
     ownership = await resolve_subject_ownership_context(
@@ -199,7 +199,7 @@ async def resolve_optional_legacy_export_context(
     converted to ``None``; subject and actor ambiguity still fail closed.
     """
 
-    from vitals.services.legacy_ownership import LegacyConnectionResolutionError
+    from vitals.services.tenancy.contracts import LegacyConnectionResolutionError
 
     try:
         return await resolve_legacy_export_context(

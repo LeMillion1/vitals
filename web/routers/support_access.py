@@ -31,7 +31,7 @@ from vitals.services.support_access import lifecycle as support_lifecycle
 from vitals.services.support_access import projections as support_projections
 from vitals.services.support_access import repair as support_repair
 from vitals.services.portability import v1_contract
-from vitals.services.access_resolution import (
+from vitals.services.authorization.subject_access import (
     AccessDeniedError,
     AccessResolutionError,
     enter_subject_scope,
@@ -39,7 +39,7 @@ from vitals.services.access_resolution import (
     resolve_access_context,
 )
 from vitals.services.emergency import access as emergency_access
-from vitals.services.legacy_ownership import NoPersonalRecordError
+from vitals.services.tenancy.contracts import NoPersonalRecordError
 from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
 from web.care_context import principal_user_id

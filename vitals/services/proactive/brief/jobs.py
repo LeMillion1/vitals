@@ -25,7 +25,7 @@ from vitals.ownership import WriteIdentity
 from vitals.services.ai_gateway import contracts as ai_gateway_service_contracts
 from vitals.services.alerts import contracts as alerts_service_contracts
 from vitals.services.alerts import lifecycle as alerts_service_lifecycle
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.services.proactive import compose
 from vitals.services.proactive.preferences import contracts as preference_contracts
 from vitals.services.proactive.preferences import queries as preference_queries
@@ -322,7 +322,7 @@ async def brief_job(session_factory, redis=None, *, subject_id) -> None:
     what there is, minus the numbers the night never produced.
     """
     from vitals.services.garmin import jobs as garmin_jobs
-    from vitals.services.language_service import get_language
+    from vitals.services.preferences.language import get_language
     from vitals.i18n import current_lang
     from vitals.services.proactive import channels
 

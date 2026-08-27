@@ -134,7 +134,7 @@ def resolve_domains(domains: Sequence[str], enabled: Optional[dict[str, bool]] =
     The single choke point for "a disabled module never leaves the building":
     both the form and the snapshot builder go through it, so they cannot disagree.
     """
-    from vitals.services.modules_service import CORE_KEYS
+    from vitals.services.modules.registry import CORE_KEYS
 
     wanted = set(domains or ())
     em = enabled or {}
@@ -367,7 +367,7 @@ async def build_snapshot(
         raise SharePreparedOwnerError("composing a report requires the subject it is about")
 
     from vitals.i18n import current_lang
-    from vitals.services import health_profile_service
+    from vitals.services.profile import health as health_profile_service
 
     chosen = resolve_domains(domains, enabled)
     start, end = clamp_window(period_start, period_end)

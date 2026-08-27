@@ -29,7 +29,8 @@ from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.tenancy import FileAsset
 from vitals.models.weight import ProgressPhoto
 from vitals.ownership import WriteIdentity
-from vitals.services import file_asset_service, weight as weight_domain
+from vitals.services import weight as weight_domain
+from vitals.services.files import lifecycle as file_lifecycle
 from vitals.services.conflicts import engine
 from vitals.utils.timeutils import now_local
 
@@ -107,7 +108,7 @@ async def _asset(
     identity: WriteIdentity,
     suffix: str,
 ) -> FileAsset:
-    return await file_asset_service.register_legacy_local(
+    return await file_lifecycle.register_legacy_local(
         session,
         subject_id=identity.subject_id,
         uploaded_by_user_id=identity.actor_user_id,
@@ -209,7 +210,7 @@ async def _migrated_photo(
     *,
     uploaded_by_user_id=None,
 ) -> tuple[FileAsset, ProgressPhoto]:
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         session,
         subject_id=identity.subject_id,
         uploaded_by_user_id=uploaded_by_user_id,
@@ -611,7 +612,7 @@ async def test_a_malicious_file_name_never_reaches_the_page_at_all(
 
     identity = _identity(legacy_owner_roots)
     file_key = "uploads/synthetic-');window.photo_pwned=1;('-.png"
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=identity.subject_id,
         uploaded_by_user_id=identity.actor_user_id,
@@ -776,7 +777,7 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
     (tmp_path / route_key).write_bytes(contents)
     monkeypatch.setattr(web_main, "UPLOADS_DIR", str(tmp_path))
 
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=identity.subject_id,
         uploaded_by_user_id=identity.actor_user_id,
@@ -927,7 +928,7 @@ async def test_nested_photo_key_is_owned_like_any_other(
     """
     identity = _identity(legacy_owner_roots)
     file_key = f"uploads/{route_prefix}/synthetic-valid-nested.png"
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=identity.subject_id,
         uploaded_by_user_id=identity.actor_user_id,
@@ -1102,14 +1103,14 @@ async def test_delete_failure_rolls_back_fact_and_file_lifecycle_together(
     asset, photo = await _owned_photo(db_session, identity, "delete-failure")
     asset_id, photo_id = asset.id, photo.id
     await db_session.commit()
-    original_mark = file_asset_service.mark_local_deleted
+    original_mark = file_lifecycle.mark_local_deleted
 
     async def fail_after_lifecycle(*args, **kwargs):
         await original_mark(*args, **kwargs)
         raise RuntimeError("synthetic failure after file lifecycle transition")
 
     monkeypatch.setattr(
-        file_asset_service,
+        file_lifecycle,
         "mark_local_deleted",
         fail_after_lifecycle,
     )
@@ -1193,7 +1194,6 @@ async def test_the_asset_is_the_download_authority_not_the_fact_that_points_at_i
     unreadable, and no photo at all does not make a registered asset secret.
     """
 
-    from vitals.services import file_asset_service as fas
     from web import main as web_main
 
     identity = _identity(legacy_owner_roots)
@@ -1210,7 +1210,7 @@ async def test_the_asset_is_the_download_authority_not_the_fact_that_points_at_i
         # unreachable, which is the point of taking the path out of the URL.
         assert (await auth_client.get(f"/static/uploads/{name}")).status_code == 404
 
-        asset = await fas.register_legacy_local(
+        asset = await file_lifecycle.register_legacy_local(
             db_session,
             subject_id=identity.subject_id,
             uploaded_by_user_id=identity.actor_user_id,
@@ -1248,7 +1248,7 @@ async def test_the_asset_is_the_download_authority_not_the_fact_that_points_at_i
         ).status_code == 200
 
         # Retiring the asset is what withdraws it, and it withdraws it at once.
-        await fas.mark_legacy_local_deleted(
+        await file_lifecycle.mark_legacy_local_deleted(
             db_session,
             file_asset_id=asset.id,
             subject_id=identity.subject_id,
@@ -1294,7 +1294,7 @@ async def test_a_migrated_photo_with_no_uploader_still_downloads(
     route_key = "synthetic-migrated-download.png"
     contents = b"synthetic migrated progress-photo bytes"
 
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=identity.subject_id,
         uploaded_by_user_id=None,
@@ -1365,7 +1365,7 @@ async def test_what_withdraws_a_download_and_what_only_looks_like_it_should(
     file_key = f"uploads/{route_key}"
     contents = b"synthetic prefixed progress photo"
 
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=identity.subject_id,
         uploaded_by_user_id=identity.actor_user_id,
@@ -1395,7 +1395,7 @@ async def test_what_withdraws_a_download_and_what_only_looks_like_it_should(
         if graph_state == "purged":
             asset.purged_at = asset.deleted_at
     elif graph_state == "alias_collision":
-        alias_asset = await file_asset_service.register_legacy_local(
+        alias_asset = await file_lifecycle.register_legacy_local(
             db_session,
             subject_id=identity.subject_id,
             uploaded_by_user_id=identity.actor_user_id,
@@ -1457,7 +1457,7 @@ async def test_legacy_prefixed_photo_create_and_delete_reject_document_disk_alia
     identity = _identity(legacy_owner_roots)
     route_key = f"{route_prefix}/synthetic-legacy-delete-alias.png"
     file_key = f"uploads/{route_key}"
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=identity.subject_id,
         uploaded_by_user_id=identity.actor_user_id,

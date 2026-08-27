@@ -56,7 +56,7 @@ from vitals.models.supplements import Supplement
 from vitals.models.tenancy import IntegrationConnection
 from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, NoiseMarker
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.operations.ownership.raw import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
 )

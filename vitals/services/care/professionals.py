@@ -32,7 +32,7 @@ from vitals.enums import (
 )
 from vitals.models.identity import AuditEvent, User, UserRole
 from vitals.models.professional import ProfessionalProfile, ProfessionalReviewDecision
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 #: Statuses a professional may put their own profile into. Everything else is an
 #: operator's verdict, and a profile that could set its own verdict would make

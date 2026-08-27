@@ -22,7 +22,7 @@ from vitals.models.ai import (
     AISubjectQuotaPeriod,
 )
 from vitals.models.identity import HealthSubject
-from vitals.services.platform_admin_service import (
+from vitals.services.platform.authorization import (
     PreparedPlatformAdmin,
     require_prepared_platform_admin,
 )

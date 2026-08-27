@@ -443,7 +443,7 @@ async def test_patient_guidance_requires_and_honours_subject_binding(
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from vitals.services.care import records
-    from vitals.services.access_resolution import (
+    from vitals.services.authorization.subject_access import (
         enter_subject_scope,
         resolve_access_context,
     )
@@ -2570,7 +2570,7 @@ async def test_real_postgres_support_disclosure_and_patient_history_bind_one_sub
     from vitals.models.identity import HealthSubject, User, UserRole
     from vitals.persistence.rls import bind_session_subject, in_platform_scope
     from vitals.services.support_access import contracts, export, lifecycle, projections
-    from vitals.services.access_resolution import resolve_access_context
+    from vitals.services.authorization.subject_access import resolve_access_context
     from web.auth import create_federated_session
     from web.care_context import require_care_context
     from web.config import SESSION_COOKIE

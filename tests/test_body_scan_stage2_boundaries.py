@@ -34,9 +34,11 @@ from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import file_asset_service, raw_payload_service, weight as weight_domain
+from vitals.services import weight as weight_domain
+from vitals.services.files import lifecycle as file_lifecycle
+from vitals.services.data_lake import raw_payloads
 from vitals.services.conflicts import engine
-from vitals.services import modules_service
+from vitals.services.modules import preferences as modules_service
 from vitals.services.body_scan.scans import alerts as body_scan_alerts
 from vitals.services.body_scan.scans import contracts as body_scan_contracts
 from vitals.services.body_scan.scans import ingestion as body_scan_ingestion
@@ -163,7 +165,7 @@ async def _upload_raw(
     payload: dict | None = None,
 ) -> tuple[FileAsset, RawPayload]:
     storage_ref = f"body/synthetic-{suffix}.png"
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         session,
         subject_id=identity.subject_id,
         uploaded_by_user_id=identity.actor_user_id,
@@ -173,7 +175,7 @@ async def _upload_raw(
         size_bytes=21,
         content_sha256="a" * 64,
     )
-    raw = await raw_payload_service.upsert_owned_raw_payload(
+    raw = await raw_payloads.upsert_owned_raw_payload(
         session,
         identity=identity,
         integration_connection_id=connection.id,

@@ -257,7 +257,7 @@ async def _validate_password_rollback(
     from vitals.services.authentication.startup import (
         require_oidc_owner_bootstrap_graph,
     )
-    from vitals.services.identity_service import normalize_username
+    from vitals.services.identity.normalization import normalize_username
     from vitals.utils.passwords import verify_password
 
     if read_gate_state(runtime_env) != "locked":
@@ -450,11 +450,9 @@ async def _require_bound_owner(
         UserRole,
     )
     from vitals.services.authentication import registration as registration_service
-    from vitals.services.identity_service import (
-        acquire_identity_governance_lock,
-        normalize_username,
-        retire_password_hash,
-    )
+    from vitals.services.identity.credentials import retire_password_hash
+    from vitals.services.identity.governance import acquire_identity_governance_lock
+    from vitals.services.identity.normalization import normalize_username
 
     if read_gate_state(runtime_env) != "locked":
         raise OidcCutoverError(

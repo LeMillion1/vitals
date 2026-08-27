@@ -53,7 +53,7 @@ from vitals.operations.ownership.portability_v1 import import_full
 from vitals.ownership import OWNERSHIP_REGISTRY
 from vitals.services.portability.v1_contract import _EXCLUDED_TABLES
 from vitals.services.portability.v1_export import export_full
-from vitals.services.legacy_ownership import LegacyOwnershipError
+from vitals.services.tenancy.contracts import LegacyOwnershipError
 from web.config import get_web_config
 
 NOW = datetime(2026, 8, 20, 12, tzinfo=UTC)

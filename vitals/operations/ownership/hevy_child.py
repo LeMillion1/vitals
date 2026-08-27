@@ -39,7 +39,7 @@ from vitals.models.tenancy import IntegrationConnection
 from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )

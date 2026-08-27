@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.models.base import Base
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.scoped_keys import SCOPED_KEYS, ScopedIndex, ScopedKeySpec
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.operations.ownership.validate import (
     OwnershipValidationError,
     OwnershipValidationStatus,

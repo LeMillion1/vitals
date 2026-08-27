@@ -13,7 +13,7 @@ from vitals.enums import Source
 from vitals.models.garmin import DOMAIN, GarminActivity, GarminDaily
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
-from vitals.services import raw_payload_service
+from vitals.services.data_lake import sweep as raw_sweep
 from vitals.services.conflicts import engine
 from vitals.services.garmin.errors import (
     GarminOwnershipValidationError,
@@ -444,8 +444,8 @@ async def reparse_owned_pending(
     *,
     identity: WriteIdentity,
     integration_connection_id: uuid.UUID,
-    limit: int = raw_payload_service.REPARSE_BATCH,
-    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+    limit: int = raw_sweep.REPARSE_BATCH,
+    since_days: int = raw_sweep.REPARSE_WINDOW_DAYS,
 ) -> int:
     """Sweep one explicit Garmin scope, isolating reparses in savepoints."""
 

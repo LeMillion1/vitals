@@ -23,9 +23,9 @@ from vitals.models.ai import AIInvocation
 from vitals.models.labs import DOMAIN, LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
-from vitals.services import raw_payload_service
+from vitals.services.data_lake import sweep as raw_sweep
 from vitals.services.conflicts import engine
-from vitals.services.upload_ownership_service import resolve_owned_upload_reference
+from vitals.services.files.upload_references import resolve_owned_upload_reference
 from vitals.utils.timeutils import now_local, today_local
 
 from .alerts import refresh_alerts
@@ -591,8 +591,8 @@ async def reparse_owned_pending(
     *,
     identity: WriteIdentity,
     prepared_conflict_write: engine.PreparedConflictWrite,
-    limit: int = raw_payload_service.REPARSE_BATCH,
-    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+    limit: int = raw_sweep.REPARSE_BATCH,
+    since_days: int = raw_sweep.REPARSE_WINDOW_DAYS,
 ) -> int:
     """Replay pending parser raws inside one prevalidated subject boundary."""
 

@@ -23,11 +23,11 @@ from vitals.operations.ownership import portability_v1
 from vitals.services.portability import v1_export
 from vitals.services.conflicts import catalog as conflict_catalog
 from vitals.services.hrt import catalog
-from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+from vitals.services.identity.bootstrap import bootstrap_legacy_owner
 from vitals.operations.ownership.shared_report import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_PHASE,
 )
-from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent

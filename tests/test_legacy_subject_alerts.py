@@ -22,9 +22,9 @@ from vitals.enums import (
 from vitals.models.identity import HealthSubject, User
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services import legacy_subject_alerts as subject_alerts
-from vitals.services import legacy_subject_alerts as subject_alerts_legacy
-from vitals.services.legacy_ownership import LegacyOwnershipContext
+from vitals.services.alerts import legacy_subject as subject_alerts
+from vitals.services.alerts import legacy_subject as subject_alerts_legacy
+from vitals.services.tenancy.contracts import LegacyOwnershipContext
 from vitals.utils.timeutils import now_local
 
 
@@ -607,7 +607,7 @@ async def test_postgres_rotation_cannot_adopt_legacy_alert_to_retired_snapshot(
     db_session: AsyncSession,
     monkeypatch,
 ):
-    from vitals.services.identity_service import acquire_identity_governance_lock
+    from vitals.services.identity.governance import acquire_identity_governance_lock
 
     owner, subject = await _subject(db_session, "owner")
     roots = await _roots(db_session, subject)

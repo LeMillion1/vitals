@@ -16,7 +16,7 @@ from vitals.enums import Domain, UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.models.share import SharedReport
 from vitals.models.weight import WeightLog
-from vitals.services import identity_service
+from vitals.services.identity import governance as identity_governance
 from vitals.services.share import jobs, ownership, public_access, queries, reports, snapshot
 
 share_service = SimpleNamespace(
@@ -819,7 +819,7 @@ async def test_postgres_snapshot_scope_blocks_subject_creation(
     async def create_subject() -> None:
         async with factory() as session:
             attempted.set()
-            await identity_service.acquire_identity_governance_lock(session)
+            await identity_governance.acquire_identity_governance_lock(session)
             user = User(
                 username="share-racing-owner",
                 normalized_username="share-racing-owner",
@@ -983,7 +983,7 @@ async def test_postgres_public_resolution_refreshes_preloaded_identity(
     await stale.commit()
 
     async with factory() as writer:
-        await identity_service.acquire_identity_governance_lock(writer)
+        await identity_governance.acquire_identity_governance_lock(writer)
         if mutation == "suspend_owner":
             owner = await writer.scalar(
                 select(User)

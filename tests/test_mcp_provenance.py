@@ -30,7 +30,7 @@ def _use_test_factory(session_factory, monkeypatch):
 
 @pytest.fixture(autouse=True)
 async def _optional_modules_on(session_factory, legacy_owner_roots):
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as modules_service
 
     async with session_factory() as session:
         for key in sorted(modules_service.OPTIONAL_KEYS):
@@ -72,7 +72,7 @@ async def test_mcp_weight_outranks_garmin_both_ways(session_factory, owner_write
         IntegrationProvider,
     )
     from vitals.models.tenancy import IntegrationConnection
-    from vitals.services import raw_payload_service
+    from vitals.services.data_lake import raw_payloads
 
     on_date = date(2026, 7, 1)
     async with session_factory() as session:
@@ -87,7 +87,7 @@ async def test_mcp_weight_outranks_garmin_both_ways(session_factory, owner_write
         )
         session.add(connection)
         await session.flush()
-        raw = await raw_payload_service.upsert_owned_raw_payload(
+        raw = await raw_payloads.upsert_owned_raw_payload(
             session,
             identity=WriteIdentity(owner_write.subject_id, None),
             integration_connection_id=connection.id,
@@ -134,7 +134,7 @@ async def test_mcp_weight_outranks_garmin_both_ways(session_factory, owner_write
                 IntegrationConnection.provider == IntegrationProvider.GARMIN.value,
             )
         )
-        later_raw = await raw_payload_service.upsert_owned_raw_payload(
+        later_raw = await raw_payloads.upsert_owned_raw_payload(
             session,
             identity=WriteIdentity(owner_write.subject_id, None),
             integration_connection_id=later_connection.id,

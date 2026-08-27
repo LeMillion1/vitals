@@ -22,7 +22,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset
 from vitals.ownership import WriteIdentity
 from vitals.ownership_transition import bridges as ownership_bridges
-from vitals.services import file_asset_service
+from vitals.services.files import contracts as file_contracts
 from vitals.services.conflicts import engine
 
 from .contracts import (
@@ -78,7 +78,7 @@ async def _validate_migrated_sheet_root(
         or asset.uploaded_by_user_id is not None
         or asset.purpose != FileAssetPurpose.BODY_SCAN_DOCUMENT.value
         or asset.storage_ref != scan.file_key
-        or not file_asset_service.local_asset_is_live(asset)
+        or not file_contracts.local_asset_is_live(asset)
     ):
         raise engine.ConflictRawOwnershipError(
             "historical body-scan sheet root is not the reviewed placeholder"

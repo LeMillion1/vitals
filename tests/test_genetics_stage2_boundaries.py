@@ -1565,7 +1565,7 @@ async def test_postgres_legacy_write_holds_exact_one_governance_through_commit(
     db_session,
     legacy_owner_roots,
 ):
-    from vitals.services.identity_service import acquire_identity_governance_lock
+    from vitals.services.identity.governance import acquire_identity_governance_lock
 
     assert db_session.bind is not None
     factory = async_sessionmaker(

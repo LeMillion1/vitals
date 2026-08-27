@@ -7,6 +7,11 @@ mismatch fails closed rather than silently minting or modifying an admin.
 
 The function mutates and flushes only.  Startup must commit or roll back in a
 short, dedicated transaction before catalog seeding and scheduler startup.
+
+This bridge remains runtime-required while password-mode startup materializes
+the environment-backed owner. It may be removed only after password-mode
+bootstrap and rollback are retired and startup tests prove that every supported
+installation enters through an already durable identity graph.
 """
 from __future__ import annotations
 
@@ -21,11 +26,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import AuditOutcome, UserRoleName, UserStatus
 from vitals.models.identity import AuditEvent, HealthSubject, User, UserRole
 from vitals.persistence.rls import bind_session_subject
-from vitals.services.identity_service import (
-    acquire_identity_governance_lock,
-    bcrypt_cost,
-    normalize_username,
-)
+from vitals.services.identity.credentials import bcrypt_cost
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.identity.normalization import normalize_username
 
 _MAX_TIMEZONE_LENGTH = 64
 _BOOTSTRAP_ROLES = (

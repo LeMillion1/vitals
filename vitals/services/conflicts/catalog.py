@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, Evidence, RuleType, Severity
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.utils.identifiers import slugify
 
 logger = logging.getLogger("vitals.services.conflict_catalog")

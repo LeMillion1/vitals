@@ -21,7 +21,7 @@ from vitals.models.tenancy import FileAsset
 from vitals.models.weight import WeightLog
 from vitals.services import weight as weight_domain
 from vitals.services.conflicts import engine
-from vitals.services.modules_service import SETTINGS_KEY
+from vitals.services.modules.preferences import SETTINGS_KEY
 from vitals.persistence.file_storage import private_file_disk_path
 from vitals.utils.timeutils import today_local
 
@@ -1978,7 +1978,7 @@ async def test_rail_lists_every_section_at_once(auth_client, route):
     you are on. It briefly collapsed to one rubric at a time to save vertical
     space; that cost the thing a rail is for, and the owner asked for the whole
     list back."""
-    from vitals.services.modules_service import nav_modules
+    from vitals.services.modules.navigation import nav_modules
 
     r = await auth_client.get(route, headers={"Accept": "text/html"})
     assert r.status_code == 200
@@ -2120,7 +2120,7 @@ async def test_today_page_renders_its_own_hero_and_quick_log(auth_client):
 async def test_today_survives_every_optional_module_being_off(auth_client, db_session):
     """An instance running "weight + Garmin only" gets a shorter screen, not five
     empty cards — and no chip pointing at a section that isn't there."""
-    from vitals.services.modules_service import OPTIONAL_KEYS
+    from vitals.services.modules.registry import OPTIONAL_KEYS
 
     for key in sorted(OPTIONAL_KEYS):
         r = await auth_client.post("/settings/modules", data={"module": key, "enabled": "false"})
@@ -2139,7 +2139,7 @@ async def test_today_survives_every_optional_module_being_off(auth_client, db_se
 async def test_today_is_pinned_in_the_rail_without_a_rubric_number(auth_client):
     """It is the entry point, not a domain: pinned above the rubrics, never inside
     one, and it must not appear in the module registry's numbering."""
-    from vitals.services.modules_service import MODULE_REGISTRY
+    from vitals.services.modules.registry import MODULE_REGISTRY
 
     assert "today" not in MODULE_REGISTRY
     r = await auth_client.get("/today", headers={"Accept": "text/html"})

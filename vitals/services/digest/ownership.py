@@ -48,7 +48,7 @@ from vitals.models.milestones import DOMAIN, WeeklyDigest
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.utils.timeutils import today_local
 
 from vitals.services.digest.projection.assembly import assemble_context
@@ -805,7 +805,7 @@ async def prepare_subject_digest_owner(
     the reason given in ``resolve_subject_ownership_context``.
     """
 
-    from vitals.services.legacy_ownership import resolve_subject_ownership_context
+    from vitals.services.tenancy.ownership import resolve_subject_ownership_context
 
     # Governance first, as on the other path: the lock has to precede the
     # owner-lifecycle proof, not follow it, or a rotation committing in between
@@ -843,7 +843,7 @@ async def prepare_digest_owner(
     distinction ``vitals/legacy_scope.py`` is about — not the number of
     parameters, but whether any of them can be left out and still act.
     """
-    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+    from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 
     await acquire_identity_governance_lock(session)
     ownership = subject_ownership or await resolve_legacy_ownership_context(

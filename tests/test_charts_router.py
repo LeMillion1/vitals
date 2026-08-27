@@ -6,7 +6,7 @@ from datetime import date
 
 
 from vitals.models.weight import WeightLog
-from vitals.services import custom_charts_service
+from vitals.services.charts import configuration as custom_charts_service
 
 
 DAY = date(2026, 6, 1)

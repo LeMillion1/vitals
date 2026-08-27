@@ -22,8 +22,9 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 )
 
 import vitals.models  # noqa: E402,F401  -- register the metadata graph
-from vitals.services import identity_service, platform_admin_service  # noqa: E402
 from vitals.services.authentication import platform_operators  # noqa: E402
+from vitals.services.identity.contracts import IdentityServiceError  # noqa: E402
+from vitals.services.platform import authorization as platform_authorization  # noqa: E402
 
 PROVISION_CONFIRMATION = "PROVISION RECORDLESS PLATFORM OPERATOR"
 REVOKE_CONFIRMATION = "REVOKE PLATFORM ADMIN ROLE"
@@ -90,8 +91,8 @@ async def _run(args: argparse.Namespace) -> int:
                     )
                 await session.commit()
             except (
-                identity_service.IdentityServiceError,
-                platform_admin_service.PlatformAdminError,
+                IdentityServiceError,
+                platform_authorization.PlatformAdminError,
                 platform_operators.PlatformOperatorError,
             ) as exc:
                 await session.rollback()

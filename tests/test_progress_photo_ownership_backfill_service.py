@@ -21,7 +21,7 @@ from vitals.enums import (
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.tenancy import FileAsset
 from vitals.models.weight import ProgressPhoto
-from vitals.services import file_asset_service
+from vitals.services.files import lifecycle as file_lifecycle
 from vitals.operations.ownership import progress_photo as service
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
@@ -198,7 +198,7 @@ async def test_stop_resume_and_processed_bound(db_session, legacy_owner_roots):
 @pytest.mark.asyncio
 async def test_existing_exact_asset_is_never_reused(db_session, legacy_owner_roots):
     await _ready(db_session, legacy_owner_roots)
-    await file_asset_service.register_legacy_local(
+    await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=legacy_owner_roots.subject_id,
         uploaded_by_user_id=None,
@@ -335,7 +335,7 @@ async def test_postgres_projected_graph_races_roll_back_without_progress(
 ):
     await _ready(db_session, legacy_owner_roots)
     if race == "asset_lifecycle":
-        asset = await file_asset_service.register_legacy_local(
+        asset = await file_lifecycle.register_legacy_local(
             db_session,
             subject_id=legacy_owner_roots.subject_id,
             uploaded_by_user_id=legacy_owner_roots.user_id,

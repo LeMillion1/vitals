@@ -44,7 +44,7 @@ from vitals.models.tenancy import (
 import vitals.services.labs.ai as lab_ai
 import vitals.services.labs.ingestion as lab_ingestion
 from vitals.services.conflicts import engine
-from vitals.services.legacy_ownership import LegacySubjectResolutionError
+from vitals.services.tenancy.contracts import LegacySubjectResolutionError
 from web.config import get_web_config
 
 

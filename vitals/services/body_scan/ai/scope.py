@@ -17,8 +17,8 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset
 from vitals.ownership import WriteIdentity
-from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 
 from .contracts import (
     BodyScanAIOwnershipError,

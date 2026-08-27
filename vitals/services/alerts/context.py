@@ -15,10 +15,8 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.conflict_rule import ConflictRule
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.identity_service import (
-    UnsupportedIdentityDatabaseError,
-    acquire_identity_governance_lock,
-)
+from vitals.services.identity.contracts import UnsupportedIdentityDatabaseError
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 from vitals.services.alerts.contracts import (
     AlertUnsupportedDatabaseError,

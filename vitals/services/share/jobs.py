@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.models.identity import HealthSubject, User
 from vitals.models.share import SharedReport
 from vitals.persistence.rls import enter_platform_scope
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.services.share.ownership import ShareOwnershipError
 from vitals.services.share.snapshot import _historical_bridge_state, _validate_report_roots
 from vitals.utils.timeutils import now_local

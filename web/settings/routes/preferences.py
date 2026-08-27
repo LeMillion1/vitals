@@ -11,9 +11,10 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.process_mode import ProcessMode, load_process_mode
-from vitals.services import language_service, modules_service
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
-from vitals.services.modules_service import ModuleToggleError
+from vitals.services.modules import preferences as modules_service
+from vitals.services.preferences import language as language_service
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
+from vitals.services.modules.preferences import ModuleToggleError
 from vitals.services.proactive.preferences import contracts as preference_contracts
 from vitals.services.proactive.preferences import queries as preference_queries
 from vitals.services.proactive.preferences import writes as preference_writes

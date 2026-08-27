@@ -11,7 +11,7 @@ from vitals.analytics import exclude_ranges
 from vitals.analytics.chart_registry import get as get_metric
 from vitals.analytics.regression import fit_trend, project_date_for_value
 from vitals.analytics.rolling import rolling_mean_by_date
-from vitals.services import chart_data_service
+from vitals.services.charts import data as chart_data_service
 from vitals.services.portability import llm_projection
 from vitals.services.projections.data_overview import project_data_overview
 from vitals.services.weight import noise as weight_noise

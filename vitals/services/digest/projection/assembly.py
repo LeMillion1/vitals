@@ -67,18 +67,21 @@ async def assemble_context(
     prev_start = window.previous_start
     prev_end = window.previous_end
 
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as module_preferences
+    from vitals.services.modules.registry import MODULE_REGISTRY
 
     if enabled_modules is None:
-        enabled = await modules_service.get_enabled_modules(session, subject_id=subject_id)
+        enabled = await module_preferences.get_enabled_modules(
+            session, subject_id=subject_id
+        )
     else:
         enabled = {
             key: (True if spec.category == "core" else bool(enabled_modules.get(key, False)))
-            for key, spec in modules_service.MODULE_REGISTRY.items()
+            for key, spec in MODULE_REGISTRY.items()
         }
 
     def module_on(key: str) -> bool:
-        spec = modules_service.MODULE_REGISTRY[key]
+        spec = MODULE_REGISTRY[key]
         return spec.category == "core" or bool(enabled.get(key))
 
     def domain_visible(domain: str) -> bool:

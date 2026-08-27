@@ -346,7 +346,7 @@ async def record_subject_job_outcome(
 
     from vitals.enums import Domain, IntegrationProvider, Severity
     from vitals.i18n import t
-    from vitals.services.legacy_ownership import resolve_subject_ownership_context
+    from vitals.services.tenancy.ownership import resolve_subject_ownership_context
 
     # The reviewed registry rather than a live ``JobSpec``: the family is a
     # property of the job, declared once and asserted by its own contract test,

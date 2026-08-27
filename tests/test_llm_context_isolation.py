@@ -42,7 +42,7 @@ from vitals.models.supplements import Supplement
 from vitals.models.timeline import Annotation
 from vitals.models.tenancy import IntegrationConnection
 from vitals.models.weight import BodyMeasurement, WeightLog
-from vitals.services import modules_service
+from vitals.services.modules import preferences as modules_service
 from vitals.services.portability import llm_projection
 
 pytestmark = pytest.mark.usefixtures("all_modules_on", "owned_by_legacy_subject")

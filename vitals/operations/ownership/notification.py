@@ -35,7 +35,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.proactive import Notification, NotificationDeliveryIntent
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.tenancy_bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
+from vitals.services.tenancy.bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
@@ -48,7 +48,7 @@ from vitals.operations.ownership.hrt_child import (
 from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )

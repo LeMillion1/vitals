@@ -12,7 +12,7 @@ from vitals.enums import Source
 from vitals.models.hevy import DOMAIN, HevyWorkout
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
-from vitals.services import raw_payload_service
+from vitals.services.data_lake import sweep as raw_sweep
 from vitals.services.hevy.ownership import (
     HevyRawPayloadInvariantError,
     _lock_owned_hevy_scope,
@@ -146,8 +146,8 @@ async def reparse_owned_pending(
     *,
     identity: WriteIdentity,
     integration_connection_id: uuid.UUID,
-    limit: int = raw_payload_service.REPARSE_BATCH,
-    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+    limit: int = raw_sweep.REPARSE_BATCH,
+    since_days: int = raw_sweep.REPARSE_WINDOW_DAYS,
 ) -> int:
     """Sweep pending Hevy rows in one exact S/C scope. Does not commit.
 

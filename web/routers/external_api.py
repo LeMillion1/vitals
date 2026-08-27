@@ -84,7 +84,7 @@ async def resolve_external_caller(
     can tell "switched off here" from "my token is wrong".
     """
 
-    from vitals.services import external_api_token_service as tokens
+    from vitals.services.external_api import tokens
 
     presented = _presented(request)
     configured = get_web_config().external_api_token

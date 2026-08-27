@@ -12,14 +12,10 @@ from vitals.enums import UserStatus
 from vitals.models.app_settings import AppSetting
 from vitals.models.identity import HealthSubject, User
 from vitals.models.scoped_settings import SubjectSetting, UserSetting
-from vitals.services import (
-    custom_charts_service,
-    language_service,
-    modules_service,
-)
-from vitals.services.scoped_settings_service import (
-    ScopedSettingKey,
-)
+from vitals.services.charts import configuration as custom_charts_service
+from vitals.services.modules import preferences as modules_service
+from vitals.services.preferences import language as language_service
+from vitals.services.settings.contracts import ScopedSettingKey
 
 
 WEIGHT_SERIES = [{"domain": "weight", "metric_key": "weight.weight_kg"}]

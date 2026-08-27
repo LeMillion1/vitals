@@ -9,14 +9,13 @@ from markupsafe import Markup, escape
 
 from vitals.i18n import t, decimal, get_js_strings, plural
 from vitals.services.supplements.parsing import timing_bucket
-from vitals.services.modules_service import (
-    MODULE_REGISTRY,
-    NAV_RUBRICS,
+from vitals.services.modules.navigation import (
     bottom_slots,
     more_rubrics,
     more_routes,
     nav_modules,
 )
+from vitals.services.modules.registry import MODULE_REGISTRY, NAV_RUBRICS
 
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")

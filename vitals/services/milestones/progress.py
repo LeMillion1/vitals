@@ -43,7 +43,7 @@ async def _current_body_fat(
     only the fallback when there's no BIA data (not a "most recent date" contest)."""
     from vitals.config import load_config
     from vitals.services.weight import measurements as weight_measurements
-    from vitals.services.modules_service import get_enabled_modules
+    from vitals.services.modules.preferences import get_enabled_modules
 
     config = load_config()
     source_pref = config.body_fat_source or "latest"

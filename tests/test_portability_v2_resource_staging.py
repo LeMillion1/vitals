@@ -353,7 +353,7 @@ async def test_registration_failure_cleans_bytes_without_deleting_old_assets(
         raise RuntimeError("synthetic registration failure")
 
     monkeypatch.setattr(
-        resource_staging.file_asset_service,
+        resource_staging.file_lifecycle,
         "register_private_local",
         fail_registration,
     )

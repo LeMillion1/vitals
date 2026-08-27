@@ -1,4 +1,4 @@
-"""Allowlisted bridge between legacy and explicitly scoped settings.
+"""Transactional scoped-setting store with a bounded legacy bridge.
 
 This module is the low-level Stage-2 compatibility boundary.  It deliberately
 has no cache integration: product services own UUID-namespaced caching and move
@@ -12,15 +12,11 @@ from __future__ import annotations
 
 import uuid
 from copy import deepcopy
-from dataclasses import dataclass
-from enum import StrEnum
-from types import MappingProxyType
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import IntegrationConnectionStatus, IntegrationProvider, UserStatus
 from vitals.models.app_settings import AppSetting
 from vitals.models.identity import HealthSubject, User
 from vitals.models.scoped_settings import (
@@ -29,216 +25,21 @@ from vitals.models.scoped_settings import (
     UserSetting,
 )
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.identity_service import acquire_identity_governance_lock
-
-
-class SettingScope(StrEnum):
-    """Supported ownership boundaries for reviewed legacy settings."""
-
-    USER = "user"
-    SUBJECT = "subject"
-    INTEGRATION_CONNECTION = "integration_connection"
-
-
-class ScopedSettingKey(StrEnum):
-    """Legacy keys whose destination scope has been explicitly reviewed."""
-
-    UI_LANGUAGE = "ui_language"
-    ENABLED_MODULES = "enabled_modules"
-    CUSTOM_CHARTS = "custom_charts"
-    GARMIN_WEIGHT_EXPORT_ENABLED = "garmin_weight_export_enabled"
-
-
-@dataclass(frozen=True, slots=True)
-class ScopedSettingRoute:
-    """One allowlisted legacy-to-scoped persistence mapping."""
-
-    scope: SettingScope
-    legacy_key: str
-    model: type[UserSetting | SubjectSetting | IntegrationConnectionSetting]
-    scope_id_field: str
-    required_provider: IntegrationProvider | None = None
-
-
-SCOPED_SETTING_REGISTRY: Mapping[ScopedSettingKey, ScopedSettingRoute] = (
-    MappingProxyType(
-        {
-            ScopedSettingKey.UI_LANGUAGE: ScopedSettingRoute(
-                scope=SettingScope.USER,
-                legacy_key="ui_language",
-                model=UserSetting,
-                scope_id_field="user_id",
-            ),
-            ScopedSettingKey.ENABLED_MODULES: ScopedSettingRoute(
-                scope=SettingScope.SUBJECT,
-                legacy_key="enabled_modules",
-                model=SubjectSetting,
-                scope_id_field="subject_id",
-            ),
-            ScopedSettingKey.CUSTOM_CHARTS: ScopedSettingRoute(
-                scope=SettingScope.SUBJECT,
-                legacy_key="custom_charts",
-                model=SubjectSetting,
-                scope_id_field="subject_id",
-            ),
-            ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED: ScopedSettingRoute(
-                scope=SettingScope.INTEGRATION_CONNECTION,
-                legacy_key="garmin_weight_export_enabled",
-                model=IntegrationConnectionSetting,
-                scope_id_field="integration_connection_id",
-                required_provider=IntegrationProvider.GARMIN,
-            ),
-        }
-    )
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.settings.contracts import (
+    ScopedSettingDriftError,
+    ScopedSettingKey,
+    ScopedSettingOwnershipError,
+    ScopedSettingTargetNotFoundError,
+    ScopedSettingValidationError,
+    SettingScope,
+    _ValidatedRequest,
+    _validate_request,
 )
-
-_SECRET_KEY_MARKERS = (
-    "token",
-    "secret",
-    "password",
-    "api_key",
-    "apikey",
-    "credential",
+from vitals.services.settings.legacy import (
+    _installation_is_still_one_person,
+    _require_legacy_bridge_open,
 )
-
-
-class ScopedSettingError(RuntimeError):
-    """Base class for persisted scoped-setting state failures."""
-
-
-class ScopedSettingValidationError(ValueError):
-    """The requested key, scope, or identifier is not safe to use."""
-
-
-class UnknownScopedSettingKeyError(ScopedSettingValidationError):
-    """A key is not present in the reviewed migration registry."""
-
-
-class ForbiddenScopedSettingKeyError(ScopedSettingValidationError):
-    """A secret-like key was offered to a generic setting store."""
-
-
-class ScopedSettingScopeMismatchError(ScopedSettingValidationError):
-    """A known key was requested through the wrong ownership boundary."""
-
-
-class ScopedSettingTargetNotFoundError(ScopedSettingError):
-    """The requested user, subject, or connection does not exist."""
-
-
-class ScopedSettingOwnershipError(ScopedSettingError):
-    """A connection is not an allowed resource of the requested subject."""
-
-
-class ScopedSettingDriftError(ScopedSettingError):
-    """Legacy and already-created scoped values disagree during mirroring."""
-
-
-class LegacyScopedSettingBridgeClosedError(ScopedSettingError):
-    """Singleton legacy compatibility is unsafe for the persisted identity graph."""
-
-
-@dataclass(frozen=True, slots=True)
-class _ValidatedRequest:
-    key: ScopedSettingKey
-    route: ScopedSettingRoute
-    scope_id: uuid.UUID
-    expected_subject_id: uuid.UUID | None
-
-
-def _as_scope(scope: SettingScope | str) -> SettingScope:
-    try:
-        return SettingScope(scope)
-    except (TypeError, ValueError) as exc:
-        raise ScopedSettingValidationError(
-            f"unknown scoped-setting scope: {scope!r}"
-        ) from exc
-
-
-def _as_key(key: ScopedSettingKey | str) -> ScopedSettingKey:
-    if not isinstance(key, str):
-        raise UnknownScopedSettingKeyError("scoped-setting key must be a string")
-    normalized = key.casefold()
-    if any(marker in normalized for marker in _SECRET_KEY_MARKERS):
-        raise ForbiddenScopedSettingKeyError(
-            "secret-like keys are forbidden in generic scoped settings"
-        )
-    try:
-        return ScopedSettingKey(key)
-    except ValueError as exc:
-        raise UnknownScopedSettingKeyError(
-            f"unknown scoped-setting key: {key!r}"
-        ) from exc
-
-
-def _required_uuid(value: object, *, field: str) -> uuid.UUID:
-    if not isinstance(value, uuid.UUID) or value.int == 0:
-        raise ScopedSettingValidationError(f"{field} must be a non-zero UUID")
-    return value
-
-
-def _optional_uuid(value: object, *, field: str) -> uuid.UUID | None:
-    if value is None:
-        return None
-    return _required_uuid(value, field=field)
-
-
-_SCOPE_ID_FIELD = {
-    SettingScope.USER: "user id",
-    SettingScope.SUBJECT: "health subject id",
-    SettingScope.INTEGRATION_CONNECTION: "integration connection id",
-}
-
-
-def _validate_request(
-    *,
-    scope: SettingScope | str,
-    key: ScopedSettingKey | str,
-    scope_id: uuid.UUID,
-    expected_subject_id: uuid.UUID | None,
-) -> _ValidatedRequest:
-    """Resolve one settings request against the key's registered route.
-
-    ``scope`` names which kind of thing owns the value and ``scope_id`` is that
-    thing's id — one mandatory pair, not three optional ones. The three-id
-    spelling this replaced let a caller reach a function with every id left out
-    and be told so only at runtime; there was no way to write the call without a
-    scope, but also no way to see from the signature that one was required.
-
-    ``expected_subject_id`` is not a scope. It applies to connection-scoped keys
-    only and asserts which person the connection belongs to, so a caller holding
-    a connection id from elsewhere cannot read settings off somebody else's
-    integration.
-    """
-
-    parsed_scope = _as_scope(scope)
-    parsed_key = _as_key(key)
-    route = SCOPED_SETTING_REGISTRY[parsed_key]
-    if route.scope is not parsed_scope:
-        raise ScopedSettingScopeMismatchError(
-            f"{parsed_key.value!r} belongs to {route.scope.value!r}, "
-            f"not {parsed_scope.value!r}"
-        )
-
-    resolved_id = _required_uuid(scope_id, field=_SCOPE_ID_FIELD[parsed_scope])
-    if parsed_scope is SettingScope.INTEGRATION_CONNECTION:
-        resolved_subject_id = _optional_uuid(
-            expected_subject_id, field="expected_subject_id"
-        )
-    else:
-        if expected_subject_id is not None:
-            raise ScopedSettingScopeMismatchError(
-                "expected_subject_id applies to integration-connection settings "
-                "only; a user or subject setting is already scoped by its own id"
-            )
-        resolved_subject_id = None
-
-    return _ValidatedRequest(
-        key=parsed_key,
-        route=route,
-        scope_id=resolved_id,
-        expected_subject_id=resolved_subject_id,
-    )
 
 
 async def _require_scope_target(
@@ -296,81 +97,6 @@ async def _require_scope_target(
             f"health subject {request.expected_subject_id}"
         )
     return connection
-
-
-async def _installation_is_still_one_person(session: AsyncSession) -> bool:
-    """Whether the legacy ``app_settings`` singleton still means anything.
-
-    Every route here has two representations: the scoped row, which belongs to
-    one user, subject or connection, and one global ``app_settings`` key, which
-    belongs to the installation. The second only *means* something while the
-    installation is one person — with two subjects, "the module map" is not a
-    thing that exists, and the row is nobody's in particular.
-
-    So this is not a permission check. It is the question of whether the
-    compatibility half of the bridge still has a subject to be about.
-    """
-
-    rows = list(
-        await session.execute(select(HealthSubject.id).order_by(HealthSubject.id).limit(2))
-    )
-    return len(rows) == 1
-
-
-async def _require_legacy_bridge_open(
-    session: AsyncSession,
-    request: _ValidatedRequest,
-    *,
-    connection: IntegrationConnection | None,
-) -> None:
-    """Fail closed unless the legacy singleton has one unambiguous active owner.
-
-    The caller acquires the identity-governance advisory lock before entering
-    this function.  Locking the subject/owner rows then keeps the checked graph
-    stable until its transaction ends.  Future registration and identity writes
-    use the same governance lock.
-    """
-
-    rows = list(
-        await session.execute(
-            select(
-                HealthSubject.id,
-                HealthSubject.owner_user_id,
-                User.status,
-            )
-            .join(User, User.id == HealthSubject.owner_user_id)
-            .order_by(HealthSubject.id)
-            .limit(2)
-            .with_for_update()
-        )
-    )
-    if len(rows) != 1:
-        raise LegacyScopedSettingBridgeClosedError(
-            "legacy scoped-setting compatibility requires exactly one health subject"
-        )
-
-    legacy_subject_id, legacy_owner_user_id, owner_status = rows[0]
-    if owner_status != UserStatus.ACTIVE.value:
-        raise LegacyScopedSettingBridgeClosedError(
-            "legacy scoped-setting compatibility requires an active subject owner"
-        )
-
-    if request.route.scope is SettingScope.USER:
-        request_matches = request.scope_id == legacy_owner_user_id
-    elif request.route.scope is SettingScope.SUBJECT:
-        request_matches = request.scope_id == legacy_subject_id
-    else:
-        assert connection is not None
-        request_matches = connection.subject_id == legacy_subject_id
-        if connection.status == IntegrationConnectionStatus.RETIRED.value:
-            raise LegacyScopedSettingBridgeClosedError(
-                "retired integration connections cannot use legacy compatibility"
-            )
-
-    if not request_matches:
-        raise LegacyScopedSettingBridgeClosedError(
-            "requested setting scope is not owned by the legacy health subject"
-        )
 
 
 async def _scoped_row(
@@ -658,19 +384,6 @@ async def mirror_legacy_setting(
 
 
 __all__ = [
-    "SCOPED_SETTING_REGISTRY",
-    "ForbiddenScopedSettingKeyError",
-    "LegacyScopedSettingBridgeClosedError",
-    "ScopedSettingDriftError",
-    "ScopedSettingError",
-    "ScopedSettingKey",
-    "ScopedSettingOwnershipError",
-    "ScopedSettingRoute",
-    "ScopedSettingScopeMismatchError",
-    "ScopedSettingTargetNotFoundError",
-    "ScopedSettingValidationError",
-    "SettingScope",
-    "UnknownScopedSettingKeyError",
     "get_scoped_setting",
     "mirror_legacy_setting",
     "set_scoped_setting",

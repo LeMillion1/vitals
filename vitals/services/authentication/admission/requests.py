@@ -33,7 +33,7 @@ from vitals.services.authentication.admission._shared import (
     verified_email as validate_verified_email,
 )
 from vitals.services.authentication.registration import RegistrationMode
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 
 async def submit_request(

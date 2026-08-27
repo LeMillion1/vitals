@@ -141,7 +141,7 @@ def test_llm_generic_row_dump_has_no_uuid_or_private_plumbing():
 async def test_full_backup_rebinds_subject_and_nulls_other_private_plumbing(
     db_session, monkeypatch
 ):
-    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+    from vitals.services.identity.bootstrap import bootstrap_legacy_owner
 
     owner = await bootstrap_legacy_owner(
         db_session,
@@ -265,7 +265,7 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
     from vitals.models.system_alert import SystemAlert
     from vitals.models.weight import WeightLog
     from vitals.services.conflicts import catalog
-    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+    from vitals.services.identity.bootstrap import bootstrap_legacy_owner
 
     owner = await bootstrap_legacy_owner(
         db_session,
@@ -442,7 +442,7 @@ async def test_legacy_v1_required_row_without_marker_rebinds_to_local_subject(
     db_session,
 ):
     from vitals.models.weight import WeightLog
-    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+    from vitals.services.identity.bootstrap import bootstrap_legacy_owner
 
     owner = await bootstrap_legacy_owner(
         db_session,
@@ -480,7 +480,7 @@ async def test_legacy_v1_required_row_without_marker_rebinds_to_local_subject(
 async def test_v1_export_and_import_fail_closed_with_multiple_subjects(db_session):
     from vitals.models.identity import HealthSubject, User
     from vitals.models.weight import WeightLog
-    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+    from vitals.services.identity.bootstrap import bootstrap_legacy_owner
 
     owner = await bootstrap_legacy_owner(
         db_session,

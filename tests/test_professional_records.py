@@ -27,7 +27,7 @@ from vitals.enums import (
 )
 from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.services.care import invitations, professionals, records, relationships
-from vitals.services.access_resolution import resolve_access_context
+from vitals.services.authorization.subject_access import resolve_access_context
 
 
 async def _user(session, slug: str, *, roles=()) -> User:

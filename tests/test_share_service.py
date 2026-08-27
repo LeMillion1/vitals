@@ -29,7 +29,7 @@ share_service = SimpleNamespace(
         if not name.startswith("_")
     }
 )
-from vitals.services.modules_service import MODULE_REGISTRY
+from vitals.services.modules.registry import MODULE_REGISTRY
 from vitals.utils.timeutils import now_local
 from vitals.utils.passwords import verify_password
 from web.config import get_web_config

@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import FileAssetPurpose, FileStorageBackend
 from vitals.models.identity import HealthSubject, User
 from vitals.persistence import file_storage
-from vitals.services import file_asset_service
+from vitals.services.files import lifecycle as file_lifecycle
 from vitals.services.portability.archive_reader import (
     ValidatedArchive,
     open_validated_resource,
@@ -342,7 +342,7 @@ async def stage_record_resources(
                 sha256_hex=copied.sha256_hex,
             )
             written.append(new_object)
-            asset = await file_asset_service.register_private_local(
+            asset = await file_lifecycle.register_private_local(
                 session,
                 subject_id=subject_id,
                 uploaded_by_user_id=uploader_id,

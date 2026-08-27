@@ -32,9 +32,8 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.analytics import chart_registry
-from vitals.services.scoped_settings_service import (
-    ScopedSettingKey,
-    SettingScope,
+from vitals.services.settings.contracts import ScopedSettingKey, SettingScope
+from vitals.services.settings.scoped_store import (
     get_scoped_setting,
     update_scoped_setting,
 )
@@ -291,3 +290,19 @@ async def prime_cache(
         )
     except Exception:
         logger.warning("custom_charts: Redis prime failed", exc_info=True)
+
+
+__all__ = [
+    "ChartConfigError",
+    "MAX_CHARTS",
+    "MAX_SERIES_PER_CHART",
+    "REDIS_KEY",
+    "REDIS_TTL",
+    "SETTINGS_KEY",
+    "cache_key",
+    "create_chart",
+    "delete_chart",
+    "get_chart",
+    "list_charts",
+    "prime_cache",
+]

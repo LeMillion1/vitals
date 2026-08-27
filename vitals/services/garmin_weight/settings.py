@@ -17,7 +17,8 @@ from vitals.models.garmin import (
 )
 from vitals.models.scoped_settings import IntegrationConnectionSetting
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services import scoped_settings_service
+from vitals.services.settings import contracts as scoped_settings_contracts
+from vitals.services.settings import scoped_store
 from vitals.services.alerts import legacy as alerts_service_legacy
 from vitals.services.conflicts import engine
 from vitals.services.garmin_weight.contracts import (
@@ -57,10 +58,10 @@ async def is_enabled(session: AsyncSession) -> bool:
         )
         if connection_status == IntegrationConnectionStatus.RETIRED.value:
             return False
-        value = await scoped_settings_service.get_scoped_setting(
+        value = await scoped_store.get_scoped_setting(
             session,
-            scope=scoped_settings_service.SettingScope.INTEGRATION_CONNECTION,
-            key=scoped_settings_service.ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED,
+            scope=scoped_settings_contracts.SettingScope.INTEGRATION_CONNECTION,
+            key=scoped_settings_contracts.ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED,
             expected_subject_id=context.identity.subject_id,
             scope_id=context.integration_connection_id,
             default=False,
@@ -168,10 +169,10 @@ async def set_enabled_scoped(
             and connection_status != IntegrationConnectionStatus.RETIRED.value
         )
         if bridge_is_open:
-            await scoped_settings_service.set_scoped_setting(
+            await scoped_store.set_scoped_setting(
                 session,
-                scope=scoped_settings_service.SettingScope.INTEGRATION_CONNECTION,
-                key=(scoped_settings_service.ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED),
+                scope=scoped_settings_contracts.SettingScope.INTEGRATION_CONNECTION,
+                key=(scoped_settings_contracts.ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED),
                 value=clean,
                 expected_subject_id=context.identity.subject_id,
                 scope_id=context.integration_connection_id,

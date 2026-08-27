@@ -27,8 +27,8 @@ from sqlalchemy.pool import NullPool
 
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
-from vitals.services.identity_bootstrap import bootstrap_legacy_owner
-from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+from vitals.services.identity.bootstrap import bootstrap_legacy_owner
+from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
 from vitals.ownership import PRE_OWNERSHIP_CONTRACT_REVISION
 
 

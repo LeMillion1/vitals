@@ -25,7 +25,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset
 from vitals.models.weight import DOMAIN, WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import file_asset_service
+from vitals.services.files import contracts as file_contracts
 from vitals.services.conflicts import engine
 from vitals.utils.timeutils import today_local
 
@@ -309,9 +309,9 @@ async def _validate_body_scan_ai_origin(
     asset = await session.scalar(
         asset_stmt.execution_options(populate_existing=True)
     )
-    live_file = asset is not None and file_asset_service.local_asset_is_live(asset)
+    live_file = asset is not None and file_contracts.local_asset_is_live(asset)
     retired_file = (
-        asset is not None and file_asset_service.local_asset_is_retired(asset)
+        asset is not None and file_contracts.local_asset_is_retired(asset)
     )
     if (
         asset is None

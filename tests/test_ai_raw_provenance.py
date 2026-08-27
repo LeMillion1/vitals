@@ -40,7 +40,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection, PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import platform_admin_service
+from vitals.services.platform import authorization as platform_authorization
 from web.config import get_web_config
 
 NOW = datetime(2026, 8, 20, 12, tzinfo=UTC)
@@ -93,7 +93,7 @@ def _identity(roots) -> WriteIdentity:
 async def _configure_gateway(session, roots) -> PlatformIntegrationConnection:
     if session.get_bind().dialect.name == "sqlite":
         await session.execute(text("PRAGMA foreign_keys=ON"))
-    prepared = await platform_admin_service.prepare_platform_admin(
+    prepared = await platform_authorization.prepare_platform_admin(
         session,
         actor_username=get_web_config().auth_username,
     )

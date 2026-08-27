@@ -33,7 +33,7 @@ async def _garmin_weight(db_session, owner_write, value: float, *, on_date):
         IntegrationProvider,
     )
     from vitals.models.tenancy import IntegrationConnection
-    from vitals.services import raw_payload_service
+    from vitals.services.data_lake import raw_payloads
 
     connection = await db_session.scalar(
         select(IntegrationConnection).where(
@@ -51,7 +51,7 @@ async def _garmin_weight(db_session, owner_write, value: float, *, on_date):
         )
         db_session.add(connection)
         await db_session.flush()
-    raw = await raw_payload_service.upsert_owned_raw_payload(
+    raw = await raw_payloads.upsert_owned_raw_payload(
         db_session,
         identity=owner_write.identity,
         integration_connection_id=connection.id,
@@ -762,9 +762,9 @@ async def test_delete_noise_marker(db_session, owner_write):
 
 async def test_delete_progress_photo(db_session, owner_write):
     from vitals.enums import FileAssetPurpose
-    from vitals.services import file_asset_service
+    from vitals.services.files import lifecycle as file_lifecycle
 
-    asset = await file_asset_service.register_legacy_local(
+    asset = await file_lifecycle.register_legacy_local(
         db_session,
         subject_id=owner_write.subject_id,
         uploaded_by_user_id=owner_write.identity.actor_user_id,

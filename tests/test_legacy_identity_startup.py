@@ -11,10 +11,10 @@ from vitals.enums import UserStatus
 from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.models.scoped_settings import SubjectSetting
 from vitals.persistence.rls import bound_subject, in_platform_scope
-from vitals.services import modules_service
-from vitals.services.identity_bootstrap import LegacyOwnerIdentityMismatchError
+from vitals.services.modules import preferences as modules_service
+from vitals.services.identity.bootstrap import LegacyOwnerIdentityMismatchError
 from vitals.services.proactive.preferences import codec as preference_codec
-from vitals.services.scoped_settings_service import ScopedSettingKey
+from vitals.services.settings.contracts import ScopedSettingKey
 from vitals.utils.passwords import hash_password
 from web.main import _bootstrap_legacy_identity, _load_oidc_identity_state
 

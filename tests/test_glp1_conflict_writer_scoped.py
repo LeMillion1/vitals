@@ -26,7 +26,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.models.weight import NoiseMarker, WeightLog
 from vitals.ownership import WriteIdentity
-from vitals.services import modules_service
+from vitals.services.modules import preferences as modules_service
 from vitals.services.conflicts import engine
 
 
@@ -1271,7 +1271,7 @@ async def test_postgres_legacy_phase_write_serializes_subject_governance(
     db_session,
     legacy_owner_roots,
 ):
-    from vitals.services.identity_service import acquire_identity_governance_lock
+    from vitals.services.identity.governance import acquire_identity_governance_lock
 
     assert db_session.bind is not None
     factory = async_sessionmaker(

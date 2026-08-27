@@ -11,26 +11,30 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from vitals.enums import UserRoleName, UserStatus
 from vitals.models.identity import AuditEvent, HealthSubject, User, UserRole
 from vitals.persistence.rls import bound_subject, in_platform_scope
-from vitals.services.identity_bootstrap import (
+from vitals.services.identity.bootstrap import (
     LegacyOwnerConfigurationError,
     LegacyOwnerCredentialMismatchError,
     LegacyOwnerIdentityMismatchError,
     LegacyOwnerStateMismatchError,
     bootstrap_legacy_owner,
 )
-from vitals.services.identity_service import (
+from vitals.services.identity.contracts import (
     IdentityStateConflictError,
     IdentityValidationError,
     LastActivePlatformSuperadminError,
     PasswordHashDowngradeError,
     PasswordHashMismatchError,
+)
+from vitals.services.identity.credentials import (
+    retire_password_hash,
+    rotate_password_hash,
+)
+from vitals.services.identity.normalization import normalize_username
+from vitals.services.identity.queries import has_active_platform_superadmin
+from vitals.services.identity.roles import (
     assign_role,
     change_user_status,
-    has_active_platform_superadmin,
-    normalize_username,
-    retire_password_hash,
     revoke_role,
-    rotate_password_hash,
 )
 from vitals.utils.passwords import hash_password
 

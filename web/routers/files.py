@@ -23,7 +23,8 @@ from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services import file_asset_service
+from vitals.services.files import contracts as file_contracts
+from vitals.services.files import queries as file_queries
 from web.config import get_web_config
 from web.deps import get_session, require_auth
 from web.templating import STATIC_DIR
@@ -57,10 +58,8 @@ async def download(
 
     # A session proves who is driving the browser, not whose medical file this
     # is. Resolve the subject independently and let the lookup do the deciding.
-    from vitals.services.legacy_ownership import (
-        LegacyOwnershipError,
-        resolve_legacy_ownership_context,
-    )
+    from vitals.services.tenancy.contracts import LegacyOwnershipError
+    from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 
     try:
         ownership = await resolve_legacy_ownership_context(db, actor_username=username)
@@ -68,12 +67,12 @@ async def download(
         raise _MISSING from None
 
     try:
-        asset = await file_asset_service.resolve_for_download(
+        asset = await file_queries.resolve_for_download(
             db,
             opaque_key=key,
             subject_id=ownership.subject_id,
         )
-    except file_asset_service.FileAssetServiceError:
+    except file_contracts.FileAssetServiceError:
         raise _MISSING from None
 
     try:

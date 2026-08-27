@@ -58,8 +58,8 @@ from vitals.models.scoped_settings import (
     IntegrationConnectionSetting,
 )
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.identity_service import (
-    PreIdentityCompatibilityError,
+from vitals.services.identity.contracts import PreIdentityCompatibilityError
+from vitals.services.identity.governance import (
     acquire_identity_governance_lock,
     authorize_pre_identity_compatibility_transaction,
 )

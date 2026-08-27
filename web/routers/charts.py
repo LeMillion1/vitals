@@ -12,9 +12,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services import chart_data_service, custom_charts_service
-from vitals.services.custom_charts_service import ChartConfigError
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.charts import configuration as custom_charts_service
+from vitals.services.charts import data as chart_data_service
+from vitals.services.charts.configuration import ChartConfigError
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from web.deps import get_redis, get_session, require_auth
 from web.templating import templates
 

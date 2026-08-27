@@ -24,10 +24,8 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.models.identity import HealthSubject
 from vitals.models.scoped_settings import SubjectSetting
 from vitals.services.conflicts.catalog import load_rule_catalog
-from vitals.services.identity_service import (
-    UnsupportedIdentityDatabaseError,
-    acquire_identity_governance_lock,
-)
+from vitals.services.identity.contracts import UnsupportedIdentityDatabaseError
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 
 SETTING_KEY = "conflict_rule_activation"

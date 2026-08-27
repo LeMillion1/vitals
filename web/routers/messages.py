@@ -26,11 +26,11 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.services.care import threads as care_threads
-from vitals.services.access_resolution import (
+from vitals.services.authorization.subject_access import (
     AccessResolutionError,
     resolve_access_context,
 )
-from vitals.services.legacy_ownership import NoPersonalRecordError
+from vitals.services.tenancy.contracts import NoPersonalRecordError
 from web.care_context import principal_user_id
 from web.deps import get_session, require_auth
 

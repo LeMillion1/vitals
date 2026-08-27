@@ -13,7 +13,8 @@ from vitals.models.tenancy import FileAsset
 from vitals.models.weight import DOMAIN, ProgressPhoto
 from vitals.ownership import WriteIdentity
 from vitals.ownership_transition import bridges as ownership_bridges
-from vitals.services import file_asset_service
+from vitals.services.files import contracts as file_contracts
+from vitals.services.files import lifecycle as file_lifecycle
 from vitals.services.conflicts import engine
 
 from .contracts import ProgressPhotoDeletion, ProgressPhotoOwnershipError
@@ -238,7 +239,7 @@ async def _progress_photo_scope_rows(
             asset.subject_id != subject_id
             or asset.uploaded_by_user_id not in expected_uploaders
             or asset.purpose != FileAssetPurpose.PROGRESS_PHOTO.value
-            or not file_asset_service.local_asset_is_live(asset)
+            or not file_contracts.local_asset_is_live(asset)
             or asset.storage_ref != row.file_key
         ):
             raise ProgressPhotoOwnershipError(
@@ -296,7 +297,7 @@ async def add_progress_photo(
         asset.subject_id != identity.subject_id
         or asset.uploaded_by_user_id != identity.actor_user_id
         or asset.purpose != FileAssetPurpose.PROGRESS_PHOTO.value
-        or not file_asset_service.local_asset_is_live(asset)
+        or not file_contracts.local_asset_is_live(asset)
     ):
         raise ProgressPhotoOwnershipError(
             "progress photo file asset is not authoritative in subject scope"
@@ -467,7 +468,7 @@ async def delete_progress_photo(
             raise ProgressPhotoOwnershipError(
                 "progress photo file asset disappeared during deletion"
             )
-        await file_asset_service.mark_local_deleted(
+        await file_lifecycle.mark_local_deleted(
             session,
             file_asset_id=row.file_asset_id,
             subject_id=identity.subject_id,

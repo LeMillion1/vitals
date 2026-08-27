@@ -33,8 +33,8 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
-from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.tenancy_bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.tenancy.bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
 from vitals.utils.timeutils import now_utc
 
 RAW_OWNERSHIP_BACKFILL_PHASE = "stage3.raw_payloads.v1"

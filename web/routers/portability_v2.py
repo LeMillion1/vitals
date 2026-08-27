@@ -21,8 +21,8 @@ from vitals.operations.portability.import_v2 import (
     ImportV2OperationError,
     import_validated_record_v2,
 )
-from vitals.services.access_resolution import AccessDeniedError, require_access
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.authorization.subject_access import AccessDeniedError, require_access
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from vitals.services.portability.archive_reader import (
     ArchiveReadError,
     open_validated_encrypted_archive,

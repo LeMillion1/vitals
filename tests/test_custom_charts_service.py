@@ -8,8 +8,8 @@ import json
 import pytest
 
 from vitals.models.scoped_settings import SubjectSetting
-from vitals.services import custom_charts_service as svc
-from vitals.services.custom_charts_service import ChartConfigError
+from vitals.services.charts import configuration as svc
+from vitals.services.charts.configuration import ChartConfigError
 
 
 WEIGHT_SERIES = [{"domain": "weight", "metric_key": "weight.weight_kg"}]

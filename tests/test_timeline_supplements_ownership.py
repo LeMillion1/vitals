@@ -1088,7 +1088,7 @@ async def test_another_persons_supplement_is_untouched_and_indistinguishable(
 async def test_mcp_v1_stamps_owner_and_mcp_source(
     db_session, session_factory, legacy_owner_roots, monkeypatch
 ):
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as modules_service
 
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     for key in ("timeline", "supplements"):
@@ -1147,7 +1147,7 @@ async def test_mcp_v1_reports_another_persons_supplement_as_missing(
     says nothing about whether the row exists for somebody else.
     """
 
-    from vitals.services import modules_service
+    from vitals.services.modules import preferences as modules_service
 
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     for key in ("timeline", "supplements"):

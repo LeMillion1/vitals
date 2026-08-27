@@ -22,8 +22,11 @@ from vitals.models.identity import (
     UserFederatedIdentity,
     UserRole,
 )
-from vitals.services import identity_service, platform_admin_service
 from vitals.services.authentication import federation, provisioning
+from vitals.services.identity.contracts import IdentityValidationError
+from vitals.services.identity.normalization import normalize_username
+from vitals.services.identity.roles import assign_role, revoke_role
+from vitals.services.platform import authorization as platform_authorization
 
 
 class PlatformOperatorError(RuntimeError):
@@ -81,8 +84,8 @@ async def _user_id_by_username(
     username: str,
 ) -> uuid.UUID:
     try:
-        lookup_key = identity_service.normalize_username(username).lookup_key
-    except identity_service.IdentityValidationError as exc:
+        lookup_key = normalize_username(username).lookup_key
+    except IdentityValidationError as exc:
         raise PlatformOperatorTargetNotFound(
             "the target account does not exist"
         ) from exc
@@ -105,7 +108,7 @@ async def provision_platform_operator(
     """Create one exact recordless operator and provider binding; never commit."""
 
     issuer, subject = _provider_key(issuer=issuer, subject=subject)
-    prepared = await platform_admin_service.prepare_platform_admin(
+    prepared = await platform_authorization.prepare_platform_admin(
         session,
         actor_username=actor_username,
     )
@@ -121,8 +124,8 @@ async def provision_platform_operator(
         )
 
     try:
-        normalized = identity_service.normalize_username(username)
-    except identity_service.IdentityValidationError as exc:
+        normalized = normalize_username(username)
+    except IdentityValidationError as exc:
         raise PlatformOperatorError(str(exc)) from exc
     if await session.scalar(
         select(User.id).where(User.normalized_username == normalized.lookup_key)
@@ -147,7 +150,7 @@ async def provision_platform_operator(
     )
     session.add(user)
     await session.flush()
-    await identity_service.assign_role(
+    await assign_role(
         session,
         user_id=user.id,
         role=UserRoleName.PLATFORM_SUPERADMIN,
@@ -175,7 +178,7 @@ async def revoke_health_owner_platform_admin(
     """Transfer control from a health owner to a proven operator; never commit."""
 
     issuer = _exact_provider_value(name="issuer", value=issuer)
-    prepared = await platform_admin_service.prepare_platform_admin(
+    prepared = await platform_authorization.prepare_platform_admin(
         session,
         actor_username=actor_username,
     )
@@ -250,7 +253,7 @@ async def revoke_health_owner_platform_admin(
         raise PlatformOperatorShapeError(
             "the target must be an active member who owns a health record"
         )
-    changed = await identity_service.revoke_role(
+    changed = await revoke_role(
         session,
         user_id=target_user_id,
         role=UserRoleName.PLATFORM_SUPERADMIN,

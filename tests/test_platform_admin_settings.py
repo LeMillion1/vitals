@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from vitals.enums import UserRoleName
 from vitals.models.identity import AuditEvent, McpAccessToken, UserRole
-from vitals.services import platform_admin_service
+from vitals.services.platform import authorization as platform_authorization
 from web.config import get_web_config
 
 
@@ -406,14 +406,14 @@ async def test_platform_admin_capability_expires_with_transaction(
     db_session,
     legacy_owner_roots,
 ):
-    prepared = await platform_admin_service.prepare_platform_admin(
+    prepared = await platform_authorization.prepare_platform_admin(
         db_session,
         actor_username=get_web_config().auth_username,
     )
     await db_session.commit()
 
-    with pytest.raises(platform_admin_service.PlatformAdminCapabilityError):
-        await platform_admin_service.record_openrouter_configuration_change(
+    with pytest.raises(platform_authorization.PlatformAdminCapabilityError):
+        await platform_authorization.record_openrouter_configuration_change(
             db_session,
             prepared=prepared,
             changed_fields=("digest_model",),

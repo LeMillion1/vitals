@@ -198,7 +198,7 @@ async def _garmin_weight(db_session, owner_write, value: float, *, on_date: date
     """
     from vitals.enums import Domain, IntegrationProvider
     from vitals.models.tenancy import IntegrationConnection
-    from vitals.services import raw_payload_service
+    from vitals.services.data_lake import raw_payloads
 
     connection = await db_session.scalar(
         select(IntegrationConnection).where(
@@ -206,7 +206,7 @@ async def _garmin_weight(db_session, owner_write, value: float, *, on_date: date
             IntegrationConnection.provider == IntegrationProvider.GARMIN.value,
         )
     )
-    raw = await raw_payload_service.upsert_owned_raw_payload(
+    raw = await raw_payloads.upsert_owned_raw_payload(
         db_session,
         identity=owner_write.identity,
         integration_connection_id=connection.id,

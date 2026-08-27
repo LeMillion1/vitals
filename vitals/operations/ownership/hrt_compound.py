@@ -44,7 +44,7 @@ from vitals.services.hrt.records import (
     HrtCatalogIntegrityError,
     _require_curated_compound_integrity,
 )
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )

@@ -4,7 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from vitals.services import modules_service
+from vitals.services.modules import preferences as module_preferences
+from vitals.services.modules.registry import CORE_KEYS, OPTIONAL_KEYS
 
 
 @dataclass(frozen=True)
@@ -36,14 +37,14 @@ def register_module_settings_tools(
         session_factory = deps.get_session_factory()
         async with session_factory() as session:
             ownership = await deps.legacy_owner(session)
-            enabled = await modules_service.get_enabled_modules(
+            enabled = await module_preferences.get_enabled_modules(
                 session,
                 subject_id=ownership.subject_id,
             )
         return {
             "enabled": enabled,
-            "core": sorted(modules_service.CORE_KEYS),
-            "optional": sorted(modules_service.OPTIONAL_KEYS),
+            "core": sorted(CORE_KEYS),
+            "optional": sorted(OPTIONAL_KEYS),
         }
 
     @server.tool()
@@ -55,16 +56,16 @@ def register_module_settings_tools(
         async with session_factory() as session:
             ownership = await deps.legacy_owner(session)
             try:
-                state = await modules_service.set_module_enabled(
+                state = await module_preferences.set_module_enabled(
                     session,
                     key=key,
                     enabled=enabled,
                     subject_id=ownership.subject_id,
                 )
-            except modules_service.ModuleToggleError as exc:
+            except module_preferences.ModuleToggleError as exc:
                 return {"error": str(exc)}
             await session.commit()
-            await modules_service.prime_cache(
+            await module_preferences.prime_cache(
                 deps.get_redis_client(),
                 state,
                 subject_id=ownership.subject_id,

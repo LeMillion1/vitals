@@ -14,7 +14,7 @@ from vitals.enums import Source, UserStatus
 from vitals.models.hrt import HrtCycle, HrtCycleItem, HrtDose, HrtSideEffect
 from vitals.models.identity import HealthSubject, User
 from vitals.ownership import WriteIdentity
-from vitals.services import modules_service
+from vitals.services.modules import preferences as modules_service
 from vitals.services.conflicts import engine
 from vitals.services.hrt import catalog, cycles
 

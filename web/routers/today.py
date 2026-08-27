@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services import today_service
+from vitals.services.dashboard import today as today_service
 from vitals.services.conflicts import engine
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth

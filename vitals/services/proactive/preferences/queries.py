@@ -11,11 +11,9 @@ from vitals.enums import IntegrationConnectionType, IntegrationProvider, UserSta
 from vitals.models.identity import HealthSubject, User
 from vitals.models.scoped_settings import IntegrationConnectionSetting, SubjectSetting
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.identity_service import (
-    IdentityValidationError,
-    acquire_identity_governance_lock,
-    normalize_username,
-)
+from vitals.services.identity.contracts import IdentityValidationError
+from vitals.services.identity.governance import acquire_identity_governance_lock
+from vitals.services.identity.normalization import normalize_username
 from vitals.services.proactive.preferences.codec import (
     _decode_bundle,
     _decode_delivery,
@@ -55,7 +53,7 @@ async def resolve_legacy_preferences_scope(
 ) -> ProactivePreferencesScope:
     """Resolve the exact-one subject and both connection partitions."""
 
-    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+    from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 
     ownership = await resolve_legacy_ownership_context(
         session,

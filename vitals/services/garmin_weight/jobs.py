@@ -39,7 +39,7 @@ from vitals.services.garmin_weight.outbox import (
     resolve_scoped_export_context,
 )
 from vitals.services.garmin_weight.settings import is_enabled
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.services.proactive.preferences import legacy as preference_legacy
 
 logger = logging.getLogger(__name__)
@@ -230,7 +230,7 @@ async def _export_job_pre_identity_legacy(session, *, redis=None) -> None:
     from vitals.i18n import current_lang
     from vitals.integrations.garmin_client import GarminClient
     from vitals.services.garmin.alerts import refresh_token_cache_alert
-    from vitals.services.language_service import get_language
+    from vitals.services.preferences.language import get_language
 
     await preference_legacy.get_pre_identity_legacy_prefs(session)
     if not await is_enabled(session):
@@ -258,8 +258,8 @@ async def export_job(
     """Scheduled scoped entry point for the sole registration-off owner graph."""
     from vitals.i18n import current_lang
     from vitals.integrations.garmin_client import GarminClient
-    from vitals.services.language_service import get_language
-    from vitals.services.legacy_ownership import LegacyOwnershipError
+    from vitals.services.preferences.language import get_language
+    from vitals.services.tenancy.contracts import LegacyOwnershipError
 
     async with session_factory() as session:
         await acquire_identity_governance_lock(session)

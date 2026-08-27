@@ -47,7 +47,7 @@ from vitals.services import (
 from vitals.services.garmin import ingestion as garmin_ingestion
 from vitals.services.garmin import jobs as garmin_jobs
 from vitals.services.garmin import queries as garmin_queries
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from vitals.services.proactive import channels, compose
 from vitals.services.proactive.brief import context as brief_context
 from vitals.services.proactive.brief import contracts as brief_contracts

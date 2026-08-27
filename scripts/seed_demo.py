@@ -57,7 +57,7 @@ from vitals.models.nutrition import MealLog
 from vitals.models.skincare import SkincareLog, SkincareProduct
 from vitals.models.supplements import Supplement
 from vitals.models.weight import BodyMeasurement, WeightLog
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.utils.timeutils import today_local
 
 random.seed(42)

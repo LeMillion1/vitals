@@ -26,7 +26,7 @@ from vitals.models.professional import (
     ConsentGrant,
     ProfessionalProfile,
 )
-from vitals.services.identity_service import normalize_username
+from vitals.services.identity.normalization import normalize_username
 from vitals.utils.timeutils import now_utc
 
 

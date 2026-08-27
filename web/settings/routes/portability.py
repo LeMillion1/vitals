@@ -11,12 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.access import PolicyAction, PolicyResourceType
 from vitals.i18n import t
 from vitals.operations.ownership import portability_v1
-from vitals.services.access_resolution import AccessDeniedError, require_access
-from vitals.services.installation_operator import (
+from vitals.services.authorization.subject_access import AccessDeniedError, require_access
+from vitals.services.authorization.installation import (
     NotAnOperator,
     require_installation_operator_user,
 )
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from vitals.services.portability import llm_projection, v1_contract, v1_export, v1_import
 from vitals.utils.timeutils import today_local
 from web.care_context import principal_user_id
@@ -62,7 +62,7 @@ async def _authorize_installation_operation(
     Restoring a backup replaces portable data for everybody in the database, and
     restarting takes the whole process down. Neither is a question about one
     subject, so neither goes through the subject-scoped policy — see
-    ``vitals.services.installation_operator`` for why passing the caller's own
+    ``vitals.services.authorization.installation`` for why passing the caller's own
     subject in would read as a check while always saying yes.
     """
 

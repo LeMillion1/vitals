@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import UserStatus
 from vitals.models.identity import HealthSubject, User
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity.governance import acquire_identity_governance_lock
 
 
 RETIRED_SIGNAL_OWNERSHIP_BACKFILL_PHASE = "stage3.retired_signals.v1"

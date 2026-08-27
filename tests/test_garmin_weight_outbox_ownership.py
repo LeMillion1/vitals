@@ -29,7 +29,7 @@ from vitals.models.tenancy import IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.services.conflicts import engine
-from vitals.services.scoped_settings_service import ScopedSettingKey
+from vitals.services.settings.contracts import ScopedSettingKey
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped

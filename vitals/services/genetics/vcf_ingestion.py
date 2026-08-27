@@ -10,7 +10,7 @@ from vitals.enums import Source
 from vitals.models.genetics import DOMAIN, GeneticVariant
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
-from vitals.services import raw_payload_service
+from vitals.services.data_lake import raw_payloads
 from vitals.services.conflicts import engine
 from vitals.services.genetics.vcf import INTERPRETATIONS, ParsedVariant, interpret
 from vitals.utils.timeutils import now_local
@@ -215,7 +215,7 @@ async def ingest_vcf_batch(
 
     # A raw payload with an actor but no subject is broken provenance.
     await _reject_partial_legacy_raws(session)
-    raw = await raw_payload_service.upsert_owned_raw_payload(
+    raw = await raw_payloads.upsert_owned_raw_payload(
         session,
         identity=identity,
         integration_connection_id=None,

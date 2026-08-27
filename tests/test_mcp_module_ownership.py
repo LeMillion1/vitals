@@ -8,7 +8,7 @@ from vitals.enums import UserStatus
 from vitals.models.app_settings import AppSetting
 from vitals.models.identity import HealthSubject, User
 from vitals.models.scoped_settings import SubjectSetting
-from vitals.services import modules_service
+from vitals.services.modules import preferences as modules_service
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 

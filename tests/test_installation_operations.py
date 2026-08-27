@@ -34,7 +34,7 @@ from sqlalchemy import select
 from vitals.access import AccessContext, Principal
 from vitals.enums import UserRoleName, UserStatus
 from vitals.models.identity import HealthSubject, User, UserRole
-from vitals.services.installation_operator import (
+from vitals.services.authorization.installation import (
     NotAnOperator,
     require_installation_operator,
     require_installation_operator_user,
