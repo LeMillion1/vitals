@@ -11,9 +11,10 @@
 {% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
 
-    {% call masthead_header('care', t('care.roster_heading'), []) %}{% endcall %}
+    {% set onboarding_active = is_professional_account and not profile_verified %}
+    {% call masthead_header('care', t('care.onboarding.page_heading') if onboarding_active else t('care.roster_heading'), []) %}{% endcall %}
     <p class="v-text-body max-w-2xl" style="color: var(--muted)">
-        {{ t("care.roster_description") }}
+        {{ t("care.onboarding.page_description") if onboarding_active else t("care.roster_description") }}
     </p>
 
     {% if submitted %}
@@ -31,7 +32,13 @@
         <div class="space-y-2">
             <span class="v-kicker">{{ t("care.onboarding.kicker") }}</span>
             <h2 id="professional-onboarding-title" class="v-heading-2">
-                {% if professional_profile %}{{ t("care.onboarding.correct_heading") }}{% else %}{{ t("care.onboarding.heading") }}{% endif %}
+                {% if professional_profile %}
+                    {{ t("care.onboarding.correct_heading") }}
+                {% elif onboarding_kind %}
+                    {{ t("care.onboarding.heading_" ~ onboarding_kind) }}
+                {% else %}
+                    {{ t("care.onboarding.heading") }}
+                {% endif %}
             </h2>
             <p class="v-text-body" style="color: var(--muted)">
                 {% if professional_profile %}{{ t("care.onboarding.correct_description") }}{% else %}{{ t("care.onboarding.description") }}{% endif %}
@@ -43,6 +50,11 @@
             <p>{{ professional_profile.review_note }}</p>
         </div>
         {% endif %}
+        {% if profile_error %}
+        <div class="v-alert error" role="alert" tabindex="-1">
+            {{ t("care.onboarding.error_" ~ profile_error) }}
+        </div>
+        {% endif %}
         {% if onboarding_kind %}
         <form action="/care/profile" method="POST" class="space-y-4">
             <div>
@@ -52,13 +64,13 @@
             <div>
                 <label for="professional-display-name" class="v-label">{{ t("care.onboarding.name_label") }}</label>
                 <input id="professional-display-name" name="display_name" type="text" maxlength="200" required
-                       class="v-input mt-2" value="{{ professional_profile.display_name if professional_profile else '' }}"
+                       class="v-input mt-2" value="{{ profile_form.display_name }}"
                        autocomplete="name">
             </div>
             <div>
-                <label for="professional-credential" class="v-label">{{ t("care.onboarding.credential_label") }}</label>
+                <label for="professional-credential" class="v-label">{{ t("care.onboarding.credential_label_" ~ onboarding_kind) }}</label>
                 <input id="professional-credential" name="credential_reference" type="text" maxlength="200"
-                       class="v-input mt-2" value="{{ professional_profile.credential_reference if professional_profile and professional_profile.credential_reference else '' }}">
+                       class="v-input mt-2" value="{{ profile_form.credential_reference }}">
                 <p class="v-text-micro mt-2" style="color: var(--muted)">{{ t("care.onboarding.credential_help") }}</p>
             </div>
             <button type="submit" class="v-btn">{{ t("care.onboarding.submit") }}</button>

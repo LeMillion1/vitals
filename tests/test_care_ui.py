@@ -223,12 +223,45 @@ async def test_a_new_professional_lands_on_one_onboarding_action(
     assert page.status_code == 200
     assert 'action="/care/profile"' in page.text
     assert "Trainer" in page.text or "Тренер" in page.text
+    assert 'value="care-onboarding-trainer"' in page.text
+    assert (
+        "Certificate or qualification" in page.text
+        or "Сертификат или квалификация" in page.text
+    )
     assert 'name="kind"' not in page.text
     # Navigation and sign-out stay reachable before the first patient exists.
     assert 'href="/care"' in page.text
     assert 'action="/logout"' in page.text
     # Device setup is secondary and appears only after professional review.
     assert "/settings/notifications/web-push/subscription" not in page.text
+
+
+async def test_professional_profile_error_stays_on_the_plain_form(
+    new_trainer_client, db_session
+):
+    client, trainer = new_trainer_client
+    trainer_id = trainer.id
+
+    response = await client.post(
+        "/care/profile",
+        data={
+            "display_name": "   ",
+            "credential_reference": "CERT-KEEP",
+        },
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("text/html")
+    assert 'action="/care/profile"' in response.text
+    assert 'role="alert"' in response.text
+    assert 'value="CERT-KEEP"' in response.text
+    assert await db_session.scalar(
+        select(ProfessionalProfile.id).where(
+            ProfessionalProfile.user_id == trainer_id
+        )
+    ) is None
 
 
 async def test_an_ordinary_member_is_sent_from_professional_care_to_their_hub(

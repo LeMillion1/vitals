@@ -196,22 +196,60 @@ async def roster(
     return templates.TemplateResponse(
         request,
         "care/roster.html",
-        {
-            "patients": workspace.patients,
-            "username": username,
-            "accepted": accepted,
-            "submitted": submitted,
-            "professional_profile": workspace.profile,
-            "onboarding_kind": (
-                workspace.onboarding_kind.value
-                if workspace.onboarding_kind is not None
-                else None
-            ),
-            "profile_verified": workspace.profile_verified,
-            "is_professional_account": bool(workspace.professional_roles),
-            "active_account_nav": "professional_care",
-        },
+        _roster_context(
+            workspace,
+            username=username,
+            accepted=accepted,
+            submitted=submitted,
+        ),
     )
+
+
+def _roster_context(
+    workspace,
+    *,
+    username: str,
+    accepted: bool = False,
+    submitted: bool = False,
+    profile_error: str | None = None,
+    display_name: str | None = None,
+    credential_reference: str | None = None,
+) -> dict[str, object]:
+    """One render contract for the professional roster and onboarding states."""
+
+    profile = workspace.profile
+    return {
+        "patients": workspace.patients,
+        "username": username,
+        "accepted": accepted,
+        "submitted": submitted,
+        "professional_profile": profile,
+        "onboarding_kind": (
+            workspace.onboarding_kind.value
+            if workspace.onboarding_kind is not None
+            else None
+        ),
+        "profile_verified": workspace.profile_verified,
+        "is_professional_account": bool(workspace.professional_roles),
+        "active_account_nav": "professional_care",
+        "profile_error": profile_error,
+        "profile_form": {
+            "display_name": (
+                display_name
+                if display_name is not None
+                else (profile.display_name if profile is not None else username)
+            ),
+            "credential_reference": (
+                credential_reference
+                if credential_reference is not None
+                else (
+                    profile.credential_reference
+                    if profile is not None and profile.credential_reference
+                    else ""
+                )
+            ),
+        },
+    }
 
 
 @router.post("/profile")
@@ -220,7 +258,7 @@ async def submit_professional_profile(
     display_name: str = Form(""),
     credential_reference: str = Form(""),
     db: AsyncSession = Depends(get_session),
-    _username: str = Depends(require_auth),
+    username: str = Depends(require_auth),
 ):
     """Submit or correct this account's professional claim.
 
@@ -253,14 +291,42 @@ async def submit_professional_profile(
                 display_name=display_name,
                 credential_reference=credential_reference,
             )
-    except professionals.ProfessionalValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
-    except professionals.ProfessionalConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+    except professionals.ProfessionalValidationError:
+        await db.rollback()
+        workspace = await care_workspace.load_professional_workspace(
+            db,
+            user_id=user_id,
+        )
+        return templates.TemplateResponse(
+            request,
+            "care/roster.html",
+            _roster_context(
+                workspace,
+                username=username,
+                profile_error="invalid",
+                display_name=display_name,
+                credential_reference=credential_reference,
+            ),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    except professionals.ProfessionalConflictError:
+        await db.rollback()
+        workspace = await care_workspace.load_professional_workspace(
+            db,
+            user_id=user_id,
+        )
+        return templates.TemplateResponse(
+            request,
+            "care/roster.html",
+            _roster_context(
+                workspace,
+                username=username,
+                profile_error="conflict",
+                display_name=display_name,
+                credential_reference=credential_reference,
+            ),
+            status_code=status.HTTP_409_CONFLICT,
+        )
     await db.commit()
     return RedirectResponse(
         url="/care?submitted=1",
