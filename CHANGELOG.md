@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — new identities return to Vitals after provider registration
+
+The ZITADEL operations guide now requires a Vitals `/login` default redirect
+when self-registration is deliberately enabled. If Login V2 loses the original
+authorization-request context after creating an identity, the fallback starts a
+fresh OIDC request instead of leaving the person stranded on its standalone
+signed-in page. The same checklist keeps organization registration disabled and
+records the limitations of a temporary no-SMTP beta.
+
 ### Fixed — registration operations keep the deployed runtime image
 
 The production registration runbook now pins every web recreation to the

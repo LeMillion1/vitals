@@ -197,6 +197,27 @@ path. The current Vitals invitation proves local admission; it does not create
 a ZITADEL user or send provider mail. Keep public registration disabled until
 that provider-side onboarding step is implemented or operationally documented.
 
+### Controlled open-registration exception
+
+An installation deliberately using Vitals `open` registration must configure
+the existing ZITADEL instance login policy dynamically in Console; changing the
+fresh-instance Compose default does not update the identity database. Enable
+**User Registration allowed**, keep **Organization Registration allowed** off,
+and set **Default Redirect URI** to the exact public Vitals origin plus
+`/login` (for example, `https://vitals.example.com/login`). The default redirect
+is a recovery path for a lost authorization-request context, not the OIDC
+callback: it starts a new request, which lets an already-created identity return
+through the normal PKCE callback and local admission checks. Without it, Login
+V2 can leave a newly registered person on its standalone `signedin` page.
+
+Do not enable email verification until an active SMTP provider has passed a
+real delivery test. A temporary password-only beta may explicitly accept
+unverified mailboxes, but it has no reliable password recovery or email-bound
+admission proof; invitation and administrator-approval modes still require the
+literal `email_verified=true` claim and therefore must remain unavailable.
+Revisit this exception before advertising registration beyond a controlled
+test group.
+
 ## 2. Create the application in ZITADEL
 
 In the ZITADEL console, create a project named **Vitals**. Keep authorization,
