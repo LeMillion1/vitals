@@ -58,7 +58,7 @@ EXPECTED_PORTABLE_TABLES = {
     "supplements",
     "weight_logs",
 }
-EXPECTED_DIGEST = "8aec9099d557d8b136e0dd9044b7de50867b368c53e9f0c9d10d2d274f6d2f87"
+EXPECTED_DIGEST = "5883cdbd70c367bc93032b72b50bf25a5802d4bd56f38766363e8cc253e75506"
 
 
 def _metadata_copy() -> MetaData:

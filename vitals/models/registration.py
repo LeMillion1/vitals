@@ -36,6 +36,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from vitals.enums import (
     RegistrationAccountKind,
+    RegistrationIntentStatus,
     RegistrationInvitationStatus,
     RegistrationRequestStatus,
 )
@@ -50,6 +51,61 @@ _LOWERCASE_SHA256_CHECK = (
     "'5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), "
     "'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''"
 )
+
+
+class RegistrationIntent(Base):
+    """One PII-free, short-lived account-kind choice for open registration."""
+
+    __tablename__ = "registration_intents"
+    __table_args__ = (
+        CheckConstraint(
+            f"account_kind IN ({_values(RegistrationAccountKind)})",
+            name="ck_registration_intents_account_kind",
+        ),
+        CheckConstraint(
+            f"status IN ({_values(RegistrationIntentStatus)})",
+            name="ck_registration_intents_status",
+        ),
+        CheckConstraint(
+            "expires_at > created_at",
+            name="ck_registration_intents_expiry",
+        ),
+        CheckConstraint(
+            "(status = 'pending' "
+            "AND consumed_at IS NULL AND expired_at IS NULL) OR "
+            "(status = 'consumed' "
+            "AND consumed_at IS NOT NULL AND consumed_at >= created_at "
+            "AND expired_at IS NULL) OR "
+            "(status = 'expired' "
+            "AND consumed_at IS NULL "
+            "AND expired_at IS NOT NULL AND expired_at >= expires_at)",
+            name="ck_registration_intents_state",
+        ),
+        Index(
+            "ix_registration_intents_status_expiry",
+            "status",
+            "expires_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    account_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=RegistrationIntentStatus.PENDING.value,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expired_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
 
 
 class RegistrationInvitation(Base):

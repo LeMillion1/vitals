@@ -45,6 +45,13 @@ from vitals.services.authentication.admission.invitations import (
     issue_invitation,
     revoke_invitation,
 )
+from vitals.services.authentication.admission.intents import (
+    INTENT_TTL,
+    MAX_INTENT_TTL,
+    consume_intent,
+    issue_intent,
+    lock_intent,
+)
 from vitals.services.authentication.admission.requests import (
     approve_request,
     get_request,
@@ -60,7 +67,9 @@ from vitals.services.authentication.admission.retention import (
 __all__ = [
     "DEFAULT_RETENTION",
     "INVITATION_TTL",
+    "INTENT_TTL",
     "MAX_INVITATION_TTL",
+    "MAX_INTENT_TTL",
     "MAX_MAINTENANCE_BATCH",
     "MAX_REQUEST_TTL",
     "MINIMUM_RETENTION",
@@ -80,12 +89,15 @@ __all__ = [
     "RetentionResult",
     "approve_request",
     "claim_invitation",
+    "consume_intent",
     "consume_invitation",
     "consume_invitation_claim",
     "expire_due",
     "get_request",
+    "issue_intent",
     "issue_invitation",
     "maintenance_job",
+    "lock_intent",
     "purge_terminal",
     "reject_request",
     "registration_console",

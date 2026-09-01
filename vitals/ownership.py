@@ -390,6 +390,13 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         OwnershipClass.ACCOUNT_CONTROL,
         user_portable=False,
     ),
+    # Short-lived public-admission state. It contains only an opaque id, the
+    # requested non-privileged account shape, and lifecycle timestamps; it is
+    # control-plane state and never part of a person's health-data export.
+    "registration_intents": OwnershipSpec(
+        OwnershipClass.ACCOUNT_CONTROL,
+        user_portable=False,
+    ),
     # The patient's offer, so it is the patient's row — which puts it inside
     # row security. Accepting reads it in the platform scope, because the
     # professional is not bound to this subject yet and the token is what

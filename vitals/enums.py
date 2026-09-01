@@ -40,6 +40,14 @@ class RegistrationAccountKind(StrEnum):
     TRAINER = "trainer"
 
 
+class RegistrationIntentStatus(StrEnum):
+    """Lifecycle of one short-lived open-registration choice."""
+
+    PENDING = "pending"
+    CONSUMED = "consumed"
+    EXPIRED = "expired"
+
+
 class RegistrationInvitationStatus(StrEnum):
     """Lifecycle of one account-admission invitation."""
 

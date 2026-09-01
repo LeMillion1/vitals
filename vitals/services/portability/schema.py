@@ -563,7 +563,7 @@ def validate_schema_contract(
 # Filled with the digest of the descriptor above.  Updating this value requires
 # a conscious portability-format review, not merely a model migration.
 REVIEWED_SCHEMA_DIGEST: Final = (
-    "8aec9099d557d8b136e0dd9044b7de50867b368c53e9f0c9d10d2d274f6d2f87"
+    "5883cdbd70c367bc93032b72b50bf25a5802d4bd56f38766363e8cc253e75506"
 )
 PORTABILITY_SCHEMA_DESCRIPTOR: Final = build_schema_descriptor()
 PORTABILITY_SCHEMA_DIGEST: Final = schema_digest(PORTABILITY_SCHEMA_DESCRIPTOR)

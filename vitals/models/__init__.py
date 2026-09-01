@@ -19,7 +19,11 @@ from vitals.models.identity import (
     User,
     UserRole,
 )
-from vitals.models.registration import RegistrationInvitation, RegistrationRequest
+from vitals.models.registration import (
+    RegistrationIntent,
+    RegistrationInvitation,
+    RegistrationRequest,
+)
 from vitals.models.portability import PortabilityImportReceipt
 from vitals.models.tenancy import (
     FileAsset,
@@ -147,6 +151,7 @@ __all__ = [
     "McpAccessTokenScope",
     "SupportAccessGrant",
     "SupportAccessScope",
+    "RegistrationIntent",
     "RegistrationInvitation",
     "RegistrationRequest",
     "PortabilityImportReceipt",

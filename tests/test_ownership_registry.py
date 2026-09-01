@@ -37,8 +37,9 @@ def test_every_registered_table_has_exactly_one_ownership_contract():
     # invitation and operator-approval admission records; 84 since 0076 added
     # the support repair row; 87 since 0078 added the separately governed
     # emergency session, scopes and approvals; 88 since 0079 added the
-    # subject-isolated portability import receipt.
-    assert len(OWNERSHIP_REGISTRY) == 88
+    # subject-isolated portability import receipt; 89 since 0085 added the
+    # PII-free, short-lived public-registration intent.
+    assert len(OWNERSHIP_REGISTRY) == 89
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -110,6 +111,7 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "professional_profiles",
         "professional_review_decisions",
         "registration_invitations",
+        "registration_intents",
         "registration_requests",
         "shared_reports",
         "subject_settings",
