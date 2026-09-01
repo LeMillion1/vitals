@@ -428,7 +428,11 @@ async def _provision_if_registration_is_open(
             resource_id=str(user.id),
             metadata_json={
                 "source_surface": "authentication.federation",
-                "result_code": f"{account_kind.value}_open_registration_admitted",
+                "result_code": (
+                    "open_registration_admitted"
+                    if registration_intent_id is None
+                    else f"{account_kind.value}_open_registration_admitted"
+                ),
                 "resource_type": "user",
                 "resource_id": str(user.id),
                 "changed_fields": changed_fields,
