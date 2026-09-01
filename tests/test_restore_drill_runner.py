@@ -911,7 +911,7 @@ def test_apply_validation_requires_an_explicit_completed_flag(tmp_path, monkeypa
             stderr=b"",
         ),
     )
-    psql_results = iter(["0", "abcd", "ef01"])
+    psql_results = iter(["0", "abcd", "ef01", "1"])
     monkeypatch.setattr(runner, "_psql", lambda *_args, **_kwargs: next(psql_results))
 
     def fake_service_run(_context, _service, command, **_kwargs):
@@ -940,3 +940,30 @@ def test_apply_validation_requires_an_explicit_completed_flag(tmp_path, monkeypa
 
     _assert_drill_error("ownership_validation_failed", runner.run_drill, args)
     assert cleanup_calls == [context.project]
+
+
+def test_multi_subject_restore_retires_single_subject_cutover_validations(
+    tmp_path, monkeypatch
+):
+    context = _context(tmp_path)
+
+    def unexpected_service_run(*_args, **_kwargs):
+        raise AssertionError("retired single-subject validators must not run")
+
+    monkeypatch.setattr(runner, "_service_run", unexpected_service_run)
+
+    assert runner._run_legacy_cutover_validations(
+        context, subject_count=2
+    ) == {
+        "ownership": "retired_multi_subject",
+        "scoped_keys": "retired_multi_subject",
+    }
+
+
+def test_restore_validation_requires_at_least_one_subject(tmp_path):
+    _assert_drill_error(
+        "restored_subject_data_missing",
+        runner._run_legacy_cutover_validations,
+        _context(tmp_path),
+        subject_count=0,
+    )

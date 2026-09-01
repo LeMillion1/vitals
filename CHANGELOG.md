@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — multi-user installation restore rehearsal
+
+The installation restore drill no longer invokes retired cutover validators that
+intentionally require exactly one health subject. Current constraints and the
+multi-subject RLS validator remain mandatory, while a one-subject recovery still
+re-runs the legacy ownership and scoped-key proofs.
+
 ### Added — public registration supports members, doctors and trainers
 
 Visitors can now choose a plain-language account type in Vitals before the

@@ -310,8 +310,11 @@ The command accepts no production environment, database URL, Compose project,
 volume, or credential. It stages the exact Git `HEAD`, verifies and safely
 extracts the exact five-file bundle, renders and audits a scratch-only Compose
 configuration, and restores PostgreSQL with `ON_ERROR_STOP` and one transaction.
-It then migrates to the single Alembic head, records the ownership and scoped-key
-checks in the disposable database, provisions distinct web and worker roles,
+It then migrates to the single Alembic head. On a legacy one-subject recovery it
+re-runs and records the one-time ownership and scoped-key cutover checks. On a
+multi-subject recovery those retired single-user checks are marked not applicable;
+the database constraints and the current multi-subject RLS proof are the recovery
+gate. The drill provisions distinct web and worker roles,
 proves forced subject RLS through the web role, restarts PostgreSQL, and repeats
 the read-only proof. Web, worker, and data services have only internal networks.
 The worker must pass its DB/Redis/generation/lease/heartbeat readiness helper and

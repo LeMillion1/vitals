@@ -245,6 +245,51 @@ def _validate_role_payload(context: Context, payload: Any) -> None:
             _fail("runtime_role_provision_failed")
 
 
+def _run_legacy_cutover_validations(
+    context: Context, *, subject_count: int
+) -> dict[str, str]:
+    """Run the retired single-user cutover proofs only when applicable.
+
+    Stage-4 ownership validation and the dependent scoped-key audit deliberately
+    require exactly one health subject. They prove the one-time transition from
+    the legacy single-user lake; after registration creates another subject,
+    PostgreSQL constraints plus the current multi-subject RLS validator are the
+    recovery proof. Treating the cutover checks as current validators would make
+    every valid multi-user backup impossible to rehearse.
+    """
+
+    if subject_count < 1:
+        _fail("restored_subject_data_missing")
+    if subject_count > 1:
+        return {
+            "ownership": "retired_multi_subject",
+            "scoped_keys": "retired_multi_subject",
+        }
+
+    validations: dict[str, str] = {}
+    for script, key in (
+        ("scripts/validate_subject_ownership.py", "ownership"),
+        ("scripts/audit_scoped_keys.py", "scoped_keys"),
+    ):
+        for apply in (False, True):
+            command = ["python", script] + (["--apply"] if apply else [])
+            payload = _json_from_output(
+                _service_run(
+                    context,
+                    "vitals_migrate",
+                    command,
+                    code=f"{key}_validation_failed",
+                ),
+                code=f"{key}_validation_failed",
+            )
+            if payload.get("result") != "ok":
+                _fail(f"{key}_validation_failed")
+            if apply and payload.get("completed") is not True:
+                _fail(f"{key}_validation_failed")
+            validations[key] = str(payload.get("status"))
+    return validations
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
@@ -1407,27 +1452,16 @@ def run_drill(args: argparse.Namespace) -> dict[str, Any]:
         ) != head_revision:
             _fail("head_revision_invalid")
         _write_state(context, phase="validating", head_revision=head_revision)
-        validations: dict[str, str] = {}
-        for script, key in (
-            ("scripts/validate_subject_ownership.py", "ownership"),
-            ("scripts/audit_scoped_keys.py", "scoped_keys"),
-        ):
-            for apply in (False, True):
-                command = ["python", script] + (["--apply"] if apply else [])
-                payload = _json_from_output(
-                    _service_run(
-                        context,
-                        "vitals_migrate",
-                        command,
-                        code=f"{key}_validation_failed",
-                    ),
-                    code=f"{key}_validation_failed",
-                )
-                if payload.get("result") != "ok":
-                    _fail(f"{key}_validation_failed")
-                if apply and payload.get("completed") is not True:
-                    _fail(f"{key}_validation_failed")
-                validations[key] = str(payload.get("status"))
+        restored_subject_count = int(
+            _psql(
+                context,
+                "SELECT count(*) FROM health_subjects;",
+                code="restored_subject_count_invalid",
+            )
+        )
+        validations = _run_legacy_cutover_validations(
+            context, subject_count=restored_subject_count
+        )
         role_payload = _json_from_output(
             _service_run(
                 context,
