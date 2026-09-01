@@ -347,10 +347,10 @@ tbody tr:hover td { background: var(--surface-2); }
   <h1>Vitals Architecture</h1>
   <p class="standfirst">A self-hosted health-data service — 14 domains, 5 external integration modules and one data lake — where every medical fact belongs to a named health subject and cross-subject access requires relationship consent, an exact support grant, or an independently approved read-only break-glass session.</p>
   <div class="meta">
-    <span><b>88</b> tables</span>
-    <span><b>84</b> migrations · head 0084</span>
+    <span><b>89</b> tables</span>
+    <span><b>85</b> migrations · head 0085</span>
     <span><b>14</b> domains</span>
-    <span><b>246</b> application services</span>
+    <span><b>247</b> application services</span>
     <span><b>71</b> RLS tables</span>
     <span>Reviewed <b>2026-08-27</b></span>
   </div>
@@ -438,10 +438,10 @@ flowchart TB
 flowchart LR
   web["<b>Web process</b><br/><span style='font-size:11px'>37 routers · HTMX UI<br/>MCP + external API · no scheduler</span>"]
   worker["<b>Worker process</b><br/><span style='font-size:11px'>16 APScheduler jobs · 11 fan-out<br/>no published HTTP port</span>"]
-  svc["<b>Shared core</b><br/><span style='font-size:11px'>246 tracked service modules<br/>authorization + business rules</span>"]
+  svc["<b>Shared core</b><br/><span style='font-size:11px'>247 tracked service modules<br/>authorization + business rules</span>"]
   idp["<b>ZITADEL</b><br/><span style='font-size:11px'>PostgreSQL · API · Login V2<br/>separate recovery stream</span>"]
 
-  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>88 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
+  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>89 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
   redis[("<b>Redis</b><br/><span style='font-size:11px'>cache, rate limits,<br/>Garmin token, breaker</span>")]
   files[/"<b>Private files</b><br/><span style='font-size:11px'>photos, scans, PDFs<br/>opaque keys</span>"/]
 
@@ -557,7 +557,7 @@ erDiagram
       <tbody>
         <tr><td><code>subject_data</code></td><td>32</td><td>The record itself. Subject mandatory.</td></tr>
         <tr><td><code>subject_control</code></td><td>22</td><td>Subject-owned settings, grants and integration roots.</td></tr>
-        <tr><td><code>account_control</code></td><td>10</td><td>Users, roles and account credentials.</td></tr>
+        <tr><td><code>account_control</code></td><td>11</td><td>Users, roles, account credentials and short-lived admission state.</td></tr>
         <tr><td><code>subject_child</code></td><td>5</td><td>Inherits its subject from a parent row.</td></tr>
         <tr><td><code>subject_control_child</code></td><td>8</td><td>Control-plane child rows with explicit subject ownership.</td></tr>
         <tr><td><code>mixed_catalog</code></td><td>2</td><td>Curated rows belong to nobody; custom rows to one subject.</td></tr>
@@ -862,7 +862,7 @@ flowchart LR
 <section id="cutover">
   <p class="eyebrow">Operations</p>
   <h2>The ownership cutover</h2>
-  <p>For databases older than revision 0049, ownership conversion is not one <code>alembic upgrade head</code>. The historical three-part sequence below remains the required bridge. Current production has completed it, advanced through <code>0084</code>, split migration/web/worker database authority, and health-gated worker before web.</p>
+  <p>For databases older than revision 0049, ownership conversion is not one <code>alembic upgrade head</code>. The historical three-part sequence below remains the required bridge. The current schema has completed it, advanced through <code>0085</code>, split migration/web/worker database authority, and health-gated worker before web.</p>
 
   <figure>
     <div class="diagram">
@@ -872,7 +872,7 @@ flowchart TB
   a["<b>1 · alembic upgrade 0048</b><br/><span style='font-size:11px'>every ownership column exists,<br/>all still nullable · safe to stop here</span>"]
   b["<b>2 · bootstrap, then 19 phases</b><br/><span style='font-size:11px'>owner, resource roots, catalogs<br/>raw → facts → children → artifacts<br/>each resumable, each checkpointed</span>"]
   c{"every target column<br/>stamped?"}
-  d["<b>3 · upgrade through 0084</b><br/><span style='font-size:11px'>0049 NOT NULL · 0050+ FORCE RLS<br/>0081/82 attested handoffs · 0083 worker capability</span>"]
+  d["<b>3 · upgrade through 0085</b><br/><span style='font-size:11px'>0049 NOT NULL · 0050+ FORCE RLS<br/>0081/82 attested handoffs · 0083 worker capability</span>"]
   e["<b>refused</b><br/><span style='font-size:11px'>names each table and how far behind<br/>nothing altered — run the phase, retry</span>"]
   f["<b>one-way from here</b><br/><span style='font-size:11px'>once a second subject writes,<br/>downgrade is forbidden</span>"]
 

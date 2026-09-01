@@ -185,7 +185,9 @@ documented in [`REGISTRATION_FLOW.md`](REGISTRATION_FLOW.md).
 For closed, invitation-only or administrator-approved installations, keep the
 ZITADEL instance login policy at **User Registration allowed: off**. The Compose
 fresh-instance default is `allow_register=false`; changing that environment
-value later does not update an existing identity database.
+value later does not update an existing identity database. If that database
+already existed, change the persisted policy in Console; do not delete its
+volume merely to reapply a first-instance default.
 
 For deliberate public registration, open the existing ZITADEL instance login
 settings and enable **User Registration allowed**. Keep **Organization

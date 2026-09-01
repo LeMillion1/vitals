@@ -45,26 +45,26 @@ verdict:
    specific gaps.
 3. The ownership inventory called itself exhaustive but originally omitted 12
    of 76 live tables. It later reached 83 entries; five newer support,
-   break-glass, and portability-receipt tables bring the live registry to 88 and
-   are included in the inventory now.
+   break-glass, portability-receipt and registration-intent tables bring the
+   live registry to 89 and are included in the inventory now.
 4. `ARCHITECTURE.html` was a historical snapshot presented as a live reference.
-   Its live counters and authorization bases have been resynchronized at 88
-   tables, 71 RLS policies, revision `0084`, and the shipped break-glass path.
+   Its live counters and authorization bases have been resynchronized at 89
+   tables, 71 RLS policies, revision `0085`, and the shipped break-glass path.
 
 ## Reproducible current facts
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0084 (head)`; 84 files in `migrations/versions` | Verified |
-| SQLAlchemy tables | `len(Base.metadata.tables)` → 88 | Verified |
-| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 88 | Verified and exhaustive in code |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0085 (head)`; 85 files in `migrations/versions` | Verified |
+| SQLAlchemy tables | `len(Base.metadata.tables)` → 89 | Verified |
+| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 89 | Verified and exhaustive in code |
 | Subject-scoped tables | 71 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
 | Required subject columns | 60 of the 71 `subject_id` columns are non-null | Verified |
 | Ownership cutover | 19 ordered backfill phases and 19 matching scripts | Verified |
 | Domain enum | 14 values: 13 record sections plus internal `system` | Verified |
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
 | Web routers | 37 tracked non-`__init__` modules under `web/routers` | Verified |
-| Application services | 246 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
+| Application services | 247 tracked non-`__init__` modules under `vitals/services`, recursively | Verified |
 | Flat service debt | 0 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 74 |
 | Scheduled jobs | 16 registered jobs; 11 fan out per subject or provider connection | Verified |
 | Platform-scope callers | the AST contract in `tests/test_row_level_security.py` enumerates 9 exact permitted functions; invitation acceptance is no longer one of them | Verified and shrinking |
