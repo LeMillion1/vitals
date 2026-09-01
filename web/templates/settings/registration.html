@@ -17,24 +17,41 @@
     {% if error %}<div class="v-alert warn" role="alert">{{ t("registration.operator.error_" ~ error) }}</div>{% endif %}
 
     <section class="v-card p-6 space-y-4">
-        {{ card_header(t("registration.operator.door_title")) }}
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div class="v-card-inset p-4">
-                <div class="v-label">{{ t("registration.operator.stored_mode") }}</div>
-                <div class="v-text-body mt-1">{{ t("registration.operator.mode_" ~ console.stored_mode.value) }}</div>
-            </div>
-            <div class="v-card-inset p-4">
-                <div class="v-label">{{ t("registration.operator.effective_mode") }}</div>
-                <div class="v-text-body mt-1">{{ t("registration.operator.mode_" ~ console.effective_mode.value) }}</div>
-            </div>
+        {{ card_header(t("registration.operator.public_title")) }}
+        <div class="space-y-2">
+            <p class="v-heading-3">
+                {% if console.effective_mode.value == 'open' %}
+                    {{ t("registration.operator.public_status_open") }}
+                {% else %}
+                    {{ t("registration.operator.public_status_paused") }}
+                {% endif %}
+            </p>
+            <p class="v-text-body" style="color: var(--muted)">
+                {% if console.effective_mode.value == 'open' %}
+                    {{ t("registration.operator.public_hint_open") }}
+                {% else %}
+                    {{ t("registration.operator.public_hint_paused") }}
+                {% endif %}
+            </p>
         </div>
         {% if not console.deployment_unlocked %}
         <div class="v-alert info">{{ t("registration.operator.deployment_locked") }}</div>
         {% elif not oidc_enabled %}
         <div class="v-alert warn">{{ t("registration.operator.oidc_required") }}</div>
-        {% elif console.effective_mode.value not in ['invite_only', 'admin_approved'] %}
-        <div class="v-alert info">{{ t("registration.operator.mode_without_admission_queue") }}</div>
         {% endif %}
+        <form action="/settings/platform/registration/mode" method="POST" hx-boost="false">
+            {% if console.stored_mode.value == 'open' %}
+            <input type="hidden" name="mode" value="disabled">
+            <button type="submit" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3">
+                {{ t("registration.operator.pause_action") }}
+            </button>
+            {% elif console.deployment_unlocked and oidc_enabled %}
+            <input type="hidden" name="mode" value="open">
+            <button type="submit" class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3">
+                {{ t("registration.operator.open_action") }}
+            </button>
+            {% endif %}
+        </form>
     </section>
 
     {% if console.total_live_requests or console.effective_mode.value == 'admin_approved' %}

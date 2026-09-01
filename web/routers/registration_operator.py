@@ -101,6 +101,41 @@ async def registration_console(
     )
 
 
+@router.post("/mode")
+async def change_registration_mode(
+    request: Request,
+    mode: str = Form(""),
+    _username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """Open or pause public registration without a shell command."""
+
+    operator_id = await _operator_id(request, db)
+    cfg = get_web_config()
+    if mode == RegistrationMode.OPEN.value and not cfg.oidc_enabled:
+        return _back(error="unavailable")
+    try:
+        changed = await admission.change_public_registration(
+            db,
+            actor_user_id=operator_id,
+            mode=mode,
+        )
+    except admission.AdmissionForbidden as exc:
+        await db.rollback()
+        raise _forbidden(exc) from exc
+    except (admission.AdmissionError, admission.AdmissionValidationError):
+        await db.rollback()
+        return _back(error="mode_refused")
+    await db.commit()
+    return _back(
+        decided=(
+            "registration_opened"
+            if changed is RegistrationMode.OPEN
+            else "registration_paused"
+        )
+    )
+
+
 @router.post("/invitations", response_class=HTMLResponse)
 async def issue_invitation(
     request: Request,

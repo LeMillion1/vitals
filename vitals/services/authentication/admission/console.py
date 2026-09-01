@@ -22,6 +22,7 @@ from vitals.services.authentication.registration import (
     deployment_is_unlocked,
     effective_mode,
     get_stored_mode,
+    set_stored_mode,
 )
 from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.utils.timeutils import to_local_naive
@@ -207,11 +208,38 @@ async def registration_console(
     )
 
 
+async def change_public_registration(
+    session: AsyncSession,
+    *,
+    actor_user_id: uuid.UUID,
+    mode: RegistrationMode | str,
+) -> RegistrationMode:
+    """Open or pause the ordinary public door from the application UI."""
+
+    try:
+        resolved = mode if isinstance(mode, RegistrationMode) else RegistrationMode(mode)
+    except (TypeError, ValueError) as exc:
+        raise AdmissionValidationError("unsupported public registration mode") from exc
+    if resolved not in {RegistrationMode.DISABLED, RegistrationMode.OPEN}:
+        raise AdmissionValidationError("unsupported public registration mode")
+    await acquire_identity_governance_lock(session)
+    await require_operator(session, actor_user_id=actor_user_id)
+    if resolved is RegistrationMode.OPEN and not deployment_is_unlocked():
+        raise AdmissionValidationError("the deployment registration gate is locked")
+    return await set_stored_mode(
+        session,
+        resolved,
+        actor_user_id=actor_user_id,
+        source_surface="web.platform",
+    )
+
+
 __all__ = [
     "InvitationConsoleEntry",
     "RequestConsoleEntry",
     "RegistrationConsole",
     "CONSOLE_PAGE_SIZE",
     "MAX_CONSOLE_PAGE",
+    "change_public_registration",
     "registration_console",
 ]

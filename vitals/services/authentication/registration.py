@@ -37,6 +37,7 @@ its dedicated admission service. They never fall through to ``open``.
 from __future__ import annotations
 
 import os
+import uuid
 from enum import StrEnum
 
 from sqlalchemy import select
@@ -140,7 +141,11 @@ async def effective_mode(session: AsyncSession) -> RegistrationMode:
 
 
 async def set_stored_mode(
-    session: AsyncSession, mode: RegistrationMode | str
+    session: AsyncSession,
+    mode: RegistrationMode | str,
+    *,
+    actor_user_id: uuid.UUID | None = None,
+    source_surface: str = "operator_cli",
 ) -> RegistrationMode:
     """Record the mode. Never commits, and never checks who is asking.
 
@@ -178,14 +183,14 @@ async def set_stored_mode(
         row.value = {"mode": resolved.value}
     session.add(
         AuditEvent(
-            actor_user_id=None,
+            actor_user_id=actor_user_id,
             subject_id=None,
             event_type="registration.mode.changed",
             outcome=AuditOutcome.SUCCESS.value,
             resource_type="platform_setting",
             resource_id=REGISTRATION_MODE_KEY,
             metadata_json={
-                "source_surface": "operator_cli",
+                "source_surface": source_surface,
                 "result_code": (
                     f"{previous.value if previous else 'invalid'}_to_{resolved.value}"
                 ),

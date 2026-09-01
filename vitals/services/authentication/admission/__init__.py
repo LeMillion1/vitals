@@ -36,6 +36,7 @@ from vitals.services.authentication.admission.console import (
     InvitationConsoleEntry,
     RequestConsoleEntry,
     RegistrationConsole,
+    change_public_registration,
     registration_console,
 )
 from vitals.services.authentication.admission.invitations import (
@@ -88,6 +89,7 @@ __all__ = [
     "RegistrationConsole",
     "RetentionResult",
     "approve_request",
+    "change_public_registration",
     "claim_invitation",
     "consume_intent",
     "consume_invitation",

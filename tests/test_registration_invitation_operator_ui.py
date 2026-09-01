@@ -81,6 +81,83 @@ async def _enable_invites(db_session, monkeypatch) -> None:
     )
 
 
+async def test_operator_opens_and_pauses_public_registration_in_the_ui(
+    client, db_session, monkeypatch
+):
+    _configure_oidc(monkeypatch)
+    monkeypatch.setenv(registration_policy.REGISTRATION_UNLOCK_ENV, "1")
+    admin = await _user(db_session, "registration-mode-admin", admin=True)
+    await db_session.commit()
+    _sign_in(client, admin)
+
+    page = await client.get("/settings/platform/registration")
+    assert page.status_code == 200
+    assert 'action="/settings/platform/registration/mode"' in page.text
+    assert 'name="mode" value="open"' in page.text
+    assert "Configured mode" not in page.text
+    assert "Настроенный режим" not in page.text
+
+    opened = await client.post(
+        "/settings/platform/registration/mode",
+        data={"mode": "open"},
+        follow_redirects=False,
+    )
+    assert opened.status_code == 303
+    assert opened.headers["location"].endswith(
+        "?decided=registration_opened"
+    )
+    assert (
+        await registration_policy.get_stored_mode(db_session)
+        is registration_policy.RegistrationMode.OPEN
+    )
+    event = await db_session.scalar(
+        select(AuditEvent)
+        .where(AuditEvent.event_type == "registration.mode.changed")
+        .order_by(AuditEvent.occurred_at.desc())
+    )
+    assert event is not None
+    assert event.actor_user_id == admin.id
+    assert event.metadata_json["source_surface"] == "web.platform"
+
+    open_page = await client.get("/settings/platform/registration")
+    assert 'name="mode" value="disabled"' in open_page.text
+    paused = await client.post(
+        "/settings/platform/registration/mode",
+        data={"mode": "disabled"},
+        follow_redirects=False,
+    )
+    assert paused.status_code == 303
+    assert paused.headers["location"].endswith(
+        "?decided=registration_paused"
+    )
+    assert (
+        await registration_policy.get_stored_mode(db_session)
+        is registration_policy.RegistrationMode.DISABLED
+    )
+
+
+async def test_public_registration_mode_change_requires_a_live_operator(
+    client, db_session, monkeypatch
+):
+    _configure_oidc(monkeypatch)
+    monkeypatch.setenv(registration_policy.REGISTRATION_UNLOCK_ENV, "1")
+    member = await _user(db_session, "registration-mode-member")
+    await db_session.commit()
+    _sign_in(client, member)
+
+    response = await client.post(
+        "/settings/platform/registration/mode",
+        data={"mode": "open"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 403
+    assert (
+        await registration_policy.get_stored_mode(db_session)
+        is registration_policy.RegistrationMode.DISABLED
+    )
+
+
 async def test_operator_issues_one_redacted_non_replayable_link(
     client, db_session, monkeypatch
 ):
