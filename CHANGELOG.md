@@ -8,6 +8,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — public registration supports members, doctors and trainers
+
+Visitors can now choose a plain-language account type in Vitals before the
+ZITADEL login. A short-lived, one-time server intent binds that choice to the
+OIDC callback without exposing the role in the browser: members receive one
+owned health record, while doctors and trainers receive exactly one
+professional role and no record or patient access. Replay, expiry, callback
+mismatch, a closed registration door and attempts to re-role an existing
+identity fail closed.
+
+Platform administrators can open or pause public registration from the browser
+after the deployment gate is unlocked. New professionals land directly on a
+short role-specific profile screen; form errors stay in HTML with entered values
+preserved, and verification remains an independent audited decision. The
+interactive role journey and operational contract live in
+`docs/REGISTRATION_CJM.html` and `docs/REGISTRATION_FLOW.md`.
+
 ### Fixed — new identities return to Vitals after provider registration
 
 The ZITADEL operations guide now requires a Vitals `/login` default redirect

@@ -124,46 +124,46 @@
     </div>
 
     <div class="legend" aria-label="Implementation status">
-        <span class="ready">Already exists</span>
-        <span class="build">Required in this goal</span>
+        <span class="ready">Implemented and tested</span>
+        <span class="build">Still required</span>
         <span class="external">External dependency</span>
     </div>
 
     <section class="journey" aria-label="Customer journey map">
         <article class="lane" data-lane="member">
             <div class="lane-title"><strong>Member</strong><span>Tracks their own health</span></div>
-            <div class="step"><span class="step-number">1 · Entry</span><h3>Choose a use case</h3><p class="screen">“Слежу за своим здоровьем”</p><p>One clear choice before leaving Vitals.</p><span class="state build">Build</span></div>
+            <div class="step"><span class="step-number">1 · Entry</span><h3>Choose a use case</h3><p class="screen">“Слежу за своим здоровьем”</p><p>One clear choice before leaving Vitals.</p><span class="state ready">Implemented</span></div>
             <div class="step"><span class="step-number">2 · Identity</span><h3>Create ZITADEL login</h3><p class="screen">Email and password</p><p>Vitals never stores the password.</p><span class="state ready">Exists</span></div>
-            <div class="step"><span class="step-number">3 · Account</span><h3>Open personal record</h3><p class="screen">“Готово. Начнём с сегодняшнего дня.”</p><p>Creates the member role and one owned health subject.</p><span class="state build">Build</span></div>
+            <div class="step"><span class="step-number">3 · Account</span><h3>Open personal record</h3><p class="screen">“Готово. Начнём с сегодняшнего дня.”</p><p>Creates the member role and one owned health subject.</p><span class="state ready">Tested</span></div>
             <div class="step"><span class="step-number">4 · First value</span><h3>Today</h3><p class="screen">Add food, health data or a device</p><p>No professional setup is shown.</p><span class="state ready">Exists</span></div>
-            <div class="step"><span class="step-number">5 · Care</span><h3>Add a specialist</h3><p class="screen">“Добавить специалиста”</p><p>A separate care invitation never creates an account or a role.</p><span class="state build">Simplify copy</span></div>
+            <div class="step"><span class="step-number">5 · Care</span><h3>Add a specialist</h3><p class="screen">“Добавить специалиста”</p><p>A separate care invitation never creates an account or a role.</p><span class="state ready">Separate flow</span></div>
         </article>
 
         <article class="lane" data-lane="doctor">
             <div class="lane-title"><strong>Doctor</strong><span>Works with patients</span></div>
-            <div class="step"><span class="step-number">1 · Entry</span><h3>Choose a use case</h3><p class="screen">“Работаю врачом”</p><p>Explains that professional verification follows.</p><span class="state build">Build</span></div>
-            <div class="step"><span class="step-number">2 · Identity</span><h3>Create ZITADEL login</h3><p class="screen">Email and password</p><p>The selected type is held by a one-time server intent.</p><span class="state ready">OIDC exists</span></div>
-            <div class="step"><span class="step-number">3 · Profile</span><h3>Tell us about your work</h3><p class="screen">Name and licence or certificate, if available</p><p>Creates an unverified doctor profile, not PHI access.</p><span class="state build">Simplify</span></div>
-            <div class="step"><span class="step-number">4 · Review</span><h3>Wait for review</h3><p class="screen">“Профиль отправлен”</p><p>Shows the next step and a calm pending state.</p><span class="state ready">Logic exists</span></div>
+            <div class="step"><span class="step-number">1 · Entry</span><h3>Choose a use case</h3><p class="screen">“Работаю врачом”</p><p>Explains that professional verification follows.</p><span class="state ready">Implemented</span></div>
+            <div class="step"><span class="step-number">2 · Identity</span><h3>Create ZITADEL login</h3><p class="screen">Email and password</p><p>The selected type is held by a one-time server intent.</p><span class="state ready">Bound and tested</span></div>
+            <div class="step"><span class="step-number">3 · Profile</span><h3>Tell us about your work</h3><p class="screen">Name and licence or registration number</p><p>Creates an unverified doctor profile, not PHI access.</p><span class="state ready">Simplified</span></div>
+            <div class="step"><span class="step-number">4 · Review</span><h3>Wait for review</h3><p class="screen">“Профиль отправлен”</p><p>Shows the next step and a calm pending state.</p><span class="state ready">Implemented</span></div>
             <div class="step"><span class="step-number">5 · Work</span><h3>Open care workspace</h3><p class="screen">Patients appear only after relationship and consent</p><p>No personal record is created by default.</p><span class="state ready">Exists</span></div>
         </article>
 
         <article class="lane" data-lane="trainer">
             <div class="lane-title"><strong>Trainer</strong><span>Works with clients</span></div>
-            <div class="step"><span class="step-number">1 · Entry</span><h3>Choose a use case</h3><p class="screen">“Работаю тренером”</p><p>Uses plain language, not an internal role name.</p><span class="state build">Build</span></div>
-            <div class="step"><span class="step-number">2 · Identity</span><h3>Create ZITADEL login</h3><p class="screen">Email and password</p><p>Existing identities can sign in but cannot replay the intent to change roles.</p><span class="state build">Bind intent</span></div>
-            <div class="step"><span class="step-number">3 · Profile</span><h3>Tell us about your work</h3><p class="screen">Name and certificate, if available</p><p>The trainer claim is independently reviewed.</p><span class="state build">Simplify</span></div>
-            <div class="step"><span class="step-number">4 · Review</span><h3>Wait for review</h3><p class="screen">“Профиль отправлен”</p><p>Clear pending, returned and verified states.</p><span class="state ready">Logic exists</span></div>
+            <div class="step"><span class="step-number">1 · Entry</span><h3>Choose a use case</h3><p class="screen">“Работаю тренером”</p><p>Uses plain language, not an internal role name.</p><span class="state ready">Implemented</span></div>
+            <div class="step"><span class="step-number">2 · Identity</span><h3>Create ZITADEL login</h3><p class="screen">Email and password</p><p>Existing identities can sign in but cannot replay the intent to change roles.</p><span class="state ready">Bound and tested</span></div>
+            <div class="step"><span class="step-number">3 · Profile</span><h3>Tell us about your work</h3><p class="screen">Name and certificate, if available</p><p>The trainer claim is independently reviewed.</p><span class="state ready">Simplified</span></div>
+            <div class="step"><span class="step-number">4 · Review</span><h3>Wait for review</h3><p class="screen">“Профиль отправлен”</p><p>Clear pending, returned and verified states.</p><span class="state ready">Implemented</span></div>
             <div class="step"><span class="step-number">5 · Work</span><h3>Open care workspace</h3><p class="screen">Clients appear only after relationship and consent</p><p>No personal record is created by default.</p><span class="state ready">Exists</span></div>
         </article>
 
         <article class="lane" data-lane="admin">
             <div class="lane-title"><strong>Administrator</strong><span>Controls admission, not PHI</span></div>
-            <div class="step"><span class="step-number">1 · Policy</span><h3>Open or pause registration</h3><p class="screen">One UI control with current status</p><p>No routine shell command after the deployment gate is unlocked.</p><span class="state build">Build</span></div>
-            <div class="step"><span class="step-number">2 · Visibility</span><h3>See new accounts</h3><p class="screen">Counts by member, doctor and trainer</p><p>No health data appears in the control plane.</p><span class="state build">Build</span></div>
+            <div class="step"><span class="step-number">1 · Policy</span><h3>Open or pause registration</h3><p class="screen">One UI control with current status</p><p>No routine shell command after the deployment gate is unlocked.</p><span class="state ready">Implemented</span></div>
+            <div class="step"><span class="step-number">2 · Entry</span><h3>Keep one public entry</h3><p class="screen">Login → Create account → role choice</p><p>No separate administrator-created role link is needed.</p><span class="state ready">Implemented</span></div>
             <div class="step"><span class="step-number">3 · Review</span><h3>Review professional profile</h3><p class="screen">Name, type and credential reference</p><p>The reviewer cannot approve their own profile.</p><span class="state ready">Exists</span></div>
             <div class="step"><span class="step-number">4 · Decision</span><h3>Verify or return</h3><p class="screen">Short action and reason when returned</p><p>Every decision remains audited.</p><span class="state ready">Exists</span></div>
-            <div class="step"><span class="step-number">5 · Operations</span><h3>Observe the complete path</h3><p class="screen">Registration and review state in one hub</p><p>Registration role never grants patient-record access.</p><span class="state build">Build</span></div>
+            <div class="step"><span class="step-number">5 · Guardrail</span><h3>Keep access separate</h3><p class="screen">Registration role never grants patient data</p><p>Profile review, relationship and consent remain independent checks.</p><span class="state ready">Tested</span></div>
         </article>
     </section>
 
@@ -182,7 +182,7 @@
     <section class="copy" aria-labelledby="copy-title">
         <h2 id="copy-title">Primary Russian UI copy</h2>
         <div class="copy-grid">
-            <div class="copy-item"><strong>Как вы будете использовать Vitals?</strong><p>Можно изменить сценарий позже через поддержку. Выберите основной.</p></div>
+            <div class="copy-item"><strong>Как вы будете использовать Vitals?</strong><p>Выберите основной вариант. Проверка специалиста будет отдельным шагом.</p></div>
             <div class="copy-item"><strong>Слежу за своим здоровьем</strong><p>Дневник здоровья, питание, тренировки и интеграции.</p></div>
             <div class="copy-item"><strong>Работаю врачом</strong><p>Профиль проверит администратор. До проверки данных пациентов не будет.</p></div>
             <div class="copy-item"><strong>Работаю тренером</strong><p>Профиль проверит администратор. До проверки данных подопечных не будет.</p></div>

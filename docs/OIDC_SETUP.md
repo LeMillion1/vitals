@@ -173,50 +173,40 @@ explicit first-instance password exist to ensure it is never used. Changing a
 `FIRSTINSTANCE` value after `vitals_idp_pgdata` has been created does not update
 the existing administrator.
 
-## 1. Keep provider registration closed
+## 1. Choose the admission policy
 
-Vitals does not create a local account from an arbitrary provider identity.
-Every person is provisioned and linked explicitly, so the provider must not
-advertise self-registration. The Compose profile sets ZITADEL's default
-instance login policy to `allow_register=false` for a new identity database.
+Vitals registration is closed by default. A deployment must explicitly set
+`VITALS_REGISTRATION_UNLOCK=1`, and a recently authenticated platform
+administrator must then open the public door in
+`/settings/platform/registration`. The same screen pauses it again without a
+shell command or container restart. The complete browser and role contract is
+documented in [`REGISTRATION_FLOW.md`](REGISTRATION_FLOW.md).
 
-That default-instance setting is only consumed while the instance is created.
-If `vitals_idp_pgdata` already existed before this setting was added, open the
-ZITADEL Console's instance login settings, disable user registration, and save
-the policy. Do not delete the volume to make the default apply: it contains the
-identity store. Verify the result in a private browser window: the login page
-must not offer a register/sign-up action.
+For closed, invitation-only or administrator-approved installations, keep the
+ZITADEL instance login policy at **User Registration allowed: off**. The Compose
+fresh-instance default is `allow_register=false`; changing that environment
+value later does not update an existing identity database.
 
-An identity accidentally created through provider self-registration still has
-no Vitals account and cannot enter a health record. Remove or retain it under
-your identity-retention policy; never bind it merely because its email matches.
+For deliberate public registration, open the existing ZITADEL instance login
+settings and enable **User Registration allowed**. Keep **Organization
+Registration allowed** off, and set **Default Redirect URI** to the exact public
+Vitals origin plus `/login` (for example,
+`https://vitals.example.com/login`). This fallback starts a new PKCE request if
+Login V2 loses the original authorization context; without it, a newly created
+identity may remain on Login V2's standalone `signedin` page.
 
-Before issuing a Vitals registration link, an operator must also create or
-invite that same person in the provider and give them a verified recovery/login
-path. The current Vitals invitation proves local admission; it does not create
-a ZITADEL user or send provider mail. Keep public registration disabled until
-that provider-side onboarding step is implemented or operationally documented.
-
-### Controlled open-registration exception
-
-An installation deliberately using Vitals `open` registration must configure
-the existing ZITADEL instance login policy dynamically in Console; changing the
-fresh-instance Compose default does not update the identity database. Enable
-**User Registration allowed**, keep **Organization Registration allowed** off,
-and set **Default Redirect URI** to the exact public Vitals origin plus
-`/login` (for example, `https://vitals.example.com/login`). The default redirect
-is a recovery path for a lost authorization-request context, not the OIDC
-callback: it starts a new request, which lets an already-created identity return
-through the normal PKCE callback and local admission checks. Without it, Login
-V2 can leave a newly registered person on its standalone `signedin` page.
+The visitor chooses `member`, `doctor` or `trainer` in Vitals before ZITADEL.
+Vitals stores that choice only in a short-lived, one-time server intent and
+re-checks the effective registration mode in the callback. A professional
+choice creates no personal health record and grants no patient access. An
+already-linked identity cannot use a registration intent to change roles.
 
 Do not enable email verification until an active SMTP provider has passed a
-real delivery test. A temporary password-only beta may explicitly accept
-unverified mailboxes, but it has no reliable password recovery or email-bound
-admission proof; invitation and administrator-approval modes still require the
-literal `email_verified=true` claim and therefore must remain unavailable.
-Revisit this exception before advertising registration beyond a controlled
-test group.
+real delivery test. A controlled password-only beta may create accounts from an
+unverified mailbox, but it has no reliable password recovery and cannot use
+email-bound care invitations. Invitation and administrator-approval admission
+still require a literal `email_verified=true` claim. Revisit this limitation
+before advertising registration beyond the controlled test group.
 
 ## 2. Create the application in ZITADEL
 
