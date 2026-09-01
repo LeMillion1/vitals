@@ -658,9 +658,9 @@ pre-split образ нельзя запускать против revision `0083
 Профиль `offsite` не запускается автоматически. ZITADEL хранится отдельно и не
 входит в health-bundle: профиль `idp` создаёт отдельный manifest, а профиль
 `idp-offsite` использует другой зашифрованный репозиторий и не читает `.env`
-Vitals. У профиля ZITADEL нет запускаемого образа: version-controlled sentinel
-и preflight блокируют его до отдельного review-коммита с поддерживаемым OCI
-digest, совместимой конфигурацией и полной restore/OIDC-репетицией.
+Vitals. Compose фиксирует проверенные ZITADEL API/Login V2 `v4.16.2` и Caddy
+`2.10.2` по OCI digest. Включение профиля всё равно требует отдельной проверки
+restore, OIDC и публичного gateway по runbook.
 
 #### 7. Проактивный слой (опционально)
 
@@ -1524,9 +1524,9 @@ replication to a separate versioned S3 repository and the mandatory scratch
 restore drill. The `offsite` profile never starts automatically. ZITADEL remains
 outside the health bundle: `idp` creates a separate manifest, while
 `idp-offsite` uses different encrypted-repository credentials and cannot read
-the Vitals `.env`. The ZITADEL profile has no runnable image: a version-controlled
-sentinel and preflight block it until a reviewed commit supplies a supported OCI
-digest, compatible configuration, and the approved full restore/OIDC drill.
+the Vitals `.env`. Compose pins the reviewed ZITADEL API/Login V2 `v4.16.2` and
+Caddy `2.10.2` images by OCI digest. Enabling the profile still requires the
+separate restore, OIDC, and public-gateway gates in the runbook.
 
 #### 7. Proactive layer (optional)
 

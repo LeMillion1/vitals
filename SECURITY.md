@@ -31,14 +31,17 @@ You will receive a response within **72 hours**. If the issue is confirmed, a fi
 
 ## Security Design Notes
 
-The commercial branch is designed for a shared service with patient, professional,
-support, and platform roles. Until the final release gate is recorded, deploy it
-only in a controlled environment and keep public registration disabled. The
-security model assumes:
+The commercial branch is designed for a shared service with patient,
+professional, support, and platform roles. A controlled test installation may
+open deployment-gated registration to a deliberately limited audience. That is
+not approval for a broad public or commercial launch. Without tested SMTP and
+mailbox verification, password recovery and address-bound care invitations
+remain unavailable. The security model assumes:
 
 - The application runs behind a TLS-terminating reverse proxy; operational
   interfaces remain private
-- Only provisioned accounts can enter while registration is disabled
+- Only identities admitted by the effective registration policy receive a local
+  account; a self-selected professional role grants no patient access
 - The `.env` file with credentials is never committed to the repository
 
 The normative role and operational boundaries are defined in
@@ -59,10 +62,12 @@ Key security controls already in place:
 ### Commercial branch transition
 
 The code-level transition covers subject ownership, scoped services, files,
-integrations, sessions, MCP, and PostgreSQL RLS. Public registration remains
-disabled until the remaining external security, legal, identity-provider,
-backup, and operations gates are completed. Passing the code boundary does not
-by itself authorize a public commercial launch.
+integrations, sessions, MCP, PostgreSQL RLS, and role-aware public registration.
+The reference production installation runs a controlled password-only beta.
+Broader public/commercial launch remains blocked by the remaining email,
+security, legal, abuse-prevention, and operations gates. Professional
+verification, an exact relationship, and current scoped consent remain
+independent requirements for patient access.
 
 The legacy environment-backed owner is materialized as an active database user,
 `member`, `platform_superadmin`, and self-owned health subject during startup.

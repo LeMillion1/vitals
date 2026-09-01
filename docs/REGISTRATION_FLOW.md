@@ -108,3 +108,20 @@ group.
 - The final image is exercised in Docker Compose and in a clean browser session
   before deployment, then the same flows are smoke-tested on the deployed
   build.
+
+## Reference production evidence — 2026-09-02
+
+The reference production checkout is
+`b5fb96c55bbbcb4dbe5dedb8c9151b796b925e1f`, PostgreSQL reports `0085 (head)`,
+and web and worker run the same healthy immutable image. The registration gate
+is unlocked and both stored and effective modes are `open`.
+
+A read-only production smoke verified the public three-role form, the Vitals to
+ZITADEL redirect, discovery, and the canonical issuer. It intentionally did not
+create a synthetic professional account. Exact member, doctor, and trainer
+mutations are verified by automated PostgreSQL, Compose, and browser gates; a
+live disposable professional journey remains separate evidence.
+
+The newest health and identity manifests have matching Cloudflare R2 replication
+markers. The exact health bundle restored from `0084`, migrated to `0085`, and
+passed the distinct-role and multi-subject RLS recovery gates in 45.751 seconds.

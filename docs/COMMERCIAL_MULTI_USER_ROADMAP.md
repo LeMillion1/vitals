@@ -2,7 +2,7 @@
 
 Status: active design and implementation plan
 
-Last reviewed: 2026-08-26
+Last reviewed: 2026-09-02
 
 Current implementation branch: `commercial/main`
 
@@ -19,7 +19,7 @@ already exist upstream. New commercial work therefore starts from the current
 upstream head. The fork's `master` branch is not force-updated or otherwise
 rewritten.
 
-## Where this stands today (2026-08-27)
+## Where this stands today (2026-09-02)
 
 The numbers and states below are measured, not remembered. Re-derive them rather
 than trusting them if this date has gone stale.
@@ -27,10 +27,12 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0084` — 84 revisions |
-| Schema | 88 tables; 71 carry `subject_id` and are covered by an RLS policy; 60 have it `NOT NULL` |
+| Production release | `b5fb96c55bbbcb4dbe5dedb8c9151b796b925e1f` |
+| Alembic head | `0085` — 85 revisions; production also reports `0085 (head)` |
+| Schema | 89 tables; 71 carry `subject_id` and are covered by an RLS policy; 60 have it `NOT NULL` |
 | Backfill | 19 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | Current gates: 5,938 fast tests and all 43 live UI scenarios passed; the earlier exhaustive PostgreSQL gate selected 5,613 tests across three isolated shards with the full migration cycle |
+| Registration | Controlled password-only beta is open; member, doctor and trainer are public choices |
+| Recovery | Separate health and identity bundles, encrypted Cloudflare R2 repositories, verified scratch restore |
 | Domains / scheduled jobs | 14 and 16, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -1697,7 +1699,9 @@ Scope:
 - threat model, privacy model, terms/consent copy, incident response, key rotation,
   disaster recovery, backup encryption, and jurisdiction-specific review;
 - load/failure testing and observability with redaction verification;
-- switch registration from `disabled` only after every gate below passes.
+- the controlled password-only beta may open through the documented deployment
+  and administrator gates; advertising a broader public/commercial launch still
+  waits for every remaining gate below.
 
 Exit criteria:
 
@@ -1767,7 +1771,9 @@ Additional gates:
 ## Release and review rules
 
 - One concern per PR; schema expansion precedes behavior cutover.
-- Registration stays `disabled` until PR 13 gates pass.
+- Registration defaults to `disabled`. The reference controlled beta is
+  deliberately open through the deployment gate and audited administrator UI;
+  the remaining PR-13 gates still block a broader public/commercial launch.
 - Each PR updates this status, its decision log, `CHANGELOG.md`, and any affected
   security/architecture documentation.
 - Each PR records commands actually run and distinguishes passed, skipped, and
@@ -1787,13 +1793,13 @@ Additional gates:
 - [x] Backfill subject ownership across the lake.
 - [x] Pass cross-subject service isolation and PostgreSQL RLS gates.
 - [x] Cut over OIDC authentication and per-user Vitals sessions/step-up state —
-  PR-05. Registration is still closed, and closed by
-  `authentication.registration`
-  rather than by there being nowhere for an account to come from: four modes,
-  `disabled` by default, and a deployment gate in front of the other three that
-  is an environment variable rather than a settings page. A `HealthSubject` is
-  born in `authentication.provisioning` and nowhere else; an operator reaches
-  it through `scripts/provision_account.py`.
+  PR-05.
+- [x] Ship deployment-gated, role-aware public registration. A visitor chooses
+  member, doctor or trainer in Vitals; a short-lived one-time intent binds the
+  choice to the OIDC callback. Members receive one owned health subject, while
+  doctors and trainers receive one professional role and no personal record or
+  patient access. A recently authenticated platform administrator opens or
+  pauses the door in the UI after the host-level gate is unlocked.
 - [x] Isolate files, settings, portability — PR-06.
 - [x] Isolate connectors, scheduler, and messaging — PR-09 care dispatch and
   PHI-free worker rendering are complete. Every job about a record runs
@@ -1820,7 +1826,10 @@ Additional gates:
       a fixed read-only projection, patient transparency and revocation;
       broader repair and operational dashboards remain unbuilt.
 - [ ] Complete commercial security/legal/operations review.
-- [ ] Open registration.
+- [x] Open member, doctor and trainer registration for the controlled
+      password-only beta.
+- [ ] Add tested SMTP/mailbox verification, password recovery, and the remaining
+      abuse/legal/operations controls before a broader public launch.
 - [ ] Define and run any remaining commercial contract migration; ownership
       `NOT NULL` and FORCE-RLS contracts already shipped in revisions `0049` and
       `0050`.

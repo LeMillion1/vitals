@@ -1,12 +1,12 @@
 # Multi-user implementation audit
 
-Last verified: 2026-08-27, branch `commercial/main`.
+Last verified: 2026-09-02, branch `commercial/main`.
 
 This is the current-state companion to the commercial roadmap and ownership
 cutover history. It separates shipped behavior from target design and records
 the commands or source registries behind quantitative claims. The original
 code audit read no production database, `.env`, upload, backup, credential,
-Garmin session, or OAuth token. The 2026-08-27 production addendum below records
+Garmin session, or OAuth token. The 2026-09-02 production addendum below records
 only aggregate schema/role/health and checksum results from the authorized
 cutover; it contains no payloads or secret values.
 
@@ -19,14 +19,20 @@ relationships and consent, care-team conversations, OIDC login, revocable
 browser sessions, per-subject integrations, and controlled read-only support
 access.
 
-This does not by itself authorize a public commercial launch. Registration
-remains closed until the operator completes the external security, legal, and
-operations review. ZITADEL identity onboarding/recovery delivery and broader
-operations dashboards remain explicit future roadmap items rather than hidden
-release claims; Vitals professional-link invitations are shipped. The
-multi-subject health-store and independent identity-store recovery
-paths are now shipped and destructively rehearsed, but encrypted automated
-offsite replication still requires operator-owned repositories.
+This does not by itself authorize a broad public commercial launch. The
+reference production installation deliberately runs a controlled password-only
+beta with role-aware registration open. Member, doctor and trainer account
+creation and professional-profile review are shipped. SMTP-backed mailbox
+verification, reliable password recovery, abuse controls, and the remaining
+legal and operations review are still gates to advertising the service beyond
+the controlled test group.
+
+The multi-subject health store and independent identity store have separate
+recovery streams. Both replicate encrypted snapshots to distinct
+operator-owned Cloudflare R2 restic repositories, and their scratch restore
+paths have been exercised. Each installation must retain independent
+administrative recovery credentials and repeat the drill after relevant schema,
+provider, storage, or Compose changes.
 
 The earlier documentation overstated completion in important areas. Those
 findings remain useful provenance, but this document now records the later
@@ -75,37 +81,41 @@ current commit. The final gate below records commands executed against the
 final runtime tree; later commit `19e67f4` changes only a PostgreSQL corruption
 test and was rerun in its complete shard.
 
-## Production transition addendum — 2026-08-27
+## Production verification addendum — 2026-09-02
 
-The production health store is at Alembic `0084`. All 71 subject-policy tables
-have RLS enabled and forced. Migration ownership, web runtime, and worker use
-three different PostgreSQL logins; both runtime logins are non-owner,
-`NOSUPERUSER`, and `NOBYPASSRLS`, while only the worker is a member of the
-database-specific platform-scope capability. Web and worker are healthy from
-one immutable runtime image at `62873bf`, and the worker publishes no host
-port. The external `/health` endpoint reports database, Redis, and scheduler
-healthy, and the post-deploy application, worker, ZITADEL API, Login V2, and
-loopback gateway logs contain no error-level lines.
+Production runs checkout `b5fb96c55bbbcb4dbe5dedb8c9151b796b925e1f`.
+Web and worker use the same immutable runtime image and are healthy. PostgreSQL
+reports Alembic `0085 (head)`. The external `/health` endpoint reports the
+database, Redis, and scheduler healthy, and the worker publishes no host port.
+Migration ownership, web runtime, and worker use three distinct PostgreSQL
+logins; both runtime logins are non-owner, `NOSUPERUSER`, and `NOBYPASSRLS`,
+while only the worker has the database-specific platform-scope capability.
 
-A fresh production bundle restored from its pre-cutover revision through
-`0084`, passed role/RLS/worker/web gates, rendered authenticated desktop and
-phone journeys, survived a runtime restart, and was destroyed by exact scratch
-project identity. Measured served RTO was 58.892 seconds. The health and
-ZITADEL DB+Login-PAT manifests both passed their checksums in owner-only local
-backup directories. No verified off-host copy exists yet; automatic S3/restic
-replication remains a production gate.
+The registration deployment gate is unlocked; stored and effective modes are
+both `open`. `/register` and `/login` answer 200. The public registration page
+exposes member, doctor, and trainer choices, `/auth/start` redirects to the
+production ZITADEL authorization endpoint, and discovery returns the exact
+issuer `https://auth.bugless.tech`.
 
-Self-hosted ZITADEL API, PostgreSQL, Login V2, loopback Caddy, and its backup
-sidecar are healthy. A destructive identity DB+PAT restore and restart passed.
-The loopback gateway pins the canonical public authority: requests spelling the
-Host as either `auth.bugless.tech` or `auth.bugless.tech:443` both discover the
-exact issuer `https://auth.bugless.tech`.
-The public Caddy profile is deployed but deliberately stopped: production
-Vitals remains in password mode until `auth.bugless.tech` has its normal DNS
-route, public HTTP/2/gRPC/browser gates pass, the Web OIDC application exists,
-and the owner completes the one-time federated binding. The latest complete
-fast suite at that gateway boundary passed 5,980 tests, skipped 213, and
-deselected 43 in 235.23 seconds.
+That production smoke was read-only after page load: it did not create a
+synthetic doctor or trainer. Exact member, doctor, and trainer account shapes,
+callback replay protection, and professional onboarding passed the automated
+PostgreSQL, Compose, and browser gates. A live disposable professional journey
+must not be described as production-tested until one is deliberately created
+and removed.
+
+The health manifest `vitals_bundle_20260901T211130Z.sha256` and identity manifest
+`zitadel_bundle_20260901T211131Z.sha256` passed their checksum gates. The exact
+health bundle restored from `0084`, migrated through `0085`, passed distinct
+role and multi-subject RLS checks, cleaned its exact scratch project, and
+measured an RTO of 45.751 seconds. The independent ZITADEL DB+Login-PAT restore
+has separately passed provider restart and OIDC checks.
+
+The health and identity restic sidecars are both running. Their exact
+last-successful markers match those newest local manifests, proving encrypted
+replication to separate Cloudflare R2 repositories. The recovery monitor timer
+is active; a forced 2026-09-02 run completed with result `success` and exit code
+zero.
 
 ## Delivered product boundaries
 
@@ -342,14 +352,17 @@ within published vulnerable ranges. It was first replaced by a fail-closed
 sentinel. Subsequent implementation approved digest-pinned ZITADEL API/Login V2
 `v4.16.2` and Caddy `2.10.2`, split `init schema`, `setup`, runtime, gateway,
 and database authority, and made the Login PAT part of each identity bundle.
-The destructive restored-login, offsite, public HTTP/2/gRPC, and browser
-rehearsals remain operator gates that local unit tests cannot prove.
+The reference production installation has passed the destructive restored-login,
+independent offsite, and public HTTP/2/gRPC/browser rehearsals. They remain
+per-installation and per-version operator gates; local unit tests cannot replace
+them.
 
 ### `ARCHITECTURE.md` — mostly current method, incomplete generated sources
 
 Its reproducible-counter idea is right. The RLS source list and HTML counters
-are synchronized through revision `0084`. It documents the first bounded-context
-moves, but the live flat-service debt is still substantial.
+are synchronized through revision `0085`. The root of `vitals/services` now
+contains no tracked service modules; the 247 application-service modules are
+grouped recursively by owning context.
 
 ### `ARCHITECTURE.html` — synchronized during this audit
 
