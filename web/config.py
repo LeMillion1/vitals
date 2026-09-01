@@ -33,6 +33,12 @@ OIDC_HANDOFF_TTL = 600
 REGISTRATION_ADMISSION_COOKIE = "vitals_registration_admission"
 REGISTRATION_ADMISSION_TTL = 600
 
+# A public account-type choice is persisted server-side before OIDC starts.
+# The browser carries only a signed opaque row id, never the selected role or
+# provider identity. It is short-lived and single-use at the database boundary.
+REGISTRATION_INTENT_COOKIE = "vitals_registration_intent"
+REGISTRATION_INTENT_TTL = 900
+
 # An administrator-approved applicant reaches the OIDC callback with provider
 # query parameters that must not remain in browser history. The callback
 # redirects to a clean status URL and carries only this signed request UUID and

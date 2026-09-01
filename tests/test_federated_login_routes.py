@@ -23,6 +23,7 @@ from web.config import (
     OIDC_HANDOFF_COOKIE,
     PENDING_2FA_COOKIE,
     REGISTRATION_ADMISSION_COOKIE,
+    REGISTRATION_INTENT_COOKIE,
     REGISTRATION_REQUEST_COOKIE,
     SESSION_COOKIE,
 )
@@ -178,6 +179,17 @@ async def _enable_admin_approval(db_session, monkeypatch) -> None:
     await db_session.commit()
 
 
+async def _enable_open_registration(db_session, monkeypatch) -> None:
+    from vitals.services.authentication import registration
+
+    monkeypatch.setenv(registration.REGISTRATION_UNLOCK_ENV, "1")
+    await registration.set_stored_mode(
+        db_session,
+        registration.RegistrationMode.OPEN,
+    )
+    await db_session.commit()
+
+
 async def _set_owner_federated_cookie(client, db_session, legacy_owner_roots):
     from vitals.models.identity import User
     from web.auth import create_federated_session
@@ -305,6 +317,157 @@ async def test_the_handoff_cookie_never_carries_the_verifier_in_the_clear(
 async def test_start_is_absent_when_no_provider_is_configured(client):
     assert (await client.get("/auth/start")).status_code == 404
     assert (await client.get("/auth/callback?code=c&state=s")).status_code == 404
+
+
+# ── Public role choice ──────────────────────────────────────────────────────
+
+
+async def test_open_login_page_offers_a_plain_create_account_path(
+    client, federated, db_session, monkeypatch
+):
+    await _enable_open_registration(db_session, monkeypatch)
+
+    response = await client.get("/login", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert 'href="/auth/start?next=%2F"' in response.text
+    assert 'href="/register"' in response.text
+
+
+async def test_public_registration_mints_only_an_opaque_server_side_choice(
+    client, federated, db_session, monkeypatch
+):
+    from sqlalchemy import select
+
+    from vitals.models.registration import RegistrationIntent
+    from web.admission_handoff import read_registration_intent_claim
+
+    await _enable_open_registration(db_session, monkeypatch)
+    response = await client.post(
+        "/register",
+        data={"account_kind": "doctor"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/start?next=/care"
+    claim = response.cookies[REGISTRATION_INTENT_COOKIE]
+    intent_id = read_registration_intent_claim(claim)
+    assert isinstance(intent_id, uuid.UUID)
+    intent = await db_session.scalar(
+        select(RegistrationIntent).where(RegistrationIntent.id == intent_id)
+    )
+    assert intent is not None
+    assert intent.account_kind == "doctor"
+    cookie_header = response.headers["set-cookie"]
+    assert "doctor" not in cookie_header
+    assert "HttpOnly" in cookie_header
+    assert "SameSite=lax" in cookie_header
+    assert "Path=/auth" in cookie_header
+
+
+@pytest.mark.parametrize(
+    ("account_kind", "expected_role", "expected_next", "owns_record"),
+    [
+        ("member", "member", "/today", True),
+        ("doctor", "doctor", "/care", False),
+        ("trainer", "trainer", "/care", False),
+    ],
+)
+async def test_public_registration_callback_provisions_the_selected_account_shape(
+    client,
+    federated,
+    db_session,
+    monkeypatch,
+    account_kind,
+    expected_role,
+    expected_next,
+    owns_record,
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    from sqlalchemy import select
+
+    from vitals.models.identity import HealthSubject, UserFederatedIdentity, UserRole
+
+    await _enable_open_registration(db_session, monkeypatch)
+    begin = await client.post(
+        "/register",
+        data={"account_kind": account_kind},
+        follow_redirects=False,
+    )
+    start = await client.get(begin.headers["location"], follow_redirects=False)
+    query = parse_qs(urlsplit(start.headers["location"]).query)
+    federated.pending_claims.update(
+        {
+            "sub": f"public-{account_kind}",
+            "nonce": query["nonce"][0],
+            "preferred_username": f"new-{account_kind}",
+            "email": f"{account_kind}@example.test",
+            "email_verified": False,
+        }
+    )
+
+    callback = await client.get(
+        f"/auth/callback?code=code&state={query['state'][0]}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert callback.status_code == 303
+    assert callback.headers["location"] == expected_next
+    assert callback.cookies.get(SESSION_COOKIE)
+    link = await db_session.scalar(
+        select(UserFederatedIdentity).where(
+            UserFederatedIdentity.subject == f"public-{account_kind}"
+        )
+    )
+    assert link is not None
+    roles = tuple(
+        await db_session.scalars(
+            select(UserRole.role).where(UserRole.user_id == link.user_id)
+        )
+    )
+    subject_id = await db_session.scalar(
+        select(HealthSubject.id).where(HealthSubject.owner_user_id == link.user_id)
+    )
+    assert roles == (expected_role,)
+    assert (subject_id is not None) is owns_record
+
+
+async def test_public_registration_rejects_a_callback_from_another_browser_claim(
+    client, federated, db_session, monkeypatch
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    await _enable_open_registration(db_session, monkeypatch)
+    begin = await client.post(
+        "/register",
+        data={"account_kind": "trainer"},
+        follow_redirects=False,
+    )
+    start = await client.get(begin.headers["location"], follow_redirects=False)
+    query = parse_qs(urlsplit(start.headers["location"]).query)
+    federated.pending_claims.update(
+        {
+            "sub": "mismatched-registration-browser",
+            "nonce": query["nonce"][0],
+        }
+    )
+    client.cookies.set(
+        REGISTRATION_INTENT_COOKIE,
+        "tampered",
+        path="/auth",
+    )
+
+    callback = await client.get(
+        f"/auth/callback?code=code&state={query['state'][0]}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert callback.status_code == 401
+    assert not callback.cookies.get(SESSION_COOKIE)
+    assert 'href="/register"' in callback.text
+    assert "vitals_registration_intent=\"\"" in callback.headers["set-cookie"]
 
 
 # ── Invitation handoff ──────────────────────────────────────────────────────
@@ -1746,19 +1909,21 @@ async def test_before_the_cutover_the_password_login_still_works(client):
     assert (await client.get("/auth/start")).status_code == 404
 
 
-async def test_after_the_cutover_the_login_page_sends_you_to_the_provider(
+async def test_after_the_cutover_the_login_page_offers_one_clear_provider_entry(
     client, federated
 ):
     response = await client.get("/login", follow_redirects=False)
-    assert response.status_code == 303
-    assert response.headers["location"].startswith("/auth/start")
+    assert response.status_code == 200
+    assert 'href="/auth/start?next=%2F"' in response.text
+    assert 'href="/register"' not in response.text
 
 
 async def test_after_the_cutover_the_login_page_keeps_where_you_were_going(
     client, federated
 ):
     response = await client.get("/login?next=/labs", follow_redirects=False)
-    assert "next=%2Flabs" in response.headers["location"]
+    assert response.status_code == 200
+    assert 'href="/auth/start?next=%2Flabs"' in response.text
 
 
 @pytest.mark.parametrize(

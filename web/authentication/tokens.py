@@ -129,6 +129,7 @@ def create_oidc_handoff(
     next_url: str,
     max_age_seconds: int | None = None,
     invitation_id: uuid.UUID | None = None,
+    registration_intent_id: uuid.UUID | None = None,
 ) -> str:
     """Seal what the callback needs for the browser to carry there."""
 
@@ -136,6 +137,13 @@ def create_oidc_handoff(
         not isinstance(invitation_id, uuid.UUID) or invitation_id.int == 0
     ):
         raise ValueError("invitation_id must be a non-zero UUID")
+    if registration_intent_id is not None and (
+        not isinstance(registration_intent_id, uuid.UUID)
+        or registration_intent_id.int == 0
+    ):
+        raise ValueError("registration_intent_id must be a non-zero UUID")
+    if invitation_id is not None and registration_intent_id is not None:
+        raise ValueError("one OIDC handoff may carry only one admission proof")
     return _get_oidc_handoff_serializer().dumps(
         {
             "state": state,
@@ -144,10 +152,21 @@ def create_oidc_handoff(
             "next": next_url,
             "max_age_seconds": max_age_seconds,
             "admission_type": (
-                "registration_invitation" if invitation_id is not None else None
+                "registration_invitation"
+                if invitation_id is not None
+                else (
+                    "registration_intent"
+                    if registration_intent_id is not None
+                    else None
+                )
             ),
             "invitation_id": (
                 str(invitation_id) if invitation_id is not None else None
+            ),
+            "registration_intent_id": (
+                str(registration_intent_id)
+                if registration_intent_id is not None
+                else None
             ),
         }
     )
@@ -170,6 +189,7 @@ def read_oidc_handoff(token: str | None) -> dict | None:
         "max_age_seconds",
         "admission_type",
         "invitation_id",
+        "registration_intent_id",
     }:
         return None
     for key in ("state", "nonce", "code_verifier"):
@@ -184,10 +204,25 @@ def read_oidc_handoff(token: str | None) -> dict | None:
     ):
         return None
     invitation_id = payload["invitation_id"]
+    registration_intent_id = payload["registration_intent_id"]
     admission_type = payload["admission_type"]
-    if (invitation_id is None) != (admission_type is None):
+    if admission_type is None and (
+        invitation_id is not None or registration_intent_id is not None
+    ):
         return None
-    if admission_type is not None and admission_type != "registration_invitation":
+    if admission_type == "registration_invitation" and (
+        invitation_id is None or registration_intent_id is not None
+    ):
+        return None
+    if admission_type == "registration_intent" and (
+        registration_intent_id is None or invitation_id is not None
+    ):
+        return None
+    if admission_type not in {
+        None,
+        "registration_invitation",
+        "registration_intent",
+    }:
         return None
     if invitation_id is not None:
         try:
@@ -197,6 +232,14 @@ def read_oidc_handoff(token: str | None) -> dict | None:
         if invitation_id.int == 0:
             return None
     payload["invitation_id"] = invitation_id
+    if registration_intent_id is not None:
+        try:
+            registration_intent_id = uuid.UUID(registration_intent_id)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if registration_intent_id.int == 0:
+            return None
+    payload["registration_intent_id"] = registration_intent_id
     return payload
 
 

@@ -39,6 +39,11 @@ ANONYMOUS_BY_DESIGN = {
     # Signed, opaque status handoff after the callback removes OAuth query
     # parameters from browser history; it grants no account or session.
     ("GET", "/auth/registration-request"),
+    # Public registration asks for one non-privileged account shape, persists
+    # it server-side as a short-lived one-time intent, and then begins OIDC.
+    # It issues no session and is rate-limited at the POST boundary.
+    ("GET", "/register"),
+    ("POST", "/register"),
     # The invitation bearer stays in the URL fragment and is exchanged once by
     # a same-origin POST for a signed, opaque browser claim before OIDC starts.
     # Neither route accepts a session because creating one is their purpose.

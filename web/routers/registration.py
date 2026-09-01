@@ -1,4 +1,4 @@
-"""Anonymous account-invitation entry without bearer leakage."""
+"""Simple public account choice and invitation entry without bearer leakage."""
 
 from __future__ import annotations
 
@@ -6,17 +6,22 @@ import secrets
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services.authentication import admission
+from vitals.enums import RegistrationAccountKind
+from vitals.services.authentication import admission, registration
 from web.admission_handoff import (
+    clear_registration_intent_cookie,
     clear_invitation_claim_cookie,
+    create_registration_intent_claim,
     create_invitation_claim,
+    set_registration_intent_cookie,
     set_invitation_claim_cookie,
 )
-from web.config import get_web_config
+from web.authentication.tokens import read_session
+from web.config import SESSION_COOKIE, get_web_config
 from web.deps import get_session
 from web.ratelimit import login_rate_limit
 from web.request_bodies import read_bounded_json_object
@@ -35,6 +40,96 @@ INVITATION_CSP = (
 )
 
 router = APIRouter(prefix="/register", tags=["registration"])
+
+
+async def _public_page(
+    request: Request,
+    db: AsyncSession,
+    *,
+    error: bool = False,
+    selected_kind: str = "",
+) -> HTMLResponse:
+    cfg = get_web_config()
+    mode = await registration.effective_mode(db)
+    return templates.TemplateResponse(
+        request,
+        "register.html",
+        {
+            "registration_open": (
+                cfg.oidc_enabled and mode is registration.RegistrationMode.OPEN
+            ),
+            "account_kinds": tuple(RegistrationAccountKind),
+            "selected_kind": selected_kind,
+            "error": error,
+        },
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Robots-Tag": "noindex, nofollow, noarchive",
+        },
+    )
+
+
+@router.get("", response_class=HTMLResponse)
+async def public_registration(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+):
+    """Ask one plain product question before handing identity to ZITADEL."""
+
+    if read_session(request.cookies.get(SESSION_COOKIE)) is not None:
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    return await _public_page(request, db)
+
+
+@router.post("", response_class=HTMLResponse)
+async def begin_public_registration(
+    request: Request,
+    account_kind: str = Form(""),
+    db: AsyncSession = Depends(get_session),
+    _limit: None = Depends(
+        login_rate_limit(
+            limit=10,
+            window=300,
+            bucket="public_registration",
+        )
+    ),
+):
+    """Persist a one-time server intent and begin the provider login."""
+
+    if read_session(request.cookies.get(SESSION_COOKIE)) is not None:
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    if not get_web_config().oidc_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    try:
+        intent = await admission.issue_intent(db, account_kind=account_kind)
+    except (admission.AdmissionError, admission.AdmissionValidationError):
+        await db.rollback()
+        return await _public_page(
+            request,
+            db,
+            error=True,
+            selected_kind=account_kind,
+        )
+    await db.commit()
+
+    next_url = (
+        "/today"
+        if intent.account_kind == RegistrationAccountKind.MEMBER.value
+        else "/care"
+    )
+    response = RedirectResponse(
+        url=f"/auth/start?next={next_url}",
+        status_code=status.HTTP_303_SEE_OTHER,
+        headers={"Cache-Control": "no-store"},
+    )
+    clear_invitation_claim_cookie(response)
+    clear_registration_intent_cookie(response)
+    set_registration_intent_cookie(
+        response,
+        create_registration_intent_claim(intent.id),
+    )
+    return response
 
 
 async def _json_object(request: Request) -> dict[str, Any]:
@@ -128,6 +223,7 @@ async def exchange_invitation(
     clear_session_cookie(response)
     clear_pending_2fa_cookie(response)
     clear_oidc_handoff_cookie(response)
+    clear_registration_intent_cookie(response)
     set_invitation_claim_cookie(
         response,
         create_invitation_claim(invitation_id),

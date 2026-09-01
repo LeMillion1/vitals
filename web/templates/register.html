@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="{{ request.state.lang if request.state is defined else 'en' }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <title>{{ t("registration.public.page_title") }}</title>
+    <link rel="stylesheet" href="/static/fonts.css">
+    <link rel="stylesheet" href="/static/tailwind.css">
+    <link rel="stylesheet" href="/static/vitals.css">
+    <link rel="stylesheet" href="/static/vitals-masthead.css">
+</head>
+<body class="ui-masthead">
+    <main class="v-page px-6 py-7 max-w-2xl mx-auto">
+        <section class="v-card p-6 space-y-6" aria-labelledby="registration-heading">
+            <div class="space-y-2">
+                <div class="v-eyebrow">Vitals</div>
+                <h1 id="registration-heading" class="v-heading-1">
+                    {% if registration_open %}{{ t("registration.public.heading") }}{% else %}{{ t("registration.public.closed_heading") }}{% endif %}
+                </h1>
+                <p class="v-text-body" style="color: var(--muted)">
+                    {% if registration_open %}{{ t("registration.public.description") }}{% else %}{{ t("registration.public.closed_body") }}{% endif %}
+                </p>
+            </div>
+
+            {% if error %}
+            <div class="v-alert warn" role="alert">{{ t("registration.public.error") }}</div>
+            {% endif %}
+
+            {% if registration_open %}
+            <form action="/register" method="POST" class="space-y-5">
+                <fieldset class="space-y-3">
+                    <legend class="sr-only">{{ t("registration.public.heading") }}</legend>
+                    {% for kind in account_kinds %}
+                    <label class="v-card-inset p-4 flex items-start gap-3 cursor-pointer min-h-11">
+                        <input type="radio" name="account_kind" value="{{ kind.value }}" required
+                               class="mt-1" {% if selected_kind == kind.value %}checked{% endif %}>
+                        <span>
+                            <strong class="v-text-body">{{ t("registration.public.kind_" ~ kind.value) }}</strong>
+                            <span class="v-text-micro block mt-1" style="color: var(--muted)">{{ t("registration.public.kind_" ~ kind.value ~ "_body") }}</span>
+                        </span>
+                    </label>
+                    {% endfor %}
+                </fieldset>
+                <button type="submit" class="v-btn w-full sm:w-auto">{{ t("registration.public.continue") }}</button>
+            </form>
+            {% endif %}
+
+            <div class="pt-2 border-t" style="border-color: var(--line)">
+                <a href="/auth/start" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3">
+                    {{ t("registration.public.sign_in") }}
+                </a>
+            </div>
+        </section>
+    </main>
+</body>
+</html>

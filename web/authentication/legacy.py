@@ -11,6 +11,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.i18n import t
+from vitals.services.authentication import registration
 from vitals.services.authentication import legacy_two_factor as twofa_service
 from vitals.utils.passwords import verify_password, verify_password_dummy
 from web.authentication.tokens import (
@@ -44,14 +45,30 @@ def authenticate(username: str, password: str) -> bool:
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request, next: Optional[str] = None):
+async def login_page(
+    request: Request,
+    next: Optional[str] = None,
+    db: AsyncSession = Depends(get_session),
+):
     if read_session(request.cookies.get(SESSION_COOKIE)) is not None:
         return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
     if get_web_config().oidc_enabled:
-        target = "/auth/start"
-        if next:
-            target += f"?next={quote(safe_next(next), safe='')}"
-        return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
+        next_url = safe_next(next)
+        target = f"/auth/start?next={quote(next_url, safe='')}"
+        mode = await registration.effective_mode(db)
+        return templates.TemplateResponse(
+            request,
+            "oidc_entry.html",
+            {
+                "sign_in_url": target,
+                "registration_open": mode is registration.RegistrationMode.OPEN,
+            },
+            headers={
+                "Cache-Control": "no-store",
+                "Referrer-Policy": "no-referrer",
+                "X-Robots-Tag": "noindex, nofollow, noarchive",
+            },
+        )
     return templates.TemplateResponse(request, "login.html", {"next": safe_next(next)})
 
 

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="{{ request.state.lang if request.state is defined else 'en' }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <title>{{ t("login.page_title") }}</title>
+    <link rel="stylesheet" href="/static/fonts.css">
+    <link rel="stylesheet" href="/static/tailwind.css">
+    <link rel="stylesheet" href="/static/vitals.css">
+    <link rel="stylesheet" href="/static/vitals-masthead.css">
+</head>
+<body class="ui-masthead">
+    <main class="v-page px-6 py-7 max-w-2xl mx-auto">
+        <section class="v-card p-6 space-y-6" aria-labelledby="login-heading">
+            <div class="space-y-2">
+                <div class="v-eyebrow">Vitals</div>
+                <h1 id="login-heading" class="v-heading-1">{{ t("login.federated.heading") }}</h1>
+                <p class="v-text-body" style="color: var(--muted)">{{ t("login.federated.description") }}</p>
+            </div>
+            <div class="flex flex-col sm:flex-row gap-3">
+                <a href="{{ sign_in_url }}" class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3">
+                    {{ t("login.federated.sign_in") }}
+                </a>
+                {% if registration_open %}
+                <a href="/register" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3">
+                    {{ t("login.federated.create_account") }}
+                </a>
+                {% endif %}
+            </div>
+            <p class="v-text-micro" style="color: var(--muted)">{{ t("login.federated.provider_hint") }}</p>
+        </section>
+    </main>
+</body>
+</html>

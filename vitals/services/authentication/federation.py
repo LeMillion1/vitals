@@ -37,7 +37,12 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import AuditOutcome, UserStatus
+from vitals.enums import (
+    AuditOutcome,
+    RegistrationAccountKind,
+    UserRoleName,
+    UserStatus,
+)
 from vitals.models.identity import AuditEvent, User, UserFederatedIdentity
 from vitals.services.identity.contracts import IdentityValidationError
 from vitals.services.identity.governance import acquire_identity_governance_lock
@@ -296,6 +301,7 @@ async def _provision_if_registration_is_open(
     email_verified: bool,
     preferred_username: str | None,
     authenticated_at: datetime | None,
+    registration_intent_id: uuid.UUID | None = None,
 ) -> User | None:
     """An account for a stranger, if this installation has said it wants one.
 
@@ -311,7 +317,7 @@ async def _provision_if_registration_is_open(
     name is a collision to resolve, not a way to become somebody else.
     """
 
-    from vitals.services.authentication import provisioning, registration
+    from vitals.services.authentication import admission, provisioning, registration
 
     # Registration policy and identity creation are one governance decision.
     # The lock is deliberately acquired before re-reading both the immutable
@@ -337,7 +343,24 @@ async def _provision_if_registration_is_open(
     try:
         await registration.require_open_registration(session)
     except registration.RegistrationClosed:
+        if registration_intent_id is not None:
+            raise admission.AdmissionRefused(
+                "this admission proof does not open an account"
+            )
         return None
+
+    account_kind = RegistrationAccountKind.MEMBER
+    if registration_intent_id is not None:
+        intent = await admission.consume_intent(
+            session,
+            intent_id=registration_intent_id,
+        )
+        try:
+            account_kind = RegistrationAccountKind(intent.account_kind)
+        except ValueError as exc:  # Defensive against manually corrupted rows.
+            raise admission.AdmissionRefused(
+                "this admission proof does not open an account"
+            ) from exc
 
     candidate = (preferred_username or "").strip()
     if not candidate and email and "@" in email:
@@ -346,15 +369,29 @@ async def _provision_if_registration_is_open(
         candidate = f"user-{subject[:24]}"
 
     try:
-        provisioned = await provisioning.provision_bound_member_account(
-            session,
-            username=candidate,
-            # The provider's display claim may name the account, but only a
-            # verified claim may become an address-bound local fact.  Project
-            # it below after the account exists and collision handling can
-            # remain a uniform login refusal.
-            email=None,
-        )
+        if account_kind is RegistrationAccountKind.MEMBER:
+            provisioned = await provisioning.provision_bound_member_account(
+                session,
+                username=candidate,
+                # The provider's display claim may name the account, but only a
+                # verified claim may become an address-bound local fact. Project
+                # it below after the account exists and collision handling can
+                # remain a uniform login refusal.
+                email=None,
+            )
+        else:
+            role = (
+                UserRoleName.DOCTOR
+                if account_kind is RegistrationAccountKind.DOCTOR
+                else UserRoleName.TRAINER
+            )
+            provisioned = await provisioning.provision_account(
+                session,
+                username=candidate,
+                email=None,
+                roles=(role.value,),
+                with_health_record=False,
+            )
     except provisioning.AccountProvisioningError as exc:
         # Invalid or colliding provider naming data is one uniform refusal.
         # Picking a suffix would imply a relationship to an existing account;
@@ -378,6 +415,9 @@ async def _provision_if_registration_is_open(
         email_verified=email_verified,
     )
     user.last_login_at = datetime.now(timezone.utc)
+    changed_fields = ["federated_identity", "roles"]
+    if provisioned.subject_id is not None:
+        changed_fields.append("subject")
     session.add(
         AuditEvent(
             actor_user_id=None,
@@ -388,10 +428,10 @@ async def _provision_if_registration_is_open(
             resource_id=str(user.id),
             metadata_json={
                 "source_surface": "authentication.federation",
-                "result_code": "open_registration_admitted",
+                "result_code": f"{account_kind.value}_open_registration_admitted",
                 "resource_type": "user",
                 "resource_id": str(user.id),
-                "changed_fields": ["federated_identity", "roles", "subject"],
+                "changed_fields": changed_fields,
             },
         )
     )
@@ -475,6 +515,7 @@ async def resolve_federated_user(
     email: str | None = None,
     email_verified: bool = False,
     preferred_username: str | None = None,
+    registration_intent_id: uuid.UUID | None = None,
 ) -> User:
     """The local user this provider identity is, or a refusal.
 
@@ -524,6 +565,7 @@ async def resolve_federated_user(
             email_verified=email_verified,
             preferred_username=preferred_username,
             authenticated_at=authenticated_at,
+            registration_intent_id=registration_intent_id,
         )
         if provisioned is not None:
             return provisioned
@@ -550,6 +592,7 @@ async def decide_federated_login(
     identity: FederatedIdentity,
     bootstrap_subject: str,
     invitation_id: uuid.UUID | None,
+    registration_intent_id: uuid.UUID | None = None,
     step_up: bool,
 ) -> FederatedSessionDecision | FederatedRegistrationDecision:
     """Resolve one validated provider identity into a local login outcome.
@@ -565,6 +608,11 @@ async def decide_federated_login(
     from vitals.models.identity import HealthSubject
     from vitals.services.authentication import admission
 
+    if invitation_id is not None and registration_intent_id is not None:
+        raise FederatedLoginError("one login may carry only one admission proof")
+    if step_up and registration_intent_id is not None:
+        raise FederatedLoginError("step-up cannot create an account")
+
     if invitation_id is None or identity.subject == bootstrap_subject:
         try:
             user = await resolve_federated_user(
@@ -576,6 +624,7 @@ async def decide_federated_login(
                 email=identity.email,
                 email_verified=identity.email_verified,
                 preferred_username=identity.preferred_username,
+                registration_intent_id=registration_intent_id,
             )
         except BootstrapRefused:
             # A failed bootstrap ceremony must not become a public application.

@@ -37,6 +37,7 @@ from web.authentication.tokens import (
 from web.config import (
     OIDC_HANDOFF_COOKIE,
     REGISTRATION_ADMISSION_COOKIE,
+    REGISTRATION_INTENT_COOKIE,
     REGISTRATION_REQUEST_COOKIE,
     SESSION_COOKIE,
     get_web_config,
@@ -154,6 +155,7 @@ def _login_failed(
     reason: str,
     *,
     next_url: str | None = None,
+    retry_url: str | None = None,
 ):
     """Render one response for every federated-login refusal."""
 
@@ -164,7 +166,8 @@ def _login_failed(
         "oidc_error.html",
         {
             "error": t("login.error.federated"),
-            "retry_url": f"/auth/start?next={quote(destination, safe='')}",
+            "retry_url": retry_url
+            or f"/auth/start?next={quote(destination, safe='')}",
         },
         status_code=status.HTTP_401_UNAUTHORIZED,
     )
@@ -220,7 +223,10 @@ async def federated_login_start(
     if not cfg.oidc_enabled:
         raise HTTPException(status_code=404)
 
-    from web.admission_handoff import read_invitation_claim
+    from web.admission_handoff import (
+        read_invitation_claim,
+        read_registration_intent_claim,
+    )
 
     invitation_id = (
         None
@@ -229,9 +235,17 @@ async def federated_login_start(
             request.cookies.get(REGISTRATION_ADMISSION_COOKIE)
         )
     )
+    registration_intent_id = (
+        None
+        if step_up or invitation_id is not None
+        else read_registration_intent_claim(
+            request.cookies.get(REGISTRATION_INTENT_COOKIE)
+        )
+    )
     if (
         not step_up
         and invitation_id is None
+        and registration_intent_id is None
         and read_session(request.cookies.get(SESSION_COOKIE)) is not None
     ):
         response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
@@ -268,6 +282,7 @@ async def federated_login_start(
             next_url=safe_next(next),
             max_age_seconds=900 if step_up or invitation_id is not None else None,
             invitation_id=invitation_id,
+            registration_intent_id=registration_intent_id,
         ),
     )
     return response
@@ -312,6 +327,7 @@ async def federated_login_callback(
         )
 
     invitation_id = handoff["invitation_id"]
+    registration_intent_id = handoff["registration_intent_id"]
     if invitation_id is not None:
         from web.admission_handoff import (
             clear_invitation_claim_cookie,
@@ -328,6 +344,25 @@ async def federated_login_callback(
                 next_url=handoff["next"],
             )
             clear_invitation_claim_cookie(response)
+            return response
+
+    if registration_intent_id is not None:
+        from web.admission_handoff import (
+            clear_registration_intent_cookie,
+            read_registration_intent_claim,
+        )
+
+        browser_claim = read_registration_intent_claim(
+            request.cookies.get(REGISTRATION_INTENT_COOKIE)
+        )
+        if browser_claim != registration_intent_id:
+            response = _login_failed(
+                request,
+                "callback registration intent does not match this browser's",
+                next_url=handoff["next"],
+                retry_url="/register",
+            )
+            clear_registration_intent_cookie(response)
             return response
 
     provider = _provider()
@@ -352,6 +387,7 @@ async def federated_login_callback(
             identity=identity,
             bootstrap_subject=cfg.oidc_bootstrap_subject,
             invitation_id=invitation_id,
+            registration_intent_id=registration_intent_id,
             step_up=handoff["max_age_seconds"] is not None,
         )
     except (
@@ -360,11 +396,17 @@ async def federated_login_callback(
         admission.AdmissionValidationError,
     ) as exc:
         await db.rollback()
-        return _login_failed(
+        response = _login_failed(
             request,
             f"no session for this identity: {exc}",
             next_url=handoff["next"],
+            retry_url=("/register" if registration_intent_id is not None else None),
         )
+        if registration_intent_id is not None:
+            from web.admission_handoff import clear_registration_intent_cookie
+
+            clear_registration_intent_cookie(response)
+        return response
 
     if isinstance(decision, FederatedRegistrationDecision):
         # Persist the proof before telling the browser that it exists.
@@ -398,6 +440,10 @@ async def federated_login_callback(
         from web.admission_handoff import clear_invitation_claim_cookie
 
         clear_invitation_claim_cookie(response)
+    if registration_intent_id is not None:
+        from web.admission_handoff import clear_registration_intent_cookie
+
+        clear_registration_intent_cookie(response)
     return response
 
 
@@ -429,6 +475,9 @@ async def logout(request: Request):
     response = RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
     clear_session_cookie(response)
     clear_pending_2fa_cookie(response)
+    from web.admission_handoff import clear_registration_intent_cookie
+
+    clear_registration_intent_cookie(response)
     return response
 
 
