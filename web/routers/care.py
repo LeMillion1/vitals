@@ -37,6 +37,7 @@ from vitals.services.care import workspace as care_workspace
 from web.care_context import CareContext, principal_user_id, require_care_context
 from web.config import get_web_config
 from web.deps import get_session, require_auth
+from web.presenters.care import professional_roster_context
 from web.templating import STATIC_DIR, templates
 from web.uploads import (
     PreparedMedicalDocument,
@@ -196,60 +197,13 @@ async def roster(
     return templates.TemplateResponse(
         request,
         "care/roster.html",
-        _roster_context(
+        professional_roster_context(
             workspace,
             username=username,
             accepted=accepted,
             submitted=submitted,
         ),
     )
-
-
-def _roster_context(
-    workspace,
-    *,
-    username: str,
-    accepted: bool = False,
-    submitted: bool = False,
-    profile_error: str | None = None,
-    display_name: str | None = None,
-    credential_reference: str | None = None,
-) -> dict[str, object]:
-    """One render contract for the professional roster and onboarding states."""
-
-    profile = workspace.profile
-    return {
-        "patients": workspace.patients,
-        "username": username,
-        "accepted": accepted,
-        "submitted": submitted,
-        "professional_profile": profile,
-        "onboarding_kind": (
-            workspace.onboarding_kind.value
-            if workspace.onboarding_kind is not None
-            else None
-        ),
-        "profile_verified": workspace.profile_verified,
-        "is_professional_account": bool(workspace.professional_roles),
-        "active_account_nav": "professional_care",
-        "profile_error": profile_error,
-        "profile_form": {
-            "display_name": (
-                display_name
-                if display_name is not None
-                else (profile.display_name if profile is not None else username)
-            ),
-            "credential_reference": (
-                credential_reference
-                if credential_reference is not None
-                else (
-                    profile.credential_reference
-                    if profile is not None and profile.credential_reference
-                    else ""
-                )
-            ),
-        },
-    }
 
 
 @router.post("/profile")
@@ -300,7 +254,7 @@ async def submit_professional_profile(
         return templates.TemplateResponse(
             request,
             "care/roster.html",
-            _roster_context(
+            professional_roster_context(
                 workspace,
                 username=username,
                 profile_error="invalid",
@@ -318,7 +272,7 @@ async def submit_professional_profile(
         return templates.TemplateResponse(
             request,
             "care/roster.html",
-            _roster_context(
+            professional_roster_context(
                 workspace,
                 username=username,
                 profile_error="conflict",
