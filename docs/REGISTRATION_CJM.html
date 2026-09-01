@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vitals registration journey</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --page: light-dark(#f5f2f7, #1d1a21);
+            --surface: light-dark(#ffffff, #332f3c);
+            --surface-2: light-dark(#ece7f0, #3d3848);
+            --line: light-dark(#d5ccd9, #564e63);
+            --text: light-dark(#211b25, #f3f0f6);
+            --muted: light-dark(#62576a, #cfc8d8);
+            --accent: light-dark(#a85f00, #f5a623);
+            --good: light-dark(#176b3a, #6fc58e);
+            --warn: light-dark(#8a4f00, #f0b24a);
+            --block: light-dark(#9c2f21, #ee7a60);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background: var(--page);
+            color: var(--text);
+            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            line-height: 1.45;
+        }
+        main { width: min(1180px, 100%); margin: 0 auto; padding: 32px 20px 56px; }
+        h1, h2, h3, p { margin-top: 0; }
+        h1 { margin-bottom: 8px; font-size: clamp(28px, 5vw, 44px); }
+        h2 { font-size: 22px; }
+        h3 { font-size: 17px; }
+        .lede { max-width: 780px; color: var(--muted); }
+        .toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin: 24px 0; }
+        button {
+            min-height: 44px;
+            padding: 10px 16px;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: var(--surface);
+            color: var(--text);
+            font: inherit;
+            cursor: pointer;
+        }
+        button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+        .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 22px; color: var(--muted); font-size: 14px; }
+        .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 7px; border-radius: 50%; background: var(--line); }
+        .legend .ready::before { background: var(--good); }
+        .legend .build::before { background: var(--accent); }
+        .legend .external::before { background: var(--warn); }
+        .journey { display: grid; gap: 14px; }
+        .lane {
+            display: grid;
+            grid-template-columns: 150px repeat(5, minmax(170px, 1fr));
+            gap: 10px;
+            align-items: stretch;
+        }
+        .lane-title, .step {
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            background: var(--surface);
+            padding: 16px;
+        }
+        .lane-title { display: flex; flex-direction: column; justify-content: center; }
+        .lane-title strong { font-size: 17px; }
+        .lane-title span { margin-top: 4px; color: var(--muted); font-size: 13px; }
+        .step { position: relative; min-height: 174px; }
+        .step::after {
+            content: "";
+            position: absolute;
+            top: 50%;
+            right: -11px;
+            width: 11px;
+            border-top: 2px solid var(--line);
+        }
+        .step:last-child::after { display: none; }
+        .step-number { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+        .step p { margin-bottom: 10px; color: var(--muted); font-size: 14px; }
+        .step .screen { color: var(--text); font-weight: 600; }
+        .state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+        .state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+        .state.ready::before { background: var(--good); }
+        .state.build::before { background: var(--accent); }
+        .state.external::before { background: var(--warn); }
+        .guardrails, .copy, .acceptance {
+            margin-top: 28px;
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            background: var(--surface);
+            padding: 22px;
+        }
+        .guardrail-grid, .copy-grid, .acceptance-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+        .rule, .copy-item, .check { padding: 16px; border-radius: 14px; background: var(--surface-2); }
+        .rule strong, .copy-item strong, .check strong { display: block; margin-bottom: 6px; }
+        .rule p, .copy-item p, .check p { margin: 0; color: var(--muted); font-size: 14px; }
+        .critical { border-left: 4px solid var(--block); }
+        .note { margin-top: 18px; color: var(--muted); font-size: 14px; }
+        [hidden] { display: none !important; }
+        @media (max-width: 1100px) {
+            .lane { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .lane-title { grid-column: 1 / -1; }
+            .step::after { display: none; }
+        }
+        @media (max-width: 700px) {
+            main { padding: 24px 14px 40px; }
+            .lane { display: block; }
+            .lane-title, .step { margin-bottom: 10px; min-height: 0; }
+            .guardrail-grid, .copy-grid, .acceptance-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <h1>Vitals registration journey</h1>
+    <p class="lede">Implementation contract for public member, doctor and trainer registration. The role is selected in Vitals, authentication stays in ZITADEL, and no professional receives patient access from registration alone.</p>
+
+    <div class="toolbar" role="group" aria-label="Show journey">
+        <button type="button" data-role="all" aria-pressed="true">All roles</button>
+        <button type="button" data-role="member" aria-pressed="false">Member</button>
+        <button type="button" data-role="doctor" aria-pressed="false">Doctor</button>
+        <button type="button" data-role="trainer" aria-pressed="false">Trainer</button>
+        <button type="button" data-role="admin" aria-pressed="false">Administrator</button>
+    </div>
+
+    <div class="legend" aria-label="Implementation status">
+        <span class="ready">Already exists</span>
+        <span class="build">Required in this goal</span>
+        <span class="external">External dependency</span>
+    </div>
+
+    <section class="journey" aria-label="Customer journey map">
+        <article class="lane" data-lane="member">
+            <div class="lane-title"><strong>Member</strong><span>Tracks their own health</span></div>
+            <div class="step"><span class="step-number">1 · Entry</span><h3>Choose a use case</h3><p class="screen">“Слежу за своим здоровьем”</p><p>One clear choice before leaving Vitals.</p><span class="state build">Build</span></div>
+            <div class="step"><span class="step-number">2 · Identity</span><h3>Create ZITADEL login</h3><p class="screen">Email and password</p><p>Vitals never stores the password.</p><span class="state ready">Exists</span></div>
+            <div class="step"><span class="step-number">3 · Account</span><h3>Open personal record</h3><p class="screen">“Готово. Начнём с сегодняшнего дня.”</p><p>Creates the member role and one owned health subject.</p><span class="state build">Build</span></div>
+            <div class="step"><span class="step-number">4 · First value</span><h3>Today</h3><p class="screen">Add food, health data or a device</p><p>No professional setup is shown.</p><span class="state ready">Exists</span></div>
+            <div class="step"><span class="step-number">5 · Care</span><h3>Add a specialist</h3><p class="screen">“Добавить специалиста”</p><p>A separate care invitation never creates an account or a role.</p><span class="state build">Simplify copy</span></div>
+        </article>
+
+        <article class="lane" data-lane="doctor">
+            <div class="lane-title"><strong>Doctor</strong><span>Works with patients</span></div>
+            <div class="step"><span class="step-number">1 · Entry</span><h3>Choose a use case</h3><p class="screen">“Работаю врачом”</p><p>Explains that professional verification follows.</p><span class="state build">Build</span></div>
+            <div class="step"><span class="step-number">2 · Identity</span><h3>Create ZITADEL login</h3><p class="screen">Email and password</p><p>The selected type is held by a one-time server intent.</p><span class="state ready">OIDC exists</span></div>
+            <div class="step"><span class="step-number">3 · Profile</span><h3>Tell us about your work</h3><p class="screen">Name and licence or certificate, if available</p><p>Creates an unverified doctor profile, not PHI access.</p><span class="state build">Simplify</span></div>
+            <div class="step"><span class="step-number">4 · Review</span><h3>Wait for review</h3><p class="screen">“Профиль отправлен”</p><p>Shows the next step and a calm pending state.</p><span class="state ready">Logic exists</span></div>
+            <div class="step"><span class="step-number">5 · Work</span><h3>Open care workspace</h3><p class="screen">Patients appear only after relationship and consent</p><p>No personal record is created by default.</p><span class="state ready">Exists</span></div>
+        </article>
+
+        <article class="lane" data-lane="trainer">
+            <div class="lane-title"><strong>Trainer</strong><span>Works with clients</span></div>
+            <div class="step"><span class="step-number">1 · Entry</span><h3>Choose a use case</h3><p class="screen">“Работаю тренером”</p><p>Uses plain language, not an internal role name.</p><span class="state build">Build</span></div>
+            <div class="step"><span class="step-number">2 · Identity</span><h3>Create ZITADEL login</h3><p class="screen">Email and password</p><p>Existing identities can sign in but cannot replay the intent to change roles.</p><span class="state build">Bind intent</span></div>
+            <div class="step"><span class="step-number">3 · Profile</span><h3>Tell us about your work</h3><p class="screen">Name and certificate, if available</p><p>The trainer claim is independently reviewed.</p><span class="state build">Simplify</span></div>
+            <div class="step"><span class="step-number">4 · Review</span><h3>Wait for review</h3><p class="screen">“Профиль отправлен”</p><p>Clear pending, returned and verified states.</p><span class="state ready">Logic exists</span></div>
+            <div class="step"><span class="step-number">5 · Work</span><h3>Open care workspace</h3><p class="screen">Clients appear only after relationship and consent</p><p>No personal record is created by default.</p><span class="state ready">Exists</span></div>
+        </article>
+
+        <article class="lane" data-lane="admin">
+            <div class="lane-title"><strong>Administrator</strong><span>Controls admission, not PHI</span></div>
+            <div class="step"><span class="step-number">1 · Policy</span><h3>Open or pause registration</h3><p class="screen">One UI control with current status</p><p>No routine shell command after the deployment gate is unlocked.</p><span class="state build">Build</span></div>
+            <div class="step"><span class="step-number">2 · Visibility</span><h3>See new accounts</h3><p class="screen">Counts by member, doctor and trainer</p><p>No health data appears in the control plane.</p><span class="state build">Build</span></div>
+            <div class="step"><span class="step-number">3 · Review</span><h3>Review professional profile</h3><p class="screen">Name, type and credential reference</p><p>The reviewer cannot approve their own profile.</p><span class="state ready">Exists</span></div>
+            <div class="step"><span class="step-number">4 · Decision</span><h3>Verify or return</h3><p class="screen">Short action and reason when returned</p><p>Every decision remains audited.</p><span class="state ready">Exists</span></div>
+            <div class="step"><span class="step-number">5 · Operations</span><h3>Observe the complete path</h3><p class="screen">Registration and review state in one hub</p><p>Registration role never grants patient-record access.</p><span class="state build">Build</span></div>
+        </article>
+    </section>
+
+    <section class="guardrails" aria-labelledby="guardrails-title">
+        <h2 id="guardrails-title">Role model and guardrails</h2>
+        <div class="guardrail-grid">
+            <div class="rule"><strong>ZITADEL proves identity</strong><p>It owns passwords and login. Vitals owns member, doctor and trainer meaning.</p></div>
+            <div class="rule"><strong>Choice is not verification</strong><p>A self-declared doctor or trainer can submit a profile but cannot open a patient.</p></div>
+            <div class="rule"><strong>Role is not consent</strong><p>Patient access still requires a verified profile, exact relationship, current consent and scope.</p></div>
+            <div class="rule"><strong>One-time server intent</strong><p>The browser carries only an opaque UUID. Account type, email and provider claims stay server-side.</p></div>
+            <div class="rule"><strong>Existing accounts are stable</strong><p>Opening a new registration intent must never add or replace roles on a linked identity.</p></div>
+            <div class="rule critical"><strong>Email verification remains explicit</strong><p>Password-only beta can create accounts, but address-bound care invitations require a separately verified mailbox.</p></div>
+        </div>
+    </section>
+
+    <section class="copy" aria-labelledby="copy-title">
+        <h2 id="copy-title">Primary Russian UI copy</h2>
+        <div class="copy-grid">
+            <div class="copy-item"><strong>Как вы будете использовать Vitals?</strong><p>Можно изменить сценарий позже через поддержку. Выберите основной.</p></div>
+            <div class="copy-item"><strong>Слежу за своим здоровьем</strong><p>Дневник здоровья, питание, тренировки и интеграции.</p></div>
+            <div class="copy-item"><strong>Работаю врачом</strong><p>Профиль проверит администратор. До проверки данных пациентов не будет.</p></div>
+            <div class="copy-item"><strong>Работаю тренером</strong><p>Профиль проверит администратор. До проверки данных подопечных не будет.</p></div>
+            <div class="copy-item"><strong>Расскажите о себе</strong><p>Имя для подопечных · Лицензия или сертификат (если есть).</p></div>
+            <div class="copy-item"><strong>Профиль отправлен</strong><p>После проверки здесь появятся приглашения и ваши подопечные.</p></div>
+        </div>
+    </section>
+
+    <section class="acceptance" aria-labelledby="acceptance-title">
+        <h2 id="acceptance-title">Acceptance checklist</h2>
+        <div class="acceptance-grid">
+            <div class="check"><strong>Public path</strong><p>At phone and desktop widths, a visitor can create each account type without a shell command.</p></div>
+            <div class="check"><strong>Replay safety</strong><p>Expired, replayed and mismatched intents fail uniformly and create no account.</p></div>
+            <div class="check"><strong>Isolation</strong><p>A new member sees an empty personal record; a new professional sees no patient and owns no record.</p></div>
+            <div class="check"><strong>Professional review</strong><p>Doctor and trainer land directly in simple profile onboarding and then a clear pending state.</p></div>
+            <div class="check"><strong>Admin UI</strong><p>An administrator can open or pause Vitals registration and review professionals from the browser.</p></div>
+            <div class="check"><strong>Production test</strong><p>The complete flow is verified in Compose and in a clean browser session against the deployed build.</p></div>
+        </div>
+        <p class="note">This map is the implementation checklist. A screen is not complete until its lane, copy, guardrail and acceptance item all agree with the running service.</p>
+    </section>
+</main>
+<script>
+    (function () {
+        var buttons = Array.from(document.querySelectorAll('[data-role]'));
+        var lanes = Array.from(document.querySelectorAll('[data-lane]'));
+        buttons.forEach(function (button) {
+            button.addEventListener('click', function () {
+                var role = button.getAttribute('data-role');
+                buttons.forEach(function (candidate) {
+                    candidate.setAttribute('aria-pressed', String(candidate === button));
+                });
+                lanes.forEach(function (lane) {
+                    lane.hidden = role !== 'all' && lane.getAttribute('data-lane') !== role;
+                });
+            });
+        });
+    })();
+</script>
+</body>
+</html>
