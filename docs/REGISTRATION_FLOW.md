@@ -68,7 +68,7 @@ registration and remains audited. A reviewer cannot approve their own profile.
 
 ## Operating the public door
 
-The deployment must set `VITALS_REGISTRATION_UNLOCK=1` once, and OIDC must be
+The deployment must set `VITALS_REGISTRATION_UNLOCKED=1` once, and OIDC must be
 fully configured. This is the host-level safety gate. After that one deployment
 decision, a recently authenticated platform administrator can open or pause
 public registration at `/settings/platform/registration`; routine operation

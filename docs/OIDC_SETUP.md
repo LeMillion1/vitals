@@ -176,7 +176,7 @@ the existing administrator.
 ## 1. Choose the admission policy
 
 Vitals registration is closed by default. A deployment must explicitly set
-`VITALS_REGISTRATION_UNLOCK=1`, and a recently authenticated platform
+`VITALS_REGISTRATION_UNLOCKED=1`, and a recently authenticated platform
 administrator must then open the public door in
 `/settings/platform/registration`. The same screen pauses it again without a
 shell command or container restart. The complete browser and role contract is
