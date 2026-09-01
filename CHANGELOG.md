@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — registration operations keep the deployed runtime image
+
+The production registration runbook now pins every web recreation to the
+checkout's immutable Git-SHA image and runs the registration CLIs inside that
+same runtime image. Opening or closing registration can no longer silently
+replace production web with a stale mutable `local` image or depend on
+application libraries being installed in the host Python.
+
 ### Fixed — offsite snapshots stay idempotent across container recreation
 
 The Vitals and ZITADEL restic sidecars now use each bundle's unique snapshot tag

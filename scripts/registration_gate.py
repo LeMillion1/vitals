@@ -10,15 +10,24 @@ stored registration mode is selected.
 
 Production opening sequence::
 
+    export VITALS_IMAGE_TAG="$(git rev-parse HEAD)"
     docker compose stop vitals_app
-    python scripts/registration_gate.py --set unlocked \
+    docker compose run --rm --no-deps \
+        -v "$PWD/.vitals-runtime:/run/vitals-runtime:rw" \
+        vitals_app python scripts/registration_gate.py \
+        --runtime-env /run/vitals-runtime/vitals.env --set unlocked \
         --confirm 'WEB STOPPED; UNLOCK REGISTRATION'
-    docker compose up -d --force-recreate vitals_app
+    docker compose up -d --no-deps --force-recreate --wait vitals_app
     docker compose ps vitals_app
-    python scripts/registration_mode.py --set invite_only \
-        --runtime-env .vitals-runtime/vitals.env \
+    docker compose exec -T vitals_app python scripts/registration_mode.py \
+        --set invite_only --runtime-env /run/vitals-runtime/vitals.env \
         --confirm-web-recreated \
         'WEB RECREATED WITH REGISTRATION GATE ENABLED'
+
+The immutable tag is mandatory in production: recreating without it silently
+selects the mutable ``local`` image when that tag exists on the host. Running
+the CLIs in the selected runtime image also avoids assuming that the host
+Python has application dependencies installed.
 """
 
 from __future__ import annotations

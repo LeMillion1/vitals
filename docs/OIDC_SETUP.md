@@ -437,15 +437,24 @@ the host-operator update, persist and read back the gate, then recreate and
 health-check web before changing the stored mode:
 
 ```bash
+export VITALS_IMAGE_TAG="$(git rev-parse HEAD)"
 docker compose stop vitals_app
-python scripts/registration_gate.py --set unlocked \
+docker compose run --rm --no-deps \
+  -v "$PWD/.vitals-runtime:/run/vitals-runtime:rw" \
+  vitals_app python scripts/registration_gate.py \
+  --runtime-env /run/vitals-runtime/vitals.env --set unlocked \
   --confirm 'WEB STOPPED; UNLOCK REGISTRATION'
-docker compose up -d --force-recreate --wait vitals_app
-python scripts/registration_mode.py --set invite_only \
-  --runtime-env .vitals-runtime/vitals.env \
+docker compose up -d --no-deps --force-recreate --wait vitals_app
+docker compose exec -T vitals_app python scripts/registration_mode.py \
+  --set invite_only --runtime-env /run/vitals-runtime/vitals.env \
   --confirm-web-recreated \
   'WEB RECREATED WITH REGISTRATION GATE ENABLED'
 ```
+
+In production, never omit `VITALS_IMAGE_TAG`: Compose otherwise falls back to
+the mutable `local` tag when it recreates web. The registration CLIs run in the
+same immutable application image because the host is not required to have
+SQLAlchemy or the rest of the application environment installed.
 
 Do not proceed unless `registration_gate.py` reports
 `"readback": "unlocked"` and Compose reports the recreated web service healthy.
@@ -480,12 +489,16 @@ Use the same stop, persisted-gate, recreate, and readback sequence with the
 approval mode:
 
 ```bash
+export VITALS_IMAGE_TAG="$(git rev-parse HEAD)"
 docker compose stop vitals_app
-python scripts/registration_gate.py --set unlocked \
+docker compose run --rm --no-deps \
+  -v "$PWD/.vitals-runtime:/run/vitals-runtime:rw" \
+  vitals_app python scripts/registration_gate.py \
+  --runtime-env /run/vitals-runtime/vitals.env --set unlocked \
   --confirm 'WEB STOPPED; UNLOCK REGISTRATION'
-docker compose up -d --force-recreate --wait vitals_app
-python scripts/registration_mode.py --set admin_approved \
-  --runtime-env .vitals-runtime/vitals.env \
+docker compose up -d --no-deps --force-recreate --wait vitals_app
+docker compose exec -T vitals_app python scripts/registration_mode.py \
+  --set admin_approved --runtime-env /run/vitals-runtime/vitals.env \
   --confirm-web-recreated \
   'WEB RECREATED WITH REGISTRATION GATE ENABLED'
 ```
@@ -509,12 +522,16 @@ not remain pending until expiry.
 After onboarding, close the stored mode before locking the deployment gate:
 
 ```bash
-python scripts/registration_mode.py --set disabled \
-  --runtime-env .vitals-runtime/vitals.env
+export VITALS_IMAGE_TAG="$(git rev-parse HEAD)"
+docker compose exec -T vitals_app python scripts/registration_mode.py \
+  --set disabled --runtime-env /run/vitals-runtime/vitals.env
 docker compose stop vitals_app
-python scripts/registration_gate.py --set locked \
+docker compose run --rm --no-deps \
+  -v "$PWD/.vitals-runtime:/run/vitals-runtime:rw" \
+  vitals_app python scripts/registration_gate.py \
+  --runtime-env /run/vitals-runtime/vitals.env --set locked \
   --confirm 'WEB STOPPED; LOCK REGISTRATION'
-docker compose up -d --force-recreate --wait vitals_app
+docker compose up -d --no-deps --force-recreate --wait vitals_app
 ```
 
 For a professional account provisioned directly by an operator, creating the

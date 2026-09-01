@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import stat
+from pathlib import Path
 
 from scripts import registration_gate as cli
 
@@ -200,3 +201,19 @@ def test_gate_refuses_a_runtime_file_containing_operator_authority(
 
     result = json.loads(capsys.readouterr().err)
     assert "non-runtime keys" in result["reason"]
+
+
+def test_production_registration_runbook_pins_and_reuses_the_runtime_image():
+    documented = cli.__doc__ or ""
+    oidc_runbook = (
+        Path(__file__).resolve().parents[1] / "docs" / "OIDC_SETUP.md"
+    ).read_text(encoding="utf-8")
+
+    for instructions in (documented, oidc_runbook):
+        assert 'export VITALS_IMAGE_TAG="$(git rev-parse HEAD)"' in instructions
+        assert "docker compose run --rm --no-deps" in instructions
+        assert "--runtime-env /run/vitals-runtime/vitals.env" in instructions
+        assert (
+            "docker compose up -d --no-deps --force-recreate --wait vitals_app"
+            in instructions
+        )
