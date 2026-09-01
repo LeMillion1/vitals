@@ -118,6 +118,16 @@ validate_manifest() {
     fi
 }
 
+publish_marker() {
+    if ! printf '%s\n' "$manifest_name" > "$MARKER.tmp" \
+        || ! chmod 600 "$MARKER.tmp" \
+        || ! mv "$MARKER.tmp" "$MARKER"; then
+        rm -f "$MARKER.tmp"
+        echo "[idp-offsite] ERROR: the replication marker could not be published" >&2
+        return 1
+    fi
+}
+
 replicate_latest() {
     if ! manifest="$(
         find "$BACKUP_DIR" -maxdepth 1 -type f \
@@ -135,9 +145,23 @@ replicate_latest() {
         return 1
     fi
 
-    if ! restic snapshots --json >/dev/null; then
+    if ! existing_snapshots="$(
+        restic snapshots --json --tag "vitals-idp-bundle:$stamp"
+    )"; then
         echo "[idp-offsite] ERROR: initialized repository preflight failed" >&2
         return 1
+    fi
+    case "$existing_snapshots" in
+        \[*\]) ;;
+        *)
+            echo "[idp-offsite] ERROR: repository preflight returned malformed JSON" >&2
+            return 1
+            ;;
+    esac
+    if [ "$existing_snapshots" != "[]" ]; then
+        publish_marker
+        echo "[idp-offsite] identity set $stamp is already replicated"
+        return 0
     fi
     if ! restic backup \
         --skip-if-unchanged \
@@ -151,13 +175,7 @@ replicate_latest() {
         return 1
     fi
 
-    if ! printf '%s\n' "$manifest_name" > "$MARKER.tmp" \
-        || ! chmod 600 "$MARKER.tmp" \
-        || ! mv "$MARKER.tmp" "$MARKER"; then
-        rm -f "$MARKER.tmp"
-        echo "[idp-offsite] ERROR: the replication marker could not be published" >&2
-        return 1
-    fi
+    publish_marker
     echo "[idp-offsite] verified encrypted identity set $stamp"
 }
 

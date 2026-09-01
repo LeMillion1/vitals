@@ -67,7 +67,10 @@ def _fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
         """
 printf '%s\\n' "$*" >> "$FAKE_RESTIC_LOG"
 case "$1" in
-    snapshots) exit "${FAKE_RESTIC_PREFLIGHT_STATUS:-0}" ;;
+    snapshots)
+        printf '%s\n' "${FAKE_RESTIC_SNAPSHOTS_JSON:-[]}"
+        exit "${FAKE_RESTIC_PREFLIGHT_STATUS:-0}"
+        ;;
     backup)
         exit "${FAKE_RESTIC_BACKUP_STATUS:-0}"
         ;;
@@ -116,7 +119,7 @@ def test_complete_set_uses_restic_idempotency_and_advances_marker(tmp_path):
     )
     assert stat.S_IMODE(marker.stat().st_mode) == 0o600
     commands = log.read_text(encoding="utf-8").splitlines()
-    assert commands[0] == "snapshots --json"
+    assert commands[0] == f"snapshots --json --tag vitals-bundle:{STAMP}"
     assert commands[1].startswith(
         "backup --skip-if-unchanged --host synthetic-vitals --tag vitals"
     )
@@ -128,10 +131,12 @@ def test_complete_set_uses_restic_idempotency_and_advances_marker(tmp_path):
     assert env["VITALS_OFFSITE_ENV_FILE"] in commands[1]
     assert env["VITALS_OFFSITE_RUNTIME_ENV_FILE"] in commands[1]
 
+    env["FAKE_RESTIC_SNAPSHOTS_JSON"] = '[{"id":"existing"}]'
     second = _run(env)
     assert second.returncode == 0
     repeated_commands = log.read_text(encoding="utf-8").splitlines()
-    assert repeated_commands == [*commands, *commands]
+    assert repeated_commands == [*commands, commands[0]]
+    assert "already replicated" in second.stdout
 
 
 @pytest.mark.parametrize("damage", ["checksum", "traversal", "extra"])
@@ -195,7 +200,9 @@ def test_failed_backup_is_retried_and_only_success_advances_marker(tmp_path):
     assert retried.returncode == 0, retried.stderr
     assert (state_dir / "last-successful-manifest").exists()
     commands = log.read_text(encoding="utf-8").splitlines()
-    assert commands[0] == commands[2] == "snapshots --json"
+    assert commands[0] == commands[2] == (
+        f"snapshots --json --tag vitals-bundle:{STAMP}"
+    )
     assert commands[1] == commands[3]
     assert commands[1].startswith(
         "backup --skip-if-unchanged --host synthetic-vitals --tag vitals"

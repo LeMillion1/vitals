@@ -54,7 +54,10 @@ def _fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         """
 printf '%s\n' "$*" >> "$FAKE_RESTIC_LOG"
 case "$1" in
-    snapshots) exit "${FAKE_RESTIC_PREFLIGHT_STATUS:-0}" ;;
+    snapshots)
+        printf '%s\n' "${FAKE_RESTIC_SNAPSHOTS_JSON:-[]}"
+        exit "${FAKE_RESTIC_PREFLIGHT_STATUS:-0}"
+        ;;
     backup) exit "${FAKE_RESTIC_BACKUP_STATUS:-0}" ;;
     *) exit 99 ;;
 esac
@@ -98,7 +101,7 @@ def test_complete_identity_set_is_the_only_replication_payload(tmp_path):
     first = _run(env)
     assert first.returncode == 0, first.stderr
     commands = log.read_text(encoding="utf-8").splitlines()
-    assert commands[0] == "snapshots --json"
+    assert commands[0] == f"snapshots --json --tag vitals-idp-bundle:{STAMP}"
     assert commands[1].startswith(
         "backup --skip-if-unchanged --host synthetic-identity --tag vitals-idp "
     )
@@ -115,9 +118,11 @@ def test_complete_identity_set_is_the_only_replication_payload(tmp_path):
     )
     assert stat.S_IMODE(marker.stat().st_mode) == 0o600
 
+    env["FAKE_RESTIC_SNAPSHOTS_JSON"] = '[{"id":"existing"}]'
     second = _run(env)
     assert second.returncode == 0
-    assert log.read_text(encoding="utf-8").splitlines() == [*commands, *commands]
+    assert log.read_text(encoding="utf-8").splitlines() == [*commands, commands[0]]
+    assert "already replicated" in second.stdout
 
 
 def test_missing_identity_manifest_is_not_a_healthy_wait_state(tmp_path):

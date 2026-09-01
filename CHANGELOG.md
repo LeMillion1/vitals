@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — offsite snapshots stay idempotent across container recreation
+
+The Vitals and ZITADEL restic sidecars now use each bundle's unique snapshot tag
+as a durable idempotency key after validating the local manifest. Re-running an
+unchanged recovery set therefore no longer creates an extra encrypted snapshot
+merely because Compose recreated a bind mount with new directory metadata.
+
 ### Changed — every application service has an owning context
 
 The final 21 root-level service modules now live in explicit identity,

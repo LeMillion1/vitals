@@ -150,7 +150,11 @@ docker compose stop vitals_offsite_backup
 ```
 
 The sidecar validates the exact manifest and every local checksum, opens the
-already initialized repository, and runs `restic backup --skip-if-unchanged`.
+already initialized repository, and queries the bundle's unique restic tag
+before running `restic backup --skip-if-unchanged`. The tag is the durable
+idempotency key because container-created parent-directory metadata can differ
+even when every selected file is unchanged. A matching snapshot republishes the
+local marker without uploading another snapshot.
 It never initializes, forgets, prunes, or restores a repository. It exits on a
 failed cycle so Compose exposes the failure through state/restart count instead
 of leaving a silently broken process marked as running.

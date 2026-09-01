@@ -131,6 +131,16 @@ legacy_uploads_${stamp}.tar.gz"
     legacy_upload_name="legacy_uploads_${stamp}.tar.gz"
 }
 
+publish_marker() {
+    if ! printf '%s\n' "$manifest_name" > "$MARKER.tmp" \
+        || ! chmod 600 "$MARKER.tmp" \
+        || ! mv "$MARKER.tmp" "$MARKER"; then
+        rm -f "$MARKER.tmp"
+        echo "[offsite] ERROR: the replication marker could not be published" >&2
+        return 1
+    fi
+}
+
 replicate_latest() {
     if ! manifest="$(
         find "$BACKUP_DIR" -maxdepth 1 -type f -name 'vitals_bundle_*.sha256' -print \
@@ -149,9 +159,26 @@ replicate_latest() {
     fi
 
     # Opening the repository is the preflight. Production never calls init.
-    if ! restic snapshots --json >/dev/null; then
+    # The bundle tag is also the durable idempotency key: container-created
+    # parent-directory metadata can differ even when every selected file is
+    # byte-for-byte unchanged, so --skip-if-unchanged alone is insufficient.
+    if ! existing_snapshots="$(
+        restic snapshots --json --tag "vitals-bundle:$stamp"
+    )"; then
         echo "[offsite] ERROR: initialized repository preflight failed" >&2
         return 1
+    fi
+    case "$existing_snapshots" in
+        \[*\]) ;;
+        *)
+            echo "[offsite] ERROR: repository preflight returned malformed JSON" >&2
+            return 1
+            ;;
+    esac
+    if [ "$existing_snapshots" != "[]" ]; then
+        publish_marker
+        echo "[offsite] complete set $stamp is already replicated"
+        return 0
     fi
     if ! restic backup \
         --skip-if-unchanged \
@@ -169,13 +196,7 @@ replicate_latest() {
         return 1
     fi
 
-    if ! printf '%s\n' "$manifest_name" > "$MARKER.tmp" \
-        || ! chmod 600 "$MARKER.tmp" \
-        || ! mv "$MARKER.tmp" "$MARKER"; then
-        rm -f "$MARKER.tmp"
-        echo "[offsite] ERROR: the replication marker could not be published" >&2
-        return 1
-    fi
+    publish_marker
     echo "[offsite] verified encrypted replication for complete set $stamp"
 }
 
