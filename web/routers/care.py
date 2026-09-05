@@ -52,6 +52,25 @@ from web.uploads import (
 
 router = APIRouter(prefix="/care", tags=["care"])
 
+_INVITATION_PAGE_HEADERS = {
+    "Cache-Control": "no-store",
+    # Do not send the bearer path; retain the origin required by POST CSRF.
+    "Referrer-Policy": "strict-origin",
+    "X-Robots-Tag": "noindex, nofollow, noarchive",
+}
+
+
+def _invitation_page(
+    request: Request, *, username: str, token: str | None = None,
+    error: str | None = None, status_code: int = status.HTTP_200_OK,
+) -> HTMLResponse:
+    """Render the invitation without reflecting a refused bearer in its body."""
+    return templates.TemplateResponse(
+        request, "care/accept.html",
+        {"token": token, "username": username, "accept_error": error},
+        status_code=status_code, headers=_INVITATION_PAGE_HEADERS,
+    )
+
 
 async def _visible_record(db: AsyncSession, care: CareContext):
     """Compatibility seam for tests; domain projection lives in the service."""
@@ -114,9 +133,7 @@ async def show_invitation(
     spent by a preview is one the intended person can never use.
     """
 
-    return templates.TemplateResponse(
-        request, "care/accept.html", {"token": token, "username": username}
-    )
+    return _invitation_page(request, username=username, token=token)
 
 
 @router.post("/accept/{token}")
@@ -124,7 +141,7 @@ async def accept_invitation(
     request: Request,
     token: str,
     db: AsyncSession = Depends(get_session),
-    _username: str = Depends(require_auth),
+    username: str = Depends(require_auth),
 ):
     """Take up an offer, which establishes care and nothing more.
 
@@ -138,6 +155,7 @@ async def accept_invitation(
         db,
         user_id=user_id,
     )
+    profile_verified = await professionals.is_verified(db, user_id=user_id)
     try:
         invitation = await invitations.accept(
             db,
@@ -148,19 +166,25 @@ async def accept_invitation(
         await relationships.establish_from_invitation(
             db, invitation=invitation
         )
-    except invitations.InvitationError:
-        # Spent, expired, revoked, wrong address, never existed. One answer.
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
-    except relationships.KindMismatch as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
-    except relationships.CareError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    except (invitations.InvitationError, relationships.CareError):
+        # ``accept`` flushes before relationship validation. A normal template
+        # response would make get_session commit those partial writes, so undo
+        # the whole attempt before rendering the one refusal boundary.
+        await db.rollback()
+        error = "email" if verified_email is None else (
+            "profile" if not profile_verified else "generic"
+        )
+        return _invitation_page(
+            request,
+            username=username,
+            error=error,
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
     await db.commit()
     return RedirectResponse(
         url="/care?accepted=1",
         status_code=status.HTTP_303_SEE_OTHER,
+        headers=_INVITATION_PAGE_HEADERS,
     )
 
 

@@ -11,23 +11,34 @@
 {% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
 
-    {% set onboarding_active = is_professional_account and not profile_verified %}
-    {% call masthead_header('care', t('care.onboarding.page_heading') if onboarding_active else t('care.roster_heading'), []) %}{% endcall %}
+    {% set profile_needs_input = is_professional_account and (not professional_profile or professional_profile.verification_status == 'rejected') %}
+    {% set profile_pending = is_professional_account and professional_profile and professional_profile.verification_status in ['pending', 'unverified'] %}
+    {% set profile_suspended = is_professional_account and professional_profile and professional_profile.verification_status == 'suspended' %}
+    {% if profile_needs_input %}
+        {% set workspace_heading = t('care.onboarding.page_heading') %}
+        {% set workspace_description = t('care.onboarding.page_description') %}
+    {% elif profile_pending %}
+        {% set workspace_heading = t('care.onboarding.pending_page_heading') %}
+        {% set workspace_description = t('care.onboarding.pending_page_description') %}
+    {% elif profile_suspended %}
+        {% set workspace_heading = t('care.onboarding.suspended_heading') %}
+        {% set workspace_description = t('care.onboarding.suspended_description') %}
+    {% else %}
+        {% set workspace_heading = t('care.roster_heading_' ~ onboarding_kind) if onboarding_kind in ['doctor', 'trainer'] else t('care.roster_heading') %}
+        {% set workspace_description = t('care.roster_description') %}
+    {% endif %}
+    {% call masthead_header('care', workspace_heading, []) %}{% endcall %}
     <p class="v-text-body max-w-2xl" style="color: var(--muted)">
-        {{ t("care.onboarding.page_description") if onboarding_active else t("care.roster_description") }}
+        {{ workspace_description }}
     </p>
 
-    {% if submitted %}
-    <div class="v-alert info">
-        {{ t("care.onboarding.submitted") }}
-    </div>
-    {% elif accepted %}
+    {% if accepted %}
     <div class="v-alert info">
         {{ t("care.accepted_waiting") }}
     </div>
     {% endif %}
 
-    {% if is_professional_account and (not professional_profile or professional_profile.verification_status == 'rejected') %}
+    {% if profile_needs_input %}
     <section class="v-card p-6 space-y-5" aria-labelledby="professional-onboarding-title">
         <div class="space-y-2">
             <span class="v-kicker">{{ t("care.onboarding.kicker") }}</span>
@@ -41,7 +52,13 @@
                 {% endif %}
             </h2>
             <p class="v-text-body" style="color: var(--muted)">
-                {% if professional_profile %}{{ t("care.onboarding.correct_description") }}{% else %}{{ t("care.onboarding.description") }}{% endif %}
+                {% if professional_profile %}
+                    {{ t("care.onboarding.correct_description") }}
+                {% elif onboarding_kind %}
+                    {{ t("care.onboarding.description_" ~ onboarding_kind) }}
+                {% else %}
+                    {{ t("care.onboarding.description") }}
+                {% endif %}
             </p>
         </div>
         {% if professional_profile and professional_profile.review_note %}
@@ -62,7 +79,7 @@
                 <div class="mt-2"><span class="v-chip">{{ t("care.kind." ~ onboarding_kind) }}</span></div>
             </div>
             <div>
-                <label for="professional-display-name" class="v-label">{{ t("care.onboarding.name_label") }}</label>
+                <label for="professional-display-name" class="v-label">{{ t("care.onboarding.name_label_" ~ onboarding_kind) }}</label>
                 <input id="professional-display-name" name="display_name" type="text" maxlength="200" required
                        class="v-input mt-2" value="{{ profile_form.display_name }}"
                        autocomplete="name">
@@ -79,32 +96,42 @@
         <div class="v-alert info">{{ t("care.onboarding.kind_ambiguous") }}</div>
         {% endif %}
     </section>
-    {% elif is_professional_account and professional_profile.verification_status in ['pending', 'unverified'] %}
-    <section class="v-card p-6 space-y-3">
+    {% elif profile_pending %}
+    <section class="v-card p-6 space-y-4" aria-labelledby="professional-review-title">
         <span class="v-chip">{{ t("care.onboarding.pending") }}</span>
-        <h2 class="v-heading-2">{{ t("care.onboarding.pending_heading") }}</h2>
+        <h2 id="professional-review-title" class="v-heading-2">{{ t("care.onboarding.pending_heading") }}</h2>
         <p class="v-text-body" style="color: var(--muted)">{{ t("care.onboarding.pending_description") }}</p>
+        <div>
+            <a href="/care" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3">
+                {{ t("care.onboarding.check_status") }}
+            </a>
+        </div>
     </section>
-    {% elif is_professional_account and professional_profile.verification_status == 'suspended' %}
+    {% elif profile_suspended %}
     <section class="v-card p-6 space-y-3">
         <span class="v-chip">{{ t("care.onboarding.suspended") }}</span>
         <h2 class="v-heading-2">{{ t("care.onboarding.suspended_heading") }}</h2>
         {% if professional_profile.review_note %}<p class="v-text-body">{{ professional_profile.review_note }}</p>{% endif %}
         <p class="v-text-body" style="color: var(--muted)">{{ t("care.onboarding.suspended_description") }}</p>
     </section>
-    {% elif is_professional_account and profile_verified %}
+    {% elif is_professional_account and profile_verified and patients %}
     <div class="v-alert good">
         {{ t("care.onboarding.verified", name=professional_profile.display_name) }}
     </div>
     {% endif %}
 
     {% if profile_verified or not is_professional_account %}
-    {% include "partials/web_push_card.html" %}
-
     {% if not patients %}
-    <div class="v-card p-6">
-        <p class="v-text-body" style="color: var(--muted)">{{ t("care.roster_empty") }}</p>
-    </div>
+    <section class="v-card p-6 space-y-4" aria-labelledby="professional-roster-empty-title">
+        {% if is_professional_account and profile_verified %}
+        <span class="v-chip good">{{ t("care.onboarding.verified", name=professional_profile.display_name) }}</span>
+        {% endif %}
+        <div class="space-y-2">
+            <h2 id="professional-roster-empty-title" class="v-heading-2">{{ t("care.roster_empty_heading") }}</h2>
+            <p class="v-text-body" style="color: var(--muted)">{{ t("care.roster_empty") }}</p>
+        </div>
+        <p class="v-text-micro" style="color: var(--muted)">{{ t("care.roster_empty_hint") }}</p>
+    </section>
     {% else %}
     <div class="space-y-3">
         {# A row that is not open still appears, showing why. A professional
@@ -159,6 +186,8 @@
         {% endfor %}
     </div>
     {% endif %}
+
+    {% include "partials/web_push_card.html" %}
     {% endif %}
 </div>
 {% endblock %}

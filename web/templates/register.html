@@ -19,7 +19,7 @@
                     {% if registration_open %}{{ t("registration.public.heading") }}{% else %}{{ t("registration.public.closed_heading") }}{% endif %}
                 </h1>
                 <p class="v-text-body" style="color: var(--muted)">
-                    {% if registration_open %}{{ t("registration.public.description") }}{% else %}{{ t("registration.public.closed_body") }}{% endif %}
+                    {% if registration_open and existing_identity %}{{ t("registration.public.existing_description") }}{% elif registration_open %}{{ t("registration.public.description") }}{% else %}{{ t("registration.public.closed_body") }}{% endif %}
                 </p>
             </div>
 
@@ -28,9 +28,13 @@
             {% endif %}
 
             {% if registration_open %}
-            <form action="/register" method="POST" class="space-y-5">
+            <form action="/register" method="POST" class="space-y-5"
+                  aria-describedby="registration-next-step">
+                {% if existing_identity %}<input type="hidden" name="existing" value="true">{% endif %}
                 <fieldset class="space-y-3">
-                    <legend class="sr-only">{{ t("registration.public.heading") }}</legend>
+                    <legend id="registration-account-type" class="v-label">
+                        {{ t("registration.public.kind_legend") }}
+                    </legend>
                     {% for kind in account_kinds %}
                     <label class="v-card-inset p-4 flex items-start gap-3 cursor-pointer min-h-11">
                         <input type="radio" name="account_kind" value="{{ kind.value }}" required
@@ -42,7 +46,12 @@
                     </label>
                     {% endfor %}
                 </fieldset>
-                <button type="submit" class="v-btn w-full sm:w-auto">{{ t("registration.public.continue") }}</button>
+                <div class="space-y-2">
+                    <button type="submit" class="v-btn w-full sm:w-auto">{{ t("registration.public.continue") }}</button>
+                    <p id="registration-next-step" class="v-text-micro" style="color: var(--muted)">
+                        {% if existing_identity %}{{ t("registration.public.existing_next_step") }}{% else %}{{ t("registration.public.next_step") }}{% endif %}
+                    </p>
+                </div>
             </form>
             {% endif %}
 

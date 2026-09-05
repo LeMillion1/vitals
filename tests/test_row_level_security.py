@@ -157,7 +157,13 @@ async def _migrated_engine(database_url: str, alembic_config):
     async with engine.begin() as connection:
         # Standalone routines are not part of SQLAlchemy metadata.  Without an
         # explicit drop this helper's second migrate-from-zero run would leave
-        # revisions 0081/0082 leave functions behind while removing their tables.
+        # revisions 0081/0082/0086 leave functions behind while removing their
+        # tables.
+        await connection.execute(
+            sa.text(
+                "DROP FUNCTION IF EXISTS public.project_professional_roster(uuid)"
+            )
+        )
         await connection.execute(
             sa.text(
                 "DROP FUNCTION IF EXISTS public.attest_shared_report_token(text)"
@@ -1156,25 +1162,45 @@ def _shared_report_authorization_module():
     return module
 
 
+def _professional_roster_module():
+    spec = importlib.util.spec_from_file_location(
+        "_rev0086",
+        REPOSITORY_ROOT
+        / "migrations"
+        / "versions"
+        / "0086_project_professional_roster.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_authorization_bridges_name_the_exact_runtime_routines():
     from scripts.provision_runtime_db_role import RUNTIME_EXECUTE_ROUTINES
     from vitals.services.care.invitations import POSTGRES_AUTHORIZATION_ROUTINE
+    from vitals.services.care.relationships import POSTGRES_ROSTER_ROUTINE
     from vitals.services.share.public_access import (
         POSTGRES_PUBLIC_AUTHORIZATION_ROUTINE,
     )
 
     invitation = _invitation_authorization_module()
     shared_report = _shared_report_authorization_module()
+    professional_roster = _professional_roster_module()
     invitation_signature = invitation.ROUTINE_SIGNATURE.replace(" ", "")
     shared_report_signature = shared_report.ROUTINE_SIGNATURE.replace(" ", "")
+    professional_roster_signature = professional_roster.ROUTINE_SIGNATURE.replace(
+        " ", ""
+    )
     assert POSTGRES_AUTHORIZATION_ROUTINE.replace(" ", "") == invitation_signature
     assert (
         POSTGRES_PUBLIC_AUTHORIZATION_ROUTINE.replace(" ", "")
         == shared_report_signature
     )
+    assert POSTGRES_ROSTER_ROUTINE.replace(" ", "") == professional_roster_signature
     assert RUNTIME_EXECUTE_ROUTINES == (
         invitation_signature,
         shared_report_signature,
+        professional_roster_signature,
     )
 
 

@@ -202,6 +202,17 @@ async def _invited(client, db_session, *, email, kind=ProfessionalKind.DOCTOR):
     return response.text.split("/care/accept/")[1].split("<")[0].strip()
 
 
+def _assert_html_invitation_refusal(response) -> None:
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("text/html")
+    assert "no-store" in response.headers["cache-control"]
+    assert response.headers["referrer-policy"] == "strict-origin"
+    assert response.headers["x-robots-tag"] == "noindex, nofollow, noarchive"
+    assert response.text.lstrip().startswith("<!DOCTYPE html>")
+    assert 'role="alert"' in response.text
+    assert 'href="/care"' in response.text
+
+
 async def test_a_get_does_not_spend_the_link(patient_client, db_session):
     """Browsers, previews and mail scanners fetch URLs nobody chose to open.
 
@@ -218,6 +229,15 @@ async def test_a_get_does_not_spend_the_link(patient_client, db_session):
         f"/care/accept/{token}", headers={"Accept": "text/html"}
     )
     assert response.status_code == 200
+    assert "no-store" in response.headers["cache-control"]
+    assert response.headers["referrer-policy"] == "strict-origin"
+    assert 'method="POST" hx-boost="false"' in response.text
+    assert (
+        "Accept a care invitation" in response.text
+        or "Принять приглашение в команду" in response.text
+    )
+    assert "someone’s record" not in response.text
+    assert "чужую запись" not in response.text
 
     db_session.expire_all()
     status_value = await db_session.scalar(select(ProfessionalInvitation.status))
@@ -289,8 +309,163 @@ async def test_an_unverified_address_does_not_accept(patient_client, db_session)
     await db_session.commit()  # email_verified_at stays null
 
     async with _client_for("cc-unverified") as doctor_client:
-        response = await doctor_client.post(f"/care/accept/{token}")
-        assert response.status_code == 404
+        response = await doctor_client.post(
+            f"/care/accept/{token}", headers={"Accept": "text/html"}
+        )
+        _assert_html_invitation_refusal(response)
+        assert token not in response.text
+        assert (
+            "does not have a verified email address" in response.text
+            or "нет подтверждённой электронной почты" in response.text
+        )
+        assert (
+            "create a new invitation" in response.text
+            or "создать новое приглашение" in response.text
+        )
+
+    db_session.expire_all()
+    assert await db_session.scalar(
+        select(ProfessionalInvitation.status)
+    ) == "pending"
+
+
+async def test_refused_tokens_share_one_generic_html_boundary(
+    patient_client, db_session
+):
+    """A valid row for another address must not answer differently from no row."""
+
+    from vitals.utils.timeutils import now_utc
+
+    owner_client, _user_id, _subject_id = patient_client
+    token = await _invited(
+        owner_client,
+        db_session,
+        email="somebody-else@example.test",
+    )
+    doctor = await _user(
+        db_session,
+        "cc-uniform-doctor",
+        roles=(UserRoleName.DOCTOR,),
+        email="uniform-doctor@example.test",
+    )
+    doctor.email_verified_at = now_utc()
+    await _verify_professional(db_session, doctor, slug="cc-uniform-doctor")
+    await db_session.commit()
+
+    async with _client_for("cc-uniform-doctor") as doctor_client:
+        wrong_address = await doctor_client.post(
+            f"/care/accept/{token}", headers={"Accept": "text/html"}
+        )
+        unknown = await doctor_client.post(
+            "/care/accept/never-issued-opaque-token",
+            headers={"Accept": "text/html"},
+        )
+
+    _assert_html_invitation_refusal(wrong_address)
+    _assert_html_invitation_refusal(unknown)
+    assert wrong_address.content == unknown.content
+    assert token not in wrong_address.text
+    assert "never-issued-opaque-token" not in unknown.text
+    assert (
+        "link may have expired" in unknown.text
+        or "Срок действия ссылки мог истечь" in unknown.text
+    )
+
+    db_session.expire_all()
+    assert await db_session.scalar(
+        select(ProfessionalInvitation.status)
+    ) == "pending"
+
+
+@pytest.mark.integration
+async def test_postgres_profile_refusal_rolls_back_and_the_same_link_can_retry(
+    patient_client, db_session
+):
+    """An HTML refusal is a response, so the route itself must undo the attempt."""
+
+    from vitals.models.identity import AuditEvent
+    from vitals.models.professional import CareRelationship, ProfessionalProfile
+    from vitals.services.care import professionals
+    from vitals.utils.timeutils import now_utc
+
+    owner_client, _user_id, _subject_id = patient_client
+    token = await _invited(
+        owner_client,
+        db_session,
+        email="profile-retry@example.test",
+    )
+    doctor = await _user(
+        db_session,
+        "cc-profile-retry",
+        roles=(UserRoleName.DOCTOR,),
+        email="profile-retry@example.test",
+    )
+    doctor.email_verified_at = now_utc()
+    profile = await professionals.submit_profile(
+        db_session,
+        user_id=doctor.id,
+        kind=ProfessionalKind.DOCTOR,
+        display_name="Dr Retry",
+    )
+    profile_id = profile.id
+    await db_session.commit()
+    audit_count_before_refusal = await db_session.scalar(
+        select(func.count()).select_from(AuditEvent)
+    )
+
+    async with _client_for("cc-profile-retry") as doctor_client:
+        refused = await doctor_client.post(
+            f"/care/accept/{token}", headers={"Accept": "text/html"}
+        )
+        _assert_html_invitation_refusal(refused)
+        assert (
+            "does not yet have a currently approved" in refused.text
+            or "пока нет действующего проверенного" in refused.text
+        )
+
+        db_session.expire_all()
+        assert await db_session.scalar(
+            select(ProfessionalInvitation.status)
+        ) == "pending"
+        assert await db_session.scalar(
+            select(func.count()).select_from(CareRelationship)
+        ) == 0
+        assert await db_session.scalar(
+            select(func.count()).select_from(AuditEvent)
+        ) == audit_count_before_refusal
+
+        operator = await _user(
+            db_session,
+            "cc-profile-retry-operator",
+            roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+        )
+        await professionals.decide(
+            db_session,
+            profile_id=profile_id,
+            reviewer_user_id=operator.id,
+            expected_status=ProfessionalVerificationStatus.PENDING,
+            status=ProfessionalVerificationStatus.VERIFIED,
+        )
+        await db_session.commit()
+
+        accepted = await doctor_client.post(
+            f"/care/accept/{token}", headers={"Accept": "text/html"}
+        )
+        assert accepted.status_code == 303
+        assert accepted.headers["location"] == "/care?accepted=1"
+
+    db_session.expire_all()
+    assert await db_session.scalar(
+        select(ProfessionalInvitation.status)
+    ) == "accepted"
+    assert await db_session.scalar(
+        select(func.count()).select_from(CareRelationship)
+    ) == 1
+    assert await db_session.scalar(
+        select(ProfessionalProfile.verification_status).where(
+            ProfessionalProfile.id == profile_id
+        )
+    ) == "verified"
 
 
 async def test_the_patient_selects_exact_consent_scopes(patient_client, db_session):

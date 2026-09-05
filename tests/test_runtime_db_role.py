@@ -59,6 +59,12 @@ async def test_runtime_role_is_restricted_and_receives_future_table_grants():
                     "SET search_path = pg_catalog, pg_temp "
                     "SET row_security = off AS 'BEGIN RETURN 1; END'"
                 ),
+                RUNTIME_EXECUTE_ROUTINES[2]: (
+                    "CREATE FUNCTION public.project_professional_roster(uuid) "
+                    "RETURNS TABLE(id uuid) LANGUAGE plpgsql VOLATILE "
+                    "SECURITY DEFINER SET search_path = pg_catalog, pg_temp "
+                    "SET row_security = off AS 'BEGIN RETURN; END'"
+                ),
             }
             for allowed_routine in RUNTIME_EXECUTE_ROUTINES:
                 if not await connection.scalar(
@@ -448,8 +454,9 @@ async def test_distinct_web_and_worker_logins_have_exact_routine_sets():
     (
         "migrations.versions.0081_authorize_professional_invitation",
         "migrations.versions.0082_authorize_shared_report_token",
+        "migrations.versions.0086_project_professional_roster",
     ),
-    ids=("invitation", "shared-report"),
+    ids=("invitation", "shared-report", "professional-roster"),
 )
 async def test_runtime_role_refuses_an_untrusted_required_routine(
     tamper_sql,
@@ -472,6 +479,7 @@ async def test_runtime_role_refuses_an_untrusted_required_routine(
         for module_name in (
             "migrations.versions.0081_authorize_professional_invitation",
             "migrations.versions.0082_authorize_shared_report_token",
+            "migrations.versions.0086_project_professional_roster",
         )
     )
     migration = import_module(migration_module)

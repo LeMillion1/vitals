@@ -8,12 +8,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — patients can open their care conversation under forced RLS
+
+The patient's conversation action now enters the subject scope resolved from
+their own account before loading the chosen relationship. The relationship ID
+cannot select another person's record. Exact live consent and message scopes
+are still required; reopening returns the same conversation without generating
+a message, and paused access is refused immediately.
+
+### Fixed — care invitation failures stay in the invitation page
+
+Care invitation acceptance now explains the verified-email and approved-profile
+prerequisites in English and Russian. A refused, expired, spent, or mismatched
+link returns the same non-enumerating HTML boundary instead of a raw API error,
+and a failed attempt is rolled back so it cannot spend an otherwise retryable
+invitation or create a partial care connection. The bearer page is non-cacheable,
+keeps referrers to the origin, and never opens health data by accepting alone.
+
+### Fixed — account creation has one clear next step
+
+Choosing a new account in Vitals now opens the provider's registration form
+directly. A later sign-in retry offers account selection so a just-created
+provider identity can finish onboarding without starting registration again.
+This display hint does not grant a role or replace the one-time registration
+intent, and existing accounts cannot change their roles through this flow.
+
+Signing in with a provider identity that is not linked to Vitals no longer
+silently creates a member account and personal health record. When public
+registration is open, Vitals returns to the account-type choice; only that
+server-side choice can create the corresponding member, doctor, or trainer
+account.
+
+Registration and professional onboarding now explain the next action in plain
+English and Russian. Review status no longer asks for a profile that has
+already been sent; the empty workspace explains how to receive a manually
+shared invitation. An email-shaped login is no longer suggested as a public
+professional name, while explicitly entered values survive validation errors.
+
+### Fixed — professional rosters remain discoverable under forced RLS
+
+The PostgreSQL web role can now load only the signed-in professional's bounded
+cross-subject roster before entering a patient's subject scope. The projection
+requires an active account, the relationship's exact professional role, and a
+verified same-kind profile; it leaves forced row-level security and the
+worker-only platform capability intact. Paused, expired, revoked, or health-only
+consents expose no message activity metadata, and another professional's
+relationships remain invisible.
+
 ### Fixed — public registration form keeps its same-origin identity
 
 The public account-type page now preserves its origin for the browser's form
 submission. Its previous no-referrer policy emitted `Origin: null`, causing the
 global CSRF boundary to reject the page's own `POST /register` with HTTP 403.
-Secret-bearing invitation pages retain their stricter no-referrer policy.
+Secret-bearing care invitation pages retain only their origin in referrers so
+their native same-origin acceptance POST remains CSRF-valid.
 
 ### Fixed — multi-user installation restore rehearsal
 

@@ -17,6 +17,7 @@ from vitals.services.authentication import admission
 from vitals.services.authentication.federation import (
     FederatedLoginError,
     FederatedRegistrationDecision,
+    RegistrationChoiceRequired,
     decide_federated_login,
 )
 from vitals.services.authentication.oidc import OidcError
@@ -128,6 +129,29 @@ def _registration_request_redirect(*, state: str, reference: uuid.UUID) -> Respo
     return response
 
 
+def _registration_choice_redirect() -> Response:
+    """Return an unknown provider identity to the local account choice."""
+
+    from web.admission_handoff import (
+        clear_invitation_claim_cookie,
+        clear_registration_intent_cookie,
+        clear_request_status_cookie,
+    )
+
+    response = RedirectResponse(
+        url="/register?existing=true",
+        status_code=status.HTTP_303_SEE_OTHER,
+        headers={"Cache-Control": "no-store"},
+    )
+    clear_session_cookie(response)
+    clear_pending_2fa_cookie(response)
+    clear_oidc_handoff_cookie(response)
+    clear_invitation_claim_cookie(response)
+    clear_registration_intent_cookie(response)
+    clear_request_status_cookie(response)
+    return response
+
+
 def _provider():
     """Return the configured, discovery-caching OIDC provider."""
 
@@ -216,6 +240,7 @@ async def federated_login_start(
     request: Request,
     next: Optional[str] = None,
     step_up: bool = False,
+    create_account: bool = False,
 ):
     """Begin a login at the provider."""
 
@@ -254,9 +279,18 @@ async def federated_login_start(
         clear_request_status_cookie(response)
         return response
 
+    # Registration should open the provider's registration form, not silently
+    # reuse another person's provider session. A retry through the sign-in door
+    # must still allow the identity just created at the provider to be selected.
+    prompt = None
+    if step_up or invitation_id is not None:
+        prompt = "login"
+    elif registration_intent_id is not None:
+        prompt = "create" if create_account else "select_account"
+
     try:
         login = await _provider().begin_login(
-            prompt="login" if step_up or invitation_id is not None else None,
+            prompt=prompt,
             max_age_seconds=900 if step_up or invitation_id is not None else None,
         )
     except OidcError as exc:
@@ -390,6 +424,9 @@ async def federated_login_callback(
             registration_intent_id=registration_intent_id,
             step_up=handoff["max_age_seconds"] is not None,
         )
+    except RegistrationChoiceRequired:
+        await db.rollback()
+        return _registration_choice_redirect()
     except (
         FederatedLoginError,
         admission.AdmissionError,

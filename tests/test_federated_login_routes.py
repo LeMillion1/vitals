@@ -240,6 +240,53 @@ async def test_start_sends_the_browser_to_the_provider_with_pkce(
     assert query["state"] and query["nonce"]
     # The verifier is the one thing that must never leave in the redirect.
     assert "code_verifier" not in query
+    assert "prompt" not in query
+
+
+@pytest.mark.parametrize("account_kind", ["member", "doctor", "trainer"])
+async def test_registration_opens_the_provider_create_form(
+    client, federated, db_session, monkeypatch, account_kind
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    await _enable_open_registration(db_session, monkeypatch)
+    chosen = await client.post(
+        "/register", data={"account_kind": account_kind}, follow_redirects=False
+    )
+    started = await client.get(chosen.headers["location"], follow_redirects=False)
+    query = parse_qs(urlsplit(started.headers["location"]).query)
+
+    assert started.status_code == 303
+    assert query["prompt"] == ["create"]
+    assert query["code_challenge_method"] == ["S256"]
+
+
+async def test_registration_retry_can_select_the_just_created_identity(
+    client, federated, db_session, monkeypatch
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    await _enable_open_registration(db_session, monkeypatch)
+    await client.post(
+        "/register", data={"account_kind": "doctor"}, follow_redirects=False
+    )
+    retry = await client.get("/auth/start", follow_redirects=False)
+    query = parse_qs(urlsplit(retry.headers["location"]).query)
+
+    assert query["prompt"] == ["select_account"]
+
+
+async def test_create_account_hint_cannot_replace_a_registration_intent(
+    client, federated
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    started = await client.get(
+        "/auth/start?create_account=true", follow_redirects=False
+    )
+    query = parse_qs(urlsplit(started.headers["location"]).query)
+
+    assert "prompt" not in query
 
 
 async def test_step_up_forces_provider_login_and_rejects_stale_authentication(
@@ -334,6 +381,81 @@ async def test_open_login_page_offers_a_plain_create_account_path(
     assert 'href="/register"' in response.text
 
 
+async def test_unknown_provider_sign_in_returns_to_choice_without_an_account(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from vitals.models.identity import AuditEvent, HealthSubject, User
+    from vitals.models.identity import UserFederatedIdentity
+    from vitals.models.registration import RegistrationRequest
+
+    await _enable_open_registration(db_session, monkeypatch)
+    subjects_before = await db_session.scalar(
+        select(func.count()).select_from(HealthSubject)
+    )
+    private_values = (
+        "provider-only-subject",
+        "Private.Provider@example.test",
+        "private-provider-name",
+    )
+    federated.pending_claims.update(
+        {
+            "sub": private_values[0],
+            "email": private_values[1],
+            "email_verified": True,
+            "preferred_username": private_values[2],
+        }
+    )
+    state, _ = await _start(client, federated)
+
+    response = await client.get(
+        f"/auth/callback?code=code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/register?existing=true"
+    assert "no-store" in response.headers["cache-control"]
+    for cookie_name in (
+        SESSION_COOKIE,
+        PENDING_2FA_COOKIE,
+        OIDC_HANDOFF_COOKIE,
+        REGISTRATION_ADMISSION_COOKIE,
+        REGISTRATION_INTENT_COOKIE,
+        REGISTRATION_REQUEST_COOKIE,
+    ):
+        assert response.cookies.get(cookie_name) in (None, "")
+    browser_envelope = response.headers["location"] + response.headers.get(
+        "set-cookie", ""
+    )
+    assert all(value not in browser_envelope for value in private_values)
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(UserFederatedIdentity)
+        .where(UserFederatedIdentity.subject == private_values[0])
+    ) == 0
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(User.normalized_username == private_values[2])
+    ) == 0
+    assert await db_session.scalar(select(func.count()).select_from(RegistrationRequest)) == 0
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(AuditEvent)
+        .where(AuditEvent.event_type == "registration.account.provisioned")
+    ) == 0
+    assert await db_session.scalar(
+        select(func.count()).select_from(HealthSubject)
+    ) == subjects_before
+
+    page = await client.get(response.headers["location"], follow_redirects=False)
+    assert page.status_code == 200
+    assert "no-store" in page.headers["cache-control"]
+    assert 'name="existing" value="true"' in page.text
+
+
 async def test_public_registration_page_keeps_browser_form_origin(
     client, federated, db_session, monkeypatch
 ):
@@ -342,9 +464,59 @@ async def test_public_registration_page_keeps_browser_form_origin(
     response = await client.get("/register")
 
     assert response.status_code == 200
+    assert 'id="registration-account-type"' in response.text
+    assert (
+        "enter your name and email" in response.text
+        or "укажите имя и электронную почту" in response.text
+    )
     # ``no-referrer`` gives a form POST ``Origin: null``. The CSRF boundary then
     # rejects the same page that rendered the form, so keep its origin intact.
     assert response.headers["referrer-policy"] == "same-origin"
+
+
+async def test_provider_only_choice_selects_an_account_instead_of_creating_one(
+    client, federated, db_session, monkeypatch
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    from web.admission_handoff import read_registration_intent_claim
+
+    await _enable_open_registration(db_session, monkeypatch)
+    response = await client.post(
+        "/register",
+        data={"account_kind": "doctor", "existing": "true"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/start?next=/care"
+    assert read_registration_intent_claim(
+        response.cookies[REGISTRATION_INTENT_COOKIE]
+    ) is not None
+
+    started = await client.get(response.headers["location"], follow_redirects=False)
+    query = parse_qs(urlsplit(started.headers["location"]).query)
+    assert query["prompt"] == ["select_account"]
+
+
+async def test_existing_identity_hint_cannot_open_closed_registration(
+    client, federated, db_session
+):
+    from sqlalchemy import func, select
+
+    from vitals.models.registration import RegistrationIntent
+
+    response = await client.post(
+        "/register",
+        data={"account_kind": "member", "existing": "true"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert not response.cookies.get(REGISTRATION_INTENT_COOKIE)
+    assert await db_session.scalar(
+        select(func.count()).select_from(RegistrationIntent)
+    ) == 0
 
 
 async def test_public_registration_form_survives_the_origin_check(
@@ -366,7 +538,7 @@ async def test_public_registration_form_survives_the_origin_check(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/auth/start?next=/care"
+    assert response.headers["location"] == "/auth/start?next=/care&create_account=true"
 
 
 @pytest.mark.parametrize("origin", ["null", "https://attacker.example.test"])
@@ -405,7 +577,7 @@ async def test_public_registration_mints_only_an_opaque_server_side_choice(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/auth/start?next=/care"
+    assert response.headers["location"] == "/auth/start?next=/care&create_account=true"
     claim = response.cookies[REGISTRATION_INTENT_COOKIE]
     intent_id = read_registration_intent_claim(claim)
     assert isinstance(intent_id, uuid.UUID)

@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.services.care import threads as care_threads
 from vitals.services.authorization.subject_access import (
     AccessResolutionError,
+    enter_subject_scope,
     resolve_access_context,
 )
 from vitals.services.tenancy.contracts import NoPersonalRecordError
@@ -72,6 +73,10 @@ async def open_relationship_conversation(
     user_id = await principal_user_id(request, db)
     try:
         access = await resolve_access_context(db, user_id=user_id, subject_id=None)
+        # Resolve the patient's own subject before entering its RLS boundary.
+        # The relationship id never chooses the scope, and the service still
+        # verifies the exact pair, live consent and message permissions.
+        await enter_subject_scope(db, access)
         thread = await care_threads.open_relationship_thread(
             db,
             context=access,

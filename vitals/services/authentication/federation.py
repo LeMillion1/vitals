@@ -61,6 +61,10 @@ class UnknownFederatedIdentity(FederatedLoginError):
     """A valid provider login with no account on this installation."""
 
 
+class RegistrationChoiceRequired(FederatedLoginError):
+    """An unknown identity must choose an account kind before provisioning."""
+
+
 class InactiveAccount(FederatedLoginError):
     """The account exists and may not be used."""
 
@@ -303,7 +307,7 @@ async def _provision_if_registration_is_open(
     authenticated_at: datetime | None,
     registration_intent_id: uuid.UUID | None = None,
 ) -> User | None:
-    """An account for a stranger, if this installation has said it wants one.
+    """An account for a stranger carrying an explicit registration choice.
 
     ``None`` rather than an exception when registration is closed, so the caller
     can fall through to the one uniform refusal above. A closed door and an
@@ -349,18 +353,24 @@ async def _provision_if_registration_is_open(
             )
         return None
 
-    account_kind = RegistrationAccountKind.MEMBER
-    if registration_intent_id is not None:
-        intent = await admission.consume_intent(
-            session,
-            intent_id=registration_intent_id,
+    if registration_intent_id is None:
+        # An open door is not a role choice. In particular, arriving through
+        # the generic sign-in button must not silently manufacture a member
+        # account and its health record from provider claims alone.
+        raise RegistrationChoiceRequired(
+            "choose an account type before creating an account"
         )
-        try:
-            account_kind = RegistrationAccountKind(intent.account_kind)
-        except ValueError as exc:  # Defensive against manually corrupted rows.
-            raise admission.AdmissionRefused(
-                "this admission proof does not open an account"
-            ) from exc
+
+    intent = await admission.consume_intent(
+        session,
+        intent_id=registration_intent_id,
+    )
+    try:
+        account_kind = RegistrationAccountKind(intent.account_kind)
+    except ValueError as exc:  # Defensive against manually corrupted rows.
+        raise admission.AdmissionRefused(
+            "this admission proof does not open an account"
+        ) from exc
 
     candidate = (preferred_username or "").strip()
     if not candidate and email and "@" in email:
@@ -428,11 +438,7 @@ async def _provision_if_registration_is_open(
             resource_id=str(user.id),
             metadata_json={
                 "source_surface": "authentication.federation",
-                "result_code": (
-                    "open_registration_admitted"
-                    if registration_intent_id is None
-                    else f"{account_kind.value}_open_registration_admitted"
-                ),
+                "result_code": f"{account_kind.value}_open_registration_admitted",
                 "resource_type": "user",
                 "resource_id": str(user.id),
                 "changed_fields": changed_fields,
@@ -524,9 +530,10 @@ async def resolve_federated_user(
     """The local user this provider identity is, or a refusal.
 
     Creates an account for an unrecognised identity only where
-    ``authentication.registration`` says the installation is accepting them, which by
-    default and by deployment gate it is not. Otherwise the only way a link
-    appears is the operator-configured bootstrap, and that runs once.
+    ``authentication.registration`` says the installation is accepting them and the
+    browser carries a one-time server-side registration choice. Otherwise the
+    only way a link appears is the operator-configured bootstrap, and that runs
+    once.
 
     ``email`` and ``preferred_username`` are claims, used for nothing but naming
     a newly provisioned account. Neither is an identity key and neither is
@@ -633,6 +640,14 @@ async def decide_federated_login(
         except BootstrapRefused:
             # A failed bootstrap ceremony must not become a public application.
             raise
+        except RegistrationChoiceRequired as exc:
+            if step_up:
+                # Step-up can only re-authenticate an already known account and
+                # must retain the ordinary, non-enumerating login refusal.
+                raise UnknownFederatedIdentity(
+                    "this provider identity has no account on this installation"
+                ) from exc
+            raise
         except UnknownFederatedIdentity:
             if step_up:
                 # Step-up can only re-authenticate an already known account.
@@ -709,6 +724,7 @@ __all__ = [
     "FederatedLoginError",
     "FederatedSessionDecision",
     "InactiveAccount",
+    "RegistrationChoiceRequired",
     "UnknownFederatedIdentity",
     "decide_federated_login",
     "resolve_existing_federated_user",

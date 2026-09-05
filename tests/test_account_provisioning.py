@@ -614,17 +614,11 @@ async def test_a_stranger_with_a_valid_login_gets_no_account(
     )
 
 
-async def test_an_open_installation_provisions_and_links_in_one_go(
+async def test_an_open_installation_requires_a_choice_before_provisioning(
     db_session, legacy_owner_roots, monkeypatch
 ):
-    """What opening registration will do, exercised while it is still shut.
+    """A generic provider login is not implicit consent to create a member."""
 
-    Deliberately tested rather than left until the release that turns it on: a
-    path that has never run is a path nobody knows the shape of, and this one
-    creates accounts.
-    """
-
-    from vitals.models.identity import UserFederatedIdentity
     from vitals.services.authentication import federation as federated_login_service
 
     monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
@@ -633,65 +627,43 @@ async def test_an_open_installation_provisions_and_links_in_one_go(
     )
     await db_session.commit()
 
-    user = await federated_login_service.resolve_federated_user(
-        db_session,
-        issuer="https://idp.example.test",
-        subject="opaque-newcomer",
-        email="newcomer@example.test",
-        preferred_username="newcomer",
+    counts_before = (
+        await db_session.scalar(select(func.count()).select_from(User)),
+        await db_session.scalar(select(func.count()).select_from(HealthSubject)),
     )
-    await db_session.commit()
-
-    assert user.username == "newcomer"
-    link = await db_session.scalar(
-        select(UserFederatedIdentity).where(
-            UserFederatedIdentity.subject == "opaque-newcomer"
+    with pytest.raises(federated_login_service.RegistrationChoiceRequired):
+        await federated_login_service.resolve_federated_user(
+            db_session,
+            issuer="https://idp.example.test",
+            subject="opaque-newcomer",
+            email="newcomer@example.test",
+            preferred_username="newcomer",
         )
-    )
-    assert link is not None and link.user_id == user.id
-    subject_id = await db_session.scalar(
-        select(HealthSubject.id).where(HealthSubject.owner_user_id == user.id)
-    )
-    assert subject_id is not None
-    audit = await db_session.scalar(
-        select(AuditEvent).where(
-            AuditEvent.event_type == "registration.account.provisioned"
-        )
-    )
-    assert audit is not None
-    assert audit.actor_user_id is None
-    assert audit.subject_id == subject_id
-    assert audit.resource_id == str(user.id)
-    assert audit.metadata_json == {
-        "source_surface": "authentication.federation",
-        "result_code": "open_registration_admitted",
-        "resource_type": "user",
-        "resource_id": str(user.id),
-        "changed_fields": ["federated_identity", "roles", "subject"],
-    }
-    envelope = json.dumps(audit.metadata_json, sort_keys=True)
-    assert "newcomer@example.test" not in envelope
-    assert "opaque-newcomer" not in envelope
-    assert "newcomer" not in envelope
 
-    again = await federated_login_service.resolve_federated_user(
-        db_session,
-        issuer="https://idp.example.test",
-        subject="opaque-newcomer",
-        email="newcomer@example.test",
-        preferred_username="renamed-claim-is-not-an-identity-key",
-    )
-    assert again.id == user.id
+    assert (
+        await db_session.scalar(select(func.count()).select_from(User)),
+        await db_session.scalar(select(func.count()).select_from(HealthSubject)),
+    ) == counts_before
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(UserFederatedIdentity)
+        .where(UserFederatedIdentity.subject == "opaque-newcomer")
+    ) == 0
     assert await db_session.scalar(
         select(func.count())
         .select_from(AuditEvent)
         .where(AuditEvent.event_type == "registration.account.provisioned")
-    ) == 1
+    ) == 0
+    assert await db_session.scalar(
+        select(User.id).where(User.normalized_username == "newcomer")
+    ) is None
 
 
-async def test_invalid_oidc_naming_claim_is_a_uniform_refusal_without_an_account(
+async def test_member_intent_provisions_with_a_private_audit_envelope(
     db_session, legacy_owner_roots, monkeypatch
 ):
+    from vitals.enums import RegistrationAccountKind
+    from vitals.services.authentication import admission
     from vitals.services.authentication import federation
 
     monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
@@ -699,6 +671,72 @@ async def test_invalid_oidc_naming_claim_is_a_uniform_refusal_without_an_account
         db_session, registration_service.RegistrationMode.OPEN
     )
     await db_session.commit()
+    intent = await admission.issue_intent(
+        db_session,
+        account_kind=RegistrationAccountKind.MEMBER,
+    )
+
+    user = await federation.resolve_federated_user(
+        db_session,
+        issuer="https://idp.example.test",
+        subject="opaque-intent-newcomer",
+        email="Private.Newcomer@example.test",
+        email_verified=True,
+        preferred_username="private-newcomer-name",
+        registration_intent_id=intent.id,
+    )
+
+    link = await db_session.scalar(
+        select(UserFederatedIdentity).where(
+            UserFederatedIdentity.subject == "opaque-intent-newcomer"
+        )
+    )
+    subject_id = await db_session.scalar(
+        select(HealthSubject.id).where(HealthSubject.owner_user_id == user.id)
+    )
+    audit = await db_session.scalar(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "registration.account.provisioned"
+        )
+    )
+    assert link is not None and link.user_id == user.id
+    assert subject_id is not None
+    assert audit is not None
+    assert audit.actor_user_id is None
+    assert audit.subject_id == subject_id
+    assert audit.resource_id == str(user.id)
+    assert audit.metadata_json == {
+        "source_surface": "authentication.federation",
+        "result_code": "member_open_registration_admitted",
+        "resource_type": "user",
+        "resource_id": str(user.id),
+        "changed_fields": ["federated_identity", "roles", "subject"],
+    }
+    envelope = json.dumps(audit.metadata_json, sort_keys=True)
+    for private_value in (
+        "Private.Newcomer@example.test",
+        "opaque-intent-newcomer",
+        "private-newcomer-name",
+    ):
+        assert private_value not in envelope
+
+
+async def test_invalid_oidc_naming_claim_is_a_uniform_refusal_without_an_account(
+    db_session, legacy_owner_roots, monkeypatch
+):
+    from vitals.enums import RegistrationAccountKind
+    from vitals.services.authentication import admission
+    from vitals.services.authentication import federation
+
+    monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
+    await registration_service.set_stored_mode(
+        db_session, registration_service.RegistrationMode.OPEN
+    )
+    await db_session.commit()
+    intent = await admission.issue_intent(
+        db_session,
+        account_kind=RegistrationAccountKind.MEMBER,
+    )
 
     with pytest.raises(federation.UnknownFederatedIdentity):
         await federation.resolve_federated_user(
@@ -706,6 +744,7 @@ async def test_invalid_oidc_naming_claim_is_a_uniform_refusal_without_an_account
             issuer="https://idp.example.test",
             subject="hostile-naming-claim",
             preferred_username="hostile\x00name",
+            registration_intent_id=intent.id,
         )
 
     assert await db_session.scalar(
@@ -725,6 +764,8 @@ async def test_an_open_installation_still_refuses_a_name_somebody_holds(
 ):
     """Picking ``newcomer-2`` would hand a stranger a name implying a relationship."""
 
+    from vitals.enums import RegistrationAccountKind
+    from vitals.services.authentication import admission
     from vitals.services.authentication import federation as federated_login_service
 
     monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
@@ -735,6 +776,10 @@ async def test_an_open_installation_still_refuses_a_name_somebody_holds(
         db_session, username="newcomer"
     )
     await db_session.commit()
+    intent = await admission.issue_intent(
+        db_session,
+        account_kind=RegistrationAccountKind.MEMBER,
+    )
 
     with pytest.raises(federated_login_service.UnknownFederatedIdentity):
         await federated_login_service.resolve_federated_user(
@@ -742,12 +787,15 @@ async def test_an_open_installation_still_refuses_a_name_somebody_holds(
             issuer="https://idp.example.test",
             subject="opaque-impostor",
             preferred_username="newcomer",
+            registration_intent_id=intent.id,
         )
 
 
 async def test_the_name_falls_back_to_the_subject_when_the_provider_offers_nothing(
     db_session, legacy_owner_roots, monkeypatch
 ):
+    from vitals.enums import RegistrationAccountKind
+    from vitals.services.authentication import admission
     from vitals.services.authentication import federation as federated_login_service
 
     monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
@@ -755,11 +803,16 @@ async def test_the_name_falls_back_to_the_subject_when_the_provider_offers_nothi
         db_session, registration_service.RegistrationMode.OPEN
     )
     await db_session.commit()
+    intent = await admission.issue_intent(
+        db_session,
+        account_kind=RegistrationAccountKind.MEMBER,
+    )
 
     user = await federated_login_service.resolve_federated_user(
         db_session,
         issuer="https://idp.example.test",
         subject="opaque-nameless-identity",
+        registration_intent_id=intent.id,
     )
     await db_session.commit()
     assert user.username.startswith("user-")
@@ -852,16 +905,10 @@ async def test_postgres_closing_registration_fences_an_unknown_oidc_admission(
 
 
 @pytest.mark.integration
-async def test_postgres_duplicate_unknown_oidc_callbacks_share_one_account_graph(
+async def test_postgres_duplicate_generic_callbacks_create_no_account_graph(
     db_session, legacy_owner_roots, monkeypatch
 ):
-    """Two callbacks for one new ``(issuer, sub)`` are idempotent.
-
-    Both requests are allowed to reach the governance fence before either may
-    commit.  The winner creates the graph; after waiting, the loser must re-read
-    the immutable federated identity and return that same user rather than fail
-    on the already-taken display username.
-    """
+    """Concurrent generic callbacks both stop at the account-choice boundary."""
 
     if db_session.bind.dialect.name != "postgresql":
         pytest.skip("PostgreSQL advisory-lock semantics")
@@ -873,6 +920,106 @@ async def test_postgres_duplicate_unknown_oidc_callbacks_share_one_account_graph
     await registration_service.set_stored_mode(
         db_session, registration_service.RegistrationMode.OPEN
     )
+    await db_session.commit()
+    subjects_before = await db_session.scalar(
+        select(func.count()).select_from(HealthSubject)
+    )
+
+    factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+    started = [asyncio.Event(), asyncio.Event()]
+
+    async def refuse(index: int) -> bool:
+        async with factory() as session:
+            started[index].set()
+            try:
+                await federation.resolve_federated_user(
+                    session,
+                    issuer="https://idp.example.test",
+                    subject="duplicate-registration-callback",
+                    preferred_username="duplicate-registration-callback",
+                )
+            except federation.RegistrationChoiceRequired:
+                await session.rollback()
+                return True
+            return False
+
+    async with factory() as fence:
+        await acquire_identity_governance_lock(fence)
+        callbacks = [
+            asyncio.create_task(refuse(0)),
+            asyncio.create_task(refuse(1)),
+        ]
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(event.wait() for event in started)), timeout=2
+            )
+            await asyncio.sleep(0.2)
+            assert all(not callback.done() for callback in callbacks)
+            await fence.commit()
+            refused = await asyncio.wait_for(asyncio.gather(*callbacks), timeout=8)
+        finally:
+            for callback in callbacks:
+                if not callback.done():
+                    callback.cancel()
+            await asyncio.gather(*callbacks, return_exceptions=True)
+
+    assert refused == [True, True]
+    async with factory() as verify:
+        link_count = await verify.scalar(
+            select(func.count())
+            .select_from(UserFederatedIdentity)
+            .where(
+                UserFederatedIdentity.issuer == "https://idp.example.test",
+                UserFederatedIdentity.subject == "duplicate-registration-callback",
+            )
+        )
+        account_count = await verify.scalar(
+            select(func.count())
+            .select_from(User)
+            .where(
+                User.normalized_username == "duplicate-registration-callback"
+            )
+        )
+        subject_count = await verify.scalar(
+            select(func.count()).select_from(HealthSubject)
+        )
+        admission_audits = await verify.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.event_type == "registration.account.provisioned")
+        )
+
+    assert link_count == account_count == admission_audits == 0
+    assert subject_count == subjects_before
+
+
+@pytest.mark.integration
+async def test_postgres_duplicate_intent_callbacks_share_one_account_graph(
+    db_session, legacy_owner_roots, monkeypatch
+):
+    """One valid member intent stays idempotent across concurrent callbacks."""
+
+    if db_session.bind.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL advisory-lock semantics")
+
+    from vitals.enums import RegistrationAccountKind, RegistrationIntentStatus
+    from vitals.models.registration import RegistrationIntent
+    from vitals.services.authentication import admission, federation
+    from vitals.services.identity.governance import acquire_identity_governance_lock
+
+    monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
+    await registration_service.set_stored_mode(
+        db_session, registration_service.RegistrationMode.OPEN
+    )
+    intent = await admission.issue_intent(
+        db_session,
+        account_kind=RegistrationAccountKind.MEMBER,
+    )
+    intent_id = intent.id
     await db_session.commit()
 
     factory = async_sessionmaker(
@@ -890,6 +1037,7 @@ async def test_postgres_duplicate_unknown_oidc_callbacks_share_one_account_graph
                 issuer="https://idp.example.test",
                 subject="duplicate-registration-callback",
                 preferred_username="duplicate-registration-callback",
+                registration_intent_id=intent_id,
             )
             await session.commit()
             return user
@@ -944,7 +1092,9 @@ async def test_postgres_duplicate_unknown_oidc_callbacks_share_one_account_graph
             .select_from(AuditEvent)
             .where(AuditEvent.event_type == "registration.account.provisioned")
         )
+        persisted_intent = await verify.get(RegistrationIntent, intent_id)
 
     assert len(accounts) == len(links) == len(subjects) == 1
     assert links[0].user_id == accounts[0].id == subjects[0].owner_user_id
     assert admission_audits == 1
+    assert persisted_intent.status == RegistrationIntentStatus.CONSUMED.value

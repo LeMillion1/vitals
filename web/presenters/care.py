@@ -5,6 +5,21 @@ from __future__ import annotations
 from vitals.services.care.workspace import ProfessionalWorkspace
 
 
+def _initial_display_name(username: str) -> str:
+    """Do not suggest an email address as a patient-facing name."""
+
+    candidate = username.strip()
+    local, separator, domain = candidate.partition("@")
+    if (
+        separator
+        and local
+        and domain
+        and not any(char.isspace() for char in candidate)
+    ):
+        return ""
+    return username
+
+
 def professional_roster_context(
     workspace: ProfessionalWorkspace,
     *,
@@ -37,7 +52,11 @@ def professional_roster_context(
             "display_name": (
                 display_name
                 if display_name is not None
-                else (profile.display_name if profile is not None else username)
+                else (
+                    profile.display_name
+                    if profile is not None
+                    else _initial_display_name(username)
+                )
             ),
             "credential_reference": (
                 credential_reference

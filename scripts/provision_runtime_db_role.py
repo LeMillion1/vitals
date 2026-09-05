@@ -31,6 +31,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 RUNTIME_EXECUTE_ROUTINES: tuple[str, ...] = (
     "public.authorize_and_lock_professional_invitation(text,uuid,text)",
     "public.attest_shared_report_token(text)",
+    "public.project_professional_roster(uuid)",
 )
 WORKER_EXECUTE_ROUTINES: tuple[str, ...] = ()
 PLATFORM_CAPABILITY_ROLE_PREFIX = "vitals_platform_scope_db_"

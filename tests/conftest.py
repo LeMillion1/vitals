@@ -270,6 +270,14 @@ async def db_session(request):
                 "REVOKE ALL ON FUNCTION "
                 f"{shared_report_auth.ROUTINE_SIGNATURE} FROM PUBLIC"
             )
+            professional_roster = import_module(
+                "migrations.versions.0086_project_professional_roster"
+            )
+            await conn.exec_driver_sql(professional_roster.CREATE_ROUTINE_SQL)
+            await conn.exec_driver_sql(
+                "REVOKE ALL ON FUNCTION "
+                f"{professional_roster.ROUTINE_SIGNATURE} FROM PUBLIC"
+            )
             await _grant_test_operator_platform_capability(conn)
         elif _SQLITE_SCHEMA_READY and _SQLITE_SCHEMA_MODE == mode:
             await conn.run_sync(_empty_every_table)

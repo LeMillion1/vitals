@@ -1,6 +1,6 @@
 # Registration flow
 
-Last reviewed: 2026-09-02
+Last reviewed: 2026-09-05
 
 This document is the implementation and operations reference for public account
 registration. The product journey and role model are visualized in
@@ -47,6 +47,13 @@ account. A rollback restores an intent if later provisioning fails.
 An already-linked provider identity always signs in to its existing account.
 Presenting a new registration intent cannot add, replace or remove its roles,
 and the intent remains unconsumed.
+
+A generic sign-in by an unknown provider identity does not create a member.
+While registration is open, the callback returns to the explicit account-type
+choice without issuing a Vitals session. The `existing=true` presentation hint
+only selects the provider's account-picker UX after that choice; it carries no
+identity or role authority. A new account choice opens provider registration
+directly, while a sign-in retry can select an identity already created there.
 
 ## Professional onboarding
 
@@ -109,7 +116,7 @@ group.
   before deployment, then the same flows are smoke-tested on the deployed
   build.
 
-## Reference production evidence — 2026-09-02
+## Historical production evidence — 2026-09-02
 
 The reference production checkout is
 `b5fb96c55bbbcb4dbe5dedb8c9151b796b925e1f`, PostgreSQL reports `0085 (head)`,
@@ -118,9 +125,12 @@ is unlocked and both stored and effective modes are `open`.
 
 A read-only production smoke verified the public three-role form, the Vitals to
 ZITADEL redirect, discovery, and the canonical issuer. It intentionally did not
-create a synthetic professional account. Exact member, doctor, and trainer
-mutations are verified by automated PostgreSQL, Compose, and browser gates; a
-live disposable professional journey remains separate evidence.
+create a synthetic professional account. Automated PostgreSQL, Compose, and
+browser gates were not evidence that the deployed native browser journey
+worked. The 2026-09-05 live audit reproduced a native registration POST rejected
+by CSRF, a professional roster hidden by forced RLS, and a patient conversation
+action missing its subject binding. The historical smoke must not be used as a
+claim that those end-to-end flows passed.
 
 The newest health and identity manifests have matching Cloudflare R2 replication
 markers. The exact health bundle restored from `0084`, migrated to `0085`, and

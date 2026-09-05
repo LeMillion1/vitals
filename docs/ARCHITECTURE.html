@@ -348,7 +348,7 @@ tbody tr:hover td { background: var(--surface-2); }
   <p class="standfirst">A self-hosted health-data service — 14 domains, 5 external integration modules and one data lake — where every medical fact belongs to a named health subject and cross-subject access requires relationship consent, an exact support grant, or an independently approved read-only break-glass session.</p>
   <div class="meta">
     <span><b>89</b> tables</span>
-    <span><b>85</b> migrations · head 0085</span>
+    <span><b>86</b> migrations · head 0086</span>
     <span><b>14</b> domains</span>
     <span><b>247</b> application services</span>
     <span><b>71</b> RLS tables</span>
@@ -872,7 +872,7 @@ flowchart TB
   a["<b>1 · alembic upgrade 0048</b><br/><span style='font-size:11px'>every ownership column exists,<br/>all still nullable · safe to stop here</span>"]
   b["<b>2 · bootstrap, then 19 phases</b><br/><span style='font-size:11px'>owner, resource roots, catalogs<br/>raw → facts → children → artifacts<br/>each resumable, each checkpointed</span>"]
   c{"every target column<br/>stamped?"}
-  d["<b>3 · upgrade through 0085</b><br/><span style='font-size:11px'>0049 NOT NULL · 0050+ FORCE RLS<br/>0081/82 attested handoffs · 0083 worker capability</span>"]
+  d["<b>3 · upgrade through 0086</b><br/><span style='font-size:11px'>0049 NOT NULL · 0050+ FORCE RLS<br/>0081/82/86 attested handoffs · 0083 worker capability</span>"]
   e["<b>refused</b><br/><span style='font-size:11px'>names each table and how far behind<br/>nothing altered — run the phase, retry</span>"]
   f["<b>one-way from here</b><br/><span style='font-size:11px'>once a second subject writes,<br/>downgrade is forbidden</span>"]
 

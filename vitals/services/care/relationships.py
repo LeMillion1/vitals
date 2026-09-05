@@ -24,7 +24,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
@@ -37,8 +37,9 @@ from vitals.enums import (
     ProfessionalInvitationStatus,
     ProfessionalKind,
     ProfessionalVerificationStatus,
+    UserStatus,
 )
-from vitals.models.identity import HealthSubject, UserRole
+from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.models.care_thread import CareMessage, CareThreadParticipant
 from vitals.models.professional import (
     CareRelationship,
@@ -53,6 +54,13 @@ from vitals.services.identity.governance import acquire_identity_governance_lock
 #: that never lapses is consent nobody revisits, and a professional who stopped
 #: being involved two years ago should not still be reading.
 DEFAULT_CONSENT_TTL = timedelta(days=365)
+
+# The roster is the one deliberately cross-subject professional read.  On
+# PostgreSQL it goes through a migration-owned projection rather than widening
+# the web role's forced-RLS scope.  Kept as an exact regprocedure signature so
+# migrations, runtime provisioning, and the application can be checked as one
+# contract.
+POSTGRES_ROSTER_ROUTINE = "public.project_professional_roster(uuid)"
 
 #: What a professional may do to a patient's own facts by default: look at them.
 #: Never create, update or delete — a patient's record is theirs, and a
@@ -233,89 +241,128 @@ async def list_professional_roster(
     link that the next request must reject.
     """
 
+    if (
+        not isinstance(professional_user_id, uuid.UUID)
+        or professional_user_id.int == 0
+    ):
+        return []
+
     evaluated_at = await _now(session)
-    participation = aliased(CareThreadParticipant)
-    unread_message = aliased(CareMessage)
-    latest_participation = aliased(CareThreadParticipant)
-    latest_message = aliased(CareMessage)
-    has_unread = (
-        select(unread_message.id)
-        .where(
-            unread_message.thread_id == participation.thread_id,
-            unread_message.actor_user_id != professional_user_id,
-            unread_message.created_at > participation.last_read_at,
-        )
-        .correlate(participation)
-        .exists()
-    )
-    unread_threads = (
-        select(func.count(participation.id))
-        .where(
-            participation.relationship_id == CareRelationship.id,
-            participation.user_id == professional_user_id,
-            participation.removed_at.is_(None),
-            has_unread,
-        )
-        .correlate(CareRelationship)
-        .scalar_subquery()
-    )
-    last_message_at = (
-        select(func.max(latest_message.created_at))
-        .select_from(latest_participation)
-        .join(
-            latest_message,
-            latest_message.thread_id == latest_participation.thread_id,
-        )
-        .where(
-            latest_participation.relationship_id == CareRelationship.id,
-            latest_participation.user_id == professional_user_id,
-            latest_participation.removed_at.is_(None),
-        )
-        .correlate(CareRelationship)
-        .scalar_subquery()
-    )
-    rows = (
-        await session.execute(
-            select(
-                CareRelationship.id,
-                CareRelationship.subject_id,
-                CareRelationship.kind,
-                CareRelationship.status,
-                HealthSubject.display_name,
-                ConsentGrant.status.label("consent_status"),
-                ConsentGrant.expires_at,
-                unread_threads.label("unread_threads"),
-                last_message_at.label("last_message_at"),
-            )
-            .join(HealthSubject, HealthSubject.id == CareRelationship.subject_id)
-            .join(
-                ProfessionalProfile,
-                (ProfessionalProfile.user_id == professional_user_id)
-                & (ProfessionalProfile.kind == CareRelationship.kind)
-                & (
-                    ProfessionalProfile.verification_status
-                    == ProfessionalVerificationStatus.VERIFIED.value
+    if session.get_bind().dialect.name == "postgresql":
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT id, subject_id, kind, status, display_name, "
+                    "consent_status, expires_at, unread_threads, last_message_at "
+                    "FROM public.project_professional_roster("
+                    "CAST(:professional_user_id AS uuid))"
                 ),
+                {"professional_user_id": professional_user_id},
             )
+        ).all()
+    else:
+        participation = aliased(CareThreadParticipant)
+        unread_message = aliased(CareMessage)
+        latest_participation = aliased(CareThreadParticipant)
+        latest_message = aliased(CareMessage)
+        has_unread = (
+            select(unread_message.id)
+            .where(
+                unread_message.thread_id == participation.thread_id,
+                unread_message.actor_user_id != professional_user_id,
+                unread_message.created_at > participation.last_read_at,
+            )
+            .correlate(participation)
+            .exists()
+        )
+        may_read_messages = (
+            select(ConsentScope.id)
+            .where(
+                ConsentScope.consent_grant_id == ConsentGrant.id,
+                ConsentScope.subject_id == CareRelationship.subject_id,
+                ConsentScope.resource_type == PolicyResourceType.OPERATION.value,
+                ConsentScope.resource_key == MESSAGE_OPERATION,
+                ConsentScope.action == PolicyAction.READ.value,
+            )
+            .correlate(CareRelationship, ConsentGrant)
+            .exists()
+        )
+        unread_threads = (
+            select(func.count(participation.id))
+            .where(
+                participation.relationship_id == CareRelationship.id,
+                participation.user_id == professional_user_id,
+                participation.removed_at.is_(None),
+                may_read_messages,
+                has_unread,
+            )
+            .correlate(CareRelationship, ConsentGrant)
+            .scalar_subquery()
+        )
+        last_message_at = (
+            select(func.max(latest_message.created_at))
+            .select_from(latest_participation)
             .join(
-                UserRole,
-                (UserRole.user_id == professional_user_id)
-                & (UserRole.role == CareRelationship.kind),
-            )
-            .outerjoin(
-                ConsentGrant,
-                (ConsentGrant.relationship_id == CareRelationship.id)
-                & ConsentGrant.status.in_(
-                    (ConsentStatus.ACTIVE.value, ConsentStatus.PAUSED.value)
-                ),
+                latest_message,
+                latest_message.thread_id == latest_participation.thread_id,
             )
             .where(
-                CareRelationship.professional_user_id == professional_user_id,
-                CareRelationship.status != CareRelationshipStatus.ENDED.value,
+                latest_participation.relationship_id == CareRelationship.id,
+                latest_participation.user_id == professional_user_id,
+                latest_participation.removed_at.is_(None),
+                may_read_messages,
             )
-            .order_by(HealthSubject.display_name, CareRelationship.id)
+            .correlate(CareRelationship, ConsentGrant)
+            .scalar_subquery()
         )
-    ).all()
+        rows = (
+            await session.execute(
+                select(
+                    CareRelationship.id,
+                    CareRelationship.subject_id,
+                    CareRelationship.kind,
+                    CareRelationship.status,
+                    HealthSubject.display_name,
+                    ConsentGrant.status.label("consent_status"),
+                    ConsentGrant.expires_at,
+                    unread_threads.label("unread_threads"),
+                    last_message_at.label("last_message_at"),
+                )
+                .join(HealthSubject, HealthSubject.id == CareRelationship.subject_id)
+                .join(
+                    User,
+                    (User.id == professional_user_id)
+                    & (User.status == UserStatus.ACTIVE.value),
+                )
+                .join(
+                    ProfessionalProfile,
+                    (ProfessionalProfile.user_id == professional_user_id)
+                    & (ProfessionalProfile.kind == CareRelationship.kind)
+                    & (
+                        ProfessionalProfile.verification_status
+                        == ProfessionalVerificationStatus.VERIFIED.value
+                    ),
+                )
+                .join(
+                    UserRole,
+                    (UserRole.user_id == professional_user_id)
+                    & (UserRole.role == CareRelationship.kind),
+                )
+                .outerjoin(
+                    ConsentGrant,
+                    (ConsentGrant.relationship_id == CareRelationship.id)
+                    & (ConsentGrant.subject_id == CareRelationship.subject_id)
+                    & ConsentGrant.status.in_(
+                        (ConsentStatus.ACTIVE.value, ConsentStatus.PAUSED.value)
+                    ),
+                )
+                .where(
+                    CareRelationship.professional_user_id == professional_user_id,
+                    CareRelationship.status != CareRelationshipStatus.ENDED.value,
+                )
+                .order_by(HealthSubject.display_name, CareRelationship.id)
+            )
+        ).all()
 
     roster: list[CareRosterEntry] = []
     for row in rows:
@@ -813,6 +860,7 @@ __all__ = [
     "CareError",
     "CareRosterEntry",
     "CareValidationError",
+    "POSTGRES_ROSTER_ROUTINE",
     "ConsentNotFound",
     "KindMismatch",
     "NotTheSubjectOwner",

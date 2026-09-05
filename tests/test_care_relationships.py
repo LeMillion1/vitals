@@ -31,20 +31,27 @@ from vitals.enums import (
     CareRelationshipStatus,
     ConsentStatus,
     Domain,
+    ProfessionalInvitationStatus,
     ProfessionalKind,
     ProfessionalVerificationStatus,
     UserRoleName,
     UserStatus,
 )
 from vitals.models.identity import HealthSubject, User, UserRole
-from vitals.services.care import invitations, relationships
+from vitals.models.professional import CareRelationship
+from vitals.services.care import invitations, professionals, relationships
 from vitals.services.authorization.subject_access import resolve_access_context
+from vitals.utils.timeutils import now_utc
 
 
 async def _user(session, slug: str, *, roles=(), status=UserStatus.ACTIVE) -> User:
+    email = slug if "@" in slug else f"{slug}@example.test"
     user = User(
         username=slug,
         normalized_username=slug,
+        email=email,
+        normalized_email=email,
+        email_verified_at=now_utc(),
         password_hash="$synthetic-test-hash",
         status=status.value,
     )
@@ -115,6 +122,31 @@ async def _in_care(session, slug: str, *, kind=ProfessionalKind.DOCTOR):
         session, invitation=issued.invitation
     )
     return owner, subject, professional, relationship
+
+
+async def _accept_for_relationship_validation(
+    session, *, issued, professional: User, verified_email: str
+) -> bool:
+    """Reach SQLite validation or prove PostgreSQL refused without mutation."""
+
+    kwargs = {
+        "token": issued.token,
+        "accepting_user_id": professional.id,
+        "verified_email": verified_email,
+    }
+    if session.get_bind().dialect.name == "postgresql":
+        with pytest.raises(invitations.InvitationRefused):
+            await invitations.accept(session, **kwargs)
+        assert issued.invitation.status == ProfessionalInvitationStatus.PENDING.value
+        assert await session.scalar(
+            select(CareRelationship.id).where(
+                CareRelationship.subject_id == issued.invitation.subject_id,
+                CareRelationship.professional_user_id == professional.id,
+            )
+        ) is None
+        return False
+    await invitations.accept(session, **kwargs)
+    return True
 
 
 def _reads(scope_key: str = "weight") -> AccessRequest:
@@ -408,17 +440,24 @@ async def test_a_doctor_cannot_be_taken_on_as_a_trainer(db_session):
         kind=ProfessionalKind.TRAINER,
         email="care-mismatch-doc@example.test",
     )
-    await invitations.accept(
+    accepted = await _accept_for_relationship_validation(
         db_session,
-        token=issued.token,
-        accepting_user_id=doctor.id,
+        issued=issued,
+        professional=doctor,
         verified_email="care-mismatch-doc@example.test",
     )
-
-    with pytest.raises(relationships.KindMismatch):
-        await relationships.establish_from_invitation(
-            db_session, invitation=issued.invitation
-        )
+    if accepted:
+        with pytest.raises(relationships.KindMismatch):
+            await relationships.establish_from_invitation(
+                db_session, invitation=issued.invitation
+            )
+    else:
+        assert await db_session.scalar(
+            select(UserRole.id).where(
+                UserRole.user_id == doctor.id,
+                UserRole.role == UserRoleName.TRAINER.value,
+            )
+        ) is None
 
 
 async def test_a_care_invitation_never_promotes_an_ordinary_member(db_session):
@@ -435,19 +474,26 @@ async def test_a_care_invitation_never_promotes_an_ordinary_member(db_session):
         subject_id=subject.id,
         actor_user_id=owner.id,
         kind=ProfessionalKind.DOCTOR,
-        email="care-member-invite@example.test",
+        email="care-member-invite-acceptor@example.test",
     )
-    await invitations.accept(
+    accepted = await _accept_for_relationship_validation(
         db_session,
-        token=issued.token,
-        accepting_user_id=member.id,
-        verified_email="care-member-invite@example.test",
+        issued=issued,
+        professional=member,
+        verified_email="care-member-invite-acceptor@example.test",
     )
-
-    with pytest.raises(relationships.KindMismatch):
-        await relationships.establish_from_invitation(
-            db_session, invitation=issued.invitation
-        )
+    if accepted:
+        with pytest.raises(relationships.KindMismatch):
+            await relationships.establish_from_invitation(
+                db_session, invitation=issued.invitation
+            )
+    else:
+        assert await db_session.scalar(
+            select(UserRole.id).where(
+                UserRole.user_id == member.id,
+                UserRole.role == UserRoleName.DOCTOR.value,
+            )
+        ) is None
 
 
 async def test_a_professional_with_no_profile_cannot_establish_care(db_session):
@@ -464,17 +510,22 @@ async def test_a_professional_with_no_profile_cannot_establish_care(db_session):
         subject_id=subject.id,
         actor_user_id=owner.id,
         kind=ProfessionalKind.TRAINER,
-        email="care-noprofile@example.test",
+        email="care-noprofile-pro@example.test",
     )
-    await invitations.accept(
+    accepted = await _accept_for_relationship_validation(
         db_session,
-        token=issued.token,
-        accepting_user_id=professional.id,
-        verified_email="care-noprofile@example.test",
+        issued=issued,
+        professional=professional,
+        verified_email="care-noprofile-pro@example.test",
     )
-    with pytest.raises(relationships.ProfessionalNotVerified):
-        await relationships.establish_from_invitation(
-            db_session, invitation=issued.invitation
+    if accepted:
+        with pytest.raises(relationships.ProfessionalNotVerified):
+            await relationships.establish_from_invitation(
+                db_session, invitation=issued.invitation
+            )
+    else:
+        assert not await professionals.is_verified(
+            db_session, user_id=professional.id
         )
 
 
@@ -535,18 +586,22 @@ async def test_only_a_verified_profile_can_establish_care(db_session, status):
         subject_id=subject.id,
         actor_user_id=owner.id,
         kind=ProfessionalKind.DOCTOR,
-        email=f"{slug}@example.test",
+        email=f"{slug}-pro@example.test",
     )
-    await invitations.accept(
+    accepted = await _accept_for_relationship_validation(
         db_session,
-        token=issued.token,
-        accepting_user_id=professional.id,
-        verified_email=f"{slug}@example.test",
+        issued=issued,
+        professional=professional,
+        verified_email=f"{slug}-pro@example.test",
     )
-
-    with pytest.raises(relationships.ProfessionalNotVerified):
-        await relationships.establish_from_invitation(
-            db_session, invitation=issued.invitation
+    if accepted:
+        with pytest.raises(relationships.ProfessionalNotVerified):
+            await relationships.establish_from_invitation(
+                db_session, invitation=issued.invitation
+            )
+    else:
+        assert not await professionals.is_verified(
+            db_session, user_id=professional.id
         )
 
 
@@ -655,6 +710,29 @@ async def test_a_suspended_profile_disappears_from_the_cross_subject_roster(
         status=ProfessionalVerificationStatus.SUSPENDED,
         note="synthetic licence withdrawal",
     )
+
+    assert await relationships.list_professional_roster(
+        db_session, professional_user_id=professional.id
+    ) == []
+
+
+async def test_an_inactive_account_disappears_from_the_cross_subject_roster(
+    db_session,
+):
+    owner, subject, professional, relationship = await _in_care(
+        db_session, "care-account-roster-suspended"
+    )
+    await relationships.grant_consent(
+        db_session,
+        relationship_id=relationship.id,
+        actor_user_id=owner.id,
+    )
+    assert [row.subject_id for row in await relationships.list_professional_roster(
+        db_session, professional_user_id=professional.id
+    )] == [subject.id]
+
+    professional.status = UserStatus.SUSPENDED.value
+    await db_session.flush()
 
     assert await relationships.list_professional_roster(
         db_session, professional_user_id=professional.id

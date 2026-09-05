@@ -296,7 +296,7 @@ page needs the same edit:
 | the domains | `vitals.enums.Domain` | 14 |
 | external integration modules | tracked non-`__init__` modules in `vitals/integrations/` | 5 |
 | the scheduled jobs | `vitals/scheduler/jobs.py` | 16, of which 11 fan out per record |
-| migration count | `migrations/versions/` | 85, head `0085` |
+| migration count | `migrations/versions/` | 86, head `0086` |
 | RLS table count | table coverage from revisions `0050` through `0079`, plus the `0083` worker-capability policy rewrite, asserted in `tests/test_row_level_security.py` | 71 |
 | platform-scope functions | the permitted list in `tests/test_row_level_security.py` | 9 |
 | routers, tracked application-service modules | tracked non-`__init__` files in `web/routers/`, `vitals/services/` | 37 and 247 |

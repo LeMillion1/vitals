@@ -106,16 +106,12 @@ async def has_live_professional_relationship(
 ) -> bool:
     """Whether a professional currently holds at least one patient."""
 
-    return (
-        await session.scalar(
-            select(CareRelationship.id)
-            .where(
-                CareRelationship.professional_user_id == professional_user_id,
-                CareRelationship.status != CareRelationshipStatus.ENDED.value,
-            )
-            .limit(1)
+    return bool(
+        await relationships.list_professional_roster(
+            session,
+            professional_user_id=professional_user_id,
         )
-    ) is not None
+    )
 
 
 async def professional_display_names(

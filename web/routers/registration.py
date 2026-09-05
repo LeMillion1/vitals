@@ -48,18 +48,21 @@ async def _public_page(
     *,
     error: bool = False,
     selected_kind: str = "",
+    existing_identity: bool = False,
 ) -> HTMLResponse:
     cfg = get_web_config()
     mode = await registration.effective_mode(db)
+    registration_open = (
+        cfg.oidc_enabled and mode is registration.RegistrationMode.OPEN
+    )
     return templates.TemplateResponse(
         request,
         "register.html",
         {
-            "registration_open": (
-                cfg.oidc_enabled and mode is registration.RegistrationMode.OPEN
-            ),
+            "registration_open": registration_open,
             "account_kinds": tuple(RegistrationAccountKind),
             "selected_kind": selected_kind,
+            "existing_identity": existing_identity and registration_open,
             "error": error,
         },
         headers={
@@ -76,19 +79,21 @@ async def _public_page(
 @router.get("", response_class=HTMLResponse)
 async def public_registration(
     request: Request,
+    existing: bool = False,
     db: AsyncSession = Depends(get_session),
 ):
     """Ask one plain product question before handing identity to ZITADEL."""
 
     if read_session(request.cookies.get(SESSION_COOKIE)) is not None:
         return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-    return await _public_page(request, db)
+    return await _public_page(request, db, existing_identity=existing)
 
 
 @router.post("", response_class=HTMLResponse)
 async def begin_public_registration(
     request: Request,
     account_kind: str = Form(""),
+    existing: bool = Form(False),
     db: AsyncSession = Depends(get_session),
     _limit: None = Depends(
         login_rate_limit(
@@ -113,6 +118,7 @@ async def begin_public_registration(
             db,
             error=True,
             selected_kind=account_kind,
+            existing_identity=existing,
         )
     await db.commit()
 
@@ -121,8 +127,9 @@ async def begin_public_registration(
         if intent.account_kind == RegistrationAccountKind.MEMBER.value
         else "/care"
     )
+    create_account_hint = "" if existing else "&create_account=true"
     response = RedirectResponse(
-        url=f"/auth/start?next={next_url}",
+        url=f"/auth/start?next={next_url}{create_account_hint}",
         status_code=status.HTTP_303_SEE_OTHER,
         headers={"Cache-Control": "no-store"},
     )

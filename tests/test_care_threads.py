@@ -30,6 +30,7 @@ from vitals.enums import (
 )
 from vitals.models.care_thread import CareThread, CareThreadParticipant
 from vitals.models.identity import HealthSubject, User, UserRole
+from vitals.persistence import rls
 from vitals.services.care import invitations, professionals, relationships, threads
 from vitals.services.authorization.subject_access import resolve_access_context
 
@@ -684,6 +685,10 @@ async def test_another_patients_thread_id_finds_nothing(db_session):
     )
     context_a = await _context(db_session, doctor, subject_a)
     thread = await threads.open_thread(db_session, context=context_a, title="A")
+    # The second patient is a separate request; production cannot carry the
+    # first request's remembered subject scope into it.
+    await db_session.commit()
+    db_session.info.pop(rls._SUBJECT_KEY, None)
 
     owner_b, subject_b = await _patient(db_session, "thread-idor-b")
     _doctor_b, _relb, _grantb = await _take_into_care(

@@ -11,19 +11,36 @@
 {% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page px-6 py-7 max-w-2xl mx-auto space-y-6">
 
-    {% call masthead_header('care', t('care.accept_heading'), []) %}{% endcall %}
+    {% call masthead_header('care', t('care.accept_error_heading') if accept_error else t('care.accept_heading'), []) %}{% endcall %}
 
-    <div class="v-card p-6 space-y-4">
+    <section class="v-card p-6 space-y-4">
+        {% if accept_error %}
+        <div class="v-alert warn" role="alert">
+            {{ t("care.accept_error_" ~ accept_error) }}
+        </div>
+        <p class="v-text-body" style="color: var(--muted)">{{ t("care.accept_error_no_change") }}</p>
+        <div>
+            <a href="/care" class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3">
+                {{ t("care.accept_back") }}
+            </a>
+        </div>
+        {% else %}
         <p class="v-text-body">{{ t("care.accept_description") }}</p>
-        <p class="v-text-body" style="color: var(--muted)">{{ t("care.accept_email_note") }}</p>
+        <p class="v-text-body" style="color: var(--muted)">{{ t("care.accept_record_note") }}</p>
+        <div class="v-alert note">{{ t("care.accept_email_note") }}</div>
 
         {# A GET must not spend the link. Browsers, link previews and mail
            scanners fetch URLs without anybody having decided anything, and a
            one-time invitation spent by a preview is one the intended person can
            never use. So the confirmation is a POST. #}
-        <form action="/care/accept/{{ token }}" method="POST">
-            <button type="submit" class="v-btn text-xs">{{ t("care.accept_submit") }}</button>
+        <form action="/care/accept/{{ token }}" method="POST" hx-boost="false"
+              class="flex flex-wrap items-center gap-2">
+            <button type="submit" class="v-btn">{{ t("care.accept_submit") }}</button>
+            <a href="/care" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3">
+                {{ t("care.accept_back") }}
+            </a>
         </form>
-    </div>
+        {% endif %}
+    </section>
 </div>
 {% endblock %}

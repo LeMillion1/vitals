@@ -65,6 +65,46 @@ async def _decide(db_session, *, subject: str, intent_id):
     )
 
 
+async def test_open_registration_requires_a_choice_for_an_unknown_identity(
+    db_session, legacy_owner_roots, monkeypatch
+):
+    await _open(db_session, monkeypatch)
+
+    with pytest.raises(federation.RegistrationChoiceRequired):
+        await _decide(
+            db_session,
+            subject="provider-only-without-choice",
+            intent_id=None,
+        )
+
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(UserFederatedIdentity)
+        .where(UserFederatedIdentity.subject == "provider-only-without-choice")
+    ) == 0
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(User.normalized_username == "provider-only-without-choice")
+    ) == 0
+
+
+async def test_unknown_step_up_stays_an_ordinary_login_refusal(
+    db_session, legacy_owner_roots, monkeypatch
+):
+    await _open(db_session, monkeypatch)
+
+    with pytest.raises(federation.UnknownFederatedIdentity):
+        await federation.decide_federated_login(
+            db_session,
+            identity=_identity("unknown-step-up"),
+            bootstrap_subject="",
+            invitation_id=None,
+            registration_intent_id=None,
+            step_up=True,
+        )
+
+
 async def test_member_intent_creates_one_member_with_a_health_subject(
     db_session, legacy_owner_roots, monkeypatch
 ):

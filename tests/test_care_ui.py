@@ -31,13 +31,19 @@ from vitals.models.professional import (
     ProfessionalNote,
     ProfessionalProfile,
 )
+from vitals.persistence import rls
 from vitals.services.care import invitations, professionals, relationships
+from vitals.utils.timeutils import now_utc
 
 
 async def _user(session, slug: str, *, roles=()) -> User:
+    email = slug if "@" in slug else f"{slug}@example.test"
     user = User(
         username=slug,
         normalized_username=slug,
+        email=email,
+        normalized_email=email,
+        email_verified_at=now_utc(),
         password_hash="$synthetic-test-hash",
         status=UserStatus.ACTIVE.value,
     )
@@ -157,6 +163,14 @@ async def doctor_client(client, db_session, legacy_owner_roots):
 
     doctor_id = legacy_owner_roots.user_id
     doctor = await db_session.get(User, doctor_id)
+    doctor_email = (
+        doctor.username
+        if "@" in doctor.username
+        else f"{doctor.username}@example.test"
+    )
+    doctor.email = doctor_email
+    doctor.normalized_email = doctor_email
+    doctor.email_verified_at = now_utc()
     db_session.add(UserRole(user_id=doctor.id, role=UserRoleName.DOCTOR.value))
     await db_session.flush()
     operator = await _user(
@@ -183,10 +197,15 @@ async def doctor_client(client, db_session, legacy_owner_roots):
     await _take_into_care(
         db_session, owner=owner_a, subject=subject_a, professional=doctor
     )
+    # These acceptances represent two distinct browser requests. Production
+    # gives each one a fresh session, so end and forget the first RLS scope.
+    await db_session.commit()
+    db_session.info.pop(rls._SUBJECT_KEY, None)
     await _take_into_care(
         db_session, owner=owner_b, subject=subject_b, professional=doctor
     )
     await db_session.commit()
+    db_session.info.pop(rls._SUBJECT_KEY, None)
 
     client.cookies.set(SESSION_COOKIE, create_session(doctor.username))
     del set_session_cookie
@@ -228,6 +247,12 @@ async def test_a_new_professional_lands_on_one_onboarding_action(
         "Certificate or qualification" in page.text
         or "Сертификат или квалификация" in page.text
     )
+    assert (
+        "Name shown to clients" in page.text
+        or "Имя для клиентов" in page.text
+    )
+    assert "independent operator" not in page.text
+    assert "независимой проверки" not in page.text
     assert 'name="kind"' not in page.text
     # Navigation and sign-out stay reachable before the first patient exists.
     assert 'href="/care"' in page.text
@@ -262,6 +287,42 @@ async def test_professional_profile_error_stays_on_the_plain_form(
             ProfessionalProfile.user_id == trainer_id
         )
     ) is None
+
+
+async def test_email_username_is_not_suggested_as_a_public_profile_name(
+    client, db_session
+):
+    """The initial fallback is blank, but a value submitted by the user survives."""
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    trainer = await _user(
+        db_session,
+        "profile-default@example.test",
+        roles=(UserRoleName.TRAINER,),
+    )
+    await db_session.commit()
+    client.cookies.set(SESSION_COOKIE, create_session(trainer.username))
+
+    initial = await client.get("/care", headers={"Accept": "text/html"})
+    assert initial.status_code == 200
+    assert re.search(
+        r'id="professional-display-name"[^>]*value=""', initial.text
+    )
+
+    submitted_name = "Visible.Name@example.test"
+    invalid = await client.post(
+        "/care/profile",
+        data={
+            "display_name": submitted_name,
+            "credential_reference": "x" * 201,
+        },
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
+    assert invalid.status_code == 422
+    assert f'value="{submitted_name}"' in invalid.text
 
 
 async def test_an_ordinary_member_is_sent_from_professional_care_to_their_hub(
@@ -399,6 +460,63 @@ async def test_the_account_role_not_the_form_chooses_profile_kind(
 
     page = await client.get(response.headers["location"])
     assert "under review" in page.text.lower() or "на проверке" in page.text.lower()
+    assert 'id="professional-review-title"' in page.text
+    assert (
+        "Return here to see the current review status" in page.text
+        or "Возвращайтесь сюда, чтобы увидеть актуальный статус" in page.text
+    )
+    assert "sent for independent review" not in page.text
+    assert "отправлен на независимую проверку" not in page.text
+    assert "Check status" in page.text or "Проверить статус" in page.text
+
+
+async def test_verified_empty_roster_explains_the_invitation_flow(
+    client, db_session
+):
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    trainer = await _user(
+        db_session,
+        "care-empty-trainer",
+        roles=(UserRoleName.TRAINER,),
+    )
+    operator = await _user(
+        db_session,
+        "care-empty-operator",
+        roles=(UserRoleName.PLATFORM_SUPERADMIN,),
+    )
+    profile = await professionals.submit_profile(
+        db_session,
+        user_id=trainer.id,
+        kind=ProfessionalKind.TRAINER,
+        display_name="Coach Empty",
+    )
+    await professionals.decide(
+        db_session,
+        profile_id=profile.id,
+        reviewer_user_id=operator.id,
+        expected_status="pending",
+        status="verified",
+    )
+    await db_session.commit()
+    client.cookies.set(SESSION_COOKIE, create_session(trainer.username))
+
+    page = await client.get("/care", headers={"Accept": "text/html"})
+    assert page.status_code == 200
+    assert "Clients" in page.text or "Клиенты" in page.text
+    assert 'id="professional-roster-empty-title"' in page.text
+    assert (
+        "one-time invitation link" in page.text
+        or "одноразовую ссылку" in page.text
+    )
+    assert (
+        "email address that is verified on this account" in page.text
+        or "адрес, который подтверждён в этом аккаунте" in page.text
+    )
+    assert page.text.index('id="professional-roster-empty-title"') < page.text.index(
+        "data-web-push-card"
+    )
 
 
 async def test_a_rejected_professional_can_correct_the_same_profile(
@@ -687,6 +805,70 @@ async def test_the_roster_puts_unread_patient_conversations_first(
     assert roster.text.index(subject_b.display_name) < roster.text.index(
         subject_a.display_name
     )
+
+
+async def test_roster_message_activity_requires_the_exact_read_scope(
+    doctor_client, db_session
+):
+    from vitals.access import AccessScope, PolicyAction, PolicyResourceType
+    from vitals.enums import Domain
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client, doctor, (_owner_a, subject_a), (owner_b, subject_b) = doctor_client
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject_b, professional=doctor
+    )
+    assert opened.status_code == 303
+    thread_id = opened.headers["location"].rsplit("/", 1)[1]
+
+    client.cookies.set(SESSION_COOKIE, create_session(owner_b.username))
+    replied = await client.post(
+        f"/care/{subject_b.id}/messages/{thread_id}",
+        data={"body": "Private activity outside the narrowed consent."},
+        follow_redirects=False,
+    )
+    assert replied.status_code == 303
+
+    relationship_id = await _relationship_id(
+        db_session,
+        subject=subject_b,
+        professional=doctor,
+    )
+    await relationships.grant_consent(
+        db_session,
+        relationship_id=relationship_id,
+        actor_user_id=owner_b.id,
+        scopes=frozenset(
+            {
+                AccessScope(
+                    resource_type=PolicyResourceType.DOMAIN,
+                    resource_key=Domain.WEIGHT.value,
+                    action=PolicyAction.READ,
+                )
+            }
+        ),
+    )
+    await db_session.commit()
+
+    rows = await relationships.list_professional_roster(
+        db_session,
+        professional_user_id=doctor.id,
+    )
+    narrowed = next(row for row in rows if row.subject_id == subject_b.id)
+    assert narrowed.open
+    assert narrowed.unread_threads == 0
+    assert narrowed.last_message_at is None
+
+    client.cookies.set(SESSION_COOKIE, create_session(doctor.username))
+    roster = await client.get("/care", headers={"Accept": "text/html"})
+    assert roster.status_code == 200
+    assert f'href="/care/{subject_b.id}"' in roster.text
+    assert "New:" not in roster.text
+    assert "Новых:" not in roster.text
+    assert "Last message:" not in roster.text
+    assert "Последнее сообщение:" not in roster.text
+    assert subject_a.display_name in roster.text
 
 
 async def test_the_patient_is_prompted_after_a_professional_accepts(

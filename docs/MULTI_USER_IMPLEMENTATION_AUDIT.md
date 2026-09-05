@@ -61,7 +61,7 @@ verdict:
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0085 (head)`; 85 files in `migrations/versions` | Verified |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0086 (head)`; 86 files in `migrations/versions` | Verified |
 | SQLAlchemy tables | `len(Base.metadata.tables)` → 89 | Verified |
 | Ownership registry | `len(OWNERSHIP_REGISTRY)` → 89 | Verified and exhaustive in code |
 | Subject-scoped tables | 71 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
