@@ -1,8 +1,8 @@
 # Vitals UI/UX rework plan
 
-Date: 2026-09-05. Updated: 2026-09-06. Status: incremental implementation
-authorized; Stage 0 acceptance is complete and Stage 1 release checks are in
-progress. Later stages remain a plan, not a claim of delivered behavior.
+Date: 2026-09-05. Updated: 2026-09-06. Status: Stages 0 and 1 are deployed and
+their available acceptance checks are complete. Later stages remain a plan,
+not a claim of delivered behavior.
 
 ## Decision and evidence
 
@@ -258,12 +258,24 @@ For every layout slice:
 - Initial isolated-browser acceptance covered index navigation, profile save,
   language switching, module toggle/navigation/count, Brief save with truthful
   shared-cadence feedback, and a legacy reauthentication return to Data with empty
-  passphrases. Deployment acceptance is recorded separately when completed.
+  passphrases.
 - Release validation passed: 6,409 fast tests (226 skipped, 45 deselected),
   nine focused PostgreSQL tests with a head-to-0034-to-head migration round trip,
   15 JavaScript portability tests, whole-repository Ruff, and diff checks.
   All six focused pages and the index were visually checked at 390 pixels;
   Tailwind was rebuilt and its generated output remained unchanged.
+- Production release `74c731ac0cbe464053bd986de11453d8f7d52f15` passed web and
+  worker health checks after fresh health and identity-provider backups.
+  Live member acceptance confirmed focused profile/Brief save returns,
+  preserved values and separate module counts, empty unconfigured integrations,
+  and 44-pixel switch labels. Federated reauthentication returned to
+  `/settings/data` with empty passphrases; a subsequent export downloaded with
+  HTTP 200 and the protected-record content type.
+- A live recordless doctor saw only Security and the care workspace. All five
+  personal settings GETs returned to `/care`; the Security page exposed no
+  personal API-key or portability controls. Its 390-pixel layout and three-slot
+  mobile navigation passed visual acceptance. Temporary viewport overrides
+  were cleared and the isolated preview server was stopped.
 - No provider API calls, mail delivery, notification sends, or live restore are
   implied by this layout work. The existing external prerequisites in the QA
   audit remain unchanged.
