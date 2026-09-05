@@ -2166,6 +2166,10 @@ async def test_today_page_renders_its_own_hero_and_quick_log(auth_client):
     assert r.text.count('class="v-today-figure"') == 5   # weight, sleep, HRV, BB, eaten
     assert 'class="mh-head"' not in r.text
     assert 'action="/weight/log"' in r.text
+    # Weight is already represented by the hero figure and narrative. The feed
+    # remains an event/meal stream and must not claim that nothing was logged.
+    assert "В ленте за сегодня пока нет ни событий, ни приёмов пищи." in r.text
+    assert "Сегодня записей ещё нет." not in r.text
     # The form posts to a conflict-aware route, so the override modal has to ship
     # with it (tests/test_router_page_contracts.py guards the same pairing).
     assert "showConfirm" in r.text

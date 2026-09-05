@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — empty daily feed does not contradict a saved weight
+
+The empty Today feed now explicitly refers to events and meals in both English
+and Russian. A weight already shown in the summary no longer sits beside a
+misleading claim that nothing has been logged.
+
 ### Fixed — conversation changes require a current recipient
 
 Patient ownership preserves conversation history but no longer permits sending,

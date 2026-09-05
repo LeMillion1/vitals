@@ -28,6 +28,19 @@ def test_translation_fallback():
     assert t("non_existent_key_xyz") == "non_existent_key_xyz"
 
 
+def test_today_empty_feed_copy_names_only_what_the_feed_contains():
+    """A separately rendered weight must not make the feed's empty state untrue."""
+
+    from vitals.i18n import STRINGS
+
+    assert STRINGS["en"]["today.feed_empty"] == (
+        "No events or meals in today's feed yet."
+    )
+    assert STRINGS["ru"]["today.feed_empty"] == (
+        "В ленте за сегодня пока нет ни событий, ни приёмов пищи."
+    )
+
+
 def test_support_console_explains_the_three_separate_approvals():
     from vitals.i18n import STRINGS
 
