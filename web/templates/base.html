@@ -838,9 +838,31 @@
         // {"detail": …} (FastAPI HTTPException), {"error": …} (hrt.py's 12
         // handlers, garmin.py, /settings/modules) and {"message": …}.
         document.addEventListener('htmx:responseError', (evt) => {
+            const xhr = evt.detail && evt.detail.xhr;
+            const elt = evt.detail && evt.detail.elt;
+            const careAction = elt && elt.closest && elt.closest('[data-care-conversation-action]');
+            if (xhr && xhr.status === 404 && careAction) {
+                const screen = careAction.closest('[data-care-conversation]');
+                const fallback = screen && screen.querySelector('template[data-care-conversation-unavailable]');
+                if (fallback) {
+                    const replacement = fallback.content.cloneNode(true);
+                    const documentTitle = fallback.dataset.documentTitle;
+                    screen.replaceChildren(replacement);
+                    if (documentTitle) document.title = documentTitle;
+                    const alert = screen.querySelector('[data-care-conversation-unavailable-alert]');
+                    if (alert) alert.focus();
+                    // This body script is re-evaluated after boosted navigations,
+                    // so older generic response-error listeners may still be
+                    // attached to document. Do not let one of them add a raw
+                    // "Not Found" toast after the safe state is already shown.
+                    evt.stopImmediatePropagation();
+                    return;
+                }
+            }
+
             let message = window.t('error.generic');
             try {
-                const data = JSON.parse(evt.detail.xhr.responseText);
+                const data = JSON.parse(xhr.responseText);
                 const detail = data && (data.detail || data.error || data.message);
                 if (typeof detail === 'string') {
                     message = detail;
@@ -852,7 +874,6 @@
             // with hx-swap="none", so a rejected change never re-renders — the
             // switch would otherwise stay wherever the user clicked it even
             // though the server didn't apply it. Flip it back to match reality.
-            const elt = evt.detail && evt.detail.elt;
             if (elt && elt.matches && elt.matches('input[type="checkbox"][hx-post="/settings/modules"]')) {
                 elt.checked = !elt.checked;
             }

@@ -1606,6 +1606,24 @@ async def test_the_conversation_page_renders_what_was_said(
     assert f'href="/care/{subject_a.id}/messages"' in page.text
     assert "Start conversation" not in page.text
     assert "Начать разговор" not in page.text
+    assert "data-care-conversation" in page.text
+    assert len(
+        re.findall(r"<form[^>]+data-care-conversation-action", page.text)
+    ) == 3
+    fallback = page.text.split(
+        "<template data-care-conversation-unavailable", 1
+    )[1].split("</template>", 1)[0]
+    assert (
+        "Conversation unavailable" in fallback
+        or "Переписка недоступна" in fallback
+    )
+    assert 'role="alert"' in fallback
+    assert 'tabindex="-1"' in fallback
+    assert 'href="/care"' in fallback
+    assert str(subject_a.id) not in fallback
+    assert thread_id not in fallback
+    assert subject_a.display_name not in fallback
+    assert "Please fast for twelve hours." not in fallback
 
 
 async def test_the_patient_conversation_uses_the_owners_perspective(
@@ -1651,6 +1669,14 @@ async def test_the_patient_conversation_uses_the_owners_perspective(
     assert 'data-message-own="false"' in page.text
     assert 'href="/settings/care" class="v-btn-ghost text-xs"' in page.text
     assert 'href="/messages" class="v-btn-ghost text-xs"' in page.text
+    fallback = page.text.split(
+        "<template data-care-conversation-unavailable", 1
+    )[1].split("</template>", 1)[0]
+    assert 'href="/messages"' in fallback
+    assert str(subject_a.id) not in fallback
+    assert thread_id not in fallback
+    assert "How are you feeling?" not in fallback
+    assert "Much better." not in fallback
 
 
 async def test_message_corrections_and_thread_state_are_shared_actions(
@@ -1845,6 +1871,111 @@ async def test_message_actions_recheck_csrf_and_live_consent(
     await db_session.refresh(message)
     assert thread.status == "open"
     assert message.body == "Original."
+
+
+async def test_stale_conversation_send_keeps_one_json_404_and_writes_nothing(
+    doctor_client, db_session
+):
+    """HTMX gets the API boundary; trusted page markup explains it locally."""
+
+    from vitals.models.care_thread import CareMessage
+
+    client, doctor, (owner, subject), _b = doctor_client
+    subject_id = subject.id
+    doctor_id = doctor.id
+    owner_id = owner.id
+    opened = await _open_professional_conversation(
+        client, db_session, subject=subject, professional=doctor
+    )
+    thread_id = uuid.UUID(opened.headers["location"].rsplit("/", 1)[1])
+    sent = await client.post(
+        f"/care/{subject.id}/messages/{thread_id}",
+        data={"body": "Original."},
+        follow_redirects=False,
+    )
+    assert sent.status_code == 303
+
+    relationship = await db_session.scalar(
+        select(CareRelationship).where(
+            CareRelationship.subject_id == subject_id,
+            CareRelationship.professional_user_id == doctor_id,
+        )
+    )
+    assert relationship is not None
+    relationship_id = relationship.id
+    await relationships.set_consent_paused(
+        db_session,
+        relationship_id=relationship_id,
+        actor_user_id=owner_id,
+        paused=True,
+    )
+    await db_session.commit()
+
+    htmx_headers = {"HX-Request": "true", "Accept": "text/html"}
+    paused = await client.post(
+        f"/care/{subject_id}/messages/{thread_id}",
+        data={"body": "UNSENT-PAUSED-CLINICAL-TEXT"},
+        headers=htmx_headers,
+        follow_redirects=False,
+    )
+    assert paused.status_code == 404
+    assert paused.headers["content-type"].startswith("application/json")
+    assert paused.json() == {"detail": "Not Found"}
+    assert b"UNSENT-PAUSED-CLINICAL-TEXT" not in paused.content
+    assert str(subject_id).encode() not in paused.content
+
+    # Restoring consent proves a missing thread reaches a different service
+    # boundary but remains indistinguishable from the paused relationship.
+    await relationships.set_consent_paused(
+        db_session,
+        relationship_id=relationship_id,
+        actor_user_id=owner_id,
+        paused=False,
+    )
+    await db_session.commit()
+    missing = await client.post(
+        f"/care/{subject_id}/messages/{uuid.uuid4()}",
+        data={"body": "UNSENT-MISSING-THREAD"},
+        headers=htmx_headers,
+        follow_redirects=False,
+    )
+    assert missing.status_code == 404
+    assert missing.content == paused.content
+
+    resumed = await client.post(
+        f"/care/{subject_id}/messages/{thread_id}",
+        data={"body": "After resume."},
+        follow_redirects=False,
+    )
+    assert resumed.status_code == 303
+
+    await relationships.revoke_consent(
+        db_session,
+        relationship_id=relationship_id,
+        actor_user_id=owner_id,
+    )
+    await db_session.commit()
+    revoked = await client.post(
+        f"/care/{subject_id}/messages/{thread_id}",
+        data={"body": "UNSENT-REVOKED-CLINICAL-TEXT"},
+        headers=htmx_headers,
+        follow_redirects=False,
+    )
+    api = await client.post(
+        f"/care/{subject_id}/messages/{thread_id}",
+        data={"body": "UNSENT-API-TEXT"},
+        follow_redirects=False,
+    )
+    assert revoked.status_code == api.status_code == 404
+    assert revoked.content == api.content == paused.content
+
+    messages = (
+        await db_session.execute(
+            select(CareMessage).where(CareMessage.thread_id == thread_id)
+        )
+    ).scalars().all()
+    assert len(messages) == 2
+    assert {message.body for message in messages} == {"Original.", "After resume."}
 
 
 async def test_the_conversation_list_renders(doctor_client, db_session):

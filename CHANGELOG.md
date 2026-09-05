@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — stale care conversations leave a safe, explicit state
+
+When a conversation or its access changes while the page is open, a refused
+send, correction, close, or reopen now replaces the stale patient name,
+conversation history, attachments, and draft with a localized generic
+explanation and a safe route back to the care workspace. The server keeps the
+same non-enumerating JSON 404 for HTMX and API callers, and neither the error
+response nor its fallback reflects a patient, thread, or submitted message.
+
 ### Fixed — care records include the current day
 
 An authorized professional's record now includes observations from the

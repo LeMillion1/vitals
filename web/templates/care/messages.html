@@ -9,7 +9,36 @@
    allowed to see it has ended. #}
 <div hx-history="false"></div>
 {% from "partials/masthead.html" import masthead_header, card_header with context %}
-<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
+<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6"{% if open_thread %} data-care-conversation{% endif %}>
+
+    {% if open_thread %}
+    {# A 404 deliberately says no more than "not found" on the wire. The
+       response-error handler clones this already-localized, identifier-free
+       state and removes the stale conversation, patient name and draft from
+       the page. Keeping it in a template avoids rebuilding trusted markup from
+       an error response or reflecting any submitted clinical text. #}
+    <template data-care-conversation-unavailable
+              data-document-title="{{ t('care.thread_unavailable_title') }} · Vitals">
+        <section class="v-card p-6 space-y-4" aria-labelledby="care-conversation-unavailable-title">
+            <h1 id="care-conversation-unavailable-title" class="v-text-heading">
+                {{ t("care.thread_unavailable_title") }}
+            </h1>
+            <div class="v-alert warn" role="alert" tabindex="-1"
+                 data-care-conversation-unavailable-alert>
+                {{ t("care.thread_unavailable") }}
+            </div>
+            <p class="v-text-body" style="color: var(--muted)">
+                {{ t("care.thread_unavailable_no_change") }}
+            </p>
+            <div>
+                <a href="{{ '/messages' if care.is_owner else '/care' }}"
+                   class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3">
+                    {{ t("care.back_to_team" if care.is_owner else "care.back_to_roster") }}
+                </a>
+            </div>
+        </section>
+    </template>
+    {% endif %}
 
     {# The same banner as the record screen, and for the same reason: somebody
        reading another person's conversation should be able to see on what
@@ -105,7 +134,8 @@
             </span>
             {% if may_send %}
             <form action="/care/{{ care.subject_id }}/messages/{{ open_thread.id }}/{{ 'close' if open_thread.status == 'open' else 'reopen' }}"
-                  method="POST" data-care-thread-action="{{ 'close' if open_thread.status == 'open' else 'reopen' }}">
+                  method="POST" data-care-conversation-action
+                  data-care-thread-action="{{ 'close' if open_thread.status == 'open' else 'reopen' }}">
                 <button type="submit" class="v-btn-ghost text-xs">
                     {{ t("care.thread_close" if open_thread.status == "open" else "care.thread_reopen") }}
                 </button>
@@ -137,7 +167,7 @@
                         {{ t("care.message_edit") }}
                     </summary>
                     <form action="/care/{{ care.subject_id }}/messages/{{ open_thread.id }}/messages/{{ message.id }}/revise"
-                          method="POST" class="space-y-3 pt-3">
+                          method="POST" class="space-y-3 pt-3" data-care-conversation-action>
                         <label for="message-edit-{{ message.id }}" class="v-label">
                             {{ t("care.message_edit_label") }}
                         </label>
@@ -160,7 +190,8 @@
 
         {% if may_send and open_thread.status == 'open' %}
         <form action="/care/{{ care.subject_id }}/messages/{{ open_thread.id }}"
-              method="POST" enctype="multipart/form-data" class="space-y-3">
+              method="POST" enctype="multipart/form-data" class="space-y-3"
+              data-care-conversation-action>
             <label for="message-body" class="v-label">{{ t("care.message_label") }}</label>
             <textarea id="message-body" name="body" rows="4" class="v-input" required
                       placeholder="{{ t('care.message_placeholder_owner' if care.is_owner else 'care.message_placeholder') }}"></textarea>

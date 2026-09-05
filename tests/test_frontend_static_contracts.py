@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = ROOT / "web/templates"
 SW_JS = (ROOT / "web/static/sw.js").read_text(encoding="utf-8")
 BASE_HTML = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+CARE_MESSAGES_HTML = (TEMPLATES / "care/messages.html").read_text(encoding="utf-8")
 HEVY_JS = (ROOT / "web/static/hevy.js").read_text(encoding="utf-8")
 APP_JS = (ROOT / "web/static/app.js").read_text(encoding="utf-8")
 
@@ -75,6 +76,47 @@ def test_response_error_handler_reads_every_error_shape():
     handler = handler[: handler.index("});")]
     for field in ("data.detail", "data.error", "data.message"):
         assert field in handler, f"htmx error toast ignores {field}"
+
+
+def test_care_404_replaces_the_stale_conversation_without_reading_the_response():
+    """A refused stale action is a safe page state, not a raw 404 toast.
+
+    The server's identical JSON boundary remains useful to API callers. The
+    browser recognizes only forms that were rendered inside a conversation and
+    clones trusted localized markup instead of using the response or draft.
+    """
+
+    handler = BASE_HTML[BASE_HTML.index("addEventListener('htmx:responseError'"):]
+    handler = handler[: handler.index("// Safe fallback for normal form submits")]
+    gate_at = handler.index("xhr.status === 404 && careAction")
+    json_at = handler.index("JSON.parse(xhr.responseText)")
+
+    assert gate_at < json_at
+    assert "[data-care-conversation-action]" in handler
+    assert "template[data-care-conversation-unavailable]" in handler
+    assert "screen.replaceChildren(replacement)" in handler
+    assert "document.title = documentTitle" in handler
+    assert "alert.focus()" in handler
+    assert "evt.stopImmediatePropagation()" in handler
+    assert handler.index("return;", gate_at) < json_at
+
+    # Close/reopen share one form; correction and send are the other two.
+    assert CARE_MESSAGES_HTML.count("data-care-conversation-action") == 3
+    fallback = CARE_MESSAGES_HTML.split(
+        "<template data-care-conversation-unavailable", 1
+    )[1].split("</template>", 1)[0]
+    assert 'role="alert"' in fallback
+    assert 'tabindex="-1"' in fallback
+    assert 'href="{{ \'/messages\' if care.is_owner else \'/care\' }}"' in fallback
+    for clinical_value in (
+        "care.subject_id",
+        "care.subject_display_name",
+        "open_thread.id",
+        "open_thread.title",
+        "message.id",
+        "message.body",
+    ):
+        assert clinical_value not in fallback
 
 
 def test_no_template_disables_a_submit_button_by_hand():
