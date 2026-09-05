@@ -1127,6 +1127,62 @@ async def test_labs_manual_add_and_flag(auth_client, db_session):
     assert row.marker == "TSH" and row.flag == "high"
 
 
+async def test_labs_dashboard_keeps_a_missing_reference_unevaluated(
+    auth_client,
+    db_session,
+    legacy_owner_roots,
+):
+    """A value alone cannot become a green normal result at render time."""
+
+    response = await auth_client.post(
+        "/labs/result",
+        data={
+            "date": "2026-06-10",
+            "marker": "Unbounded marker",
+            "value": 5.5,
+            "unit": "U/L",
+            "ref_low": "",
+            "ref_high": "",
+        },
+    )
+    assert response.status_code == 303
+    unknown = await db_session.scalar(
+        select(LabResult).where(LabResult.marker == "Unbounded marker")
+    )
+    assert unknown is not None
+    assert (unknown.ref_low, unknown.ref_high, unknown.flag) == (None, None, None)
+
+    # Portability and historical source rows can carry an explicit normal flag
+    # even when the original range is unavailable. Presentation must preserve it.
+    db_session.add(
+        LabResult(
+            subject_id=legacy_owner_roots.subject_id,
+            date=today_local(),
+            domain="labs",
+            source="manual",
+            marker="Source-normal marker",
+            value=7.0,
+            flag="normal",
+        )
+    )
+    await db_session.commit()
+
+    page = (await auth_client.get("/labs", headers={"Accept": "text/html"})).text
+
+    def marker_row(marker: str) -> str:
+        marker_at = page.index(f'title="{marker}"')
+        return page[page.rfind("<tr", 0, marker_at):page.index("</tr>", marker_at)]
+
+    unknown_row = marker_row("Unbounded marker")
+    assert "не оценено" in unknown_row
+    assert "var(--faint)" in unknown_row
+    assert "var(--good)" not in unknown_row
+
+    source_normal_row = marker_row("Source-normal marker")
+    assert "норма" in source_normal_row
+    assert "var(--good)" in source_normal_row
+
+
 async def test_labs_defer_and_delete_routes_keep_the_subject_scope(
     auth_client,
     db_session,

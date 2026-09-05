@@ -217,8 +217,21 @@ async def _load_labs(
         for row in rows
         if is_out_of_range(row.flag) and 0 <= (window.period_end - row.date).days <= 14
     ]
+    not_evaluated = [
+        {
+            "marker": row.marker,
+            "value": row.value,
+            "unit": row.unit,
+            "flag": row.flag,
+            "date": row.date.isoformat(),
+            "ref_low": row.ref_low,
+            "ref_high": row.ref_high,
+        }
+        for row in rows
+        if row.flag is None and 0 <= (window.period_end - row.date).days <= 14
+    ]
     return _LoadedSection(
-        value={"out_of_range": flagged},
+        value={"out_of_range": flagged, "not_evaluated": not_evaluated},
         row_count=len(rows),
         dates=tuple(row.date for row in rows),
         truncated=page.truncated,
@@ -501,6 +514,7 @@ async def assemble_record_projection(
         window = digest_window.report_window(
             on_date=on_date,
             period_days=period_days,
+            mode=digest_window.REPORT_MODE_CURRENT,
         )
     record: dict[str, Any] = {}
     coverage: dict[str, Mapping[str, Any]] = {}

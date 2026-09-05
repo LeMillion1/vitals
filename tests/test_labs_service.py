@@ -41,6 +41,8 @@ def test_compute_flag_classifies():
     assert lab_flags.compute_flag(4.5, None, 3.0) == "critical_high"
     # no range → unknown
     assert lab_flags.compute_flag(5.0, None, None) is None
+    assert lab_flags.evaluation_status(None) == "not_evaluated"
+    assert lab_flags.evaluation_status("normal") == "normal"
 
 
 # ── Manual entry + catalog ────────────────────────────────────────────────────

@@ -136,7 +136,7 @@
                         </thead>
                         <tbody>
                             {% for r in latest %}
-                            {% set f = r.flag or 'normal' %}
+                            {% set f = r.flag %}
                             {% set is_bad = f in ['low', 'high', 'critical_low', 'critical_high'] %}
                             <tr class="cursor-pointer" style="{% if r.marker == selected %}background: var(--surface-2){% endif %}"
                                 onclick="window.location.href='/labs?marker={{ r.marker | urlencode }}'"
@@ -146,8 +146,8 @@
                                 <td class="v-num v-text-micro" data-label="{{ t('labs.norm') }}">{% if r.ref_low is not none or r.ref_high is not none %}{{ r.ref_low if r.ref_low is not none else '' }}–{{ r.ref_high if r.ref_high is not none else '' }}{% else %}—{% endif %}</td>
                                 <td data-label="{{ t('labs.status') }}">
                                     <span class="v-text-label font-semibold"
-                                          style="color: {% if 'critical' in f %}var(--bad-strong){% elif f in ['low','high'] %}var(--warn){% else %}var(--good){% endif %}">
-                                        {{ t("enum.flag." + f) }}
+                                          style="color: {% if f is none %}var(--faint){% elif 'critical' in f %}var(--bad-strong){% elif f in ['low','high'] %}var(--warn){% else %}var(--good){% endif %}">
+                                        {{ t("labs.not_evaluated") if f is none else t("enum.flag." + f) }}
                                     </span>
                                 </td>
                                 <td class="v-num v-text-micro" data-label="{{ t('common.date') }}">{{ r.date | format_date }}</td>

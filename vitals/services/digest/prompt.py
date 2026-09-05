@@ -46,6 +46,7 @@ DIGEST_SYSTEM = """\
    - direction="up"      → масштаб ЗАВЫШЕН шумом (загрузка креатином, скачок натрия, задержка воды). Реальный темп потери жира ЛУЧШЕ, чем показывает тренд; после конца маркера жди откат вверх на скользящем среднем + замедление видимого снижения — это нормально и НЕ означает потерю темпа.
    - direction="down"    → масштаб ЗАНИЖЕН (обезвоживание, болезнь). Реальная ситуация ХУЖЕ чем числа.
    - direction=null/"neutral" → направление неизвестно, просто отметь что данные зашумлены.
+6. В labs значение flag=null означает «не оценено»: пригодного референсного диапазона нет. Не называй такой результат нормальным или отклонением. Явный flag="normal" остаётся оценкой «в норме».
 
 ПИТАНИЕ: пользователь часто забивает на трекинг. Если days_with_logs мало или калории нереалистично низкие — это пропущенный лог, а не голодовка. Не паникуй, просто отметь что данных мало.
 
@@ -115,6 +116,7 @@ INVARIANTS (breaking = bug):
    - direction="up"      → scale INFLATED by noise (creatine loading, sodium spike, water retention). Real fat-loss pace is BETTER than the trend shows; after the marker ends expect the moving average to bounce up and visible loss to slow — that is normal and does NOT mean progress has stalled.
    - direction="down"    → scale DEFLATED (dehydration, illness). Real situation is WORSE than numbers.
    - direction=null/"neutral" → direction unknown, just note data is noisy.
+6. In labs, flag=null means "not evaluated": no usable reference range was available. Never call that result normal or abnormal. An explicit flag="normal" remains an evaluated normal result.
 
 NUTRITION: user often skips tracking. Low days_with_logs or unrealistically low calories = missed log, not starvation. Don't panic, just note data is sparse.
 

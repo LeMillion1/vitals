@@ -8,6 +8,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — care records include the current day
+
+An authorized professional's record now includes observations from the
+patient's current local day instead of stopping at yesterday. The dated
+seven-day window remains subject-timezone aware, excludes future facts, and
+does not change consent or report-period boundaries.
+
+### Fixed — lab results without a reference range stay unevaluated
+
+A lab value with no usable result or catalog reference range is now shown as
+neutral and not evaluated instead of green and normal. Shared reports separate
+those values from actual out-of-range results and no longer claim that every
+marker is within range when any result is unevaluated. Care projections,
+digest instructions, the curated LLM export, and MCP lab results preserve the
+same distinction while retaining every explicit stored normal flag.
+
 ### Fixed — patients can open their care conversation under forced RLS
 
 The patient's conversation action now enters the subject scope resolved from

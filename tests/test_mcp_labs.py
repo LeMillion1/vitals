@@ -47,6 +47,22 @@ async def test_log_get_delete_lab_result(db_session, session_factory, monkeypatc
     assert await mcp_router.get_lab_results(marker="TSH") == []
 
 
+async def test_missing_reference_is_explicitly_unevaluated(session_factory, monkeypatch):
+    monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
+
+    created = await mcp_router.log_lab_result(
+        marker="Unbounded marker",
+        value=7,
+        on_date="2026-06-10",
+    )
+    assert "flag" not in created
+    assert created["evaluation_status"] == "not_evaluated"
+
+    [stored] = await mcp_router.get_lab_results(marker="Unbounded marker")
+    assert "flag" not in stored
+    assert stored["evaluation_status"] == "not_evaluated"
+
+
 async def test_log_lab_results_batch_creates_and_dedupes(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 

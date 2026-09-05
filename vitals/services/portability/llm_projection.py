@@ -26,6 +26,7 @@ from vitals.models.skincare import SkincareLog, SkincareObservation
 from vitals.models.supplements import Supplement
 from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, NoiseMarker, WeightLog
+from vitals.services.labs.flags import evaluation_status
 from vitals.services.portability.v1_contract import (
     GENERIC_OUTPUT_SUPPRESSED_COLUMNS,
     PortabilityError,
@@ -44,6 +45,11 @@ def _llm_profile() -> dict[str, Any]:
         "timezone": os.getenv("VITALS_TIMEZONE", "Europe/Chisinau"),
         "exported_at": now_local().isoformat(timespec="seconds"),
         "units": {"weight": "kg", "distance": "m", "energy": "kcal"},
+        "lab_evaluation_contract": (
+            "Each biomarkers row has evaluation_status. not_evaluated means "
+            "there was no usable reference range; never interpret it as normal "
+            "or out of range. An explicit normal status remains normal."
+        ),
         "note": (
             "Экспорт данных здоровья одного пользователя (Vitals) для анализа LLM. "
             "Даты в ISO 8601, вес в кг. Это навигатор для поддержки решений, не врач."
@@ -348,6 +354,7 @@ async def export_llm(
                 "ref_low": r.ref_low,
                 "ref_high": r.ref_high,
                 "flag": r.flag,
+                "evaluation_status": evaluation_status(r.flag),
             }
         )
         for r in labs

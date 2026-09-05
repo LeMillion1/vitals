@@ -206,6 +206,10 @@ async def test_labs_carry_range_and_history_and_honour_flagged_only(db_session, 
                 marker="Глюкоза", value=5.0, unit="ммоль/л", ref_low=3.9, ref_high=6.1,
                 flag="normal",
             ),
+            LabResult(subject_id=legacy_owner_roots.subject_id,
+                date=date(2026, 3, 10), domain="labs", source="manual",
+                marker="Без референса", value=7.0, unit="U/L", flag=None,
+            ),
         ]
     )
     await db_session.flush()
@@ -216,9 +220,10 @@ async def test_labs_carry_range_and_history_and_honour_flagged_only(db_session, 
         period_start=START, period_end=END, enabled=ALL_ON,
     )
     markers = {m["marker"]: m for m in full["blocks"]["labs"]["markers"]}
-    assert set(markers) == {"Ферритин", "Глюкоза"}
+    assert set(markers) == {"Ферритин", "Глюкоза", "Без референса"}
     assert markers["Ферритин"]["ref_low"] == 30
     assert [p["value"] for p in markers["Ферритин"]["history"]] == [31.0]
+    assert markers["Без референса"]["flag"] is None
 
     flagged = await share_service.build_snapshot(
         db_session,

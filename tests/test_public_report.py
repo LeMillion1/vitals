@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
+from starlette.requests import Request
 
 from vitals.enums import Domain
 from vitals.models.labs import LabResult
@@ -79,6 +80,76 @@ async def _make_report(db_session, **kwargs):
     )
     await db_session.commit()
     return row, password
+
+
+def _render_labs_document(markers: list[dict]) -> str:
+    """Render the frozen standalone document without involving link auth."""
+
+    from vitals.i18n import current_lang
+    from web.routers.public_report import render_document
+
+    snapshot = {
+        "lang": "en",
+        "profile": None,
+        "period": {"start": START.isoformat(), "end": END.isoformat()},
+        "generated_at": "2026-03-30T12:00:00",
+        "domains": [Domain.LABS.value],
+        "blocks": {"labs": {"markers": markers}},
+    }
+    request = Request(
+        {"type": "http", "method": "GET", "path": "/r/test", "headers": []}
+    )
+    previous = current_lang.get()
+    try:
+        return render_document(
+            request,
+            SimpleNamespace(snapshot=snapshot, note=None),
+        )
+    finally:
+        current_lang.set(previous)
+
+
+def _marker(*, marker: str, flag: str | None, value: float = 5.0) -> dict:
+    return {
+        "marker": marker,
+        "value": value,
+        "unit": "U/L",
+        "flag": flag,
+        "date": "2026-03-10",
+        "ref_low": None,
+        "ref_high": None,
+        "history": [],
+    }
+
+
+def test_lab_summary_separates_abnormal_unevaluated_and_explicit_normal():
+    mixed = _render_labs_document(
+        [
+            _marker(marker="Explicit abnormal", flag="high"),
+            _marker(marker="Missing reference", flag=None),
+            _marker(marker="Source normal", flag="normal"),
+        ]
+    )
+    assert "Outside the reference range" in mixed
+    assert "Explicit abnormal" in mixed
+    assert "No reference range; not evaluated" in mixed
+    assert "Missing reference" in mixed
+    assert "Every marker measured in this period is inside" not in mixed
+
+    unevaluated_only = _render_labs_document(
+        [_marker(marker="Missing reference", flag=None)]
+    )
+    assert "not evaluated" in unevaluated_only
+    assert "Outside the reference range" not in unevaluated_only
+    assert "Every marker measured in this period is inside" not in unevaluated_only
+
+    # A stored/source normal remains authoritative even if its original bounds
+    # are not available in this frozen projection.
+    explicit_normal = _render_labs_document(
+        [_marker(marker="Source normal", flag="normal")]
+    )
+    assert "Every marker measured in this period is inside" in explicit_normal
+    assert "not evaluated" not in explicit_normal
 
 
 @pytest.mark.asyncio

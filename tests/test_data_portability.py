@@ -3394,6 +3394,38 @@ async def test_export_llm_endpoint_downloads_digest(garmin_connection_id, hevy_c
     assert "raw_payloads" not in data
 
 
+async def test_llm_export_makes_missing_lab_evaluation_explicit(
+    db_session,
+    legacy_owner_roots,
+):
+    db_session.add_all(
+        [
+            LabResult(subject_id=legacy_owner_roots.subject_id,
+                date=date(2026, 6, 10), domain="labs", source="manual",
+                marker="Missing reference", value=7.0, flag=None,
+            ),
+            LabResult(subject_id=legacy_owner_roots.subject_id,
+                date=date(2026, 6, 10), domain="labs", source="lab_parser",
+                marker="Source normal", value=5.0, flag="normal",
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    exported = await export_llm(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        domains=["biomarkers"],
+    )
+    biomarkers = {row["marker"]: row for row in exported["biomarkers"]}
+
+    assert "flag" not in biomarkers["Missing reference"]
+    assert biomarkers["Missing reference"]["evaluation_status"] == "not_evaluated"
+    assert biomarkers["Source normal"]["flag"] == "normal"
+    assert biomarkers["Source normal"]["evaluation_status"] == "normal"
+    assert "not_evaluated" in exported["profile"]["lab_evaluation_contract"]
+
+
 async def test_import_endpoint_restores_and_reports(garmin_connection_id, hevy_connection_id, legacy_owner_roots, auth_client, db_session):
     await _seed(db_session, garmin_connection_id=garmin_connection_id, hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots)
     snap = await export_full(db_session)

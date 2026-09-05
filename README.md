@@ -414,7 +414,7 @@ graph TD
 | `get_body_scans` | Замеры состава тела InBody / МедАсс со всеми метриками |
 | `get_body_scan` | Один замер состава тела с полным листком метрик |
 | `get_body_metric_history` | История одной метрики состава тела (SMM, фазовый угол…) |
-| `get_lab_results` | Результаты анализов (биомаркер, значение, референс, флаг отклонения) |
+| `get_lab_results` | Результаты анализов (биомаркер, значение, референс, статус оценки; `not_evaluated` означает, что пригодного референса нет, а не норму или отклонение) |
 | `get_timeline` | Кросс-доменная лента событий (ручные аннотации + авто-события) |
 | `get_full_snapshot` | Кросс-доменный срез за период одним вызовом |
 | `export_everything` | Экспорт истории по всем доменам за один вызов (по умолчанию — последние 90 дней; вся история и отдельные домены — явными аргументами) |
@@ -1277,7 +1277,7 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 | `get_body_scans` | InBody / МедАсс body-composition scans with every metric |
 | `get_body_scan` | A single body-composition scan with its full metric sheet |
 | `get_body_metric_history` | History of one body-composition metric (SMM, phase angle…) |
-| `get_lab_results` | Lab results (biomarker, value, reference range, out-of-range flag) |
+| `get_lab_results` | Lab results (biomarker, value, reference range, evaluation status; `not_evaluated` means no usable reference, neither normal nor abnormal) |
 | `get_timeline` | Cross-domain event timeline (manual annotations + auto-events) |
 | `get_full_snapshot` | One cross-domain snapshot for a period (weight trend, GLP-1, recent labs, activity/recovery, workouts, nutrition, skincare, goals) |
 | `export_everything` | The entire history as one compact, LLM-ready export across all domains |

@@ -189,7 +189,17 @@ footer {
 {# ── 2. In short — deterministic, assembled from the blocks below. No model
        wrote a word of it. ────────────────────────────────────────────── #}
 {% set w = blocks.weight %}
-{% set flagged = (blocks.labs.markers if blocks.labs else []) | selectattr("flag", "ne", "normal") | list %}
+{% set lab_markers = blocks.labs.markers if blocks.labs else [] %}
+{% set abnormal_flags = ["low", "high", "critical_low", "critical_high"] %}
+{% set flagged = [] %}
+{% set unevaluated = [] %}
+{% for marker in lab_markers %}
+  {% if marker.flag in abnormal_flags %}
+    {% set _ = flagged.append(marker) %}
+  {% elif marker.flag is none %}
+    {% set _ = unevaluated.append(marker) %}
+  {% endif %}
+{% endfor %}
 {% set taking = [] %}
 {% if blocks.glp1 and blocks.glp1.current and blocks.glp1.current.drug %}
   {% set _ = taking.append(t("enum.drug." ~ blocks.glp1.current.drug) ~ (" " ~ (blocks.glp1.current.dose_mg | format_number) ~ " " ~ t("common.mg") if blocks.glp1.current.dose_mg else "")) %}
@@ -214,7 +224,12 @@ footer {
   {% if flagged %}
   <p><b>{{ t("doc.summary_flagged") }}:</b>
     {% for m in flagged %}{{ m.marker }} {{ m.value | format_number }}{% if m.unit %} {{ m.unit | format_unit }}{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</p>
-  {% elif blocks.labs %}
+  {% endif %}
+  {% if unevaluated %}
+  <p><b>{{ t("doc.summary_not_evaluated") }}:</b>
+    {% for m in unevaluated %}{{ m.marker }} {{ m.value | format_number }}{% if m.unit %} {{ m.unit | format_unit }}{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  {% endif %}
+  {% if lab_markers and not flagged and not unevaluated %}
   <p>{{ t("doc.summary_all_normal") }}</p>
   {% endif %}
 </section>
@@ -308,7 +323,9 @@ footer {
         <td class="name">{{ m.marker }}<span class="sub">{{ m.date | format_date }}</span></td>
         <td class="num">
           {{ m.value | format_number }}{% if m.unit %} {{ m.unit | format_unit }}{% endif %}
-          {%- if m.flag and m.flag != "normal" %}
+          {%- if m.flag is none %}
+          <span class="was">{{ t("labs.not_evaluated") }}</span>
+          {%- elif m.flag != "normal" %}
           <span class="flag">{{ "↓" if "low" in m.flag else "↑" }} {{ t("enum.flag." ~ m.flag) }}</span>
           {%- endif %}
         </td>

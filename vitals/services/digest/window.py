@@ -10,6 +10,7 @@ from vitals.utils.timeutils import today_local
 CONTEXT_SCHEMA_VERSION = 2
 REPORT_MODE_CLOSED = "closed_period"
 REPORT_MODE_BRIEF = "daily_brief"
+REPORT_MODE_CURRENT = "current_period"
 MIN_PERIOD_DAYS = 1
 MAX_PERIOD_DAYS = 90
 @dataclass(frozen=True)
@@ -34,9 +35,10 @@ def report_window(
 ) -> ReportWindow:
     """Validate and resolve the report window without touching the database.
 
-    A period report contains completed days. A daily brief is the one explicit
-    exception: it is a current-day snapshot, and its caller opts into that mode
-    instead of overloading ``period_days == 1`` with two meanings.
+    A closed period report contains completed days. A daily brief is a one-day
+    current snapshot, while a current period includes its still-open final day.
+    Callers opt into either current mode instead of overloading
+    ``period_days == 1`` with multiple meanings.
     """
     if isinstance(period_days, bool) or not isinstance(period_days, int):
         raise ValueError("period_days must be an integer")
@@ -44,7 +46,7 @@ def report_window(
         raise ValueError(
             f"period_days must be between {MIN_PERIOD_DAYS} and {max_period_days}"
         )
-    if mode not in {REPORT_MODE_CLOSED, REPORT_MODE_BRIEF}:
+    if mode not in {REPORT_MODE_CLOSED, REPORT_MODE_BRIEF, REPORT_MODE_CURRENT}:
         raise ValueError(f"unsupported report mode: {mode}")
     if mode == REPORT_MODE_BRIEF and period_days != 1:
         raise ValueError("daily_brief mode requires period_days=1")

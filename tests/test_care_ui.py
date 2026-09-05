@@ -1075,13 +1075,8 @@ async def test_role_revocation_hides_patient_names_from_the_roster(
 # ── The record itself ────────────────────────────────────────────────────────
 
 
-async def _weight(session, subject_id, *, kg: float, days_ago: int = 2):
-    """A weigh-in inside the record's window.
-
-    ``days_ago`` defaults to two rather than zero on purpose: the record shows
-    the same closed period every report in this product uses — completed days
-    only — so a row written for today is outside it by design.
-    """
+async def _weight(session, subject_id, *, kg: float, days_ago: int = 0):
+    """A weigh-in inside the active record's current subject-local window."""
 
     from datetime import timedelta
 

@@ -40,18 +40,24 @@ pytestmark = pytest.mark.usefixtures("all_modules_on", "owned_by_legacy_subject"
 DAY = date(2026, 8, 4)
 
 
-async def test_report_window_separates_closed_day_and_brief(monkeypatch):
+async def test_report_window_separates_closed_brief_and_current_periods(monkeypatch):
     monkeypatch.setattr(digest_window, "today_local", lambda: DAY)
 
     closed = digest_window.report_window(period_days=1)
     brief = digest_window.report_window(
         period_days=1, mode=digest_window.REPORT_MODE_BRIEF
     )
+    current = digest_window.report_window(
+        period_days=7, mode=digest_window.REPORT_MODE_CURRENT
+    )
 
     assert closed.period_end == DAY - timedelta(days=1)
     assert closed.mode == "closed_period"
     assert brief.period_end == DAY
     assert brief.mode == "daily_brief"
+    assert current.period_start == DAY - timedelta(days=6)
+    assert current.period_end == DAY
+    assert current.mode == "current_period"
 
     for invalid in (0, 91):
         with pytest.raises(ValueError, match="between 1 and 90"):
@@ -745,6 +751,35 @@ async def test_supporting_domains_are_complete_but_compact(db_session, legacy_ow
 
 
 
+async def test_lab_without_reference_crosses_digest_as_unevaluated(
+    db_session,
+    legacy_owner_roots,
+):
+    db_session.add(
+        LabResult(
+            subject_id=legacy_owner_roots.subject_id,
+            date=DAY - timedelta(days=1),
+            domain=Domain.LABS.value,
+            source=Source.MANUAL.value,
+            marker="Missing reference",
+            value=7,
+            flag=None,
+        )
+    )
+    await db_session.commit()
+
+    context = await digest_projection.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=DAY,
+    )
+
+    result = context["labs"]["results_in_period"][0]
+    assert result["marker"] == "Missing reference"
+    assert result["flag"] is None
+    assert context["labs"]["out_of_range"] == []
+
+
 async def test_ru_and_en_prompts_describe_the_same_v2_contract():
     for prompt in (digest_prompt.DIGEST_SYSTEM, digest_prompt.DIGEST_SYSTEM_EN):
         for key in (
@@ -763,3 +798,9 @@ async def test_ru_and_en_prompts_describe_the_same_v2_contract():
         # dropped — ``resolved`` was ``day_context.resolved`` and went with it.
         for phantom in ("day_context", "signals"):
             assert phantom not in prompt, phantom
+    assert "flag=null" in digest_prompt.DIGEST_SYSTEM
+    assert "не оценено" in digest_prompt.DIGEST_SYSTEM
+    assert 'flag="normal"' in digest_prompt.DIGEST_SYSTEM
+    assert "flag=null" in digest_prompt.DIGEST_SYSTEM_EN
+    assert "not evaluated" in digest_prompt.DIGEST_SYSTEM_EN
+    assert 'flag="normal"' in digest_prompt.DIGEST_SYSTEM_EN

@@ -304,7 +304,88 @@ async def test_record_window_uses_target_subject_timezone(db_session):
         )
 
     assert projection.period["report_date"] == "2025-12-31"
-    assert projection.period["period_end"] == "2025-12-30"
+    assert projection.period["period_start"] == "2025-12-25"
+    assert projection.period["period_end"] == "2025-12-31"
+    assert projection.period["mode"] == "current_period"
+
+
+async def test_current_care_window_includes_today_and_excludes_tomorrow(
+    db_session, legacy_owner_roots
+):
+    subject_id = legacy_owner_roots.subject_id
+    today = date(2026, 9, 5)
+    tomorrow = today + timedelta(days=1)
+    db_session.add_all(
+        [
+            WeightLog(
+                subject_id=subject_id,
+                domain=Domain.WEIGHT.value,
+                source=Source.MANUAL.value,
+                date=today,
+                weight_kg=72.5,
+            ),
+            WeightLog(
+                subject_id=subject_id,
+                domain=Domain.WEIGHT.value,
+                source=Source.MANUAL.value,
+                date=tomorrow,
+                weight_kg=99,
+            ),
+            LabResult(
+                subject_id=subject_id,
+                date=today,
+                domain=Domain.LABS.value,
+                source=Source.MANUAL.value,
+                marker="Today marker",
+                value=11,
+                flag="high",
+            ),
+            LabResult(
+                subject_id=subject_id,
+                date=tomorrow,
+                domain=Domain.LABS.value,
+                source=Source.MANUAL.value,
+                marker="Tomorrow marker",
+                value=12,
+                flag="high",
+            ),
+        ]
+    )
+    await db_session.flush()
+    context = AccessContext(
+        principal=Principal(user_id=legacy_owner_roots.user_id),
+        subject_id=subject_id,
+        subject_owner_user_id=legacy_owner_roots.user_id,
+        evaluated_at=datetime.now(timezone.utc),
+    )
+    enabled = {key: False for key in modules_service.MODULE_REGISTRY}
+    enabled.update({"weight": True, "labs": True})
+
+    with freeze_time("2026-09-05 06:00:00+00:00"):
+        projection = await record_projection.assemble_record_projection(
+            db_session,
+            context=context,
+            enabled_modules=enabled,
+            subject_timezone_name="Asia/Almaty",
+        )
+
+    assert projection.period == {
+        "report_date": "2026-09-05",
+        "period_days": 7,
+        "mode": "current_period",
+        "period_start": "2026-08-30",
+        "period_end": "2026-09-05",
+        "previous_start": "2026-08-23",
+        "previous_end": "2026-08-29",
+    }
+    assert projection.record["weight"]["latest_kg"] == 72.5
+    assert projection.record["weight"]["latest_date"] == "2026-09-05"
+    assert [
+        row["marker"] for row in projection.record["labs"]["out_of_range"]
+    ] == ["Today marker"]
+    for domain in ("weight", "labs"):
+        assert projection.coverage[domain]["current_rows"] == 1
+        assert projection.coverage[domain]["freshness_days"] == 0
 
 
 async def test_weight_care_history_is_bounded_without_selecting_raw_payload_json(
@@ -408,6 +489,94 @@ async def test_labs_latest_per_marker_is_not_displaced_and_reports_truncation(
     ]
     assert full.truncated is False
     assert bounded.truncated is True
+
+
+async def test_care_labs_separate_recent_unevaluated_results(
+    db_session,
+    legacy_owner_roots,
+):
+    subject_id = legacy_owner_roots.subject_id
+    db_session.add_all(
+        [
+            LabResult(
+                subject_id=subject_id,
+                date=date(2026, 1, 10),
+                domain=Domain.LABS.value,
+                source=Source.MANUAL.value,
+                marker="Explicit abnormal",
+                value=11,
+                flag="high",
+            ),
+            LabResult(
+                subject_id=subject_id,
+                date=date(2026, 1, 10),
+                domain=Domain.LABS.value,
+                source=Source.MANUAL.value,
+                marker="Missing reference",
+                value=7,
+                flag=None,
+            ),
+            LabResult(
+                subject_id=subject_id,
+                date=date(2026, 1, 10),
+                domain=Domain.LABS.value,
+                source=Source.MANUAL.value,
+                marker="Explicit normal",
+                value=5,
+                flag="normal",
+            ),
+        ]
+    )
+    await db_session.flush()
+    context = AccessContext(
+        principal=Principal(user_id=legacy_owner_roots.user_id),
+        subject_id=subject_id,
+        subject_owner_user_id=legacy_owner_roots.user_id,
+        evaluated_at=datetime.now(timezone.utc),
+    )
+    enabled = {key: False for key in modules_service.MODULE_REGISTRY}
+    enabled[Domain.LABS.value] = True
+
+    projection = await record_projection.assemble_record_projection(
+        db_session,
+        context=context,
+        enabled_modules=enabled,
+        subject_timezone_name="UTC",
+        on_date=date(2026, 1, 16),
+    )
+
+    labs = projection.record["labs"]
+    assert [row["marker"] for row in labs["out_of_range"]] == [
+        "Explicit abnormal"
+    ]
+    assert [row["marker"] for row in labs["not_evaluated"]] == [
+        "Missing reference"
+    ]
+    assert labs["not_evaluated"][0]["flag"] is None
+
+    from vitals.i18n import current_lang
+    from web.templating import templates
+
+    language = current_lang.set("en")
+    try:
+        rendered = templates.get_template("care/_record.html").render(
+            record={"labs": labs},
+            coverage={"labs": {"status": "available", "truncated": False}},
+            period={"period_start": "2026-01-10", "period_end": "2026-01-16"},
+            care=SimpleNamespace(is_support=False),
+            record_restricted=False,
+            withheld_domains=[],
+        )
+    finally:
+        current_lang.reset(language)
+    assert "Missing reference" in rendered
+    assert "not evaluated" in rendered
+
+    template = (
+        Path(__file__).parents[1] / "web/templates/care/_record.html"
+    ).read_text()
+    assert "row.flag or 'normal'" not in template
+    assert 't("labs.not_evaluated") if f is none' in template
 
 
 async def test_nutrition_unknown_macro_stays_unknown_with_sample_counts(

@@ -36,11 +36,9 @@
 {% endfor %}
 
 <div class="v-card p-6 space-y-4{% if not shown %} is-empty{% endif %}">
-  {# Dated, always. This is the same closed period every report in the product
-     uses — completed days only, so a half-logged today cannot drag a weekly
-     average — which means the latest reading here can be a day behind the
-     patient's own dashboard. Undated staleness is a defect; a named period is a
-     report. #}
+  {# Dated, always. This active record includes the subject's current local day
+     so a professional can see new observations without waiting until tomorrow.
+     The named period makes its still-open final day explicit. #}
   {{ card_header(
        t("care.record_title"),
        meta=t("care.record_period",
@@ -67,10 +65,12 @@
 
     {% call section("labs", t("care.record_labs")) %}
       {% set flagged = (record.labs or {}).out_of_range or [] %}
-      {% if flagged %}
+      {% set not_evaluated = (record.labs or {}).not_evaluated or [] %}
+      {% set highlighted = flagged + not_evaluated %}
+      {% if highlighted %}
       <ul class="space-y-1">
-        {% for row in flagged %}
-        {% set f = row.flag or 'normal' %}
+        {% for row in highlighted %}
+        {% set f = row.flag %}
         <li class="v-text-body flex items-baseline justify-between gap-2">
           <span>{{ row.marker }}</span>
           <span>
@@ -79,8 +79,8 @@
                not a dot. A clinician reading a value out of range should see
                which way it is out, and critical should not look like high. #}
             <span class="v-text-label font-semibold"
-                  style="color: {% if 'critical' in f %}var(--bad-strong){% elif f in ['low','high'] %}var(--warn){% else %}var(--good){% endif %}">
-              {{ t("enum.flag." + f) }}</span>
+                  style="color: {% if f is none %}var(--faint){% elif 'critical' in f %}var(--bad-strong){% elif f in ['low','high'] %}var(--warn){% else %}var(--good){% endif %}">
+              {{ t("labs.not_evaluated") if f is none else t("enum.flag." + f) }}</span>
             {%- if row.ref_low is not none and row.ref_high is not none %}
             <span class="v-text-micro" style="color: var(--faint)">
               {{ t("care.record_labs_ref", low=(row.ref_low | format_number), high=(row.ref_high | format_number)) }}</span>

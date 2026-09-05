@@ -8,6 +8,7 @@ from vitals.enums import LabFlag
 
 CRITICAL_WIDTH_FACTOR = 0.5
 CRITICAL_MARGIN = 0.30
+NOT_EVALUATED = "not_evaluated"
 
 
 def compute_flag(
@@ -60,10 +61,24 @@ def is_critical(flag: Optional[str]) -> bool:
     return flag in (LabFlag.CRITICAL_LOW.value, LabFlag.CRITICAL_HIGH.value)
 
 
+def evaluation_status(flag: Optional[str]) -> str:
+    """Return the explicit presentation/export status for a stored flag.
+
+    A missing flag means the result could not be evaluated because it had no
+    usable reference range.  It is neither normal nor out of range.  An actual
+    stored flag is preserved verbatim, including an explicit historical or
+    upstream ``normal`` value whose original range may not be available now.
+    """
+
+    return flag if flag is not None else NOT_EVALUATED
+
+
 __all__ = [
     "CRITICAL_MARGIN",
     "CRITICAL_WIDTH_FACTOR",
+    "NOT_EVALUATED",
     "compute_flag",
+    "evaluation_status",
     "is_critical",
     "is_out_of_range",
 ]

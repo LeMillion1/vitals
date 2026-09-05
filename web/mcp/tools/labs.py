@@ -11,6 +11,7 @@ from vitals.services.conflicts import engine
 from vitals.services.conflicts.engine import ConflictBlocked
 from vitals.services.labs import alerts as lab_alerts
 from vitals.services.labs import ingestion as lab_ingestion
+from vitals.services.labs.flags import evaluation_status
 from vitals.services.labs import results as lab_results
 from vitals.utils.timeutils import now_local, today_local
 
@@ -36,6 +37,12 @@ class RegisteredLabsTools:
     log_lab_results: Callable[..., Awaitable[dict]]
 
 
+def _serialize_result(row: Any, payload: dict) -> dict:
+    """Keep compact serialization without making a missing flag ambiguous."""
+
+    return {**payload, "evaluation_status": evaluation_status(row.flag)}
+
+
 def register_labs_tools(server: Any, deps: LabsToolDependencies) -> RegisteredLabsTools:
     """Register the frozen Labs surface in its existing order."""
 
@@ -48,7 +55,9 @@ def register_labs_tools(server: Any, deps: LabsToolDependencies) -> RegisteredLa
     ) -> list[dict]:
         """Retrieves lab results (biomarker, value, unit, reference range, computed
         out-of-range flag), optionally filtered by marker name and/or date range
-        (YYYY-MM-DD). Defaults to the most recent 100 rows across all markers."""
+        (YYYY-MM-DD). ``evaluation_status=not_evaluated`` means no usable
+        reference range was available; it is neither normal nor abnormal.
+        Defaults to the most recent 100 rows across all markers."""
         session_factory = deps.get_session_factory()
         start = deps.parse_date(start_date, field="start_date")
         end = deps.parse_date(end_date, field="end_date")
@@ -63,7 +72,10 @@ def register_labs_tools(server: Any, deps: LabsToolDependencies) -> RegisteredLa
                 limit=limit,
                 subject_id=scope.subject_id,
             )
-            return [deps.serialize_row(result) for result in results]
+            return [
+                _serialize_result(result, deps.serialize_row(result))
+                for result in results
+            ]
 
     @server.tool()
     async def log_lab_result(
@@ -147,7 +159,9 @@ def register_labs_tools(server: Any, deps: LabsToolDependencies) -> RegisteredLa
                 await session.rollback()
                 return {"error": str(exc)}
             await session.commit()
-            return await deps.serialize_written(session, row)
+            return _serialize_result(
+                row, await deps.serialize_written(session, row)
+            )
 
     @server.tool()
     async def update_lab_result(
@@ -221,7 +235,9 @@ def register_labs_tools(server: Any, deps: LabsToolDependencies) -> RegisteredLa
             if row is None:
                 return {"error": f"Lab result {result_id} not found"}
             await session.commit()
-            return await deps.serialize_written(session, row)
+            return _serialize_result(
+                row, await deps.serialize_written(session, row)
+            )
 
     @server.tool()
     async def log_lab_results(
@@ -294,7 +310,9 @@ def register_labs_tools(server: Any, deps: LabsToolDependencies) -> RegisteredLa
                 "created": summary["created"],
                 "skipped": summary["skipped"],
                 "results": [
-                    await deps.serialize_written(session, result)
+                    _serialize_result(
+                        result, await deps.serialize_written(session, result)
+                    )
                     for result in summary["results"]
                 ],
             }
