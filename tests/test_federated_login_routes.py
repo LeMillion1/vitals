@@ -334,6 +334,61 @@ async def test_open_login_page_offers_a_plain_create_account_path(
     assert 'href="/register"' in response.text
 
 
+async def test_public_registration_page_keeps_browser_form_origin(
+    client, federated, db_session, monkeypatch
+):
+    await _enable_open_registration(db_session, monkeypatch)
+
+    response = await client.get("/register")
+
+    assert response.status_code == 200
+    # ``no-referrer`` gives a form POST ``Origin: null``. The CSRF boundary then
+    # rejects the same page that rendered the form, so keep its origin intact.
+    assert response.headers["referrer-policy"] == "same-origin"
+
+
+async def test_public_registration_form_survives_the_origin_check(
+    client, federated, db_session, monkeypatch
+):
+    """Exercise the headers a current browser sends for this form submission."""
+
+    await _enable_open_registration(db_session, monkeypatch)
+
+    response = await client.post(
+        "/register",
+        data={"account_kind": "doctor"},
+        headers={
+            "Origin": "http://test",
+            "Host": "test",
+            "Sec-Fetch-Site": "same-origin",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/start?next=/care"
+
+
+@pytest.mark.parametrize("origin", ["null", "https://attacker.example.test"])
+async def test_public_registration_form_still_refuses_an_untrusted_origin(
+    client, federated, db_session, monkeypatch, origin
+):
+    await _enable_open_registration(db_session, monkeypatch)
+
+    response = await client.post(
+        "/register",
+        data={"account_kind": "doctor"},
+        headers={
+            "Origin": origin,
+            "Host": "test",
+            "Sec-Fetch-Site": "same-origin",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 403
+
+
 async def test_public_registration_mints_only_an_opaque_server_side_choice(
     client, federated, db_session, monkeypatch
 ):

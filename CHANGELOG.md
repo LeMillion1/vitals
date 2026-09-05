@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — public registration form keeps its same-origin identity
+
+The public account-type page now preserves its origin for the browser's form
+submission. Its previous no-referrer policy emitted `Origin: null`, causing the
+global CSRF boundary to reject the page's own `POST /register` with HTTP 403.
+Secret-bearing invitation pages retain their stricter no-referrer policy.
+
 ### Fixed — multi-user installation restore rehearsal
 
 The installation restore drill no longer invokes retired cutover validators that

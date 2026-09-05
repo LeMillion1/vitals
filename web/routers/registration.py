@@ -64,7 +64,10 @@ async def _public_page(
         },
         headers={
             "Cache-Control": "no-store",
-            "Referrer-Policy": "no-referrer",
+            # Keep same-origin form submissions attributable to this page.
+            # ``no-referrer`` makes browsers send ``Origin: null`` for the POST,
+            # which the global CSRF boundary correctly refuses.
+            "Referrer-Policy": "same-origin",
             "X-Robots-Tag": "noindex, nofollow, noarchive",
         },
     )
