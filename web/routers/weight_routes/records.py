@@ -48,6 +48,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/weight", tags=["weight"])
 
 
+def _parse_form_date(value: str) -> date_type:
+    """Reject a malformed form date before any write or upload work starts."""
+
+    try:
+        return date_type.fromisoformat(value)
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid date",
+        ) from None
+
+
 @router.get("", response_class=HTMLResponse)
 async def weight_dashboard(
     request: Request,
@@ -92,7 +104,7 @@ async def log_weight_entry(
     username: str = Depends(require_auth),
 ):
     """Logs or edits a weight, returning 409 JSON on rule violation for override confirmation."""
-    on_date = date_type.fromisoformat(date)
+    on_date = _parse_form_date(date)
     try:
         conflict_context, prepared = await common._prepare_weight_write(
             db,
@@ -150,7 +162,7 @@ async def log_measurement_entry(
     username: str = Depends(require_auth),
 ):
     """Upserts or edits a body measurement log, returning 409 JSON on rule violation."""
-    on_date = date_type.fromisoformat(date)
+    on_date = _parse_form_date(date)
     try:
         conflict_context, prepared = await common._prepare_aux_write(
             db,
@@ -214,8 +226,8 @@ async def add_noise_entry(
     username: str = Depends(require_auth),
 ):
     """Exclude a period from calculations to filter out creatine or salt spikes."""
-    start = date_type.fromisoformat(start_date)
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_form_date(start_date)
+    end = _parse_form_date(end_date) if end_date else None
     # Normalise: empty string → None
     dir_value = direction.strip() if direction and direction.strip() else None
 
@@ -257,7 +269,7 @@ async def add_photo_entry(
     username: str = Depends(require_auth),
 ):
     """Save up to five daily progress photos in the private file root."""
-    on_date = date_type.fromisoformat(date)
+    on_date = _parse_form_date(date)
 
     # Gather all uploaded files from both "file" (single-field tests) and "files" (multiple files input)
     uploaded_files: list[UploadFile] = []

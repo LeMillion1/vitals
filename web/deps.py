@@ -312,12 +312,33 @@ async def load_enabled_modules(
     from vitals.services.modules.registry import DEFAULT_STATE
 
     try:
+        if db.get_bind().dialect.name == "postgresql":
+            # This is intentionally the first global dependency.  Resolve the
+            # account's chrome and its subject setting in one short session
+            # before the injected request session executes any SQL.  Otherwise
+            # a cold cache makes every request hold one pooled connection while
+            # waiting for a second one, which can exhaust the pool as a convoy.
+            if db.bind is None:
+                raise RuntimeError("request session has no database bind")
+            request.state.enabled_modules = await _load_chrome_enabled_modules(
+                request,
+                redis,
+                session_factory=async_sessionmaker(
+                    db.bind,
+                    expire_on_commit=False,
+                    class_=AsyncSession,
+                ),
+            )
+            return
+
         # The module map is one person's; an anonymous request has no subject
         # to read it for and keeps the safe defaults.
         scope = await get_request_chrome_scope(request, db)
         if scope is None:
             request.state.enabled_modules = dict(DEFAULT_STATE)
             return
+        # SQLite has no row security and the fast test fixture deliberately
+        # reuses one request session so assertions can inspect its writes.
         request.state.enabled_modules = await modules_service.get_enabled_modules(
             db,
             redis,
@@ -326,6 +347,47 @@ async def load_enabled_modules(
     except Exception:
         logger.exception("module-state load failed; using safe defaults")
         request.state.enabled_modules = dict(DEFAULT_STATE)
+
+
+async def _load_chrome_enabled_modules(
+    request: Request,
+    redis: Redis,
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> dict[str, bool]:
+    """Resolve and read chrome state before the route session checks out.
+
+    The chrome belongs to the signed-in account's own record, while a doctor
+    may use the same request to open a patient's record.  Binding the shared
+    request session here would make that later, authorized patient binding look
+    like a forbidden subject switch.  One short session resolves the account,
+    then binds to its owned subject for the FORCE-RLS setting read, and closes
+    before later dependencies make the route session acquire a connection.
+    """
+
+    from vitals.persistence.rls import bind_session_subject
+    from vitals.services.modules import preferences as modules_service
+    from vitals.services.modules.registry import DEFAULT_STATE
+
+    async with session_factory() as scoped_session:
+        scope = await get_request_chrome_scope(request, scoped_session)
+        if scope is None:
+            return dict(DEFAULT_STATE)
+
+        cached = await modules_service.get_cached_enabled_modules(
+            redis,
+            subject_id=scope.subject_id,
+        )
+        if cached is not None:
+            return cached
+
+        subject_id = scope.subject_id
+        await bind_session_subject(scoped_session, subject_id)
+        return await modules_service.get_enabled_modules(
+            scoped_session,
+            redis,
+            subject_id=subject_id,
+        )
 
 
 async def load_nav_status(

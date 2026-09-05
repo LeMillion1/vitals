@@ -29,7 +29,7 @@ from vitals.services.share.ownership import (
     _owner_or_zero_subject_legacy,
 )
 from vitals.services.share.queries import clamp_window
-from vitals.utils.timeutils import now_local
+from vitals.utils.timeutils import now_local, today_local
 
 
 # Which module switch gates each selectable domain. A domain missing from this
@@ -357,10 +357,9 @@ async def build_snapshot(
 ) -> dict[str, Any]:
     """Assemble the document's data for one window. No DB writes.
 
-    A report covers days that are **over**. Today is still being lived — it has
-    no sleep in it yet and possibly no meals — so a window asked for "through
-    today" is read through yesterday and the row stores that, rather than a
-    header claiming a day the numbers don't cover.
+    Unlike a scheduled digest, an owner-created share may need a measurement,
+    meal, or lab result recorded today. Its final day is therefore included even
+    while it is still open; future dates remain outside the frozen snapshot.
     """
     owner = await _owner_or_zero_subject_legacy(session, prepared_owner)
     if owner is None:
@@ -377,9 +376,14 @@ async def build_snapshot(
         subject_id=owner._identity.subject_id,
         on_date=end,
         period_days=span_days,
-        mode=digest_window.REPORT_MODE_CLOSED,
+        mode=digest_window.REPORT_MODE_CURRENT,
         enabled_modules=enabled,
-        max_period_days=max(PERIOD_CHOICES),
+        # "All time" is the one intentionally unbounded share choice. The
+        # projection still reads the exact window, but skips its dense one-row-
+        # per-calendar-day representation so cost follows stored facts rather
+        # than every empty day in a long history.
+        max_period_days=span_days,
+        include_days=False,
     )
     stats = ctx.get("period_stats") or {}
     subject_profile = await health_profile_service.get_profile(
@@ -411,6 +415,7 @@ async def build_snapshot(
             "start": start.isoformat(),
             "end": end.isoformat(),
             "days": (end - start).days + 1,
+            "final_day_incomplete": end == today_local(),
         },
         # Whose body this document is about, from their own row rather than
         # from ``.env`` — which described the installation owner and was being

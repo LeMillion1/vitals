@@ -349,7 +349,7 @@ async def _materialize_subject_roots(
     """
 
     from vitals.services.modules import preferences as module_preferences
-    from vitals.services.modules.registry import MODULE_REGISTRY
+    from vitals.services.modules.registry import DEFAULT_STATE
     from vitals.services.tenancy.bootstrap import bootstrap_legacy_resource_roots
 
     await bootstrap_legacy_resource_roots(session, subject_id=subject_id)
@@ -357,7 +357,7 @@ async def _materialize_subject_roots(
         SubjectSetting(
             subject_id=subject_id,
             key=module_preferences.SETTINGS_KEY,
-            value={key: True for key in MODULE_REGISTRY},
+            value=dict(DEFAULT_STATE),
         )
     )
     await session.flush()

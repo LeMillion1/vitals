@@ -40,6 +40,7 @@ async def assemble_context(
     mode: str = REPORT_MODE_CLOSED,
     enabled_modules: Optional[dict[str, bool]] = None,
     max_period_days: int = MAX_PERIOD_DAYS,
+    include_days: bool = True,
 ) -> dict:
     """Build the versioned, date-bounded context shared by report consumers.
 
@@ -51,6 +52,8 @@ async def assemble_context(
 
     Optional domains are gated before their queries run. Empty, disabled, and
     truncated sources remain distinguishable through the ``coverage`` block.
+    Aggregate-only consumers may omit the dense calendar-day projection while
+    keeping the same exact query window and period statistics.
     """
 
     if not isinstance(subject_id, uuid.UUID):
@@ -156,7 +159,7 @@ async def assemble_context(
     # joining five differently-shaped blocks by date in its head, and it simply
     # didn't. The join is arithmetic, so it belongs here, not in the prompt — what
     # arrives is the table a person would draw before looking for a pattern.
-    if mode != REPORT_MODE_BRIEF:
+    if mode != REPORT_MODE_BRIEF and include_days:
         by_date_workouts: dict[str, list[dict[str, Any]]] = {}
         for workout in sessions:
             if workout["in_period"]:

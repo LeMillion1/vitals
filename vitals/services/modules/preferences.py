@@ -31,7 +31,11 @@ logger = logging.getLogger(__name__)
 
 # The legacy app_settings key the scoped read still falls back to.
 SETTINGS_KEY = "enabled_modules"
-REDIS_KEY = "settings:enabled_modules"    # cache key
+# Version the key because releases before v2 could populate a subject cache
+# from an unbound PostgreSQL session.  FORCE RLS made that look like an empty
+# setting, so the cache held the safe defaults even when the scoped row said
+# otherwise.  Old entries must not survive the read-boundary fix.
+REDIS_KEY = "settings:enabled_modules:v2"    # cache key
 REDIS_TTL = 300                           # seconds
 
 
@@ -80,17 +84,10 @@ async def get_enabled_modules(
     read still falls back to the legacy ``app_settings`` row on its own, so a
     pre-backfill installation keeps its modules without a bridge here.
     """
-    redis_key = cache_key(subject_id)
     # 1) Redis read-through cache.
-    if redis is not None:
-        try:
-            cached = await redis.get(redis_key)
-            if cached:
-                return _sanitize(json.loads(cached))
-        except Exception:
-            logger.warning(
-                "modules: Redis read failed; falling through to DB", exc_info=True
-            )
+    cached = await get_cached_enabled_modules(redis, subject_id=subject_id)
+    if cached is not None:
+        return cached
 
     # 2) Database (source of truth).
     try:
@@ -103,7 +100,8 @@ async def get_enabled_modules(
         )
         if isinstance(raw, dict):
             state = _sanitize(raw)
-            await prime_cache(redis, state, subject_id=subject_id)
+            if _session_can_populate_subject_cache(session, subject_id=subject_id):
+                await prime_cache(redis, state, subject_id=subject_id)
             return state
         logger.warning(
             "modules: subject setting is not an object (%s); using defaults",
@@ -117,6 +115,57 @@ async def get_enabled_modules(
 
     # 3) Safe fallback.
     return dict(DEFAULT_STATE)
+
+
+def _session_can_populate_subject_cache(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> bool:
+    """Whether this session could have observed the subject's protected row.
+
+    SQLite has no row security, so its ordinary application-scoped reads are
+    authoritative.  On PostgreSQL, only the exact subject binding (or an
+    explicit platform worker scope) may turn a DB result into shared cache
+    state.  An unbound runtime session sees no ``subject_settings`` rows under
+    FORCE RLS; caching that absence would hide the durable preference.
+    """
+
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        return True
+
+    from vitals.persistence.rls import bound_subject, in_platform_scope
+
+    return bound_subject(session) == subject_id or in_platform_scope(session)
+
+
+async def get_cached_enabled_modules(
+    redis: Optional[Redis],
+    *,
+    subject_id: uuid.UUID,
+) -> dict[str, bool] | None:
+    """Return a validated subject cache entry, or ``None`` on miss/failure."""
+
+    if redis is None:
+        return None
+    try:
+        cached = await redis.get(cache_key(subject_id))
+        if not cached:
+            return None
+        parsed = json.loads(cached)
+        if not isinstance(parsed, dict):
+            logger.warning(
+                "modules: Redis value is not an object (%s); falling through to DB",
+                type(parsed).__name__,
+            )
+            return None
+        return _sanitize(parsed)
+    except Exception:
+        logger.warning(
+            "modules: Redis read failed; falling through to DB", exc_info=True
+        )
+        return None
 
 
 async def set_module_enabled(
@@ -174,6 +223,7 @@ __all__ = [
     "REDIS_TTL",
     "SETTINGS_KEY",
     "cache_key",
+    "get_cached_enabled_modules",
     "get_enabled_modules",
     "prime_cache",
     "set_module_enabled",

@@ -48,6 +48,7 @@ async def test_a_provisioned_subject_is_not_one_row(db_session, legacy_owner_roo
     """
 
     from vitals.services.modules import preferences as modules_service
+    from vitals.services.modules.registry import DEFAULT_STATE
 
     provisioned = await account_provisioning_service.provision_account(
         db_session,
@@ -85,7 +86,17 @@ async def test_a_provisioned_subject_is_not_one_row(db_session, legacy_owner_roo
             SubjectSetting.key == modules_service.SETTINGS_KEY,
         )
     )
-    assert modules is not None
+    assert modules == DEFAULT_STATE
+
+    # Optional modules default off for a new record.  Its first choice changes
+    # exactly one key instead of revealing an all-true provisioning seed.
+    enabled = await modules_service.set_module_enabled(
+        db_session,
+        key="nutrition",
+        enabled=True,
+        subject_id=provisioned.subject_id,
+    )
+    assert enabled == {**DEFAULT_STATE, "nutrition": True}
 
 
 async def test_web_member_provisioning_binds_before_subject_roots(

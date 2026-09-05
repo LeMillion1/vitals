@@ -1,4 +1,4 @@
-"""Шов 3 — a message is a list of blocks; text happens once, at the very end.
+"""A message is a list of blocks; text happens once, at the very end.
 
 The deterministic blocks are built here by code, from the same cross-domain
 context the weekly digest assembles. The model contributes exactly **one** block
@@ -15,14 +15,16 @@ That split is the whole point:
 Numbers reach the model already computed, so there is nothing for it to get
 wrong; the header prints them itself rather than trusting prose about them.
 
-Text is Russian and inline, like :mod:`inbound` — the bot has one reader. The
-web UI keeps going through ``i18n``.
+Deterministic copy uses the same language context as the requesting user or
+scheduled recipient. Already persisted briefs remain immutable text.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date as date_type
 from typing import Iterable, Optional
+
+from vitals.i18n import decimal, t
 
 # Block kinds (also the priority ladder below).
 KIND_GARMIN = "garmin"
@@ -69,8 +71,6 @@ _NIGHT_KEYS = _RECOVERY_KEYS + (
     "training_readiness",
     "advice",
 )
-
-LINE_NIGHT_PENDING = "Ночь ещё не размечена — цифр восстановления за сегодня нет."
 
 # Below this the day-to-day wobble of these metrics swamps the difference, and a
 # "(норма 82)" printed next to 81 teaches him to skip the parenthesis — which is
@@ -207,12 +207,12 @@ def header_blocks(ctx: dict) -> list[Block]:
     garmin = ctx.get("garmin") or {}
     baseline = garmin.get("baseline") or {}
     parts = [
-        label + " " + _num(garmin[key]) + _vs_baseline(garmin[key], baseline.get(key))
+        t(label) + " " + _num(garmin[key]) + _vs_baseline(garmin[key], baseline.get(key))
         for key, label in (
-            ("sleep_score", "Сон"),
-            ("hrv_avg", "HRV"),
-            ("resting_hr", "Пульс покоя"),
-            ("body_battery_high", "Body Battery"),
+            ("sleep_score", "brief.header.sleep"),
+            ("hrv_avg", "brief.header.hrv"),
+            ("resting_hr", "brief.header.resting_hr"),
+            ("body_battery_high", "brief.header.body_battery"),
         )
         if garmin.get(key) is not None
     ]
@@ -220,15 +220,15 @@ def header_blocks(ctx: dict) -> list[Block]:
         blocks.append(Block(KIND_GARMIN, " · ".join(parts), 10))
     elif garmin.get("night_pending"):
         # Otherwise a brief that gave up waiting reads as a brief that broke.
-        blocks.append(Block(KIND_GARMIN, LINE_NIGHT_PENDING, 10))
+        blocks.append(Block(KIND_GARMIN, t("brief.header.night_pending"), 10))
 
     weight = ctx.get("weight") or {}
     wparts = []
     if weight.get("latest_kg") is not None:
-        wparts.append(f"Вес {_num(weight['latest_kg'])} кг")
+        wparts.append(t("brief.header.weight", value=_num(weight["latest_kg"])))
     slope = weight.get("trend_kg_per_week")
     if slope is not None:
-        wparts.append(f"тренд {slope:+.2f} кг/нед")
+        wparts.append(t("brief.header.trend", value=decimal(f"{slope:+.2f}")))
     if wparts:
         line = " · ".join(wparts)
         # A noise marker means the scale is lying in a known direction, so the
@@ -237,7 +237,9 @@ def header_blocks(ctx: dict) -> list[Block]:
         marker = (weight.get("noise_markers") or [None])[0]
         if marker and slope is not None:
             reason = (marker.get("reason") or "").strip()
-            line += f"\n⚠️ тренд зашумлён{f': {reason}' if reason else ''}"
+            line += "\n⚠️ " + t("brief.header.noisy_trend")
+            if reason:
+                line += f": {reason}"
         blocks.append(Block(KIND_WEIGHT, line, 20))
 
     return blocks
@@ -251,13 +253,13 @@ def _vs_baseline(value, mean) -> str:
         return ""
     if not mean or abs(value - mean) / abs(mean) < _BASELINE_NOTABLE:
         return ""
-    return f" (норма {_num(mean)})"
+    return " (" + t("brief.header.baseline", value=_num(mean)) + ")"
 
 
 def _num(value) -> str:
     """``86.0 → "86"``, ``86.1 → "86.1"`` — no trailing-zero noise in a message."""
     try:
-        return f"{float(value):g}"
+        return decimal(f"{float(value):g}")
     except (TypeError, ValueError):
         return str(value)
 

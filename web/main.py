@@ -53,9 +53,9 @@ app = FastAPI(
     # No anonymous schema: it would enumerate every installed health module.
     openapi_url=None,
     dependencies=[
+        Depends(load_enabled_modules),
         Depends(load_language),
         Depends(load_subject_timezone),
-        Depends(load_enabled_modules),
         Depends(load_nav_status),
         Depends(load_support_banner),
         Depends(load_care_consent_task),

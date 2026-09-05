@@ -82,16 +82,25 @@ async def _make_report(db_session, **kwargs):
     return row, password
 
 
-def _render_labs_document(markers: list[dict]) -> str:
+def _render_labs_document(
+    markers: list[dict],
+    *,
+    final_day_incomplete: bool = False,
+    lang: str = "en",
+) -> str:
     """Render the frozen standalone document without involving link auth."""
 
     from vitals.i18n import current_lang
     from web.routers.public_report import render_document
 
     snapshot = {
-        "lang": "en",
+        "lang": lang,
         "profile": None,
-        "period": {"start": START.isoformat(), "end": END.isoformat()},
+        "period": {
+            "start": START.isoformat(),
+            "end": END.isoformat(),
+            "final_day_incomplete": final_day_incomplete,
+        },
         "generated_at": "2026-03-30T12:00:00",
         "domains": [Domain.LABS.value],
         "blocks": {"labs": {"markers": markers}},
@@ -150,6 +159,16 @@ def test_lab_summary_separates_abnormal_unevaluated_and_explicit_normal():
     )
     assert "Every marker measured in this period is inside" in explicit_normal
     assert "not evaluated" not in explicit_normal
+
+
+def test_current_final_day_is_disclosed_in_the_frozen_document_in_both_languages():
+    english = _render_labs_document([], final_day_incomplete=True)
+    russian = _render_labs_document(
+        [], final_day_incomplete=True, lang="ru"
+    )
+
+    assert "final day was still in progress" in english
+    assert "последний день ещё не завершился" in russian
 
 
 @pytest.mark.asyncio

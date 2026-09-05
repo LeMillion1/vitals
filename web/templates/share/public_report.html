@@ -178,6 +178,9 @@ footer {
       {%- if snapshot.profile and snapshot.profile.height_cm %}{% set _ = bits.append(t("doc.height", n=(snapshot.profile.height_cm | format_number))) %}{% endif %}
       {{ bits | join(", ") }}</li>
     <li><b>{{ t("doc.period") }}:</b> {{ snapshot.period.start | format_date }} — {{ snapshot.period.end | format_date }}</li>
+    {% if snapshot.period.final_day_incomplete %}
+    <li class="hint">{{ t("doc.period_current_note") }}</li>
+    {% endif %}
     <li><b>{{ t("doc.generated") }}:</b> {{ snapshot.generated_at[:10] | format_date }}</li>
     {% if snapshot.domains %}
     <li><b>{{ t("doc.includes") }}:</b>

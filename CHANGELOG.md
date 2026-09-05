@@ -8,6 +8,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — deterministic briefs follow the reader's language
+
+New morning briefs use English or Russian labels and decimal formatting for
+their deterministic recovery, weight, trend, and data-quality notes. English
+users no longer receive a Russian-only fallback when platform AI is unavailable.
+Calculations, delivery policy, and already stored brief text are unchanged.
+
+### Fixed — module preferences stay consistent under forced RLS
+
+Navigation now reads the signed-in owner's module preferences in a short,
+subject-bound PostgreSQL session without claiming the route session that a
+professional may need for a patient's record. Unbound reads no longer poison
+the shared cache, and old cache entries are invalidated. Settings toggles,
+page loads, error pages, and saved form fragments use the same preferences.
+New records start with optional modules off. Existing saved preferences are
+preserved rather than silently rewritten.
+
+### Fixed — malformed weight dates fail before any write
+
+Weight logs, body measurements, excluded periods, and progress-photo forms now
+return the existing controlled invalid-date response before database or upload
+work when a submitted date is malformed, rather than raising a server error.
+
+### Fixed — ad-hoc doctor reports include today
+
+Doctor reports created from `/share` now include weight, labs, meals, and other
+facts recorded on the owner's current local day across preset, all-time, and
+exact date ranges. All time follows the actual owned history beyond the 180-day
+preset limit without building a dense row for every empty calendar day. Exact
+ranges keep that documented 180-day limit and invalid or wholly future choices
+return a clear error instead of a server failure. Future facts remain excluded,
+and both the owner and reader are told when the frozen report's final day may
+still be incomplete. Scheduled digests keep their completed-day boundary.
+
 ### Fixed — empty daily feed does not contradict a saved weight
 
 The empty Today feed now explicitly refers to events and meals in both English

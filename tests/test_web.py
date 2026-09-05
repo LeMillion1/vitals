@@ -621,6 +621,69 @@ async def test_edit_measurement_blank_field_clears_it(auth_client, db_session, o
     assert m.body_fat_pct is None
 
 
+async def test_invalid_weight_form_dates_are_rejected_before_writes_or_uploads(
+    auth_client,
+    db_session,
+    _private_file_test_root,
+):
+    """Malformed dates are a 400 and cannot leave rows or private bytes behind."""
+
+    from vitals.models.weight import (
+        BodyMeasurement,
+        NoiseMarker,
+        ProgressPhoto,
+    )
+
+    models = (WeightLog, BodyMeasurement, NoiseMarker, ProgressPhoto, FileAsset)
+    before = [
+        tuple((await db_session.scalars(select(model.id))).all())
+        for model in models
+    ]
+
+    responses = [
+        await auth_client.post(
+            "/weight/log",
+            data={"date": "not-a-date", "weight_kg": "85"},
+        ),
+        await auth_client.post(
+            "/weight/measurement",
+            data={"date": "not-a-date", "waist_cm": "85"},
+        ),
+        await auth_client.post(
+            "/weight/noise",
+            data={"start_date": "not-a-date", "reason": "synthetic"},
+        ),
+        await auth_client.post(
+            "/weight/noise",
+            data={
+                "start_date": "2026-09-05",
+                "end_date": "not-a-date",
+                "reason": "synthetic",
+            },
+        ),
+        await auth_client.post(
+            "/weight/photo",
+            data={"date": "not-a-date"},
+            files={
+                "file": (
+                    "synthetic.jpg",
+                    b"not-inspected-because-date-is-invalid",
+                    "image/jpeg",
+                )
+            },
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [400] * 5
+    assert all(response.json() == {"detail": "Invalid date"} for response in responses)
+    after = [
+        tuple((await db_session.scalars(select(model.id))).all())
+        for model in models
+    ]
+    assert after == before
+    assert not _private_file_test_root.exists()
+
+
 async def test_skincare_product_save_and_delete_via_web(auth_client, db_session):
     from vitals.models.skincare import SkincareProduct
 
@@ -1920,6 +1983,75 @@ async def test_toggle_module_hides_and_shows_nav(auth_client, db_session):
     assert r.status_code == 200
     page = await auth_client.get("/weight", headers=html_headers)
     assert 'href="/hevy"' in page.text
+
+
+async def test_first_toggle_from_core_only_enables_only_that_module(
+    auth_client,
+    db_session,
+    redis,
+):
+    """The settings OOB response and next page use one exact module snapshot."""
+
+    from vitals.models.identity import HealthSubject
+    from vitals.models.scoped_settings import SubjectSetting
+    from vitals.services.modules import preferences as modules_service
+    from vitals.services.modules.registry import DEFAULT_STATE, OPTIONAL_KEYS
+
+    subject_id = await db_session.scalar(select(HealthSubject.id))
+    row = await db_session.get(
+        SubjectSetting,
+        (subject_id, modules_service.SETTINGS_KEY),
+    )
+    assert row is not None
+    row.value = dict(DEFAULT_STATE)
+    await db_session.commit()
+    await redis.delete(modules_service.cache_key(subject_id))
+
+    response = await auth_client.post(
+        "/settings/modules",
+        data={"module": "nutrition", "enabled": "true"},
+    )
+    assert response.status_code == 200
+    assert 'href="/nutrition"' in response.text
+    for key in OPTIONAL_KEYS - {"nutrition", "body_comp"}:
+        route = modules_service.MODULE_REGISTRY[key].route
+        assert f'href="{route}"' not in response.text, key
+
+    await db_session.refresh(row)
+    assert row.value == {**DEFAULT_STATE, "nutrition": True}
+
+    measures = await auth_client.get(
+        "/weight/measures",
+        headers={"Accept": "text/html"},
+    )
+    assert measures.status_code == 200
+    assert 'href="/nutrition"' in measures.text
+    assert 'action="/weight/measurement"' in measures.text
+    assert "activeTab === 'body'" not in measures.text
+
+    saved = await auth_client.post(
+        "/weight/measurement",
+        data={
+            "date": today_local().isoformat(),
+            "neck_cm": "38",
+            "waist_cm": "85",
+        },
+        headers={
+            "referer": "http://test/weight/measures",
+            "HX-Request": "true",
+        },
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    assert saved.headers["HX-Redirect"] == "/weight/measures"
+
+    after_save = await auth_client.get(
+        "/weight/measures",
+        headers={"Accept": "text/html"},
+    )
+    assert after_save.status_code == 200
+    assert 'href="/nutrition"' in after_save.text
+    assert "activeTab === 'body'" not in after_save.text
 
 
 async def test_settings_page_renders_modules_card(auth_client):

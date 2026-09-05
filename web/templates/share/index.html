@@ -106,16 +106,24 @@
                         {{ tick("radio", "period", "all", t("share.period_all"), model="period") }}
                         {{ tick("radio", "period", "custom", t("share.period_custom"), model="period") }}
                     </div>
+                    <p class="v-text-micro mt-2" style="color: var(--muted)">
+                        {{ t("share.period_current_note") }}
+                    </p>
+                    <p class="v-text-micro mt-1" style="color: var(--muted)">
+                        {{ t("share.period_limit_note") }}
+                    </p>
                     <div x-show="period === 'custom'" x-cloak class="grid grid-cols-2 gap-3 mt-3">
                         <div>
                             <label class="v-label" for="share-from">{{ t("share.period_from") }}</label>
                             <input id="share-from" class="v-input" type="date" name="period_start"
-                                   value="{{ default_start }}" :required="period === 'custom'">
+                                   value="{{ default_start }}" max="{{ today.isoformat() }}"
+                                   :required="period === 'custom'">
                         </div>
                         <div>
                             <label class="v-label" for="share-to">{{ t("share.period_to") }}</label>
                             <input id="share-to" class="v-input" type="date" name="period_end"
-                                   value="{{ default_end }}" :required="period === 'custom'">
+                                   value="{{ default_end }}" max="{{ today.isoformat() }}"
+                                   :required="period === 'custom'">
                         </div>
                     </div>
                 </div>

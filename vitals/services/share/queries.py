@@ -12,19 +12,14 @@ from vitals.services.share.ownership import PreparedShareOwner, _owner_or_zero_s
 from vitals.utils.timeutils import today_local
 
 def window_for(days: int) -> tuple[date_type, date_type]:
-    """``days`` **complete** days, ending yesterday.
-
-    Counting back from today would hand the document a day with no sleep in it
-    and, before dinner, no food either — and then average over it.
-    """
-    end = today_local() - timedelta(days=1)
+    """``days`` calendar days through the owner's current local day."""
+    end = today_local()
     return end - timedelta(days=max(days, 1) - 1), end
 
 
 def clamp_window(start: date_type, end: date_type) -> tuple[date_type, date_type]:
-    """A window the reader picked, trimmed to days that are actually over."""
-    yesterday = today_local() - timedelta(days=1)
-    end = min(end, yesterday)
+    """A reader-picked window capped at the owner's current local day."""
+    end = min(end, today_local())
     return min(start, end), end
 
 
@@ -39,7 +34,7 @@ async def earliest_data_date(
     prepared_owner: PreparedShareOwner | None = None,
 ) -> Optional[date_type]:
     """The oldest dated row in any domain a report can carry — what "all time"
-    means. Nine cheap ``MIN()`` reads on one form submit, so a report that says
+    means. Eleven cheap ``MIN()`` reads on one form submit, so a report that says
     it covers everything starts where the record actually starts rather than at
     some round number of years ago."""
     owner = await _owner_or_zero_subject_legacy(session, prepared_owner)
@@ -48,11 +43,12 @@ async def earliest_data_date(
 
     from vitals.models.body_scan import BodyScan
     from vitals.models.garmin import GarminDaily
-    from vitals.models.glp1 import Injection
+    from vitals.models.glp1 import Injection, SideEffect as Glp1SideEffect
     from vitals.models.hevy import HevyWorkout
-    from vitals.models.hrt import HrtDose
+    from vitals.models.hrt import HrtDose, HrtSideEffect
     from vitals.models.labs import LabResult
     from vitals.models.nutrition import MealLog
+    from vitals.models.skincare import SkincareObservation
     from vitals.models.weight import WeightLog
 
     models = (
@@ -62,12 +58,16 @@ async def earliest_data_date(
         HevyWorkout,
         MealLog,
         HrtDose,
+        HrtSideEffect,
         Injection,
+        Glp1SideEffect,
         BodyScan,
+        SkincareObservation,
     )
     found = []
+    today = today_local()
     for model in models:
-        stmt = select(func.min(model.date))
+        stmt = select(func.min(model.date)).where(model.date <= today)
         if owner is not None:
             stmt = stmt.where(model.subject_id == owner.identity.subject_id)
         value = (await session.execute(stmt)).scalar()

@@ -70,6 +70,27 @@ async def test_report_window_separates_closed_brief_and_current_periods(monkeypa
         digest_window.report_window(on_date=DAY + timedelta(days=1))
 
 
+async def test_aggregate_only_context_skips_the_dense_calendar_day_projection(
+    db_session,
+    legacy_owner_roots,
+):
+    ctx = await digest_projection.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=DAY,
+        period_days=365,
+        mode=digest_window.REPORT_MODE_CURRENT,
+        max_period_days=365,
+        include_days=False,
+    )
+
+    assert ctx["report_meta"]["period_start"] == (
+        DAY - timedelta(days=364)
+    ).isoformat()
+    assert "days" not in ctx
+    assert set(ctx["period_stats"]) == {"current", "previous"}
+
+
 async def test_platform_scheduler_diagnostics_never_reach_report_context(
     db_session,
     legacy_owner_roots,

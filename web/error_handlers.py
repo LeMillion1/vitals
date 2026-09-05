@@ -111,6 +111,7 @@ async def _populate_state_for_error_page(request: Request) -> None:
     fresh session/redis, mirroring each dependency's fail-safe default so the page
     renders no matter what.
     """
+    from vitals.persistence.rls import bind_session_subject
     from vitals.services.modules import preferences as modules_service
     from vitals.services.modules.registry import DEFAULT_STATE
     from vitals.services.preferences import language as language_service
@@ -142,15 +143,16 @@ async def _populate_state_for_error_page(request: Request) -> None:
                         "404 page: language load failed; defaulting to 'en'"
                     )
                 try:
-                    enabled = await modules_service.get_enabled_modules(
-                        db,
-                        redis,
-                        subject_id=(
-                            scope.subject_id
-                            if scope is not None
-                            else None
-                        ),
-                    )
+                    if scope is not None:
+                        # This session exists only to render the error page; no
+                        # route dependency needs to bind it to another subject.
+                        # Reusing it avoids a second simultaneous pool checkout.
+                        await bind_session_subject(db, scope.subject_id)
+                        enabled = await modules_service.get_enabled_modules(
+                            db,
+                            redis,
+                            subject_id=scope.subject_id,
+                        )
                 except Exception:
                     logger.exception(
                         "404 page: module-state load failed; using defaults"

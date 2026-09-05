@@ -698,6 +698,197 @@ async def test_real_postgres_binding_survives_a_commit_and_refuses_a_switch(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_module_chrome_cold_misses_fit_a_one_connection_pool(
+    db_session,
+    redis,
+    monkeypatch,
+):
+    """Concurrent cold chrome reads never need a second pool checkout.
+
+    Module chrome is about the signed-in account's record, while the route may
+    later open another person's record for a professional.  With a pool of one,
+    two cold requests must serialize their short chrome sessions and leave both
+    route sessions untouched; the first route can then bind to its patient.
+    """
+
+    import asyncio
+    import json
+
+    from alembic.config import Config as AlembicConfig
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+    from starlette.requests import Request
+
+    from vitals.models.scoped_settings import SubjectSetting
+    from vitals.persistence.rls import bind_session_subject, bound_subject
+    from vitals.services.modules import preferences as modules_service
+    from vitals.services.modules.registry import DEFAULT_STATE
+    from web import deps as web_deps
+    from web.authentication import tokens
+    from web.authentication.tokens import SessionClaims
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
+    await db_session.close()
+
+    admin = await _migrated_engine(
+        database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
+    )
+    unpooled_restricted = await restricted_engine(database_url)
+    restricted_url = unpooled_restricted.url
+    await unpooled_restricted.dispose()
+    restricted = create_async_engine(
+        restricted_url,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=2,
+    )
+    try:
+        first, second = await _seed_two_subjects(admin)
+        first_state = {**DEFAULT_STATE, "nutrition": True}
+        second_state = {**DEFAULT_STATE, "body_comp": True}
+        async with admin.begin() as connection:
+            await connection.execute(
+                sa.insert(SubjectSetting),
+                [
+                    {
+                        "subject_id": first,
+                        "key": modules_service.SETTINGS_KEY,
+                        "value": first_state,
+                    },
+                    {
+                        "subject_id": second,
+                        "key": modules_service.SETTINGS_KEY,
+                        "value": second_state,
+                    },
+                ],
+            )
+            first_owner = await connection.scalar(
+                sa.text(
+                    "SELECT owner_user_id FROM health_subjects WHERE id = :subject"
+                ),
+                {"subject": first},
+            )
+            await connection.exec_driver_sql(
+                "GRANT EXECUTE ON FUNCTION "
+                "public.project_professional_roster(uuid) "
+                f"TO {RESTRICTED_ROLE}"
+            )
+        assert first_owner is not None
+
+        claims = SessionClaims(
+            version=2,
+            token_type="session",
+            auth_source="oidc",
+            username="rls-a",
+            user_id=first_owner,
+            session_version=1,
+            subject_id=first,
+        )
+        monkeypatch.setattr(tokens, "decode_session", lambda _token: claims)
+
+        def request() -> Request:
+            return Request(
+                {
+                    "type": "http",
+                    "http_version": "1.1",
+                    "method": "GET",
+                    "scheme": "http",
+                    "path": "/care",
+                    "raw_path": b"/care",
+                    "query_string": b"",
+                    "headers": [],
+                    "client": ("127.0.0.1", 1),
+                    "server": ("test", 80),
+                    "root_path": "",
+                }
+            )
+
+        # A pre-fix deployment may leave this exact poisoned key in Redis.  The
+        # fixed namespace must not accept it as authoritative after rollout.
+        old_key = f"settings:enabled_modules:{first}"
+        await redis.set(old_key, json.dumps(DEFAULT_STATE))
+        await redis.delete(modules_service.cache_key(first))
+
+        factory = async_sessionmaker(
+            restricted,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+        probe_request = request()
+        async with factory() as probe_session:
+            probe_scope = await web_deps.get_request_chrome_scope(
+                probe_request,
+                probe_session,
+            )
+            assert probe_scope is not None
+            assert probe_scope.subject_id == first
+            await bind_session_subject(probe_session, first)
+            assert await modules_service.get_enabled_modules(
+                probe_session,
+                None,
+                subject_id=first,
+            ) == first_state
+        # The low-level fail-safe still returns defaults to an unbound caller,
+        # but it must not publish that RLS-hidden result to Redis.
+        async with factory() as unbound_session:
+            unbound = await modules_service.get_enabled_modules(
+                unbound_session,
+                redis,
+                subject_id=first,
+            )
+            assert unbound == DEFAULT_STATE
+            assert await redis.get(modules_service.cache_key(first)) is None
+
+        first_request = request()
+        second_request = request()
+        async with factory() as first_route_session, factory() as second_route_session:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    web_deps.load_enabled_modules(
+                        first_request,
+                        first_route_session,
+                        redis,
+                    ),
+                    web_deps.load_enabled_modules(
+                        second_request,
+                        second_route_session,
+                        redis,
+                    ),
+                ),
+                timeout=5,
+            )
+            assert first_request.state.enabled_modules == first_state
+            assert second_request.state.enabled_modules == first_state
+            assert first_request.state.chrome_scope.subject_id == first
+            assert second_request.state.chrome_scope.subject_id == first
+            assert restricted.pool.checkedout() == 0
+            assert bound_subject(first_route_session) is None
+            assert bound_subject(second_route_session) is None
+
+            # The chrome read used a sibling session, so a route dependency can
+            # still bind this request to the patient it is about.  Prove the
+            # useful behavior, not only the absence of a remembered marker.
+            await bind_session_subject(first_route_session, second)
+            assert bound_subject(first_route_session) == second
+            assert await modules_service.get_enabled_modules(
+                first_route_session,
+                None,
+                subject_id=second,
+            ) == second_state
+
+        assert json.loads(await redis.get(modules_service.cache_key(first))) == first_state
+    finally:
+        await restricted.dispose()
+        await admin.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_real_postgres_member_provisioning_binds_only_its_new_subject(
     db_session,
     monkeypatch,

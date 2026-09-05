@@ -114,6 +114,36 @@ def test_delivery_leaves_register_through_explicit_installers() -> None:
     assert "register_error_handlers(app)" in main_source
 
 
+def test_module_chrome_runs_before_request_session_consumers() -> None:
+    """A cold module cache must not ask an already checked-out request for a peer."""
+
+    tree = _tree(MODULES["main"])
+    app_assignment = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "app"
+            for target in node.targets
+        )
+    )
+    assert isinstance(app_assignment.value, ast.Call)
+    dependencies = next(
+        keyword.value
+        for keyword in app_assignment.value.keywords
+        if keyword.arg == "dependencies"
+    )
+    assert isinstance(dependencies, ast.List)
+    names = [
+        element.args[0].id
+        for element in dependencies.elts
+        if isinstance(element, ast.Call)
+        and element.args
+        and isinstance(element.args[0], ast.Name)
+    ]
+    assert names[0] == "load_enabled_modules"
+
+
 def test_required_mcp_and_oauth_surfaces_fail_startup_when_imports_break() -> None:
     """A healthy process must never silently omit required protocol surfaces."""
 

@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from vitals.enums import Domain
+from vitals.models.glp1 import SideEffect as Glp1SideEffect
 from vitals.models.labs import LabResult
 from vitals.models.supplements import Supplement
 from vitals.models.weight import ProgressPhoto, WeightLog
@@ -30,7 +31,7 @@ share_service = SimpleNamespace(
     }
 )
 from vitals.services.modules.registry import MODULE_REGISTRY
-from vitals.utils.timeutils import now_local
+from vitals.utils.timeutils import now_local, today_local
 from vitals.utils.passwords import verify_password
 from web.config import get_web_config
 
@@ -82,6 +83,40 @@ pytestmark = pytest.mark.usefixtures("owned_by_legacy_subject")
 
 
 # ── Snapshot ──────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_all_time_start_uses_dated_share_facts_through_today_only(
+    db_session,
+    legacy_owner_roots,
+):
+    today = today_local()
+    oldest = today - timedelta(days=400)
+    db_session.add_all(
+        [
+            Glp1SideEffect(
+                subject_id=legacy_owner_roots.subject_id,
+                date=oldest,
+                domain=Domain.GLP1.value,
+                source="manual",
+                effect_type="nausea",
+                severity=2,
+            ),
+            WeightLog(
+                subject_id=legacy_owner_roots.subject_id,
+                date=today + timedelta(days=1),
+                domain=Domain.WEIGHT.value,
+                source="manual",
+                weight_kg=99.0,
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    assert await share_service.earliest_data_date(
+        db_session,
+        prepared_owner=await _prepared_owner(db_session),
+    ) == oldest
 
 
 @pytest.mark.asyncio

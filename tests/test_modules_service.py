@@ -64,7 +64,7 @@ async def test_set_optional_persists(db_session, legacy_owner_roots):
         subject_id=legacy_owner_roots.subject_id,
     )
     await db_session.commit()
-    assert returned["hevy"] is True
+    assert returned == {**DEFAULT_STATE, "hevy": True}
 
     fresh = await modules_service.get_enabled_modules(
         db_session,
@@ -198,6 +198,34 @@ async def test_redis_cache_is_read_through(db_session, redis, legacy_owner_roots
         subject_id=legacy_owner_roots.subject_id,
     )
     assert state["hevy"] is True  # came from cache; DB has no row
+
+
+async def test_pre_rls_fix_cache_namespace_is_not_reused(
+    db_session,
+    redis,
+    legacy_owner_roots,
+):
+    """A core-only cache written by the unbound-reader bug must expire at deploy."""
+
+    old_key = f"settings:enabled_modules:{legacy_owner_roots.subject_id}"
+    await redis.set(old_key, json.dumps(DEFAULT_STATE))
+    await db_session.merge(
+        SubjectSetting(
+            subject_id=legacy_owner_roots.subject_id,
+            key=SETTINGS_KEY,
+            value={**DEFAULT_STATE, "nutrition": True},
+        )
+    )
+    await db_session.commit()
+
+    state = await modules_service.get_enabled_modules(
+        db_session,
+        redis,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+
+    assert modules_service.cache_key(legacy_owner_roots.subject_id) != old_key
+    assert state == {**DEFAULT_STATE, "nutrition": True}
 
 
 async def test_get_primes_cache_from_db(db_session, redis, legacy_owner_roots):

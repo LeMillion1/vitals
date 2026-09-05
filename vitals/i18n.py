@@ -930,6 +930,16 @@ _EN: dict[str, str] = {
     "reports.brief_error": "Couldn't assemble the brief. Retry shortly or ask the platform administrator to check AI availability.",
     "reports.no_briefs": "No briefs yet. One is built on the schedule in Settings, or right now via the \"Build brief\" button.",
 
+    "brief.header.sleep": "Sleep",
+    "brief.header.hrv": "HRV",
+    "brief.header.resting_hr": "Resting HR",
+    "brief.header.body_battery": "Body Battery",
+    "brief.header.night_pending": "Last night has not been scored yet — today's recovery numbers are unavailable.",
+    "brief.header.weight": "Weight {value} kg",
+    "brief.header.trend": "trend {value} kg/week",
+    "brief.header.noisy_trend": "trend affected by noise",
+    "brief.header.baseline": "baseline {value}",
+
     # ── For the doctor: the owner's screen ────────────────────────────────
     "share.page_title": "For the doctor — Vitals",
     "share.heading": "For the doctor",
@@ -963,6 +973,8 @@ _EN: dict[str, str] = {
     "share.period_days": "{n} days",
     "share.period_all": "All time",
     "share.period_custom": "Exact range",
+    "share.period_current_note": "A period ending today can include partial daily totals; future dates are excluded.",
+    "share.period_limit_note": "Exact ranges can cover up to 180 days. Use All time for the full record.",
     "share.period_from": "From",
     "share.period_to": "To",
     "share.copy": "Copy",
@@ -992,7 +1004,8 @@ _EN: dict[str, str] = {
     "share.delete_confirm": "Remove this report from the list?",
     "share.empty": "No reports yet.",
     "share.error.no_sections": "Pick at least one section.",
-    "share.error.bad_period": "The end of the period cannot be earlier than its start.",
+    "share.error.bad_period": "Choose a valid report period; its end cannot be earlier than its start.",
+    "share.error.period_too_long": "An exact range can cover up to 180 days. Use All time for the full record.",
     "share.error.empty": "Nothing to show for this period — the document would come out empty.",
 
     # ── The document itself (read by the doctor, never by the owner) ──────
@@ -1004,6 +1017,7 @@ _EN: dict[str, str] = {
     "doc.sex.male": "male",
     "doc.sex.female": "female",
     "doc.period": "Period",
+    "doc.period_current_note": "The final day was still in progress when this snapshot was created and may be incomplete.",
     "doc.generated": "Compiled",
     "doc.includes": "Sections",
     "doc.summary": "In short",
@@ -3164,6 +3178,16 @@ _RU: dict[str, str] = {
     "reports.brief_error": "Не удалось собрать бриф. Повторите позже или попросите администратора платформы проверить доступность AI.",
     "reports.no_briefs": "Брифов ещё нет. Бриф собирается по расписанию из настроек или прямо сейчас — по кнопке «Собрать бриф».",
 
+    "brief.header.sleep": "Сон",
+    "brief.header.hrv": "HRV",
+    "brief.header.resting_hr": "Пульс покоя",
+    "brief.header.body_battery": "Body Battery",
+    "brief.header.night_pending": "Ночь ещё не размечена — цифр восстановления за сегодня нет.",
+    "brief.header.weight": "Вес {value} кг",
+    "brief.header.trend": "тренд {value} кг/нед",
+    "brief.header.noisy_trend": "тренд зашумлён",
+    "brief.header.baseline": "норма {value}",
+
     # ── Для врача: экран владельца ────────────────────────────────────────
     "share.page_title": "Для врача — Vitals",
     "share.heading": "Для врача",
@@ -3194,6 +3218,8 @@ _RU: dict[str, str] = {
     "share.period_days": "{n} дней",
     "share.period_all": "Всё время",
     "share.period_custom": "Точный диапазон",
+    "share.period_current_note": "Период по сегодняшний день может содержать неполные суточные итоги; будущие даты не включаются.",
+    "share.period_limit_note": "Точный диапазон может охватывать до 180 дней. Для всей истории выбери «Всё время».",
     "share.period_from": "С",
     "share.period_to": "По",
     "share.copy": "Копировать",
@@ -3223,7 +3249,8 @@ _RU: dict[str, str] = {
     "share.delete_confirm": "Убрать отчёт из списка?",
     "share.empty": "Отчётов пока нет.",
     "share.error.no_sections": "Выбери хотя бы один раздел.",
-    "share.error.bad_period": "Конец периода не может быть раньше начала.",
+    "share.error.bad_period": "Выбери допустимый период: его конец не может быть раньше начала.",
+    "share.error.period_too_long": "Точный диапазон может охватывать до 180 дней. Для всей истории выбери «Всё время».",
     "share.error.empty": "За этот период показывать нечего — документ вышел бы пустым.",
 
     # ── Сам документ (его читает врач, не владелец) ───────────────────────
@@ -3235,6 +3262,7 @@ _RU: dict[str, str] = {
     "doc.sex.male": "мужской",
     "doc.sex.female": "женский",
     "doc.period": "Период",
+    "doc.period_current_note": "На момент создания снимка последний день ещё не завершился, поэтому данные за него могут быть неполными.",
     "doc.generated": "Составлено",
     "doc.includes": "Разделы",
     "doc.summary": "Коротко",

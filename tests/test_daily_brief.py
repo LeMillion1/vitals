@@ -40,6 +40,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.milestones import WeeklyDigest
 from vitals.models.proactive import Notification
 from vitals.models.system_alert import SystemAlert
+from vitals.i18n import current_lang, t
 from vitals.models.tenancy import IntegrationConnection
 from vitals.services import (
     weight as weight_domain,
@@ -230,6 +231,42 @@ async def test_brief_rejects_inactive_llm_connection_before_network(
 
 
 # ── The header ────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    ("lang", "expected"),
+    [
+        ("en", ["Sleep 80 (baseline 85)", "Resting HR 52", "Weight 88.5 kg",
+                "trend +0.25 kg/week", "trend affected by noise: QA noise"]),
+        ("ru", ["Сон 80 (норма 85)", "Пульс покоя 52", "Вес 88,5 кг",
+                "тренд +0,25 кг/нед", "тренд зашумлён: QA noise"]),
+    ],
+)
+def test_header_uses_recipient_language_and_decimal_format(lang, expected):
+    token = current_lang.set(lang)
+    try:
+        text = compose.render(compose.header_blocks({
+            "garmin": {
+                "sleep_score": 80,
+                "resting_hr": 52,
+                "baseline": {"sleep_score": 85},
+            },
+            "weight": {
+                "latest_kg": 88.5,
+                "trend_kg_per_week": 0.25,
+                "noise_markers": [{"reason": "QA noise"}],
+            },
+        }))
+        assert all(fragment in text for fragment in expected)
+        pending = compose.render(compose.header_blocks({
+            "garmin": {"night_pending": True},
+        }))
+        assert pending == t("brief.header.night_pending")
+        if lang == "en":
+            assert "Вес" not in text
+            assert "Last night has not been scored yet" in pending
+    finally:
+        current_lang.reset(token)
+
+
 async def test_header_numbers_match_the_database(garmin_owned_scope, db_session, legacy_owner_roots, owner_write):
     """Every number in the header is printed by code from the stored row — the
     model is never in a position to get one wrong."""
@@ -248,11 +285,11 @@ async def test_header_numbers_match_the_database(garmin_owned_scope, db_session,
     stored = await garmin_queries.latest_daily(
         db_session, before_or_on=DAY, subject_id=legacy_owner_roots.subject_id
     )
-    assert f"Сон {stored.sleep_score}" in header
+    assert f"{t('brief.header.sleep')} {stored.sleep_score}" in header
     assert f"HRV {int(stored.hrv_avg)}" in header
-    assert f"Пульс покоя {stored.resting_hr}" in header
+    assert f"{t('brief.header.resting_hr')} {stored.resting_hr}" in header
     assert f"Body Battery {stored.body_battery_high}" in header
-    assert "Вес 88 кг" in header
+    assert t("brief.header.weight", value="88") in header
     # A normal morning carries no recovery warning at all.
     assert ctx["garmin"]["advice"] is None
 
@@ -285,8 +322,8 @@ async def test_noisy_weight_never_prints_a_bare_trend(db_session, legacy_owner_r
         subject_id=legacy_owner_roots.subject_id,
         on_date=DAY)
     text = compose.render(compose.header_blocks(ctx))
-    if "тренд" in text:
-        assert "зашумлён" in text
+    if ctx["weight"].get("trend_kg_per_week") is not None:
+        assert t("brief.header.noisy_trend") in text
         assert "креатином" in text
 
 
@@ -315,9 +352,11 @@ async def test_the_header_carries_his_own_norm_only_when_today_is_off_it(db_sess
     assert ctx["garmin"]["baseline"]["resting_hr"] == 52
 
     text = compose.render(compose.header_blocks(ctx))
-    assert "Сон 80 (норма 85)" in text          # ~6% off — worth saying
-    assert "Пульс покоя 52 ·" in text or text.rstrip().endswith("Пульс покоя 52")
-    assert "Пульс покоя 52 (" not in text       # on the norm — say nothing
+    sleep = t("brief.header.sleep")
+    resting_hr = t("brief.header.resting_hr")
+    assert f"{sleep} 80 ({t('brief.header.baseline', value='85')})" in text
+    assert f"{resting_hr} 52 ·" in text or text.rstrip().endswith(f"{resting_hr} 52")
+    assert f"{resting_hr} 52 (" not in text  # on the baseline — say nothing
 
 
 async def test_no_norm_until_there_is_enough_history(db_session, legacy_owner_roots, owner_write, *, garmin_owned_scope):
@@ -335,7 +374,9 @@ async def test_no_norm_until_there_is_enough_history(db_session, legacy_owner_ro
         subject_id=legacy_owner_roots.subject_id,
         on_date=DAY)
     assert ctx["garmin"]["baseline"] is None
-    assert "норма" not in compose.render(compose.header_blocks(ctx))
+    header = compose.render(compose.header_blocks(ctx))
+    assert "(норма" not in header
+    assert "(baseline" not in header
 
 
 
@@ -354,7 +395,7 @@ async def test_brief_survives_a_dead_model(garmin_owned_scope, db_session, legac
         subject_id=legacy_owner_roots.subject_id,
     )
     # The header is printed by code, so it stands with no model at all.
-    assert "Сон 80" in compose.render(compose.header_blocks(ctx))
+    assert f"{t('brief.header.sleep')} 80" in compose.render(compose.header_blocks(ctx))
 
 
 
@@ -466,10 +507,10 @@ async def test_a_running_night_never_reaches_the_brief(db_session, legacy_owner_
     )
     guarded = compose.drop_unscored_night(ctx)
     header = compose.render(compose.header_blocks(guarded))
-    assert "Пульс покоя" not in header
+    assert t("brief.header.resting_hr") not in header
     assert "Body Battery" not in header
-    assert compose.LINE_NIGHT_PENDING in header
-    assert "Вес 88 кг" in header  # what *is* known still goes out
+    assert t("brief.header.night_pending") in header
+    assert t("brief.header.weight", value="88") in header
     # And the context says why, so nothing downstream fills the gap in.
     assert guarded["garmin"]["night_pending"] is True
     assert guarded["garmin"]["resting_hr"] is None
@@ -533,7 +574,7 @@ async def test_job_waits_for_the_night_instead_of_briefing_over_it(
     await brief_jobs.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert len(notifier.sent) == 1
-    assert "Сон 80" in notifier.sent[0]["text"]
+    assert f"{t('brief.header.sleep')} 80" in notifier.sent[0]["text"]
 
 
 async def test_job_stops_waiting_at_the_end_of_the_window(
@@ -562,7 +603,7 @@ async def test_job_stops_waiting_at_the_end_of_the_window(
     await brief_jobs.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert len(notifier.sent) == 1
-    assert compose.LINE_NIGHT_PENDING in notifier.sent[0]["text"]
+    assert t("brief.header.night_pending") in notifier.sent[0]["text"]
     assert "Body Battery" not in notifier.sent[0]["text"]
 
 
@@ -655,7 +696,7 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
     await brief_jobs.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert len(notifier.sent) == 1
-    assert "Сон 80" in notifier.sent[0]["text"]
+    assert f"{t('brief.header.sleep')} 80" in notifier.sent[0]["text"]
     journal = (await db_session.execute(select(Notification))).scalars().all()
     assert [n.category for n in journal] == [delivery_contracts.CATEGORY_BRIEF]
     assert journal[0].dedupe_key == delivery_contracts.make_delivery_idempotency_key(
@@ -966,11 +1007,13 @@ def _patch_job(monkeypatch, notifier, llm):
 
 
 # ── The two buttons ───────────────────────────────────────────────────────────
+@pytest.mark.parametrize("lang", ["ru", "en"])
 async def test_build_button_shows_the_brief_and_sends_nothing(
     garmin_owned_scope,
-    auth_client, db_session, monkeypatch, owner_write,
+    auth_client, db_session, monkeypatch, owner_write, legacy_owner_roots, redis, lang,
 ):
     from web.routers import reports as reports_router
+    from vitals.services.preferences import language as language_service
 
     monkeypatch.setattr(brief_jobs, "today_local", lambda: DAY)
     monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
@@ -978,6 +1021,10 @@ async def test_build_button_shows_the_brief_and_sends_nothing(
         db_session,
         owner_write,
     garmin_owned_scope=garmin_owned_scope)
+    await language_service.set_language(
+        db_session, lang, redis, user_id=legacy_owner_roots.user_id,
+    )
+    await db_session.commit()
 
     r = await auth_client.post(
         "/reports/brief",
@@ -1002,7 +1049,9 @@ async def test_build_button_shows_the_brief_and_sends_nothing(
     assert (await db_session.execute(select(Notification))).scalars().all() == []
 
     page = await auth_client.get("/reports")
-    assert "Сон 80" in page.text
+    expected = "Sleep 80" if lang == "en" else "Сон 80"
+    assert expected in page.text
+    assert expected in rows[0].content
 
 
 async def test_build_button_does_not_require_a_delivery_channel(

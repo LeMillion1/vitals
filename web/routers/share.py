@@ -136,6 +136,16 @@ async def create(
                 request, db, username, error="share.error.bad_period",
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
+        if start > today_local():
+            return await _page(
+                request, db, username, error="share.error.bad_period",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        if (end - start).days + 1 > max(snapshot.PERIOD_CHOICES):
+            return await _page(
+                request, db, username, error="share.error.period_too_long",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
     elif period == "all":
         owner = await ownership.prepare_legacy_owner(
             db,
@@ -150,7 +160,15 @@ async def create(
         try:
             days = int(period)
         except ValueError:
-            days = 90
+            return await _page(
+                request, db, username, error="share.error.bad_period",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        if days not in snapshot.PERIOD_CHOICES:
+            return await _page(
+                request, db, username, error="share.error.bad_period",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
         start, end = queries.window_for(days)
 
     if period != "all":
