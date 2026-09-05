@@ -26,14 +26,19 @@ from vitals.enums import (
     UserStatus,
 )
 from vitals.models.identity import HealthSubject, User, UserRole
+from vitals.persistence import rls
 from vitals.services.care import invitations, professionals, records, relationships
 from vitals.services.authorization.subject_access import resolve_access_context
 
 
 async def _user(session, slug: str, *, roles=()) -> User:
+    email = f"{slug}@example.test"
     user = User(
         username=slug,
         normalized_username=slug,
+        email=email,
+        normalized_email=email.casefold(),
+        email_verified_at=datetime.now(timezone.utc),
         password_hash="$synthetic-test-hash",
         status=UserStatus.ACTIVE.value,
     )
@@ -327,6 +332,9 @@ async def test_a_note_in_one_record_is_not_reachable_from_another(db_session):
     _owner_a, subject_a, doctor_a, _rel_a = await _in_care_with_consent(
         db_session, "rec-cross-a"
     )
+    if db_session.get_bind().dialect.name == "postgresql":
+        await db_session.commit()
+        db_session.info.pop(rls._SUBJECT_KEY, None)
     _owner_b, subject_b, doctor_b, _rel_b = await _in_care_with_consent(
         db_session, "rec-cross-b"
     )
@@ -336,6 +344,9 @@ async def test_a_note_in_one_record_is_not_reachable_from_another(db_session):
     )
 
     # A's doctor, holding B's note id, asking inside A's record.
+    if db_session.get_bind().dialect.name == "postgresql":
+        await db_session.commit()
+        db_session.info.pop(rls._SUBJECT_KEY, None)
     context_a = await _context(db_session, doctor_a, subject_a)
     with pytest.raises(records.NotTheAuthor):
         await records.revise_note(
@@ -344,6 +355,9 @@ async def test_a_note_in_one_record_is_not_reachable_from_another(db_session):
     assert theirs.body == "B's record"
 
     # And asking inside B's record, where they are nobody.
+    if db_session.get_bind().dialect.name == "postgresql":
+        await db_session.commit()
+        db_session.info.pop(rls._SUBJECT_KEY, None)
     context_a_in_b = await _context(db_session, doctor_a, subject_b)
     with pytest.raises(records.NotInLiveCare):
         await records.revise_note(
@@ -407,6 +421,81 @@ async def test_an_archived_plan_stays_archived(db_session):
         await records.set_plan_status(
             db_session, context=context, plan_id=plan.id, status=CarePlanStatus.ACTIVE
         )
+
+
+@pytest.mark.parametrize(
+    ("initial", "requested", "allowed"),
+    [
+        (CarePlanStatus.DRAFT, CarePlanStatus.DRAFT, True),
+        (CarePlanStatus.DRAFT, CarePlanStatus.ACTIVE, True),
+        (CarePlanStatus.DRAFT, CarePlanStatus.ARCHIVED, True),
+        (CarePlanStatus.ACTIVE, CarePlanStatus.DRAFT, False),
+        (CarePlanStatus.ACTIVE, CarePlanStatus.ACTIVE, True),
+        (CarePlanStatus.ACTIVE, CarePlanStatus.ARCHIVED, True),
+        (CarePlanStatus.ARCHIVED, CarePlanStatus.DRAFT, False),
+        (CarePlanStatus.ARCHIVED, CarePlanStatus.ACTIVE, False),
+        (CarePlanStatus.ARCHIVED, CarePlanStatus.ARCHIVED, True),
+    ],
+)
+async def test_plan_status_transitions_are_forward_only_and_idempotent(
+    db_session, initial, requested, allowed
+):
+    _owner, subject, doctor, _rel = await _in_care_with_consent(
+        db_session, f"rec-plan-transition-{initial.value}-{requested.value}"
+    )
+    context = await _context(db_session, doctor, subject)
+    plan = await records.write_plan(
+        db_session,
+        context=context,
+        title="Plan with history",
+        body="Once published, this must not become private again.",
+        effective_from=date(2026, 9, 1),
+    )
+    if initial is CarePlanStatus.ACTIVE:
+        await records.set_plan_status(
+            db_session,
+            context=context,
+            plan_id=plan.id,
+            status=CarePlanStatus.ACTIVE,
+        )
+    elif initial is CarePlanStatus.ARCHIVED:
+        await records.set_plan_status(
+            db_session,
+            context=context,
+            plan_id=plan.id,
+            status=CarePlanStatus.ARCHIVED,
+        )
+
+    if allowed:
+        updated = await records.set_plan_status(
+            db_session,
+            context=context,
+            plan_id=plan.id,
+            status=requested,
+        )
+        expected = requested
+        assert updated is plan
+    else:
+        with pytest.raises(records.ProfessionalRecordValidationError):
+            await records.set_plan_status(
+                db_session,
+                context=context,
+                plan_id=plan.id,
+                status=requested,
+            )
+        expected = initial
+
+    assert plan.status == expected.value
+    published_ids = {
+        item.id
+        for item in await records.list_plans(
+            db_session,
+            context=context,
+            include_archived=True,
+            include_drafts=False,
+        )
+    }
+    assert (plan.id in published_ids) is (expected is not CarePlanStatus.DRAFT)
 
 
 async def test_patient_guidance_is_active_plans_and_bounded_recent_notes(db_session):

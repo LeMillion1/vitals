@@ -624,10 +624,8 @@ async def thread(
                 "messages" if care.is_owner else "professional_care"
             ),
             "thread_state_changed": state_changed,
-            "may_send": care.may(
-                resource_key=care_threads.MESSAGE_OPERATION,
-                action=care_threads.SEND_ACTION,
-                resource_type=PolicyResourceType.OPERATION,
+            "may_send": await care_threads.may_mutate_thread(
+                db, context=care.access, thread=opened
             ),
         },
     )

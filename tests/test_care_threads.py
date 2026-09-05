@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import event, func, select
@@ -28,11 +28,19 @@ from vitals.enums import (
     UserRoleName,
     UserStatus,
 )
-from vitals.models.care_thread import CareThread, CareThreadParticipant
+from vitals.models.care_thread import (
+    CareMessage,
+    CareMessageAttachment,
+    CareThread,
+    CareThreadParticipant,
+)
 from vitals.models.identity import HealthSubject, User, UserRole
+from vitals.models.professional import ConsentScope, ProfessionalProfile
+from vitals.models.tenancy import FileAsset
 from vitals.persistence import rls
 from vitals.services.care import invitations, professionals, relationships, threads
 from vitals.services.authorization.subject_access import resolve_access_context
+from vitals.services.identity import roles as identity_roles
 
 
 async def _user(session, slug: str, *, roles=()) -> User:
@@ -199,12 +207,13 @@ async def test_relationship_conversation_is_an_idempotent_exact_pair(db_session)
 async def test_postgres_concurrent_relationship_opens_converge_on_one_room(
     db_session, monkeypatch
 ):
-    """The relationship lock serializes the exact first-open race.
+    """The governance fence serializes the exact first-open race.
 
     The first writer is held after inserting the room but before commit. The
-    second writer is allowed to issue its own ``FOR UPDATE`` and must wait there
-    rather than race the unique constraint. Once the first commits, both calls
-    return the same durable room without either transaction failing.
+    second writer is allowed to request the governance fence and must wait there
+    rather than race authorization or the unique constraint. Once the first
+    commits, both calls return the same durable room without either transaction
+    failing.
     """
 
     owner, subject = await _patient(db_session, "thread-pair-race")
@@ -238,24 +247,23 @@ async def test_postgres_concurrent_relationship_opens_converge_on_one_room(
 
     monkeypatch.setattr(threads, "_create_pair_thread", hold_first_writer)
 
-    lock_queries = 0
-    second_lock_issued = asyncio.Event()
+    governance_queries = 0
+    second_governance_lock_issued = asyncio.Event()
 
-    def observe_relationship_lock(
+    def observe_governance_lock(
         _conn, _cursor, statement, _parameters, _context, _executemany
     ) -> None:
-        nonlocal lock_queries
-        normalized = statement.lower()
-        if "from care_relationships" not in normalized or "for update" not in normalized:
+        nonlocal governance_queries
+        if "pg_advisory_xact_lock" not in statement.lower():
             return
-        lock_queries += 1
-        if lock_queries == 2:
-            second_lock_issued.set()
+        governance_queries += 1
+        if governance_queries == 2:
+            second_governance_lock_issued.set()
 
     event.listen(
         db_session.bind.sync_engine,
         "before_cursor_execute",
-        observe_relationship_lock,
+        observe_governance_lock,
     )
 
     async def open_room() -> uuid.UUID:
@@ -278,9 +286,9 @@ async def test_postgres_concurrent_relationship_opens_converge_on_one_room(
     try:
         await asyncio.wait_for(first_room_inserted.wait(), timeout=5)
         second = asyncio.create_task(open_room())
-        await asyncio.wait_for(second_lock_issued.wait(), timeout=5)
+        await asyncio.wait_for(second_governance_lock_issued.wait(), timeout=5)
         assert not second.done(), (
-            "the second writer did not wait on the relationship lock"
+            "the second writer did not wait on the identity-governance fence"
         )
         release_first_writer.set()
         first_id, second_id = await asyncio.wait_for(
@@ -292,7 +300,7 @@ async def test_postgres_concurrent_relationship_opens_converge_on_one_room(
         event.remove(
             db_session.bind.sync_engine,
             "before_cursor_execute",
-            observe_relationship_lock,
+            observe_governance_lock,
         )
         pending = [
             task
@@ -326,6 +334,94 @@ async def test_postgres_concurrent_relationship_opens_converge_on_one_room(
         owner_id,
         professional_id,
     }
+
+
+@pytest.mark.integration
+async def test_postgres_suspension_wins_before_canonical_room_creation(db_session):
+    """A stale owner context cannot outrun recipient-account suspension."""
+
+    owner, subject = await _patient(db_session, "thread-pair-suspend-race")
+    doctor, relationship, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-pair-suspend-race-doctor",
+    )
+    owner_id = owner.id
+    professional_id = doctor.id
+    subject_id = subject.id
+    relationship_id = relationship.id
+    await db_session.commit()
+
+    assert db_session.bind is not None
+    factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+    governance_queries = 0
+    opener_requested_fence = asyncio.Event()
+
+    def observe_governance_lock(
+        _conn, _cursor, statement, _parameters, _context, _executemany
+    ) -> None:
+        nonlocal governance_queries
+        if "pg_advisory_xact_lock" not in statement.lower():
+            return
+        governance_queries += 1
+        if governance_queries == 2:
+            opener_requested_fence.set()
+
+    event.listen(
+        db_session.bind.sync_engine,
+        "before_cursor_execute",
+        observe_governance_lock,
+    )
+    open_task = None
+    try:
+        async with factory() as opener, factory() as suspender:
+            stale_owner_context = await resolve_access_context(
+                opener,
+                user_id=owner_id,
+                subject_id=subject_id,
+            )
+            await identity_roles.change_user_status(
+                suspender,
+                user_id=professional_id,
+                new_status=UserStatus.SUSPENDED,
+                actor_user_id=owner_id,
+            )
+            open_task = asyncio.create_task(
+                threads.open_relationship_thread(
+                    opener,
+                    context=stale_owner_context,
+                    relationship_id=relationship_id,
+                )
+            )
+            await asyncio.wait_for(opener_requested_fence.wait(), timeout=5)
+            assert not open_task.done(), (
+                "canonical open did not wait behind account suspension"
+            )
+            await suspender.commit()
+            with pytest.raises(threads.NotInTheConversation):
+                await asyncio.wait_for(open_task, timeout=5)
+            await opener.rollback()
+    finally:
+        event.remove(
+            db_session.bind.sync_engine,
+            "before_cursor_execute",
+            observe_governance_lock,
+        )
+        if open_task is not None and not open_task.done():
+            open_task.cancel()
+            await asyncio.gather(open_task, return_exceptions=True)
+
+    async with factory() as verify:
+        assert await verify.scalar(
+            select(func.count())
+            .select_from(CareThread)
+            .where(CareThread.canonical_relationship_id == relationship_id)
+        ) == 0
 
 
 async def test_doctor_and_trainer_get_separate_relationship_conversations(db_session):
@@ -716,6 +812,451 @@ def _scopes_without(action: PolicyAction) -> frozenset[AccessScope]:
             and scope.action is action
         )
     )
+
+
+@pytest.mark.parametrize(
+    "recipient_change",
+    [
+        "paused",
+        "revoked",
+        "ended",
+        "expired",
+        "account_suspended",
+        "role_removed",
+        "profile_suspended",
+        "read_scope_removed",
+        "message_scope_removed",
+    ],
+)
+async def test_owner_thread_mutations_need_a_current_exact_recipient(
+    db_session,
+    recipient_change,
+):
+    """Self-access preserves history; it never stands in for the other party."""
+
+    owner, subject = await _patient(db_session, f"thread-owner-{recipient_change}")
+    doctor, relationship, grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug=f"thread-owner-{recipient_change}-doc",
+    )
+    owner_context = await _context(db_session, owner, subject)
+    stale_doctor_context = await _context(db_session, doctor, subject)
+    thread = await threads.open_relationship_thread(
+        db_session,
+        context=owner_context,
+        relationship_id=relationship.id,
+    )
+    original = await threads.send_message(
+        db_session,
+        context=owner_context,
+        thread_id=thread.id,
+        body="Patient history stays readable.",
+    )
+    await db_session.commit()
+
+    if recipient_change == "paused":
+        await relationships.set_consent_paused(
+            db_session,
+            relationship_id=relationship.id,
+            actor_user_id=owner.id,
+            paused=True,
+        )
+    elif recipient_change == "revoked":
+        await relationships.revoke_consent(
+            db_session,
+            relationship_id=relationship.id,
+            actor_user_id=owner.id,
+        )
+    elif recipient_change == "ended":
+        await relationships.end_relationship(
+            db_session,
+            relationship_id=relationship.id,
+            actor_user_id=owner.id,
+        )
+    elif recipient_change == "expired":
+        grant.granted_at = datetime.now(timezone.utc) - timedelta(days=2)
+        grant.expires_at = datetime.now(timezone.utc) - timedelta(days=1)
+    elif recipient_change == "account_suspended":
+        doctor.status = UserStatus.SUSPENDED.value
+    elif recipient_change == "role_removed":
+        role = await db_session.scalar(
+            select(UserRole).where(
+                UserRole.user_id == doctor.id,
+                UserRole.role == relationship.kind,
+            )
+        )
+        assert role is not None
+        await db_session.delete(role)
+    elif recipient_change == "profile_suspended":
+        profile = await db_session.scalar(
+            select(ProfessionalProfile).where(
+                ProfessionalProfile.user_id == doctor.id
+            )
+        )
+        assert profile is not None
+        profile.verification_status = ProfessionalVerificationStatus.SUSPENDED.value
+        profile.review_note = "Synthetic suspension"
+        profile.verified_at = None
+        profile.verified_by_user_id = None
+    else:
+        action = (
+            PolicyAction.READ
+            if recipient_change == "read_scope_removed"
+            else PolicyAction.MESSAGE
+        )
+        scope = await db_session.scalar(
+            select(ConsentScope).where(
+                ConsentScope.consent_grant_id == grant.id,
+                ConsentScope.resource_type == PolicyResourceType.OPERATION.value,
+                ConsentScope.resource_key == threads.MESSAGE_OPERATION,
+                ConsentScope.action == action.value,
+            )
+        )
+        assert scope is not None
+        await db_session.delete(scope)
+    await db_session.commit()
+
+    assert not await threads.may_mutate_thread(
+        db_session,
+        context=owner_context,
+        thread=thread,
+    )
+    _opened, history, _participants = await threads.read_thread(
+        db_session,
+        context=owner_context,
+        thread_id=thread.id,
+    )
+    assert [message.body for message in history] == ["Patient history stays readable."]
+
+    before = {
+        "messages": await db_session.scalar(
+            select(func.count()).select_from(CareMessage)
+        ),
+        "attachments": await db_session.scalar(
+            select(func.count()).select_from(CareMessageAttachment)
+        ),
+        "assets": await db_session.scalar(select(func.count()).select_from(FileAsset)),
+    }
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.send_message(
+            db_session,
+            context=owner_context,
+            thread_id=thread.id,
+            body="There is nobody authorized to receive this.",
+        )
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.revise_message(
+            db_session,
+            context=owner_context,
+            thread_id=thread.id,
+            message_id=original.id,
+            body="This correction must not persist.",
+        )
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.attach_file(
+            db_session,
+            context=owner_context,
+            message_id=original.id,
+            original_filename="synthetic.pdf",
+            storage_ref="care/synthetic.pdf",
+            media_type="application/pdf",
+            size_bytes=4,
+            content_sha256="0" * 64,
+        )
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.close_thread(
+            db_session,
+            context=owner_context,
+            thread_id=thread.id,
+        )
+    # A stale professional context is not allowed to borrow the owner's access
+    # or a different current recipient either.
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.send_message(
+            db_session,
+            context=stale_doctor_context,
+            thread_id=thread.id,
+            body="Stale professional context must not persist.",
+        )
+
+    await db_session.refresh(original)
+    await db_session.refresh(thread)
+    assert original.body == "Patient history stays readable."
+    assert original.edited_at is None
+    assert thread.status == CareThreadStatus.OPEN.value
+    assert {
+        "messages": await db_session.scalar(
+            select(func.count()).select_from(CareMessage)
+        ),
+        "attachments": await db_session.scalar(
+            select(func.count()).select_from(CareMessageAttachment)
+        ),
+        "assets": await db_session.scalar(select(func.count()).select_from(FileAsset)),
+    } == before
+
+
+async def test_stale_suspended_owner_context_cannot_mutate_thread(db_session):
+    owner, subject = await _patient(db_session, "thread-suspended-owner")
+    _doctor, relationship, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-suspended-owner-doc",
+    )
+    owner_context = await _context(db_session, owner, subject)
+    thread = await threads.open_relationship_thread(
+        db_session,
+        context=owner_context,
+        relationship_id=relationship.id,
+    )
+    original = await threads.send_message(
+        db_session,
+        context=owner_context,
+        thread_id=thread.id,
+        body="Owner history.",
+    )
+    await db_session.commit()
+
+    owner.status = UserStatus.SUSPENDED.value
+    await db_session.commit()
+    assert not await threads.may_mutate_thread(
+        db_session,
+        context=owner_context,
+        thread=thread,
+    )
+
+    before = {
+        "messages": await db_session.scalar(
+            select(func.count()).select_from(CareMessage)
+        ),
+        "attachments": await db_session.scalar(
+            select(func.count()).select_from(CareMessageAttachment)
+        ),
+        "assets": await db_session.scalar(select(func.count()).select_from(FileAsset)),
+    }
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.send_message(
+            db_session,
+            context=owner_context,
+            thread_id=thread.id,
+            body="A disabled owner cannot send.",
+        )
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.revise_message(
+            db_session,
+            context=owner_context,
+            thread_id=thread.id,
+            message_id=original.id,
+            body="A disabled owner cannot revise.",
+        )
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.attach_file(
+            db_session,
+            context=owner_context,
+            message_id=original.id,
+            original_filename="synthetic.pdf",
+            storage_ref="care/suspended-owner.pdf",
+            media_type="application/pdf",
+            size_bytes=4,
+            content_sha256="0" * 64,
+        )
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.close_thread(
+            db_session,
+            context=owner_context,
+            thread_id=thread.id,
+        )
+
+    thread.status = CareThreadStatus.CLOSED.value
+    await db_session.commit()
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.reopen_thread(
+            db_session,
+            context=owner_context,
+            thread_id=thread.id,
+        )
+
+    await db_session.refresh(original)
+    await db_session.refresh(thread)
+    assert original.body == "Owner history."
+    assert original.edited_at is None
+    assert thread.status == CareThreadStatus.CLOSED.value
+    assert {
+        "messages": await db_session.scalar(
+            select(func.count()).select_from(CareMessage)
+        ),
+        "attachments": await db_session.scalar(
+            select(func.count()).select_from(CareMessageAttachment)
+        ),
+        "assets": await db_session.scalar(select(func.count()).select_from(FileAsset)),
+    } == before
+
+
+async def test_stale_suspended_owner_context_creates_no_canonical_room(db_session):
+    owner, subject = await _patient(db_session, "thread-suspended-owner-open")
+    _doctor, relationship, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-suspended-owner-open-doc",
+    )
+    owner_context = await _context(db_session, owner, subject)
+    owner.status = UserStatus.SUSPENDED.value
+    await db_session.commit()
+
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.open_relationship_thread(
+            db_session,
+            context=owner_context,
+            relationship_id=relationship.id,
+        )
+    assert await db_session.scalar(select(func.count()).select_from(CareThread)) == 0
+
+
+async def test_owner_cannot_reopen_after_the_exact_recipient_is_revoked(db_session):
+    owner, subject = await _patient(db_session, "thread-owner-reopen")
+    _doctor, relationship, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-owner-reopen-doc",
+    )
+    owner_context = await _context(db_session, owner, subject)
+    thread = await threads.open_relationship_thread(
+        db_session,
+        context=owner_context,
+        relationship_id=relationship.id,
+    )
+    await threads.close_thread(
+        db_session,
+        context=owner_context,
+        thread_id=thread.id,
+    )
+    await db_session.commit()
+    await relationships.revoke_consent(
+        db_session,
+        relationship_id=relationship.id,
+        actor_user_id=owner.id,
+    )
+    await db_session.commit()
+
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.reopen_thread(
+            db_session,
+            context=owner_context,
+            thread_id=thread.id,
+        )
+    await db_session.refresh(thread)
+    assert thread.status == CareThreadStatus.CLOSED.value
+    _opened, history, _participants = await threads.read_thread(
+        db_session,
+        context=owner_context,
+        thread_id=thread.id,
+    )
+    assert history == []
+
+
+async def test_recipient_selection_respects_canonical_and_historical_rooms(db_session):
+    owner, subject = await _patient(db_session, "thread-recipient-selection")
+    doctor, doctor_relationship, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-recipient-selection-doc",
+    )
+    trainer, _trainer_relationship, _grant = await _take_into_care(
+        db_session,
+        subject=subject,
+        owner=owner,
+        slug="thread-recipient-selection-trainer",
+        kind=ProfessionalKind.TRAINER,
+    )
+    owner_context = await _context(db_session, owner, subject)
+    doctor_context = await _context(db_session, doctor, subject)
+    canonical = await threads.open_relationship_thread(
+        db_session,
+        context=owner_context,
+        relationship_id=doctor_relationship.id,
+    )
+    historical = await threads.open_thread(
+        db_session,
+        context=doctor_context,
+        title="Historical group room",
+    )
+    for room in (canonical, historical):
+        await threads.add_participant(
+            db_session,
+            context=doctor_context,
+            thread_id=room.id,
+            user_id=trainer.id,
+        )
+    await db_session.commit()
+
+    await relationships.revoke_consent(
+        db_session,
+        relationship_id=doctor_relationship.id,
+        actor_user_id=owner.id,
+    )
+    await db_session.commit()
+
+    # A live trainer in the canonical doctor's room cannot replace its exact
+    # recipient. In a historical group room, that same present trainer can.
+    assert not await threads.may_mutate_thread(
+        db_session,
+        context=owner_context,
+        thread=canonical,
+    )
+    assert await threads.may_mutate_thread(
+        db_session,
+        context=owner_context,
+        thread=historical,
+    )
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.send_message(
+            db_session,
+            context=owner_context,
+            thread_id=canonical.id,
+            body="The other participant is not this room's recipient.",
+        )
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.send_message(
+            db_session,
+            context=doctor_context,
+            thread_id=historical.id,
+            body="Another recipient cannot lend the doctor access.",
+        )
+    sent = await threads.send_message(
+        db_session,
+        context=owner_context,
+        thread_id=historical.id,
+        body="The trainer is still an eligible recipient here.",
+    )
+    await db_session.commit()
+    assert sent.thread_id == historical.id
+
+    trainer_participation = await db_session.scalar(
+        select(CareThreadParticipant).where(
+            CareThreadParticipant.thread_id == historical.id,
+            CareThreadParticipant.user_id == trainer.id,
+        )
+    )
+    assert trainer_participation is not None
+    trainer_participation.removed_at = datetime.now(timezone.utc)
+    await db_session.commit()
+    assert not await threads.may_mutate_thread(
+        db_session,
+        context=owner_context,
+        thread=historical,
+    )
+    with pytest.raises(threads.NotInTheConversation):
+        await threads.send_message(
+            db_session,
+            context=owner_context,
+            thread_id=historical.id,
+            body="A removed or elsewhere-active professional is not a recipient.",
+        )
 
 
 async def test_a_consent_that_reads_but_does_not_send(db_session):

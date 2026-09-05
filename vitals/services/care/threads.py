@@ -23,9 +23,10 @@ gaining an edit time; a participant who leaves keeps their row with a
 clinical conversation somebody can make disappear is a worse record than one
 that stays, and the patient cannot review a history they cannot see.
 
-The subject's own access needs no consent at all — ``is_allowed`` short-circuits
-on self-ownership — which is what "patient-visible" means structurally rather
-than as a promise.
+The subject's own *read* access needs no consent at all — ``is_allowed``
+short-circuits on self-ownership — which is what "patient-visible" means
+structurally rather than as a promise. Writing is different: every mutation
+still needs a real professional recipient who can both read and answer it now.
 """
 
 from __future__ import annotations
@@ -48,10 +49,12 @@ from vitals.access import (
 from vitals.enums import (
     CareRelationshipStatus,
     CareThreadStatus,
+    ConsentStatus,
     FileAssetPurpose,
     FileAssetStatus,
     FileStorageBackend,
     ProfessionalVerificationStatus,
+    UserStatus,
 )
 from vitals.models.care_thread import (
     CareMessage,
@@ -59,10 +62,16 @@ from vitals.models.care_thread import (
     CareThread,
     CareThreadParticipant,
 )
-from vitals.models.identity import HealthSubject, UserRole
+from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.models.tenancy import FileAsset
-from vitals.models.professional import CareRelationship, ProfessionalProfile
+from vitals.models.professional import (
+    CareRelationship,
+    ConsentGrant,
+    ConsentScope,
+    ProfessionalProfile,
+)
 from vitals.services.files import lifecycle as file_lifecycle
+from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.services.notifications import care_push_outbox
 
 #: The operation key a consent carries for this feature. It matches what
@@ -239,6 +248,172 @@ async def _live_relationship_or_none(
     return relationship
 
 
+def _has_scope(*, action: PolicyAction):
+    """One exact scope on the active consent joined by the caller."""
+
+    return (
+        select(ConsentScope.id)
+        .where(
+            ConsentScope.consent_grant_id == ConsentGrant.id,
+            ConsentScope.subject_id == CareRelationship.subject_id,
+            ConsentScope.resource_type == PolicyResourceType.OPERATION.value,
+            ConsentScope.resource_key == MESSAGE_OPERATION,
+            ConsentScope.action == action.value,
+        )
+        .correlate(CareRelationship, ConsentGrant)
+        .exists()
+    )
+
+
+async def _eligible_recipient_exists(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    thread: CareThread,
+    for_update: bool,
+) -> bool:
+    """Whether this room has the exact professional it may still address.
+
+    A canonical room belongs to one relationship, so a different professional
+    who happens to participate cannot keep it writable. Historical topic/group
+    rooms have no canonical link and remain writable while at least one
+    currently present professional is eligible. A professional actor must be
+    that eligible participant; another live recipient cannot lend them access.
+
+    Mutation callers take the common identity-governance fence before checking
+    and lock every mutable authorization row selected here. Consent changes,
+    relationship endings, account/role changes, and profile suspension therefore
+    serialize with the write instead of invalidating it halfway to commit.
+    """
+
+    if thread.subject_id != context.subject_id:
+        return False
+    if for_update:
+        await acquire_identity_governance_lock(session)
+    actor_statement = select(User.id).where(
+        User.id == context.principal.user_id,
+        User.status == UserStatus.ACTIVE.value,
+    )
+    if for_update:
+        actor_statement = actor_statement.with_for_update()
+    if await session.scalar(actor_statement) is None:
+        return False
+    evaluated_at = await _now(session)
+    statement = (
+        select(CareRelationship.id)
+        .select_from(CareThreadParticipant)
+        .join(
+            CareRelationship,
+            (CareRelationship.id == CareThreadParticipant.relationship_id)
+            & (CareRelationship.subject_id == CareThreadParticipant.subject_id)
+            & (
+                CareRelationship.professional_user_id
+                == CareThreadParticipant.user_id
+            ),
+        )
+        .join(
+            User,
+            (User.id == CareRelationship.professional_user_id)
+            & (User.status == UserStatus.ACTIVE.value),
+        )
+        .join(
+            UserRole,
+            (UserRole.user_id == CareRelationship.professional_user_id)
+            & (UserRole.role == CareRelationship.kind),
+        )
+        .join(
+            ProfessionalProfile,
+            (ProfessionalProfile.user_id == CareRelationship.professional_user_id)
+            & (ProfessionalProfile.kind == CareRelationship.kind)
+            & (
+                ProfessionalProfile.verification_status
+                == ProfessionalVerificationStatus.VERIFIED.value
+            ),
+        )
+        .join(
+            ConsentGrant,
+            (ConsentGrant.relationship_id == CareRelationship.id)
+            & (ConsentGrant.subject_id == CareRelationship.subject_id),
+        )
+        .where(
+            CareThreadParticipant.thread_id == thread.id,
+            CareThreadParticipant.subject_id == context.subject_id,
+            CareThreadParticipant.removed_at.is_(None),
+            CareRelationship.subject_id == context.subject_id,
+            CareRelationship.subject_owner_user_id == context.subject_owner_user_id,
+            CareRelationship.status == CareRelationshipStatus.ACTIVE.value,
+            ConsentGrant.status == ConsentStatus.ACTIVE.value,
+            ConsentGrant.expires_at > evaluated_at,
+            _has_scope(action=READ_ACTION),
+            _has_scope(action=SEND_ACTION),
+        )
+        .limit(1)
+    )
+    if thread.canonical_relationship_id is not None:
+        statement = statement.where(
+            CareRelationship.id == thread.canonical_relationship_id
+        )
+    if context.principal.user_id != context.subject_owner_user_id:
+        statement = statement.where(
+            CareThreadParticipant.user_id == context.principal.user_id
+        )
+    if for_update:
+        statement = statement.with_for_update(
+            of=(
+                CareThreadParticipant,
+                CareRelationship,
+                User,
+                UserRole,
+                ProfessionalProfile,
+                ConsentGrant,
+            )
+        )
+    return await session.scalar(statement) is not None
+
+
+async def _require_mutation_recipient(
+    session: AsyncSession, *, context: AccessContext, thread: CareThread
+) -> None:
+    if not await _eligible_recipient_exists(
+        session,
+        context=context,
+        thread=thread,
+        for_update=True,
+    ):
+        raise NotInTheConversation(
+            "this conversation has no currently authorized recipient"
+        )
+
+
+async def may_mutate_thread(
+    session: AsyncSession, *, context: AccessContext, thread: CareThread
+) -> bool:
+    """Return the current-state mutation policy used to render room actions."""
+
+    if not is_allowed(
+        context,
+        AccessRequest(
+            subject_id=context.subject_id,
+            resource_type=PolicyResourceType.OPERATION,
+            resource_key=MESSAGE_OPERATION,
+            action=SEND_ACTION,
+        ),
+    ):
+        return False
+    if await _current_participation(
+        session,
+        thread_id=thread.id,
+        user_id=context.principal.user_id,
+    ) is None:
+        return False
+    return await _eligible_recipient_exists(
+        session,
+        context=context,
+        thread=thread,
+        for_update=False,
+    )
+
+
 async def _thread(
     session: AsyncSession,
     *,
@@ -374,6 +549,25 @@ async def open_relationship_thread(
     """
 
     _require_scope(context, action=SEND_ACTION)
+    await acquire_identity_governance_lock(session)
+
+    # The caller's request context is an immutable snapshot. Re-resolve under
+    # the identity fence so a suspended account or withdrawn role/consent that
+    # committed after that snapshot cannot create an empty canonical room.
+    from vitals.services.authorization.subject_access import (
+        AccessResolutionError,
+        resolve_access_context,
+    )
+
+    try:
+        current_actor_context = await resolve_access_context(
+            session,
+            user_id=context.principal.user_id,
+            subject_id=context.subject_id,
+        )
+    except AccessResolutionError as exc:
+        raise NotInTheConversation("this recipient is not in active care") from exc
+    _require_scope(current_actor_context, action=SEND_ACTION)
     owner_id = await _subject_owner_id(session, context.subject_id)
 
     relationship = await session.scalar(
@@ -397,13 +591,14 @@ async def open_relationship_thread(
 
     # The professional must still have the exact live consent, role, profile,
     # and message scopes. A participant row cannot resurrect withdrawn access.
-    from vitals.services.authorization.subject_access import resolve_access_context
-
-    professional_context = await resolve_access_context(
-        session,
-        user_id=relationship.professional_user_id,
-        subject_id=context.subject_id,
-    )
+    try:
+        professional_context = await resolve_access_context(
+            session,
+            user_id=relationship.professional_user_id,
+            subject_id=context.subject_id,
+        )
+    except AccessResolutionError as exc:
+        raise NotInTheConversation("this recipient is not in active care") from exc
     _require_scope(professional_context, action=READ_ACTION)
     _require_scope(professional_context, action=SEND_ACTION)
 
@@ -567,10 +762,7 @@ async def send_message(
     participation = await _require_participation(
         session, thread_id=thread.id, user_id=context.principal.user_id
     )
-    # Live care is re-checked here as well as at the policy: a relationship that
-    # ended leaves the consent rows behind for a moment, and "may message" must
-    # not outlive "is in care".
-    await _live_relationship_or_none(session, context=context)
+    await _require_mutation_recipient(session, context=context, thread=thread)
 
     # Stamped here rather than left to the column default, which is ``now()``
     # and therefore the same instant for everything in one transaction. The
@@ -637,7 +829,7 @@ async def revise_message(
     await _require_participation(
         session, thread_id=thread.id, user_id=context.principal.user_id
     )
-    await _live_relationship_or_none(session, context=context)
+    await _require_mutation_recipient(session, context=context, thread=thread)
     if thread.status != CareThreadStatus.OPEN.value:
         raise ThreadStateChanged("this conversation is no longer open")
     message.body = clean
@@ -683,7 +875,7 @@ async def attach_file(
     await _require_participation(
         session, thread_id=thread.id, user_id=context.principal.user_id
     )
-    await _live_relationship_or_none(session, context=context)
+    await _require_mutation_recipient(session, context=context, thread=thread)
 
     asset = await file_lifecycle.register_private_local(
         session,
@@ -942,7 +1134,7 @@ async def close_thread(
     await _require_participation(
         session, thread_id=thread.id, user_id=context.principal.user_id
     )
-    await _live_relationship_or_none(session, context=context)
+    await _require_mutation_recipient(session, context=context, thread=thread)
     if thread.status != CareThreadStatus.OPEN.value:
         raise ThreadStateChanged("this conversation is no longer open")
     thread.status = CareThreadStatus.CLOSED.value
@@ -960,7 +1152,7 @@ async def reopen_thread(
     await _require_participation(
         session, thread_id=thread.id, user_id=context.principal.user_id
     )
-    await _live_relationship_or_none(session, context=context)
+    await _require_mutation_recipient(session, context=context, thread=thread)
     if thread.status != CareThreadStatus.CLOSED.value:
         raise ThreadStateChanged("this conversation is no longer closed")
     thread.status = CareThreadStatus.OPEN.value
@@ -1021,6 +1213,7 @@ __all__ = [
     "list_threads",
     "list_thread_summaries",
     "mark_thread_read",
+    "may_mutate_thread",
     "open_relationship_thread",
     "open_thread",
     "read_thread",

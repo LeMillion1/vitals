@@ -8,6 +8,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — conversation changes require a current recipient
+
+Patient ownership preserves conversation history but no longer permits sending,
+correcting, attaching, closing, or reopening after the actual professional
+recipient loses live care or message consent. Both sides recheck current role,
+profile, account, relationship, consent expiry, and exact message read/write
+scopes before mutations. Read-only history stays available to the patient;
+stale action controls disappear without erasing messages or attachments.
+
+### Fixed — published care plans cannot become drafts again
+
+Care plans move forward from draft to active or archived, and from active to
+archived. Repeating the current state is idempotent, but a crafted request
+cannot hide published history by returning an active plan to draft or reopening
+an archived plan. Published archived plans remain in the patient's record.
+
+### Fixed — health-only rosters do not promise a conversation
+
+The professional roster no longer offers a conversation-creation action merely
+because a record is open. Its record link leads to the freshly authorized view,
+where messaging controls follow the exact current consent. Authorized unread
+conversation links remain available in the roster.
+
 ### Fixed — stale care conversations leave a safe, explicit state
 
 When a conversation or its access changes while the page is open, a refused

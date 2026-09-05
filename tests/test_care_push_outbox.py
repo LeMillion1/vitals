@@ -12,13 +12,25 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
+from vitals.access import PolicyAction, PolicyResourceType
 from vitals.enums import (
     CarePushDeliveryErrorCode,
     CarePushDeliveryStatus,
+    CareRelationshipStatus,
+    ConsentStatus,
+    ProfessionalKind,
+    ProfessionalVerificationStatus,
+    UserRoleName,
     UserStatus,
 )
 from vitals.models.care_thread import CareMessage, CareThread, CareThreadParticipant
-from vitals.models.identity import HealthSubject, User
+from vitals.models.identity import HealthSubject, User, UserRole
+from vitals.models.professional import (
+    CareRelationship,
+    ConsentGrant,
+    ConsentScope,
+    ProfessionalProfile,
+)
 from vitals.models.web_push import CarePushDelivery
 from vitals.services.authorization.subject_access import resolve_access_context
 from vitals.services.care import threads
@@ -55,6 +67,55 @@ async def _user(session, slug: str, *, status: UserStatus = UserStatus.ACTIVE) -
 
 
 async def _thread(session, roots, *recipients: User) -> tuple[CareThread, object]:
+    relationships = []
+    verified_at = now_utc()
+    for recipient in recipients:
+        session.add_all(
+            [
+                UserRole(user_id=recipient.id, role=UserRoleName.DOCTOR.value),
+                ProfessionalProfile(
+                    user_id=recipient.id,
+                    kind=ProfessionalKind.DOCTOR.value,
+                    verification_status=ProfessionalVerificationStatus.VERIFIED.value,
+                    display_name=recipient.username,
+                    verified_at=verified_at,
+                    verified_by_user_id=roots.user_id,
+                ),
+            ]
+        )
+        relationship = CareRelationship(
+            subject_id=roots.subject_id,
+            subject_owner_user_id=roots.user_id,
+            professional_user_id=recipient.id,
+            kind=ProfessionalKind.DOCTOR.value,
+            status=CareRelationshipStatus.ACTIVE.value,
+        )
+        session.add(relationship)
+        relationships.append(relationship)
+    await session.flush()
+    for relationship in relationships:
+        grant = ConsentGrant(
+            relationship_id=relationship.id,
+            subject_id=roots.subject_id,
+            version=1,
+            status=ConsentStatus.ACTIVE.value,
+            granted_at=verified_at,
+            expires_at=verified_at + timedelta(days=365),
+        )
+        session.add(grant)
+        await session.flush()
+        session.add_all(
+            [
+                ConsentScope(
+                    consent_grant_id=grant.id,
+                    subject_id=roots.subject_id,
+                    resource_type=PolicyResourceType.OPERATION.value,
+                    resource_key=threads.MESSAGE_OPERATION,
+                    action=action.value,
+                )
+                for action in (PolicyAction.READ, PolicyAction.MESSAGE)
+            ]
+        )
     thread = CareThread(
         subject_id=roots.subject_id,
         title="Synthetic notification room",
@@ -67,9 +128,17 @@ async def _thread(session, roots, *recipients: User) -> tuple[CareThread, object
             CareThreadParticipant(
                 thread_id=thread.id,
                 subject_id=roots.subject_id,
-                user_id=user_id,
+                user_id=roots.user_id,
             )
-            for user_id in (roots.user_id, *(user.id for user in recipients))
+        ]
+        + [
+            CareThreadParticipant(
+                thread_id=thread.id,
+                subject_id=roots.subject_id,
+                user_id=recipient.id,
+                relationship_id=relationship.id,
+            )
+            for recipient, relationship in zip(recipients, relationships, strict=True)
         ]
     )
     await session.flush()

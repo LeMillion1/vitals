@@ -137,6 +137,22 @@ async def test_patient_opens_only_their_own_live_conversation_with_forced_rls(
         reopened = await client.post(path)
         assert reopened.status_code == 303
         assert reopened.headers["location"] == opened.headers["location"]
+        thread_path = opened.headers["location"]
+        thread_id = uuid.UUID(thread_path.rsplit("/", 1)[1])
+        sent = await client.post(
+            thread_path,
+            data={"body": "Patient-owned PostgreSQL history."},
+        )
+        assert sent.status_code == 303
+        async with admin_sessions() as inspect:
+            patient_message = await inspect.scalar(
+                sa.select(CareMessage).where(
+                    CareMessage.thread_id == thread_id,
+                    CareMessage.actor_user_id == owner.id,
+                )
+            )
+            assert patient_message is not None
+            patient_message_id = patient_message.id
 
         foreign = await client.post(f"/messages/relationship/{other_relationship.id}")
         missing = await client.post(f"/messages/relationship/{uuid.uuid4()}")
@@ -154,6 +170,42 @@ async def test_patient_opens_only_their_own_live_conversation_with_forced_rls(
             await change.commit()
         assert (await client.post(path)).status_code == 404
 
+        # The owner still reads the durable history, but the restricted web role
+        # applies the same exact-recipient rule to every stale mutation.
+        history = await client.get(thread_path, headers={"Accept": "text/html"})
+        assert history.status_code == 200
+        assert "Patient-owned PostgreSQL history." in history.text
+        assert f'action="{thread_path}"' not in history.text
+        assert f'action="{thread_path}/close"' not in history.text
+        assert f"/messages/{patient_message_id}/revise" not in history.text
+        stale_responses = [
+            await client.post(
+                thread_path,
+                data={"body": "UNSENT-POSTGRES-PATIENT-TEXT"},
+            ),
+            await client.post(
+                f"{thread_path}/messages/{patient_message_id}/revise",
+                data={"body": "UNCHANGED-POSTGRES-PATIENT-TEXT"},
+            ),
+            await client.post(f"{thread_path}/close"),
+        ]
+        assert all(response.status_code == 404 for response in stale_responses)
+        assert all(
+            response.content == stale_responses[0].content
+            for response in stale_responses
+        )
+
+        async with admin_sessions() as change:
+            await change.execute(
+                sa.update(CareThread)
+                .where(CareThread.id == thread_id)
+                .values(status="closed")
+            )
+            await change.commit()
+        stale_reopen = await client.post(f"{thread_path}/reopen")
+        assert stale_reopen.status_code == 404
+        assert stale_reopen.content == stale_responses[0].content
+
         async with admin_sessions() as verify:
             threads = list(await verify.scalars(sa.select(CareThread)))
             assert len(threads) == 1
@@ -164,7 +216,13 @@ async def test_patient_opens_only_their_own_live_conversation_with_forced_rls(
             ) == 2
             assert await verify.scalar(
                 sa.select(sa.func.count()).select_from(CareMessage)
-            ) == 0
+            ) == 1
+            stored_message = await verify.scalar(
+                sa.select(CareMessage).where(CareMessage.id == patient_message_id)
+            )
+            assert stored_message is not None
+            assert stored_message.body == "Patient-owned PostgreSQL history."
+            assert stored_message.edited_at is None
     finally:
         app.dependency_overrides[get_session] = previous_override
         await restricted.dispose()

@@ -679,12 +679,45 @@ async def test_the_plan_lifecycle_is_available_to_its_author(
     db_session.expire_all()
     assert (await db_session.get(CarePlan, plan_id)).status == CarePlanStatus.ACTIVE
 
+    duplicate_activation = await client.post(
+        f"/care/{subject_id}/plan/{plan_id}/status",
+        data={"plan_status": CarePlanStatus.ACTIVE.value},
+        follow_redirects=False,
+    )
+    assert duplicate_activation.status_code == 303
+
+    hidden_downgrade = await client.post(
+        f"/care/{subject_id}/plan/{plan_id}/status",
+        data={"plan_status": CarePlanStatus.DRAFT.value},
+        follow_redirects=False,
+    )
+    assert hidden_downgrade.status_code == 400
+    db_session.expire_all()
+    assert (await db_session.get(CarePlan, plan_id)).status == CarePlanStatus.ACTIVE
+
     archived = await client.post(
         f"/care/{subject_id}/plan/{plan_id}/status",
         data={"plan_status": CarePlanStatus.ARCHIVED.value},
         follow_redirects=False,
     )
     assert archived.status_code == 303
+    db_session.expire_all()
+    assert (await db_session.get(CarePlan, plan_id)).status == CarePlanStatus.ARCHIVED
+
+    duplicate_archive = await client.post(
+        f"/care/{subject_id}/plan/{plan_id}/status",
+        data={"plan_status": CarePlanStatus.ARCHIVED.value},
+        follow_redirects=False,
+    )
+    assert duplicate_archive.status_code == 303
+
+    for invalid_status in (CarePlanStatus.DRAFT, CarePlanStatus.ACTIVE):
+        refused = await client.post(
+            f"/care/{subject_id}/plan/{plan_id}/status",
+            data={"plan_status": invalid_status.value},
+            follow_redirects=False,
+        )
+        assert refused.status_code == 400
     db_session.expire_all()
     assert (await db_session.get(CarePlan, plan_id)).status == CarePlanStatus.ARCHIVED
 
@@ -869,6 +902,20 @@ async def test_roster_message_activity_requires_the_exact_read_scope(
     assert "Last message:" not in roster.text
     assert "Последнее сообщение:" not in roster.text
     assert subject_a.display_name in roster.text
+    assert f'action="/care/{subject_b.id}/messages/relationship/' not in roster.text
+
+    # The authorized record is still useful, without promising a conversation
+    # that the next POST would correctly refuse under health-only consent.
+    record = await client.get(
+        f"/care/{subject_b.id}", headers={"Accept": "text/html"}
+    )
+    assert record.status_code == 200
+    assert f'action="/care/{subject_b.id}/messages/relationship/' not in record.text
+    refused = await client.post(
+        f"/care/{subject_b.id}/messages/relationship/{relationship_id}",
+        follow_redirects=False,
+    )
+    assert refused.status_code == 404
 
 
 async def test_the_patient_is_prompted_after_a_professional_accepts(
@@ -1871,6 +1918,173 @@ async def test_message_actions_recheck_csrf_and_live_consent(
     await db_session.refresh(message)
     assert thread.status == "open"
     assert message.body == "Original."
+
+
+async def test_patient_keeps_history_but_no_thread_actions_after_revocation(
+    doctor_client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+):
+    """Ownership is a read basis, not an imaginary message recipient."""
+
+    from vitals.models.care_thread import (
+        CareMessage,
+        CareMessageAttachment,
+        CareThread,
+    )
+    from vitals.models.tenancy import FileAsset
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    private_root = tmp_path / "private-care-files"
+    monkeypatch.setenv("VITALS_PRIVATE_FILE_ROOT", str(private_root))
+    client, doctor, (owner, subject), (_other_owner, other_subject) = doctor_client
+    subject_id = subject.id
+    other_subject_id = other_subject.id
+    opened = await _open_professional_conversation(
+        client,
+        db_session,
+        subject=subject,
+        professional=doctor,
+    )
+    thread_id = uuid.UUID(opened.headers["location"].rsplit("/", 1)[1])
+    assert (
+        await client.post(
+            f"/care/{subject_id}/messages/{thread_id}",
+            data={"body": "Professional history."},
+            follow_redirects=False,
+        )
+    ).status_code == 303
+
+    client.cookies.set(SESSION_COOKIE, create_session(owner.username))
+    assert (
+        await client.post(
+            f"/care/{subject_id}/messages/{thread_id}",
+            data={"body": "Patient history."},
+            follow_redirects=False,
+        )
+    ).status_code == 303
+    patient_message = await db_session.scalar(
+        select(CareMessage).where(
+            CareMessage.thread_id == thread_id,
+            CareMessage.actor_user_id == owner.id,
+        )
+    )
+    relationship = await db_session.scalar(
+        select(CareRelationship).where(
+            CareRelationship.subject_id == subject_id,
+            CareRelationship.professional_user_id == doctor.id,
+        )
+    )
+    assert patient_message is not None and relationship is not None
+    patient_message_id = patient_message.id
+    await relationships.revoke_consent(
+        db_session,
+        relationship_id=relationship.id,
+        actor_user_id=owner.id,
+    )
+    await db_session.commit()
+
+    page = await client.get(
+        f"/care/{subject_id}/messages/{thread_id}",
+        headers={"Accept": "text/html"},
+    )
+    assert page.status_code == 200
+    assert "Professional history." in page.text
+    assert "Patient history." in page.text
+    assert re.findall(r"<form[^>]+data-care-conversation-action", page.text) == []
+    assert re.findall(r"<form[^>]+data-care-thread-action", page.text) == []
+    assert "data-care-message-editor" not in page.text
+    assert 'id="message-body"' not in page.text
+
+    before = {
+        "messages": await db_session.scalar(
+            select(func.count()).select_from(CareMessage)
+        ),
+        "attachments": await db_session.scalar(
+            select(func.count()).select_from(CareMessageAttachment)
+        ),
+        "assets": await db_session.scalar(select(func.count()).select_from(FileAsset)),
+    }
+    headers = {"HX-Request": "true", "Accept": "text/html"}
+    responses = [
+        await client.post(
+            f"/care/{subject_id}/messages/{thread_id}",
+            data={"body": "UNSENT-PATIENT-TEXT"},
+            headers=headers,
+            follow_redirects=False,
+        ),
+        await client.post(
+            f"/care/{subject_id}/messages/{thread_id}/messages/"
+            f"{patient_message_id}/revise",
+            data={"body": "UNCHANGED-PATIENT-TEXT"},
+            headers=headers,
+            follow_redirects=False,
+        ),
+        await client.post(
+            f"/care/{subject_id}/messages/{thread_id}/close",
+            headers=headers,
+            follow_redirects=False,
+        ),
+        await client.post(
+            f"/care/{subject_id}/messages/{thread_id}",
+            data={"body": "UNSENT-PATIENT-ATTACHMENT"},
+            files={
+                "attachment": (
+                    "synthetic.pdf",
+                    b"%PDF-1.7\nsynthetic revoked upload\n%%EOF\n",
+                    "application/pdf",
+                )
+            },
+            headers=headers,
+            follow_redirects=False,
+        ),
+        await client.post(
+            f"/care/{subject_id}/messages/{uuid.uuid4()}",
+            data={"body": "UNSENT-MISSING-THREAD"},
+            headers=headers,
+            follow_redirects=False,
+        ),
+        await client.post(
+            f"/care/{other_subject_id}/messages/{thread_id}",
+            data={"body": "UNSENT-FOREIGN-SUBJECT"},
+            headers=headers,
+            follow_redirects=False,
+        ),
+    ]
+    assert all(response.status_code == 404 for response in responses)
+    assert all(response.content == responses[0].content for response in responses)
+    assert responses[0].json() == {"detail": "Not Found"}
+
+    conversation = await db_session.get(CareThread, thread_id)
+    assert conversation is not None
+    await db_session.refresh(conversation)
+    conversation.status = "closed"
+    await db_session.commit()
+    reopen = await client.post(
+        f"/care/{subject_id}/messages/{thread_id}/reopen",
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert reopen.status_code == 404
+    assert reopen.content == responses[0].content
+
+    await db_session.refresh(conversation)
+    await db_session.refresh(patient_message)
+    assert conversation.status == "closed"
+    assert patient_message.body == "Patient history."
+    assert patient_message.edited_at is None
+    assert {
+        "messages": await db_session.scalar(
+            select(func.count()).select_from(CareMessage)
+        ),
+        "attachments": await db_session.scalar(
+            select(func.count()).select_from(CareMessageAttachment)
+        ),
+        "assets": await db_session.scalar(select(func.count()).select_from(FileAsset)),
+    } == before
+    assert not private_root.exists()
 
 
 async def test_stale_conversation_send_keeps_one_json_404_and_writes_nothing(

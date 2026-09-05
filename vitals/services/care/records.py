@@ -53,6 +53,14 @@ _MAX_TITLE = 200
 _MAX_ACTIVE_PLAN_SUMMARY = 5
 _MAX_RECENT_NOTES = 20
 
+_PLAN_STATUS_TRANSITIONS = {
+    CarePlanStatus.DRAFT: frozenset(
+        (CarePlanStatus.ACTIVE, CarePlanStatus.ARCHIVED)
+    ),
+    CarePlanStatus.ACTIVE: frozenset((CarePlanStatus.ARCHIVED,)),
+    CarePlanStatus.ARCHIVED: frozenset(),
+}
+
 
 class ProfessionalRecordError(RuntimeError):
     """Base class for authored-record failures."""
@@ -286,9 +294,16 @@ async def set_plan_status(
     )
     if plan is None:
         raise NotTheAuthor("no plan of yours with that id in this record")
-    if plan.status == CarePlanStatus.ARCHIVED.value:
+    current = CarePlanStatus(plan.status)
+    if resolved is current:
+        return plan
+    if resolved not in _PLAN_STATUS_TRANSITIONS[current]:
+        if current is CarePlanStatus.ARCHIVED:
+            raise ProfessionalRecordValidationError(
+                "an archived plan is history; write a new one instead"
+            )
         raise ProfessionalRecordValidationError(
-            "an archived plan is history; write a new one instead"
+            f"a {current.value} plan cannot move to {resolved.value}"
         )
     plan.status = resolved.value
     await session.flush()

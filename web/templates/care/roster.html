@@ -149,20 +149,19 @@
                 </div>
                 {% endif %}
             </a>
+            {% if p.unread_threads %}
             <div class="flex items-center gap-2">
-                {% if p.unread_threads %}
                 {# An unread item can be a preserved historical topic, not
                    necessarily the canonical relationship room. Open the
                    inbox so the badge always leads to the exact unread thread. #}
                 <a href="/care/{{ p.subject_id }}/messages" class="v-btn-ghost text-xs">
                     {{ t("care.roster_unread", count=p.unread_threads) }}
                 </a>
-                {% else %}
-                <form action="/care/{{ p.subject_id }}/messages/relationship/{{ p.relationship_id }}" method="POST">
-                    <button type="submit" class="v-btn-ghost text-xs">{{ t("care.relationship_thread_open") }}</button>
-                </form>
-                {% endif %}
             </div>
+            {% endif %}
+            {# Record entry resolves the exact current scopes before offering
+               a conversation action. An open record alone is not permission
+               to create or send messages; a health-only consent is valid. #}
         </div>
         {% else %}
         <div class="v-card p-5 flex flex-wrap items-center justify-between gap-4">
