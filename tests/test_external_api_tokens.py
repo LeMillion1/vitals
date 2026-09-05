@@ -375,7 +375,7 @@ def _sign_in(client, username: str):
     client.cookies.set(SESSION_COOKIE, create_session(username))
 
 
-async def test_the_settings_page_issues_a_key_and_shows_it_once(
+async def test_the_security_page_issues_a_key_and_shows_it_once(
     client, db_session, legacy_owner_roots, _no_environment_token
 ):
     """Rendered from the POST, never redirected with the secret in the URL.
@@ -393,6 +393,10 @@ async def test_the_settings_page_issues_a_key_and_shows_it_once(
     )
     assert response.status_code == 200, "the secret was redirected rather than rendered"
     assert "Kitchen dashboard" in response.text
+    assert 'action="/settings/external-api"' in response.text
+    assert 'action="/settings/profile"' not in response.text
+    assert 'action="/settings/garmin"' not in response.text
+    assert 'action="/settings/portability-v2/export"' not in response.text
 
     listed = await tokens.list_for_subject(
         db_session, subject_id=legacy_owner_roots.subject_id
@@ -450,6 +454,9 @@ async def test_the_screen_can_stop_a_key(
         f"/settings/external-api/{issued.record.id}/revoke", follow_redirects=False
     )
     assert stopped.status_code == 303
+    assert stopped.headers["location"] == (
+        "/settings/security?saved=external_api_revoked"
+    )
 
     refused = await client.get("/external/summary", headers=_bearer(issued.secret))
     assert refused.status_code in (401, 503)

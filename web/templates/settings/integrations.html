@@ -1,0 +1,72 @@
+{% extends "settings/_layout.html" %}
+{% set settings_title_key = "settings.area.integrations.title" %}
+{% set settings_description_key = "settings.area.integrations.description" %}
+{% block settings_content %}
+{% from "partials/masthead.html" import card_header with context %}
+    <!-- ─── HEVY ───────────────────────────────────────────────────────────── -->
+    <div class="v-card v-setting-row p-6 space-y-5">
+        {{ card_header(t("settings.hevy_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("settings.hevy_description") }}
+        </p>
+        {% if not credential_vault_available %}
+        <div class="v-alert warn">{{ t("settings.no_credential_key") }}</div>
+        {% endif %}
+        <form action="/settings/hevy" method="POST" class="space-y-4">
+            <div class="space-y-1.5">
+                <label for="s-hevy-key" class="v-label">
+                    {{ t("settings.hevy_key") }}
+                    {% if hevy_api_key_set %}
+                    <span class="v-chip v-chip-sm good ml-1.5">{{ t("settings.key_set") }}</span>
+                    {% else %}
+                    <span class="v-chip v-chip-sm bad ml-1.5">{{ t("settings.key_not_set") }}</span>
+                    {% endif %}
+                </label>
+                <input id="s-hevy-key" name="hevy_api_key" type="password"
+                       value="" class="v-input"
+                       placeholder="{{ t('settings.key_placeholder_set') if hevy_api_key_set else 'hevy_...' }}"
+                       autocomplete="new-password">
+            </div>
+            <div class="flex justify-end pt-1">
+                <button type="submit" class="v-btn-ghost text-xs">{{ t("settings.save_hevy") }}</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- ─── GARMIN ─────────────────────────────────────────────────────────── -->
+    <div class="v-card v-setting-row p-6 space-y-5">
+        {{ card_header(t("settings.garmin_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("settings.garmin_description") }}
+        </p>
+        {% if not credential_vault_available %}
+        <div class="v-alert warn">{{ t("settings.no_credential_key") }}</div>
+        {% endif %}
+        <form action="/settings/garmin" method="POST" class="space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="space-y-1.5">
+                    <label for="s-garmin-email" class="v-label">{{ t("settings.garmin_email") }}</label>
+                    <input id="s-garmin-email" name="garmin_email" type="email"
+                           value="{{ garmin_email }}" class="v-input"
+                           placeholder="you@example.com" autocomplete="email">
+                </div>
+                <div class="space-y-1.5">
+                    <label for="s-garmin-pass" class="v-label">
+                        {{ t("settings.garmin_password") }}
+                        {% if garmin_password_set %}
+                        <span class="v-chip v-chip-sm good ml-1.5">{{ t("settings.key_set") }}</span>
+                        {% endif %}
+                    </label>
+                    <input id="s-garmin-pass" name="garmin_password" type="password"
+                           value="" class="v-input"
+                           placeholder="{{ t('settings.garmin_password_placeholder_set') if garmin_password_set else t('settings.garmin_password_placeholder') }}"
+                           autocomplete="new-password">
+                </div>
+            </div>
+            <div class="flex justify-end pt-1">
+                <button type="submit" class="v-btn-ghost text-xs">{{ t("settings.save_garmin") }}</button>
+            </div>
+        </form>
+        {% include "partials/garmin_weight_export.html" %}
+    </div>
+{% endblock %}

@@ -226,35 +226,86 @@ async def test_settings_page_requires_auth(client):
     assert "/login" in r.headers["location"]
 
 
+def _settings_page_content(html: str) -> str:
+    """Exclude shell controls and scripts from focused-page form assertions."""
+
+    marker = 'class="v-settings-sections'
+    assert marker in html
+    return html.split(marker, 1)[1].split("</main>", 1)[0]
+
+
 async def test_settings_page_renders(auth_client):
-    """GET /settings renders personal controls and no platform operations."""
+    """GET /settings is a navigation index, not the old aggregate form."""
     r = await auth_client.get("/settings", headers={"Accept": "text/html"})
     assert r.status_code == 200
-    assert "Профиль пользователя" in r.text
+    assert "<form" not in _settings_page_content(r.text)
+    for path in (
+        "/settings/profile",
+        "/settings/modules",
+        "/settings/integrations",
+        "/settings/brief",
+        "/settings/security",
+        "/settings/data",
+    ):
+        assert f'href="{path}"' in r.text
     assert 'action="/settings/ai"' not in r.text
     assert "triggerRestart" not in r.text
     assert "fetch('/settings/restart'" not in r.text
-    assert "Hevy" in r.text
-    assert "Garmin Connect" in r.text
-    # Password and two-factor share one card — "signing in", not two neighbours
-    # that both talk about the same door.
-    assert "Вход в Vitals" in r.text
-    assert "Двухфакторная защита" in r.text
-    assert 'name="garmin_weight_export_minutes"' in r.text
-    assert 'name="garmin_weight_max_age_days"' in r.text
-    # Personal portability is one password-protected flow; legacy JSON remains
-    # tucked away for installation operators instead of competing with it.
-    assert 'action="/settings/portability-v2/export" method="POST"' in r.text
-    assert "fetch('/settings/portability-v2/inspect'" not in r.text
-    assert 'x-data="portabilityV2()"' in r.text
-    assert 'name="archive_file" accept=".vitals"' in r.text
-    assert 'data-fallback="Запись Vitals (.vitals)"' in r.text
-    assert ": $el.dataset.fallback; inspection = null" in r.text
-    assert 'href="/settings/export-subject"' not in r.text
-    assert 'hx-post="/settings/import-subject"' not in r.text
-    # Non-restorable AI digest remains a clearly separate secondary download.
-    assert 'href="/settings/export-llm"' in r.text
-    assert 'download hx-boost="false"' in r.text
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_action", "allowed_actions"),
+    (
+        (
+            "/settings/profile",
+            "/settings/profile",
+            ("/settings/profile", "/settings/language"),
+        ),
+        ("/settings/modules", "/settings/modules", ("/settings/modules",)),
+        (
+            "/settings/integrations",
+            "/settings/hevy",
+            ("/settings/hevy", "/settings/garmin"),
+        ),
+        ("/settings/brief", "/settings/proactive", ("/settings/proactive",)),
+        (
+            "/settings/security",
+            "/settings/password",
+            (
+                "/settings/password",
+                "/settings/2fa",
+                "/settings/connectors",
+                "/settings/external-api",
+            ),
+        ),
+        (
+            "/settings/data",
+            "/settings/portability-v2/export",
+            ("/settings/portability-v2/export",),
+        ),
+    ),
+)
+async def test_each_focused_settings_page_contains_only_its_own_forms(
+    auth_client,
+    path,
+    expected_action,
+    allowed_actions,
+):
+    response = await auth_client.get(path, headers={"Accept": "text/html"})
+
+    assert response.status_code == 200
+    content = _settings_page_content(response.text)
+    settings_actions = set(
+        re.findall(
+            r'(?:action|hx-post)="(/settings[^\"]*)"',
+            content,
+        )
+    )
+    assert expected_action in settings_actions
+    assert all(
+        any(action == allowed or action.startswith(f"{allowed}/") for allowed in allowed_actions)
+        for action in settings_actions
+    ), settings_actions
 
 
 async def test_settings_page_has_gear_icon(auth_client):
@@ -294,7 +345,7 @@ async def test_settings_save_profile(
         },
     )
     assert r.status_code == 303
-    assert r.headers["location"] == "/settings?saved=profile"
+    assert r.headers["location"] == "/settings/profile?saved=profile"
 
     profile = await health_profile_service.get_profile(
         db_session, subject_id=legacy_owner_roots.subject_id
@@ -380,7 +431,7 @@ async def test_settings_save_hevy(
 
     r = await auth_client.post("/settings/hevy", data={"hevy_api_key": "hevy_abc123"})
     assert r.status_code == 303
-    assert "saved=hevy" in r.headers["location"]
+    assert r.headers["location"] == "/settings/integrations?saved=hevy"
 
     db_session.expire_all()
     account = await providers.resolve_account(
@@ -420,7 +471,7 @@ async def test_settings_save_garmin(
         },
     )
     assert r.status_code == 303
-    assert "saved=garmin" in r.headers["location"]
+    assert r.headers["location"] == "/settings/integrations?saved=garmin"
 
     db_session.expire_all()
     account = await providers.resolve_garmin_account(
@@ -433,8 +484,11 @@ async def test_settings_save_garmin(
     )
     assert await garmin_weight_settings.is_enabled(db_session) is False
 
-    page = await auth_client.get("/settings", headers={"Accept": "text/html"})
+    page = await auth_client.get(
+        "/settings/integrations", headers={"Accept": "text/html"}
+    )
     assert 'hx-post="/settings/garmin/weight-toggle"' in page.text
+    assert 'href="/settings/brief"' in page.text
     assert 'hx-post="/settings/garmin/weight/send-now"' not in page.text
 
 
@@ -609,6 +663,20 @@ async def test_settings_save_mcp(auth_client, tmp_path, monkeypatch):
     assert "VITALS_MCP_CLIENT_SECRET=test-secret" in content
 
 
+def _assert_focused_security_page(html: str) -> None:
+    assert 'action="/settings/password"' in html
+    assert 'action="/settings/2fa/' in html
+    for foreign_action in (
+        "/settings/profile",
+        "/settings/hevy",
+        "/settings/garmin",
+        "/settings/proactive",
+        "/settings/portability-v2/export",
+    ):
+        assert f'action="{foreign_action}"' not in html
+        assert f'hx-post="{foreign_action}"' not in html
+
+
 async def test_settings_change_password_wrong_old(auth_client):
     """POST /settings/password with wrong current password shows error."""
     r = await auth_client.post(
@@ -622,6 +690,7 @@ async def test_settings_change_password_wrong_old(auth_client):
     )
     assert r.status_code == 200
     assert "Неверный текущий пароль" in r.text
+    _assert_focused_security_page(r.text)
 
 
 async def test_settings_change_password_mismatch(auth_client):
@@ -637,6 +706,7 @@ async def test_settings_change_password_mismatch(auth_client):
     )
     assert r.status_code == 200
     assert "не совпадают" in r.text
+    _assert_focused_security_page(r.text)
 
 
 async def test_settings_change_password_too_short(auth_client):
@@ -652,6 +722,27 @@ async def test_settings_change_password_too_short(auth_client):
     )
     assert r.status_code == 200
     assert "8 символов" in r.text
+    _assert_focused_security_page(r.text)
+
+
+async def test_bad_twofa_code_rerenders_only_security_settings(
+    auth_client,
+    db_session,
+):
+    from vitals.services.authentication import legacy_two_factor as twofa_service
+
+    await twofa_service.start_enrolment(db_session)
+    await db_session.commit()
+
+    response = await auth_client.post(
+        "/settings/2fa/enable",
+        data={"code": "000000"},
+        headers={"Accept": "text/html"},
+    )
+
+    assert response.status_code == 200
+    assert 'action="/settings/2fa/enable"' in response.text
+    _assert_focused_security_page(response.text)
 
 
 async def _persist_owner_hash(db_session, password_hash: str) -> None:
@@ -689,7 +780,7 @@ async def test_settings_change_password_success(auth_client, db_session, tmp_pat
         },
     )
     assert r.status_code == 303
-    assert "saved=password" in r.headers["location"]
+    assert r.headers["location"] == "/settings/security?saved=password"
 
     content = env_file.read_text(encoding="utf-8")
     # The hash was updated (bcrypt hashes start with $2b$)
@@ -916,7 +1007,9 @@ async def test_settings_save_proactive_flags_adjusted_values(auth_client):
         },
     )
     assert r.status_code == 303
-    assert r.headers["location"] == "/settings?saved=proactive&adjusted=1"
+    assert r.headers["location"] == (
+        "/settings/brief?saved=proactive&adjusted=1"
+    )
 
 
 async def test_saving_the_card_does_not_reset_the_hidden_delivery_policy(auth_client, db_session):
@@ -980,7 +1073,7 @@ async def test_settings_save_proactive_no_adjusted_flag_in_range(auth_client):
         },
     )
     assert r.status_code == 303
-    assert r.headers["location"] == "/settings?saved=proactive"
+    assert r.headers["location"] == "/settings/brief?saved=proactive"
 
 
 async def test_web_only_schedule_save_is_honestly_deferred(
@@ -1013,7 +1106,9 @@ async def test_web_only_schedule_save_is_honestly_deferred(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == ("/settings?saved=proactive&deferred=reload")
+    assert response.headers["location"] == (
+        "/settings/brief?saved=proactive&deferred=reload"
+    )
 
 
 @pytest.mark.parametrize("lang", ["en", "ru"])
@@ -1030,8 +1125,11 @@ async def test_proactive_save_banner_does_not_claim_a_shared_schedule_reload(
         data={"language": lang},
     )
     assert language_response.status_code == 303
+    assert language_response.headers["location"] == (
+        "/settings/profile?saved=language"
+    )
     response = await auth_client.get(
-        "/settings",
+        "/settings/brief",
         params={"saved": "proactive", "deferred": deferred},
     )
 
@@ -1105,7 +1203,7 @@ async def test_web_only_schedule_save_signals_after_commit(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/settings?saved=proactive"
+    assert response.headers["location"] == "/settings/brief?saved=proactive"
     assert calls == [("signal", "11:00")]
 
 
@@ -1149,7 +1247,7 @@ async def test_combined_schedule_save_keeps_immediate_local_apply(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/settings?saved=proactive"
+    assert response.headers["location"] == "/settings/brief?saved=proactive"
     assert calls == ["10:30"]
 
 

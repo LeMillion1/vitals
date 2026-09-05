@@ -975,9 +975,12 @@ async def test_a_professional_keeps_phone_navigation_and_logout(client, db_sessi
     response = await client.get("/care", headers={"Accept": "text/html"})
 
     assert response.status_code == 200
-    assert 'class="md:hidden v-bottom-nav mh-bnav mh-role-bnav-2"' in response.text
-    assert 'href="/care"' in response.text
-    assert 'action="/logout"' in response.text
+    assert 'class="md:hidden v-bottom-nav mh-bnav mh-role-bnav-3"' in response.text
+    phone_nav = response.text.split('id="mobile-bottom-nav"', 1)[1].split("</nav>", 1)[0]
+    assert 'href="/care"' in phone_nav
+    assert 'href="/settings"' in phone_nav
+    assert 'action="/logout"' in phone_nav
+    assert 'href="/today"' not in phone_nav
 
 
 async def test_a_paused_consent_is_shown_as_paused_rather_than_hidden(

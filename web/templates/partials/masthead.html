@@ -179,8 +179,9 @@
                 {% endif %}
             </a>
             <a href="/share" class="mh-rail-foot-link {% if current_path.startswith('/share') %}is-active{% endif %}">{{ t('share.heading') }}</a>
-            <a href="/settings" class="mh-rail-foot-link {% if current_path.startswith('/settings') and not current_path.startswith('/settings/care') %}is-active{% endif %}">{{ t('nav.settings') }}</a>
             {% endif %}
+            {% set settings_active = current_path.startswith('/settings') and not current_path.startswith(('/settings/care', '/settings/platform')) %}
+            <a href="/settings" class="mh-rail-foot-link {% if settings_active %}is-active{% endif %}"{% if settings_active %} aria-current="page"{% endif %}>{{ t('nav.settings') }}</a>
         </div>
         <form action="/logout" method="POST" hx-boost="false" class="contents">
             <button type="submit" class="mh-rail-foot-out" title="{{ t('nav.logout') }}" aria-label="{{ t('nav.logout') }}">{{ mh_icon('logout') }}</button>

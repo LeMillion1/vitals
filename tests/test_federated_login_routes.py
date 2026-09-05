@@ -2217,7 +2217,7 @@ async def test_after_the_cutover_changing_a_local_password_is_gone(
     assert response.status_code == 404
 
 
-async def test_after_the_cutover_the_settings_page_stops_offering_sign_in(
+async def test_after_the_cutover_the_security_page_stops_offering_local_sign_in(
     auth_client, federated, db_session, legacy_owner_roots
 ):
     """Every route behind that card is 404; the card should not still be there.
@@ -2247,7 +2247,9 @@ async def test_after_the_cutover_the_settings_page_stops_offering_sign_in(
         legacy_owner_roots,
     )
 
-    response = await auth_client.get("/settings", headers={"Accept": "text/html"})
+    response = await auth_client.get(
+        "/settings/security", headers={"Accept": "text/html"}
+    )
     assert response.status_code == 200
     body = response.text
 
@@ -2266,7 +2268,9 @@ async def test_before_the_cutover_the_sign_in_card_is_still_there(
 ):
     """The gate is new; what it hides has to keep working without it."""
 
-    response = await auth_client.get("/settings", headers={"Accept": "text/html"})
+    response = await auth_client.get(
+        "/settings/security", headers={"Accept": "text/html"}
+    )
     assert response.status_code == 200
     assert '/settings/password"' in response.text
 

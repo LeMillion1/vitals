@@ -2054,14 +2054,28 @@ async def test_first_toggle_from_core_only_enables_only_that_module(
     assert "activeTab === 'body'" not in after_save.text
 
 
-async def test_settings_page_renders_modules_card(auth_client):
-    """The /settings page renders the modules card (core locked, optional toggle)."""
-    r = await auth_client.get("/settings", headers={"Accept": "text/html"})
+async def test_modules_settings_page_renders_modules_card(auth_client):
+    """The focused page renders core locks and optional module toggles."""
+    r = await auth_client.get(
+        "/settings/modules", headers={"Accept": "text/html"}
+    )
     assert r.status_code == 200
     assert "Модули дашборда" in r.text
     assert "v-switch" in r.text                       # toggle control present
     assert 'hx-post="/settings/modules"' in r.text    # optional toggles wired to the endpoint
     assert "базовый" in r.text                         # core badge
+
+
+async def test_settings_module_switches_have_accessible_names(auth_client):
+    import re
+
+    response = await auth_client.get(
+        "/settings/modules", headers={"Accept": "text/html"}
+    )
+    switches = re.findall(r'<input[^>]*role="switch"[^>]*>', response.text)
+    assert switches
+    assert all(re.search(r'aria-label="[^\"]+"', switch) for switch in switches)
+    assert any('aria-label="Питание"' in switch for switch in switches)
 
 
 async def test_care_team_management_is_always_discoverable(auth_client):
@@ -2070,7 +2084,7 @@ async def test_care_team_management_is_always_discoverable(auth_client):
     settings = await auth_client.get("/settings", headers={"Accept": "text/html"})
     assert settings.status_code == 200
     assert 'href="/settings/care"' in settings.text
-    assert "Управлять командой" in settings.text
+    assert "Команда помощи" in settings.text
 
     more = await auth_client.get("/more", headers={"Accept": "text/html"})
     assert more.status_code == 200

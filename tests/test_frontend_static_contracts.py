@@ -132,7 +132,7 @@ def test_no_template_disables_a_submit_button_by_hand():
 def test_protected_export_clears_mismatch_before_native_submit_validation():
     """An old custom validity error must not strand a corrected passphrase."""
 
-    settings = (TEMPLATES / "settings/settings.html").read_text(encoding="utf-8")
+    settings = (TEMPLATES / "settings/data.html").read_text(encoding="utf-8")
     export_form = re.search(
         r'<form action="/settings/portability-v2/export".*?</form>',
         settings,

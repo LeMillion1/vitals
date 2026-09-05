@@ -222,6 +222,65 @@ async def test_an_account_without_a_record_is_told_that_and_not_something_else(
     assert not wrong_answer, "; ".join(wrong_answer)
 
 
+async def test_recordless_professional_gets_only_recordless_safe_settings(
+    professional_client,
+):
+    """The landing page and account security exist without inventing a record."""
+
+    index = await professional_client.get(
+        "/settings", headers={"Accept": "text/html"}
+    )
+    security = await professional_client.get(
+        "/settings/security", headers={"Accept": "text/html"}
+    )
+
+    assert index.status_code == security.status_code == 200
+    index_content = index.text.split(
+        'class="v-settings-sections', 1
+    )[1].split("</main>", 1)[0]
+    assert "<form" not in index_content
+    assert 'href="/settings/security"' in index.text
+    # MCP connectors authorize the account and remain manageable without a
+    # record. Legacy installation credentials, subject-bound API keys, and
+    # access history do not belong to this recordless account.
+    assert "Подключённые помощники" in security.text
+    assert 'action="/settings/password"' not in security.text
+    assert 'action="/settings/2fa/' not in security.text
+    assert 'action="/settings/external-api"' not in security.text
+    assert 'href="/settings/access"' not in security.text
+    for path in (
+        "/settings/profile",
+        "/settings/modules",
+        "/settings/integrations",
+        "/settings/brief",
+        "/settings/data",
+    ):
+        assert f'href="{path}"' not in index.text
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/settings/profile",
+        "/settings/modules",
+        "/settings/integrations",
+        "/settings/brief",
+        "/settings/data",
+    ),
+)
+async def test_recordless_professional_cannot_open_personal_settings(
+    professional_client,
+    path,
+):
+    response = await professional_client.get(path, headers={"Accept": "text/html"})
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/care"
+    assert 'action="/settings/profile"' not in response.text
+    assert 'action="/settings/garmin"' not in response.text
+    assert 'action="/settings/portability-v2/export"' not in response.text
+
+
 async def test_each_patients_report_describes_that_patient(
     db_session, legacy_owner_roots, second_person
 ):
@@ -568,7 +627,9 @@ async def test_the_owner_can_save_their_own_notification_settings(
         follow_redirects=False,
     )
     assert response.status_code == 303, response.text
-    assert "saved=proactive" in response.headers["location"]
+    assert response.headers["location"].startswith(
+        "/settings/brief?saved=proactive"
+    )
     # Saved, and honest about the half that did not take effect: the process
     # schedule is one registry and is not rebuilt from one record.
     assert "deferred=1" in response.headers["location"]

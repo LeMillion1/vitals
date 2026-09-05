@@ -1,0 +1,71 @@
+<!-- Saved / Error banners -->
+    <div id="saved-banner">
+    {% if saved == 'profile' %}
+    <div class="v-alert info">{{ t("settings.saved.profile") }}</div>
+    {% elif saved == 'ai' %}
+    <div class="v-alert info">{{ t("settings.saved.ai") }}</div>
+    {% elif saved == 'hevy' %}
+    <div class="v-alert info">{{ t("settings.saved.hevy") }}</div>
+    {% elif saved == 'garmin' %}
+    <div class="v-alert info">{{ t("settings.saved.garmin") }}</div>
+    {% elif saved == 'mcp' %}
+    <div class="v-alert info">{{ t("settings.saved.mcp") }}</div>
+    {% elif saved == 'password' %}
+    <div class="v-alert info">{{ t("settings.saved.password") }}</div>
+    {% elif saved == 'language' %}
+    <div class="v-alert info">{{ t("settings.saved.language") }}</div>
+    {% elif saved == 'proactive' %}
+    <div class="v-alert info">{{ t("settings.saved.proactive") }}</div>
+    {% elif saved == 'twofa' %}
+    <div class="v-alert info">{{ t("settings.saved.twofa") }}</div>
+    {% elif saved == 'twofa_off' %}
+    <div class="v-alert info">{{ t("settings.saved.twofa_off") }}</div>
+    {% elif saved == 'external_api' %}
+    <div class="v-alert info">{{ t("external_api.issued") }}</div>
+    {% elif saved == 'external_api_revoked' %}
+    <div class="v-alert info">{{ t("external_api.revoked") }}</div>
+    {% elif saved == 'mcp_tokens' %}
+    <div class="v-alert info">{{ t("mcp_tokens.revoked") }}</div>
+    {% endif %}
+    {% if saved == 'proactive' and adjusted %}
+    <div class="v-alert warn">{{ t("settings.proactive_adjusted") }}</div>
+    {% endif %}
+    {% if saved == 'proactive' and deferred == 'reload' %}
+    <div class="v-alert warn">{{ t("settings.proactive_reload_deferred") }}</div>
+    {% elif saved == 'proactive' and deferred %}
+    <div class="v-alert warn">{{ t("settings.proactive_deferred") }}</div>
+    {% endif %}
+    </div>
+    {% if saved %}
+    <script>
+    (function () {
+        // base.html holds scroll position across an htmx-boosted save, so a
+        // banner saved further down the page never scrolls into view. Read the
+        // (already-rendered, already-translated) banner text back out and toast
+        // it too — same message, guaranteed visible. Runs again on every boosted
+        // swap of this block (hence var, not top-level const/let — see the IIFE
+        // note on window.vitalsToast in base.html for why that matters here).
+        var banner = document.getElementById('saved-banner');
+        var text = banner ? banner.textContent.replace(/\s+/g, ' ').trim() : '';
+        if (text && window.vitalsToast) window.vitalsToast(text, 'success');
+    })();
+    </script>
+    {% endif %}
+
+    {% if error == 'wrong_password' %}
+    <div class="v-alert warn">{{ t("settings.error.wrong_password") }}</div>
+    {% elif error == 'password_mismatch' %}
+    <div class="v-alert warn">{{ t("settings.error.password_mismatch") }}</div>
+    {% elif error == 'password_too_short' %}
+    <div class="v-alert warn">{{ t("settings.error.password_too_short") }}</div>
+    {% elif error == 'twofa_bad_code' %}
+    <div class="v-alert warn">{{ t("settings.error.twofa_bad_code") }}</div>
+    {% elif error == 'external_api' %}
+    <div class="v-alert warn">{{ t("settings.error.external_api") }}</div>
+    {% elif error == 'mcp_tokens' %}
+    <div class="v-alert warn">{{ t("mcp_tokens.error_refused") }}</div>
+    {% elif error == 'no_credential_key' %}
+    <div class="v-alert warn">{{ t("settings.no_credential_key") }}</div>
+    {% elif error in ('hevy', 'garmin') %}
+    <div class="v-alert warn">{{ t("settings.error.integration") }}</div>
+    {% endif %}

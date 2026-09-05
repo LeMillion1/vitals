@@ -14,11 +14,17 @@ ROUTES = ROOT / "web" / "settings" / "routes"
 
 EXPECTED_MANIFEST = {
     ("GET", "/settings", "settings_page"),
+    ("GET", "/settings/brief", "brief_settings_page"),
+    ("GET", "/settings/data", "data_settings_page"),
     ("GET", "/settings/export", "export_backup"),
     ("GET", "/settings/export-llm", "export_llm"),
     ("GET", "/settings/export-subject", "export_subject_backup"),
+    ("GET", "/settings/integrations", "integrations_settings_page"),
+    ("GET", "/settings/modules", "modules_settings_page"),
     ("GET", "/settings/platform", "platform_settings_page"),
     ("GET", "/settings/platform/ai", "platform_ai_page"),
+    ("GET", "/settings/profile", "profile_settings_page"),
+    ("GET", "/settings/security", "security_settings_page"),
     ("POST", "/settings/2fa/disable", "disable_twofa"),
     ("POST", "/settings/2fa/enable", "confirm_twofa"),
     ("POST", "/settings/2fa/start", "start_twofa"),
@@ -91,6 +97,7 @@ def test_settings_route_leaves_stay_bounded_and_reuse_shared_forms():
     expected = {
         "__init__.py",
         "common.py",
+        "index.py",
         "portability.py",
         "preferences.py",
         "profile.py",

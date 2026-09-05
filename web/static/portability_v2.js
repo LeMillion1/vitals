@@ -20,6 +20,16 @@
         }
     }
 
+    function reauthenticate(response) {
+        // The server decides whether a federated step-up or local login is
+        // required. Never navigate to an arbitrary response-provided URL.
+        var target = response.headers.get('X-Vitals-Reauthentication') || '';
+        if (target.indexOf('/auth/start?') !== 0 && target.indexOf('/login?') !== 0) {
+            target = '/login?next=' + encodeURIComponent('/settings/data');
+        }
+        window.location.href = target;
+    }
+
     window.portabilityV2 = function () {
         return {
             busy: '',
@@ -70,7 +80,7 @@
                     });
                     var payload = await responsePayload(response);
                     if (response.status === 401) {
-                        window.location.href = '/login?next=%2Fsettings';
+                        reauthenticate(response);
                         return;
                     }
                     if (!response.ok) throw new Error(payload.detail || translated(
@@ -131,7 +141,7 @@
                     });
                     var payload = await responsePayload(response);
                     if (response.status === 401) {
-                        window.location.href = '/login?next=%2Fsettings';
+                        reauthenticate(response);
                         return;
                     }
                     if (!response.ok) throw new Error(payload.detail || translated(

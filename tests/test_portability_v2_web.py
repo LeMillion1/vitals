@@ -218,7 +218,10 @@ async def test_all_v2_transfers_require_recent_authentication(
     )
     common = {
         "data": {"passphrase": PASSPHRASE},
-        "headers": {"Referer": "http://test/settings", "Accept": "application/json"},
+        "headers": {
+            "Referer": "http://test/settings/data",
+            "Accept": "application/json",
+        },
         "follow_redirects": False,
     }
     export = await client.post("/settings/portability-v2/export", **common)

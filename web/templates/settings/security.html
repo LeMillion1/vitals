@@ -1,0 +1,277 @@
+{% extends "settings/_layout.html" %}
+{% set settings_title_key = "settings.area.security.title" %}
+{% set settings_description_key = "settings.area.security.description" %}
+{% block settings_content %}
+{% from "partials/masthead.html" import card_header with context %}
+    <!-- ─── SIGNING IN: password + two-factor ──────────────────────────────── -->
+    {% if federated_signin or local_signin_available %}
+    <div class="v-card v-setting-row p-6 space-y-5">
+        {{ card_header(t("settings.signin_title")) }}
+
+        {% if federated_signin %}
+        {# The provider owns sign-in after the cutover. Every route behind this
+           card answers 404, so rendering the forms would offer a password change
+           and a second-factor enrolment that cannot happen — and would put a
+           stale enrolment secret on screen next to buttons that cannot act. #}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("settings.signin_federated") }}
+        </p>
+        {% else %}
+
+        <div class="space-y-2.5">
+        <span class="s-signin-label">{{ t("settings.password_label") }}</span>
+        <form action="/settings/password" method="POST" class="space-y-4">
+            <div class="space-y-1.5">
+                <label for="s-old-pass" class="v-label">{{ t("settings.current_password") }}</label>
+                <input id="s-old-pass" name="old_password" type="password"
+                       class="v-input" placeholder="••••••••" autocomplete="current-password" required>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="space-y-1.5">
+                    <label for="s-new-pass" class="v-label">{{ t("settings.new_password") }}</label>
+                    <input id="s-new-pass" name="new_password" type="password"
+                           class="v-input" placeholder="{{ t('settings.new_password_placeholder') }}" autocomplete="new-password"
+                           minlength="8" required>
+                </div>
+                <div class="space-y-1.5">
+                    <label for="s-new-pass2" class="v-label">{{ t("settings.confirm_password") }}</label>
+                    <input id="s-new-pass2" name="new_password_confirm" type="password"
+                           class="v-input" placeholder="••••••••" autocomplete="new-password"
+                           minlength="8" required>
+                </div>
+            </div>
+            <div class="flex justify-end pt-1">
+                <button type="submit" class="v-btn-ghost text-xs">{{ t("settings.save_password") }}</button>
+            </div>
+        </form>
+        </div>
+
+        <div style="border-top: 1px solid var(--line)"></div>
+
+        <div class="space-y-2.5"
+             x-data="{ confirming: {{ 'true' if error == 'twofa_bad_code' else 'false' }} }">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-2">
+                <span class="s-signin-label">{{ t("settings.twofa_label") }}</span>
+                {# State sits next to the name, the way the modules card marks a Core
+                   row — a lone chip under the description reads as a stray badge. #}
+                {% if twofa.enabled %}
+                <span class="v-chip v-chip-sm good">{{ t("settings.twofa_on") }}</span>
+                {% endif %}
+            </div>
+
+            {% if twofa.enabled %}
+            {# The code field belongs to the act of switching it off, so it stays
+               out of the way until that is actually asked for — an empty code box
+               sitting under an enabled feature just reads as something unfinished. #}
+            {# margin-left:auto so that when the row wraps on a phone the button
+               still sits right, in line with every other action on this card. #}
+            <button type="button" class="v-btn-ghost text-xs" x-show="!confirming"
+                    style="margin-left:auto"
+                    @click="confirming = true">{{ t("settings.twofa_disable") }}</button>
+            {% elif not twofa.pending %}
+            <form action="/settings/2fa/start" method="POST" style="margin-left:auto">
+                <button type="submit" class="v-btn-ghost text-xs">{{ t("settings.twofa_enable") }}</button>
+            </form>
+            {% endif %}
+        </div>
+
+        {% if twofa.enabled %}
+        {# Inline display:none, not x-cloak alone: this block survives a boosted
+           swap, and without a static default it flashes open on the way in. #}
+        <form action="/settings/2fa/disable" method="POST" x-show="confirming" x-cloak
+              style="display:none" class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+            <div class="space-y-1.5">
+                <label for="s-2fa-off" class="v-label">{{ t("settings.twofa_code") }}</label>
+                <input id="s-2fa-off" name="code" class="v-input" required
+                       inputmode="numeric" pattern="[0-9]*" maxlength="6"
+                       autocomplete="one-time-code" placeholder="000000">
+            </div>
+            <div class="flex justify-end gap-2">
+                <button type="button" class="v-btn-ghost text-xs"
+                        @click="confirming = false">{{ t("settings.twofa_cancel") }}</button>
+                <button type="submit" class="v-btn-ghost text-xs">{{ t("settings.twofa_disable") }}</button>
+            </div>
+        </form>
+
+        {% elif twofa.pending %}
+        {# ── Mid-enrolment: the secret is on screen, 2FA is still off ── #}
+        <div style="display:flex; flex-wrap:wrap; align-items:center; gap:1.25rem">
+            {# White tile: the QR must stay dark-on-light whatever the theme. #}
+            <div class="v-auth-qr">{{ twofa_qr|safe }}</div>
+            <div style="flex:1; min-width:11rem; display:flex; flex-direction:column;
+                        align-items:flex-start; gap:.625rem">
+                <span id="s-2fa-secret" class="v-text-body" data-secret="{{ twofa.secret }}"
+                      style="color:var(--muted); letter-spacing:.06em;
+                             font-variant-numeric:tabular-nums; word-break:break-all;
+                             user-select:all">{{ twofa_secret_display }}</span>
+                <div class="flex flex-wrap gap-2">
+                    <button type="button" class="v-btn-ghost text-xs" data-2fa-copy>{{ t("settings.twofa_copy") }}</button>
+                    {# Same enrolment handed to an authenticator on *this* device —
+                       the QR above is for a second one. Hidden where there's a
+                       mouse: on a desktop nothing usually claims otpauth://, so the
+                       click does nothing and the control is dead. #}
+                    <a class="v-btn-ghost text-xs s-2fa-app" href="{{ twofa_uri }}">{{ t("settings.twofa_open_app") }}</a>
+                </div>
+            </div>
+        </div>
+
+        <form action="/settings/2fa/enable" method="POST" class="space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+                <div class="space-y-1.5">
+                    <label for="s-2fa-code" class="v-label">{{ t("settings.twofa_code") }}</label>
+                    <input id="s-2fa-code" name="code" class="v-input" required autofocus
+                           inputmode="numeric" pattern="[0-9]*" maxlength="6"
+                           autocomplete="one-time-code" placeholder="000000">
+                </div>
+                <div class="flex justify-end gap-2">
+                    <button type="submit" form="s-2fa-cancel" class="v-btn-ghost text-xs">{{ t("settings.twofa_cancel") }}</button>
+                    <button type="submit" class="v-btn text-xs">{{ t("settings.twofa_confirm") }}</button>
+                </div>
+            </div>
+        </form>
+        {# Outside the form above so its submit button can't post the code here. #}
+        <form action="/settings/2fa/disable" method="POST" id="s-2fa-cancel" class="hidden"></form>
+
+        {% else %}
+        {# ── Off. The button is up in the header row; all that is left is saying
+             what it would turn on. #}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("settings.twofa_description") }}</p>
+        {% endif %}
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- ─── CONNECTED ASSISTANTS ───────────────────────────────────────────── -->
+    {% endif %}
+    <div class="v-card v-setting-row p-6 space-y-5">
+        {{ card_header(t("mcp_tokens.title")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("mcp_tokens.description") }}
+        </p>
+
+        {% if mcp_connectors %}
+        <div class="space-y-2">
+            {% for connector in mcp_connectors %}
+            <div class="v-card-inset p-4 flex flex-wrap items-center justify-between gap-3">
+                <span class="v-text-body">
+                    <strong>{{ connector.name }}</strong>
+                    · {{ t("mcp_tokens.state_" ~ connector.state) }}
+                    {% if connector.state == 'active' %}
+                    · {{ t("mcp_tokens.since") }} {{ connector.issued_at | format_date }}
+                    {% endif %}
+                    {% if connector.adopted %}
+                    <span class="v-text-micro" style="color: var(--faint)">
+                        · {{ t("mcp_tokens.predates") }}
+                    </span>
+                    {% endif %}
+                </span>
+                {% if connector.state == 'active' %}
+                <form action="/settings/connectors/{{ connector.id }}/revoke" method="POST">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("mcp_tokens.revoke") }}</button>
+                </form>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("mcp_tokens.none_yet") }}</p>
+        {% endif %}
+    </div>
+
+    {% if has_own_record %}
+    <!-- ─── EXTERNAL API CREDENTIALS ───────────────────────────────────────── -->
+    <div class="v-card v-setting-row p-6 space-y-5">
+        {{ card_header(t("external_api.title")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("external_api.description") }}
+        </p>
+
+        {% if issued_external_token %}
+        {# Shown once, and there is no page that can show it again: only the
+           hash is stored, so nobody — including an operator with the database
+           open — can read it back. #}
+        <div class="v-alert warn space-y-2">
+            <p class="v-text-body">{{ t("external_api.shown_once") }}</p>
+            <code class="v-text-micro" style="word-break: break-all; user-select: all">{{ issued_external_token }}</code>
+        </div>
+        {% endif %}
+
+        {% if external_tokens %}
+        <div class="space-y-2">
+            {% for token in external_tokens %}
+            <div class="v-card-inset p-4 flex flex-wrap items-center justify-between gap-3">
+                <span class="v-text-body">
+                    <strong>{{ token.label }}</strong>
+                    · {{ t("external_api.state_" ~ token.state) }}
+                    {% if token.state == 'active' %} · {{ t("external_api.until") }} {{ token.expires_at | format_date }}{% endif %}
+                </span>
+                {% if token.state == 'active' %}
+                <form action="/settings/external-api/{{ token.id }}/revoke" method="POST">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("external_api.revoke") }}</button>
+                </form>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("external_api.none_yet") }}</p>
+        {% endif %}
+
+        <form action="/settings/external-api" method="POST" class="space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="space-y-1.5">
+                    <label for="ext-label" class="v-label">{{ t("external_api.field_label") }}</label>
+                    <input id="ext-label" name="label" type="text" class="v-input" required
+                           maxlength="120" placeholder="{{ t('external_api.field_label_hint') }}">
+                </div>
+                <div class="space-y-1.5">
+                    <label for="ext-days" class="v-label">{{ t("external_api.field_days") }}</label>
+                    <input id="ext-days" name="days" type="number" inputmode="numeric" step="1"
+                           class="v-input" min="1" max="365" value="90" required>
+                </div>
+            </div>
+            <div class="flex justify-end">
+                <button type="submit" class="v-btn-ghost text-xs">{{ t("external_api.issue") }}</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- ─── WHO CAN OPEN THIS RECORD ──────────────────────────────────────── -->
+    {# Always here, not only once somebody has asked. A page that appears the
+       first time support requests access is a page nobody knows to look for,
+       and "has anybody been reading my record" is a question worth being able
+       to ask on a quiet day and get *no* for. #}
+    <div class="v-card v-setting-row p-6 space-y-5">
+        {{ card_header(t("support.patient_heading")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("support.patient_description") }}
+        </p>
+        <div class="flex justify-end">
+            <a href="/settings/access" class="v-btn-ghost text-xs">
+                {{ t("support.history_title") }}
+            </a>
+        </div>
+    </div>
+    {% endif %}
+{% endblock %}
+{% block settings_script %}
+<script>
+(function () {
+    // Copy the 2FA secret. Only on screen mid-enrolment, and only useful on
+    // desktop — on a phone the otpauth:// link next to it hands the secret
+    // straight to the authenticator app.
+    var btn = document.querySelector('[data-2fa-copy]');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+        var el = document.getElementById('s-2fa-secret');
+        // The grouped-in-fours rendering is for reading; the app wants the raw
+        // string, so copy the unspaced original off the data attribute.
+        navigator.clipboard.writeText(el ? el.dataset.secret : '').then(function () {
+            if (window.vitalsToast) window.vitalsToast({{ t("settings.twofa_copied")|tojson }}, 'success');
+        });
+    });
+})();
+
+</script>
+{% endblock %}

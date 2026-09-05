@@ -53,7 +53,7 @@
 {% macro mobile_role_nav() %}
 {% set current_path = request.url.path if request else '' %}
 {% set nav_context = active_account_nav | default('') %}
-{% set role_slots = (1 if request.state.is_professional else 0) + (1 if request.state.is_platform_admin else 0) + 1 %}
+{% set role_slots = (1 if request.state.is_professional else 0) + (1 if request.state.is_platform_admin else 0) + 2 %}
 <nav id="mobile-bottom-nav"
     class="md:hidden v-bottom-nav mh-bnav mh-role-bnav-{{ role_slots }}"
     style="padding-bottom: max(env(safe-area-inset-bottom), var(--sab, 0px)); min-height: calc(56px + max(env(safe-area-inset-bottom), var(--sab, 0px)))">
@@ -70,6 +70,11 @@
         <span class="mh-bnav-label">{{ t('settings.platform.heading') }}</span>
     </a>
     {% endif %}
+    {% set settings_active = current_path.startswith('/settings') and not current_path.startswith(('/settings/care', '/settings/platform')) %}
+    <a href="/settings" class="v-bnav-link {% if settings_active %}is-active{% endif %}"{% if settings_active %} aria-current="page"{% endif %}>
+        <span class="v-nav-ico">{{ mh_icon('settings') }}</span>
+        <span class="mh-bnav-label">{{ t('nav.settings') }}</span>
+    </a>
     <form action="/logout" method="POST" hx-boost="false" class="contents">
         <button type="submit" class="v-bnav-link">
             <span class="v-nav-ico">{{ mh_icon('logout') }}</span>

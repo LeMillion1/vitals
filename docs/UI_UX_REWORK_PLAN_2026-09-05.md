@@ -1,7 +1,8 @@
 # Vitals UI/UX rework plan
 
-Date: 2026-09-05. Status: proposed product structure, authorized for incremental
-implementation after the current functional QA and release acceptance checks.
+Date: 2026-09-05. Updated: 2026-09-06. Status: incremental implementation
+authorized; Stage 0 acceptance is complete and Stage 1 release checks are in
+progress. Later stages remain a plan, not a claim of delivered behavior.
 
 ## Decision and evidence
 
@@ -49,8 +50,9 @@ Long scrolling also makes the outcome of a save harder to locate.
 
 ### Proposed structure
 
-The following paths are proposals, not a list of already implemented routes.
-Reuse existing destinations where they already provide the correct boundary.
+The grouping below guides the implementation. Stage 1 now has focused routes;
+later task-specific refinements remain proposals. Reuse existing destinations
+where they already provide the correct boundary.
 
 | Area | Main question | Contents |
 | --- | --- | --- |
@@ -237,7 +239,36 @@ For every layout slice:
 - Use only synthetic records; do not send messages or call vendor APIs merely
   to validate a layout change.
 
-## Open questions to validate, not blockers for the first slice
+## Implementation status and follow-up questions
+
+### Stage 1 implementation record
+
+- `/settings` is a six-destination index for a member and an account-safe entry
+  point for a professional or operator without a personal record.
+- Focused routes are `/settings/profile`, `/settings/modules`,
+  `/settings/integrations`, `/settings/brief`, `/settings/security`, and
+  `/settings/data`; existing POST URLs remain intact.
+- Saves, errors, supported old query links, and recent authentication return to
+  the relevant section. The original recent-authentication and explicit restore
+  confirmation boundaries remain enforced.
+- Recordless accounts can manage their own assistant connections without seeing
+  personal profile, provider, subject API-key, or portability forms.
+- Module switches have translated accessible names and 44-by-44-pixel hit areas.
+  Short Profile and Security headings fit the phone bar beside All settings.
+- Initial isolated-browser acceptance covered index navigation, profile save,
+  language switching, module toggle/navigation/count, Brief save with truthful
+  shared-cadence feedback, and a legacy reauthentication return to Data with empty
+  passphrases. Deployment acceptance is recorded separately when completed.
+- Release validation passed: 6,409 fast tests (226 skipped, 45 deselected),
+  nine focused PostgreSQL tests with a head-to-0034-to-head migration round trip,
+  15 JavaScript portability tests, whole-repository Ruff, and diff checks.
+  All six focused pages and the index were visually checked at 390 pixels;
+  Tailwind was rebuilt and its generated output remained unchanged.
+- No provider API calls, mail delivery, notification sends, or live restore are
+  implied by this layout work. The existing external prerequisites in the QA
+  audit remain unchanged.
+
+### Questions for later stages
 
 - Which three actions do members actually repeat most often?
 - Do users look for goals under a health domain, Today, or a dedicated goal index?

@@ -2828,6 +2828,37 @@ sup {
    keys), so a two-column split cut the rule in half and squeezed the inputs. */
 .v-setting-row { border-color: var(--line-2); }
 
+/* Focused settings share the shell; the index contains destinations, not forms. */
+.v-settings-index-link { display: block; height: 100%; }
+.v-settings-index-link:hover { border-color: var(--muted); }
+.v-settings-index-link__next { display: block; color: var(--fg-2); }
+.v-settings-sections .v-switch {
+    min-width: 44px;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+}
+.v-settings-sections .v-switch-track { position: relative; }
+.s-signin-label {
+    display: block;
+    font-size: var(--text-eyebrow);
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--faint);
+}
+.v-auth-qr {
+    flex: none;
+    padding: var(--space-2);
+    background: var(--fg);
+    border-radius: var(--radius-sm);
+    line-height: 0;
+}
+/* A desktop normally has no handler for an on-device authenticator link. */
+@media (hover: hover) and (pointer: fine) {
+    .s-2fa-app { display: none; }
+}
+
 /* HRT — active cycle as the hero surface, logs as dense evidence. */
 .v-hrt-overview {
     overflow: hidden;

@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vitals.config import load_config
+from vitals.integrations.garmin_client import login_breaker_state
 from vitals.process_mode import ProcessMode, load_process_mode
+from vitals.services.credentials import providers as credential_providers
 from vitals.services.modules import preferences as modules_service
 from vitals.services.preferences import language as language_service
+from vitals.services.profile import health as health_profile_service
 from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from vitals.services.modules.preferences import ModuleToggleError
 from vitals.services.proactive.preferences import contracts as preference_contracts
@@ -22,10 +27,136 @@ from web.deps import get_redis, get_session, require_auth
 from web.ratelimit import rate_limit
 from web.templating import templates
 
-from .common import compatibility_override, redirect as _redirect
+from .common import (
+    SETTINGS_BRIEF_PATH,
+    SETTINGS_PROFILE_PATH,
+    compatibility_override,
+    redirect as _redirect,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def render_modules_settings(
+    request: Request,
+    username: str,
+    *,
+    db: AsyncSession,
+) -> HTMLResponse:
+    """Render the subject-scoped module switches and no other settings."""
+
+    # The global chrome map is already loaded, but direct navigation still has
+    # to prove that this account owns a record before offering write controls.
+    await resolve_legacy_ownership_context(db, actor_username=username)
+    return templates.TemplateResponse(
+        request,
+        "settings/modules.html",
+        {
+            "username": username,
+            "enabled_modules": (
+                getattr(request.state, "enabled_modules", {}) or {}
+            ),
+        },
+    )
+
+
+@router.get("/modules", response_class=HTMLResponse)
+async def modules_settings_page(
+    request: Request,
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    return await render_modules_settings(
+        request,
+        username,
+        db=db,
+    )
+
+
+async def render_brief_settings(
+    request: Request,
+    username: str,
+    *,
+    db: AsyncSession,
+    redis: Optional[Redis] = None,
+    saved: Optional[str] = None,
+    error: Optional[str] = None,
+    adjusted: Optional[str] = None,
+    deferred: Optional[str] = None,
+) -> HTMLResponse:
+    """Render the existing Brief and scheduler preference bundle."""
+
+    scope = await preference_queries.resolve_legacy_preferences_scope(
+        db,
+        actor_username=username,
+    )
+    garmin_account = await credential_providers.resolve_garmin_account(
+        db,
+        subject_id=scope.subject_id,
+    )
+    breaker = await compatibility_override(
+        "login_breaker_state",
+        login_breaker_state,
+    )(redis, garmin_account.namespace if garmin_account else "")
+    proactive = (
+        await preference_queries.get_preferences_bundle(
+            db,
+            scope=scope,
+            actor_username=username,
+        )
+    ).as_flat_dict()
+    subject_timezone = await health_profile_service.get_subject_timezone(
+        db,
+        subject_id=scope.subject_id,
+    )
+    return templates.TemplateResponse(
+        request,
+        "settings/brief.html",
+        {
+            "username": username,
+            "saved": saved,
+            "error": error,
+            "adjusted": adjusted,
+            "deferred": deferred,
+            "timezone": subject_timezone or load_config().timezone,
+            "proactive": proactive,
+            "breaker": breaker,
+            "nudge_categories": preference_contracts.NUDGE_CATEGORIES,
+            "budget_range": preference_contracts.BUDGET_RANGE,
+            "sync_hours_range": preference_contracts.SYNC_HOURS_RANGE,
+            "pulse_range": preference_contracts.PULSE_SECONDS_RANGE,
+            "weight_export_minutes_range": (
+                preference_contracts.WEIGHT_EXPORT_MINUTES_RANGE
+            ),
+            "weight_max_age_days_range": (
+                preference_contracts.WEIGHT_MAX_AGE_DAYS_RANGE
+            ),
+        },
+    )
+
+
+@router.get("/brief", response_class=HTMLResponse)
+async def brief_settings_page(
+    request: Request,
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+    saved: Optional[str] = None,
+    error: Optional[str] = None,
+    adjusted: Optional[str] = None,
+    deferred: Optional[str] = None,
+) -> HTMLResponse:
+    return await render_brief_settings(
+        request,
+        username,
+        db=db,
+        redis=redis,
+        saved=saved,
+        error=error,
+        adjusted=adjusted,
+        deferred=deferred,
+    )
 
 @router.post("/modules")
 async def toggle_module(
@@ -172,7 +303,10 @@ async def save_proactive(
         # The owner's Brief time applies directly from its durable row. This
         # notice is about the process-wide provider cadence only.
         query += "&deferred=reload" if reload_failed else "&deferred=1"
-    return _redirect(query)
+    return _redirect(
+        query,
+        destination=SETTINGS_BRIEF_PATH,
+    )
 
 
 async def signal_schedule_reload() -> bool:
@@ -228,6 +362,7 @@ async def save_language(
     db: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ):
+    del request
     ownership = await resolve_legacy_ownership_context(
         db,
         actor_username=username,
@@ -244,7 +379,7 @@ async def save_language(
         lang,
         user_id=ownership.owner_user_id,
     )
-    return RedirectResponse(
-        url="/settings?saved=language",
-        status_code=status.HTTP_303_SEE_OTHER,
+    return _redirect(
+        "?saved=language",
+        destination=SETTINGS_PROFILE_PATH,
     )

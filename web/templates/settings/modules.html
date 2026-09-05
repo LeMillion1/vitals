@@ -1,0 +1,7 @@
+{% extends "settings/_layout.html" %}
+{% set settings_title_key = "settings.area.modules.title" %}
+{% set settings_description_key = "settings.area.modules.description" %}
+{% block settings_content %}
+{% from "partials/masthead.html" import card_header with context %}
+    {% include "partials/modules_card.html" %}
+{% endblock %}

@@ -649,7 +649,9 @@ async def test_settings_status_toggle_and_send_now_use_human_owner_and_exact_gar
         tracked_prepare,
     )
 
-    page = await auth_client.get("/settings", headers={"Accept": "text/html"})
+    page = await auth_client.get(
+        "/settings/integrations", headers={"Accept": "text/html"}
+    )
     assert order[:2] == ["redis", "prepare"]
     toggled = await auth_client.post(
         "/settings/garmin/weight-toggle",

@@ -8,6 +8,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — Settings has a short index and focused screens
+
+Settings now opens a role-aware index with separate Profile, Modules,
+Integrations, Brief and schedules, Security, and Data pages. Personal forms stay
+behind record ownership checks, while an account without a personal record can
+still reach its own connected assistants from desktop and phone navigation.
+Care-team, access-history, and platform workspaces retain their independent
+boundaries. Existing save endpoints return to their relevant section, and
+validation/revocation results remain visible there. No credentials or health
+values appear in the index.
+
+Protected restore's background requests now receive the server-selected recent
+authentication destination, including a real federated step-up, and return to
+Data instead of the Settings index. Export passphrase handling, explicit restore
+confirmation, and legacy/HTMX security boundaries remain intact.
+
 ### Fixed — protected export recovers after a passphrase mismatch
 
 Editing either protected-export passphrase field now clears a previous native

@@ -1,0 +1,11 @@
+{% extends "settings/_layout.html" %}
+{% set settings_title_key = "settings.area.brief.title" %}
+{% set settings_description_key = "settings.area.brief.description" %}
+{% block settings_content %}
+{% from "partials/masthead.html" import card_header with context %}
+    <div class="flex flex-wrap items-center gap-3">
+        <p class="v-text-body">{{ t("settings.schedule_timezone") }} <strong>{{ timezone }}</strong></p>
+        <a href="/settings/profile" class="v-btn-ghost text-xs">{{ t("settings.change_timezone") }}</a>
+    </div>
+    {% include "partials/proactive_card.html" %}
+{% endblock %}

@@ -31,7 +31,7 @@ PAGE_CONTRACTS = {
     "genetics/index.html": ("v-page-genetics", "v-genetics-groups", "v-genetics-card"),
     "skincare/index.html": ("v-page-skincare", "v-routine-grid", "v-routine-warning"),
     "interactions/index.html": ("v-page-interactions", "v-interaction-summary", "v-interaction-matrix"),
-    "settings/settings.html": ("v-page-settings", "v-settings-sections", "v-setting-row"),
+    "settings/_layout.html": ("v-page-settings", "v-settings-sections"),
     "hrt/index.html": ("v-page-hrt", "v-hrt-overview", "v-hrt-log"),
 }
 
@@ -182,8 +182,19 @@ def test_page_contracts_have_responsive_layout_rules():
     assert "@media (max-width: 767px)" in TOKENS_CSS
 
 def test_settings_uses_the_shared_handoff_masthead():
-    template = (ROOT / "web/templates/settings/settings.html").read_text(encoding="utf-8")
-    assert "masthead_header('settings'" in template
+    layout = (ROOT / "web/templates/settings/_layout.html").read_text(encoding="utf-8")
+    assert "masthead_header('settings'" in layout
+    for name in (
+        "index.html",
+        "profile.html",
+        "modules.html",
+        "integrations.html",
+        "brief.html",
+        "security.html",
+        "data.html",
+    ):
+        template = (ROOT / "web/templates/settings" / name).read_text(encoding="utf-8")
+        assert '{% extends "settings/_layout.html" %}' in template
     assert "section == 'settings'" in MASTHEAD_TEMPLATE
 
 def test_mobile_nutrition_macro_grid_does_not_clip_cards():

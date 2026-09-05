@@ -1,0 +1,36 @@
+{% extends "settings/_layout.html" %}
+{% set settings_is_index = true %}
+{% block settings_content %}
+{% from "partials/masthead.html" import card_header with context %}
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    {% for area in ('profile', 'modules', 'integrations', 'brief', 'security', 'data') %}
+    {% if has_own_record or area == 'security' %}
+    <a href="/settings/{{ area }}" class="v-card v-settings-index-link p-6 space-y-3">
+        {{ card_header(t("settings.area." ~ area ~ ".title")) }}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("settings.area." ~ area ~ ".description") }}</p>
+        <span class="v-text-micro v-settings-index-link__next">
+            {% if area == 'modules' %}{{ t("settings.modules_enabled", count=enabled_module_count|format_number, total=enabled_module_total|format_number) }} · {% endif %}
+            {{ t("settings.open_section") }} <span aria-hidden="true">→</span>
+        </span>
+    </a>
+    {% endif %}
+    {% endfor %}
+</div>
+{% if has_own_record or is_professional or is_platform_admin %}
+<section class="space-y-3" aria-labelledby="settings-related-heading">
+    <h2 id="settings-related-heading" class="v-text-card">{{ t("settings.related_workspaces") }}</h2>
+    <div class="flex flex-wrap gap-3">
+        {% if has_own_record %}
+        <a href="/settings/care" class="v-btn-ghost text-xs">{{ t("care.team_heading") }}</a>
+        <a href="/settings/access" class="v-btn-ghost text-xs">{{ t("support.history_title") }}</a>
+        {% endif %}
+        {% if is_professional %}
+        <a href="/care" class="v-btn-ghost text-xs">{{ t("care.roster_heading") }}</a>
+        {% endif %}
+        {% if is_platform_admin %}
+        <a href="/settings/platform" class="v-btn-ghost text-xs">{{ t("settings.platform.heading") }}</a>
+        {% endif %}
+    </div>
+</section>
+{% endif %}
+{% endblock %}

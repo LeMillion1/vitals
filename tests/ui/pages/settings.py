@@ -7,31 +7,42 @@ from tests.ui.pages.base import Page
 class SettingsPage(Page):
     PATH = "/settings"
     NAME = "settings"
+    PROFILE_PATH = "/settings/profile"
+    SECURITY_PATH = "/settings/security"
 
     HEIGHT = 'input[name="height_cm"]'
     SAVE_PROFILE = 'button:has-text("Save profile")'
     ACCESS_HISTORY_LINK = "/settings/access"
 
     def set_height(self, centimetres: int) -> "SettingsPage":
+        self._open_section(self.PROFILE_PATH, name="profile settings")
         self.page.fill(self.HEIGHT, str(centimetres))
         self._act(self.SAVE_PROFILE)
         return self
 
     @property
     def height(self) -> str:
+        self._open_section(self.PROFILE_PATH, name="profile settings")
         return self.page.input_value(self.HEIGHT)
 
     @property
     def external_keys(self) -> "ExternalKeysCard":
+        self._open_section(self.SECURITY_PATH, name="security settings")
         return ExternalKeysCard(self)
+
+    def _open_section(self, path: str, *, name: str) -> None:
+        section = Page(self.page, self.base_url, self.who, self.complaints)
+        section.PATH = path
+        section.NAME = name
+        section.open()
+        self.status = section.status
 
 
 class ExternalKeysCard:
-    """The credentials card on the settings page.
+    """The credentials card on the focused security settings page.
 
-    Not a page of its own — it lives on ``/settings`` — but its locators belong
-    somewhere other than a test, and a card with a form and a list is exactly
-    what a page object is for.
+    Not a page of its own, but its locators belong somewhere other than a test,
+    and a card with a form and a list is exactly what a page object is for.
     """
 
     LABEL = 'input[name="label"]'

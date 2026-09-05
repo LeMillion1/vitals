@@ -222,7 +222,7 @@ Vitals написан с Claude в качестве основного инст�
 - Автосинк: сон, фазы сна, HRV (вариабельность пульса), пульс покоя, стресс, Body Battery, Training Readiness + внутридневные кривые стресса и Body Battery
 - Сессия `garminconnect` (библиотека пиновая — 0.3.7): токены в Redis + бэкап на диск, том с токенами попадает в `backup.sh` рядом с дампом БД
 - **Предохранитель логина**: вход по паролю рационируется (3 раза в 24 ч, потом пауза 6 ч, счётчики в Redis) — Garmin блокирует аккаунт за частые попытки, и каждый ретрай продлевает блок. Живой токен предохранителя не касается; MFA и «залогинились слишком часто» различаются в алертах
-- Расписание опроса — не в `.env`, а на карточке «Проактивный слой» в `/settings`: интервал полного синка + лёгкий пульс (шаги за сегодня) между ними, применяется без перезапуска контейнера
+- Расписание опроса — не в `.env`, а на карточке «Проактивный слой» в `/settings/brief`: интервал полного синка + лёгкий пульс (шаги за сегодня) между ними, применяется без перезапуска контейнера
 - **Вес обратно в Garmin (opt-in)** — карточка Garmin отправляет только самое свежее прямое измерение (ручное, MCP или BIA), никогда не возвращает импорт Garmin обратно и не переносит историю. Интервал (по умолчанию 15 минут) и окно свежести (не больше 30 дней) настраиваются на живом планировщике без перезапуска; кнопка **«Отправить сейчас»** запускает явную сверку. Новые логин и пароль начинают действовать в текущем процессе, а без реквизитов фоновая задача тихо ничего не делает
 - **Консервативная запись веса** — перед каждым POST Vitals заново читает день Garmin и пишет только в пустой день. Одна уже существующая запись с тем же весом отмечается как внешнее совпадение, а не как принадлежащая Vitals; другой вес, несколько записей или неполный ответ Garmin дают видимый конфликт без добавления дубля и без удаления чужих данных. Коррекция заменяет только точный `samplePk`, подтверждённый для POST Vitals, и лишь после проверки, что день снова пуст
 - **Неопределённость и удаление** — до сетевого POST Vitals фиксирует в БД durable-маркер «не проверено» с зарезервированной миллисекундной меткой, поэтому crash/rollback не возвращает операцию в очередь на повторную отправку. Обычно Garmin отвечает `204` без `samplePk`; тогда владение подтверждается только одной-единственной read-back записью с точным совпадением этой метки, источника `MANUAL` и веса. Совпадения только по весу недостаточно: планировщик и кнопка «Отправить сейчас» продолжают безопасную сверку и никогда не повторяют неопределённый POST. Удаление локального веса ставит в очередь удаление только подтверждённой записи Garmin, а монотонный курсор не позволяет после удаления или повторного включения выгрузить более старое измерение. Запись идёт через неофициальный web API `garminconnect`, поэтому функция по умолчанию выключена
@@ -315,7 +315,7 @@ Vitals написан с Claude в качестве основного инст�
 - **Утренний бриф**: детерминированные блоки собирает код из того же кросс-доменного контекста, что и недельный дайджест, модель добавляет ровно один абзац интерпретации — упала модель, бриф всё равно придёт; пустой день = молчание, а не пустой бриф. Хранится в `weekly_digests` (`kind='daily_brief'`), виден в `/reports`
 - **Нуджи** (подсказки в течение дня) — список спецификаций (условие, текст, кулдаун, категория-переключатель), один движок обходит реестр; добавить подсказку = одна запись. Сейчас три категории: активность, питание, свежесть данных
 - Единые ворота отправки: дедуп, тихие часы (только для нуджей) и дневной бюджет сообщений
-- Настройки (время брифа, тихие часы, бюджет, категории нуджей, частота опроса Garmin, интервал и окно свежести экспорта веса) — на карточке в `/settings`, сохранение перевешивает задачи на живом планировщике **без перезапуска**
+- Настройки (время брифа, тихие часы, бюджет, категории нуджей, частота опроса Garmin, интервал и окно свежести экспорта веса) — на карточке в `/settings/brief`, сохранение перевешивает задачи на живом планировщике **без перезапуска**
 
 > **Чего здесь больше нет.** Телеграм-бот, домен сигналов (свободный текст, разобранный моделью в строки) и `day_context` (какой это был день) удалены целиком: один токен бота и один chat id в окружении — это форма на одного пользователя, а установка на нескольких так не умеет. Ушёл вместе с ними и единственный источник **входящего** текста — того, что человек сказал о себе своими словами. Ни один прибор не производит предложение, так что раздел симптомов во врачебном отчёте сейчас пуст. Старый журнал доставки сохранён как исторический Telegram-контур; схема всё ещё требует Telegram connection и не является честной основой для account-scoped браузерного endpoint. Ревизия `0068` добавила отдельные зашифрованные подписки устройств, `0069` — subject-isolated care-outbox без PHI, а `0070` и общий планировщик — consent-rechecking отправку без повторов. Service worker принимает только фиксированный wakeup, показывает локализованный нейтральный текст и открывает `/messages`.
 </details>
@@ -358,6 +358,16 @@ graph TD
 | **`vitals/services/proactive/`** | Проактивный слой швами: `channels` (как сообщение уходит), `delivery` (можно ли его отправить), `compose`/`brief` (что сказано), `nudges` (когда повод есть) и `prefs`. Выше `channels` про транспорт не знает никто — потому его и удалось вынуть целиком, оставив шов на месте. |
 | **Фронтенд** | HTML-over-the-wire: HTMX + Alpine.js + Chart.js. Единственная оболочка — Masthead (см. [DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md)). Тексты — через `vitals/i18n.py` (RU/EN). |
 
+#### Настройки
+
+`/settings` — короткое оглавление: профиль и предпочтения (`/settings/profile`),
+модули (`/settings/modules`), интеграции (`/settings/integrations`), Brief и
+расписания (`/settings/brief`), безопасность (`/settings/security`), данные и
+перенос (`/settings/data`). Формы возвращаются в свой раздел после сохранения.
+Врач или оператор без личной медкарты видит настройки безопасности своего
+аккаунта, но не личные параметры, интеграции и перенос чужих данных. Команда
+помощи, история доступа и управление установкой остаются отдельными разделами.
+
 #### Фоновые задачи (APScheduler)
 
 Каждая задача идёт под Redis-локом (один исполнитель на всех воркеров) и штампует heartbeat, который видит `/health`. Задачи, привязанные к календарному дню записи, сверяют расписание отдельно для каждого активного владельца в его сохранённой зоне; время брифа также берётся из его собственных настроек. Пропущенная минута не воспроизводится позже, а сохранённая непрозрачная отметка Redis не даёт повторить один локальный слот при смене воркера или переводе часов назад.
@@ -377,7 +387,7 @@ graph TD
 | `nudges` | ежечасно в :05 | Обход реестра подсказок: условие, кулдаун, категория |
 | `weekly_digest` | понедельник, 08:00 | AI-дайджест |
 
-Время брифа, вечернего блока, частота опроса Garmin, интервал экспорта веса и его окно свежести живут в БД (карточка в `/settings`), а не в `.env`. Бриф читает текущее время каждого владельца прямо из его записи; в установке с одним владельцем сохранение частоты Garmin также перерегистрирует общие задачи без перезапуска.
+Время брифа, вечернего блока, частота опроса Garmin, интервал экспорта веса и его окно свежести живут в БД (карточка в `/settings/brief`), а не в `.env`. Бриф читает текущее время каждого владельца прямо из его записи; в установке с одним владельцем сохранение частоты Garmin также перерегистрирует общие задачи без перезапуска.
 
 ---
 
@@ -664,7 +674,7 @@ restore, OIDC и публичного gateway по runbook.
 
 #### 7. Проактивный слой (опционально)
 
-Настраивается целиком в приложении: карточка «Проактивный слой» в `/settings` задаёт время брифа, тихие часы, дневной бюджет и категории нуджей, а сохранение перевешивает задачи на живом планировщике без перезапуска. Переменных окружения для этого нет — и по замыслу не будет: расписание принадлежит человеку, а не установке.
+Настраивается целиком в приложении: карточка «Проактивный слой» в `/settings/brief` задаёт время брифа, тихие часы, дневной бюджет и категории нуджей, а сохранение перевешивает задачи на живом планировщике без перезапуска. Переменных окружения для этого нет — и по замыслу не будет: расписание принадлежит человеку, а не установке.
 
 Отправлять брифы пока некуда: телеграм-бота больше нет, а новый Web Push client принимает только generic care-message wakeup и специально не переносит проактивный текст. Бриф по-прежнему собирается по расписанию и лежит в `/reports`.
 
@@ -833,7 +843,7 @@ restore, OIDC и публичного gateway по runbook.
 | `VITALS_MCP_REDIRECT_HOSTS` | Разрешённые хосты OAuth-callback'ов (через запятую, только https) | `claude.ai,chatgpt.com,oauth-redirect.googleusercontent.com` |
 | `VITALS_EXTERNAL_API_TOKEN` | Токен для сервер-сервер Glance API | *Опционально* |
 
-> Расписаний здесь нет намеренно: время брифа и вечернего блока, тихие часы, дневной бюджет сообщений, категории нуджей, частота опроса Garmin, интервал и окно свежести экспорта веса живут в БД и правятся на карточке «Проактивный слой» в `/settings` — эти настройки должны применяться без перезапуска контейнера.
+> Расписаний здесь нет намеренно: время брифа и вечернего блока, тихие часы, дневной бюджет сообщений, категории нуджей, частота опроса Garmin, интервал и окно свежести экспорта веса живут в БД и правятся на карточке «Проактивный слой» в `/settings/brief` — эти настройки должны применяться без перезапуска контейнера.
 </details>
 
 ---
@@ -1085,7 +1095,7 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 - Auto-sync: sleep, sleep stages, HRV, resting HR, stress, Body Battery, Training Readiness + intraday stress / Body Battery curves
 - `garminconnect` session (pinned to 0.3.7): tokens cached in Redis + disk backup, and the token volume is archived by `backup.sh` next to the SQL dump
 - **Login breaker**: credential logins are rationed (3 per 24h, then a 6h pause, both in Redis) — Garmin rate-limits logins per account and every retry extends the block. A healthy token never touches it; MFA and "throttled" are reported apart from bad credentials
-- The poll schedule is not an env var: the full-sync interval and the light pulse (today's steps) between syncs live on the "Proactive layer" card in `/settings` and apply without a container restart
+- The poll schedule is not an env var: the full-sync interval and the light pulse (today's steps) between syncs live on the "Proactive layer" card in `/settings/brief` and apply without a container restart
 - **Weight back to Garmin (opt-in)** — the Garmin card sends only the latest direct measurement (manual, MCP, or BIA), never echoes a Garmin import, and never backfills history. Its interval (15 minutes by default) and freshness window (at most 30 days) update the running scheduler without a restart; **Send now** starts an explicit reconciliation. Newly saved credentials take effect in the current process, while the background job quietly no-ops when credentials are absent
 - **Conservative weight writes** — before every POST, Vitals freshly reads the Garmin day and writes only when that day is empty. One equal pre-existing entry is recorded as an external match, not as Vitals-owned; a different value, multiple entries, or an incomplete Garmin response becomes a visible conflict without adding a duplicate or deleting external data. A correction replaces only the exact `samplePk` confirmed for Vitals' own POST, and only after confirming that the day is empty again
 - **Ambiguity and deletion** — before the network POST, Vitals commits a durable unverified marker with a reserved millisecond timestamp, so a crash or rollback cannot put the request back into the send queue. Garmin normally answers with `204` and no `samplePk`; ownership is then established only from one sole read-back record matching that timestamp, the `MANUAL` source, and the exact weight. Weight equality alone is insufficient: scheduled runs and **Send now** continue safe reconciliation and never repeat an unverified POST. Deleting a local weight queues removal only for a confirmed Vitals-owned Garmin record, while a monotonic cursor prevents deletion or re-enabling from exposing an older measurement for export. The write path uses `garminconnect`'s unofficial web API, so it is off by default
@@ -1178,7 +1188,7 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 - **Morning brief**: the deterministic blocks are assembled by code from the same cross-domain context the weekly digest reads, and the model adds exactly one paragraph of interpretation — if the model is down the brief still arrives; an empty day means silence, not an empty brief. Stored in `weekly_digests` (`kind='daily_brief'`), visible in `/reports`
 - **Nudges** — a list of specs (condition, text, cooldown, category toggle) walked by one engine; adding a hint is one entry. Three categories today: activity, nutrition, data freshness
 - One set of gates on the way out: dedupe, quiet hours (nudges only) and a daily message budget
-- Settings (brief time, quiet hours, budget, nudge categories, Garmin poll frequency, weight-export interval and freshness window) live on a card in `/settings`; saving reschedules the jobs on the live scheduler **without a restart**
+- Settings (brief time, quiet hours, budget, nudge categories, Garmin poll frequency, weight-export interval and freshness window) live on a card in `/settings/brief`; saving reschedules the jobs on the live scheduler **without a restart**
 
 > **What is no longer here.** The Telegram bot, the signals domain (free text parsed by a model into typed rows) and `day_context` (what a given day was made of) were removed outright: one bot token and one chat id in the environment is a single-user shape, and a shared installation cannot have it. Removing it also removed the only source of **inbound** text — what a person says about themselves in their own words. No device produces a sentence, so the symptoms section of the doctor's report is empty for now. The retained delivery journal is historical Telegram state: its schema still requires a Telegram connection and is not an honest home for an account-scoped browser endpoint. Revision `0068` adds separately encrypted device subscriptions, `0069` adds the subject-isolated, PHI-free care outbox, and `0070` plus the shared scheduler add consent-rechecking delivery without retries. The service worker accepts only that fixed wakeup, renders localized neutral copy, and opens `/messages`.
 </details>
@@ -1221,6 +1231,17 @@ graph TD
 | **`vitals/services/proactive/`** | The proactive layer along its seams: `channels` (how a message leaves), `delivery` (whether it may), `compose`/`brief` (what is said), `nudges` (when there's a reason at all), plus `prefs`. Nothing above `channels` knows about the transport — which is why the transport could be taken out whole, leaving the seam in place. |
 | **Frontend** | HTML-over-the-wire: HTMX + Alpine.js + Chart.js. One shell — Masthead (see [DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md)). All copy flows through `vitals/i18n.py` (EN/RU). |
 
+#### Settings
+
+`/settings` is a short index: profile and preferences (`/settings/profile`),
+modules (`/settings/modules`), integrations (`/settings/integrations`), Brief and
+schedules (`/settings/brief`), security (`/settings/security`), and data and
+portability (`/settings/data`). Forms return to their section after saving.
+A professional or operator without a personal record can reach their account's
+security controls, but not another person's profile, integrations, or data
+transfer. Care-team, access-history, and installation controls remain separate
+workspaces.
+
 #### Background jobs (APScheduler)
 
 Every job runs under a Redis lock (one runner across workers) and stamps a heartbeat that `/health` watches. Jobs tied to a record's calendar day evaluate their schedules independently for each active owner in that owner's saved timezone; Brief time also comes from that owner's own settings. A missed minute is not replayed later, while a retained opaque Redis claim prevents a rolling worker or repeated DST wall-clock minute from dispatching the same local slot twice.
@@ -1240,7 +1261,7 @@ Every job runs under a Redis lock (one runner across workers) and stamps a heart
 | `nudges` | hourly at :05 | Walks the nudge registry: condition, cooldown, category |
 | `weekly_digest` | Mondays, 08:00 | AI digest |
 
-Brief time, evening time, the Garmin poll rate, the weight-export interval and its freshness window live in the database (the `/settings` card), not in `.env`. The Brief dispatcher reads each owner's current time directly from that row; on a single-owner installation, saving a Garmin cadence also re-registers the shared jobs without a restart.
+Brief time, evening time, the Garmin poll rate, the weight-export interval and its freshness window live in the database (the `/settings/brief` card), not in `.env`. The Brief dispatcher reads each owner's current time directly from that row; on a single-owner installation, saving a Garmin cadence also re-registers the shared jobs without a restart.
 
 ---
 
@@ -1530,7 +1551,7 @@ separate restore, OIDC, and public-gateway gates in the runbook.
 
 #### 7. Proactive layer (optional)
 
-Configured entirely inside the app: the "Proactive layer" card in `/settings` sets the brief time, quiet hours, the daily budget and the nudge categories, and saving reschedules the jobs on the live scheduler without a restart. There are no environment variables for any of it, by design — a schedule belongs to a person, not to an installation.
+Configured entirely inside the app: the "Proactive layer" card in `/settings/brief` sets the brief time, quiet hours, the daily budget and the nudge categories, and saving reschedules the jobs on the live scheduler without a restart. There are no environment variables for any of it, by design — a schedule belongs to a person, not to an installation.
 
 There is nowhere to send a brief yet: the Telegram bot is gone, while the new Web Push client accepts only a generic care-message wakeup and deliberately cannot carry proactive text. The brief is still built on schedule and kept in `/reports`.
 
@@ -1702,7 +1723,7 @@ runtime reader opens them any more.
 | `VITALS_MCP_REDIRECT_HOSTS` | Allowed OAuth callback hosts (comma-separated, https only) | `claude.ai,chatgpt.com,oauth-redirect.googleusercontent.com` |
 | `VITALS_EXTERNAL_API_TOKEN` | Token for server-server Glance API | *Optional* |
 
-> No schedules here, on purpose: brief and evening times, quiet hours, the daily message budget, nudge categories, the Garmin poll rate, and the weight-export interval and freshness window live in the database and are edited on the "Proactive layer" card in `/settings` — those settings have to apply without restarting the container.
+> No schedules here, on purpose: brief and evening times, quiet hours, the daily message budget, nudge categories, the Garmin poll rate, and the weight-export interval and freshness window live in the database and are edited on the "Proactive layer" card in `/settings/brief` — those settings have to apply without restarting the container.
 </details>
 
 ---

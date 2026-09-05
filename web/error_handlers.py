@@ -58,17 +58,18 @@ async def recent_authentication_handler(
     del exc
     accept = request.headers.get("accept", "")
     is_htmx = request.headers.get("HX-Request", "").lower() == "true"
-    if "text/html" not in accept and not is_htmx:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"detail": "Recent authentication required"},
-        )
+    is_json = "text/html" not in accept and not is_htmx
 
     next_path = request.url.path if request.method == "GET" else "/"
     referer = request.headers.get("referer")
     if referer:
         parsed = urlsplit(referer)
-        if parsed.netloc == request.url.netloc and parsed.path.startswith("/"):
+        if (
+            parsed.scheme == request.url.scheme
+            and parsed.netloc == request.url.netloc
+            and parsed.path.startswith("/")
+            and not parsed.path.startswith("//")
+        ):
             next_path = parsed.path
             if parsed.query:
                 next_path += f"?{parsed.query}"
@@ -76,27 +77,31 @@ async def recent_authentication_handler(
     from web.authentication.tokens import clear_session_cookie
     from web.config import get_web_config
 
-    if get_web_config().oidc_enabled:
+    federated = get_web_config().oidc_enabled
+    if federated:
         target = "/auth/start?" + urlencode(
             {"step_up": "true", "next": next_path}
         )
-        if is_htmx:
-            return Response(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                headers={"HX-Redirect": target},
-            )
-        return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
+    else:
+        target = "/login?" + urlencode({"next": next_path})
 
-    target = "/login?" + urlencode({"next": next_path})
-    response = (
-        Response(
+    if is_json:
+        # Fetch callers need the same real step-up as full-page and HTMX forms.
+        # A normal login can reuse an old federated session and loop forever.
+        response = JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Recent authentication required"},
+            headers={"X-Vitals-Reauthentication": target},
+        )
+    elif is_htmx:
+        response = Response(
             status_code=status.HTTP_401_UNAUTHORIZED,
             headers={"HX-Redirect": target},
         )
-        if is_htmx
-        else RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
-    )
-    clear_session_cookie(response)
+    else:
+        response = RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
+    if not federated:
+        clear_session_cookie(response)
     return response
 
 async def _populate_state_for_error_page(request: Request) -> None:

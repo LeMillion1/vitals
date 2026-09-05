@@ -12,6 +12,14 @@ from fastapi.responses import RedirectResponse
 
 _T = TypeVar("_T", bound=Callable)
 
+SETTINGS_INDEX_PATH = "/settings"
+SETTINGS_PROFILE_PATH = "/settings/profile"
+SETTINGS_MODULES_PATH = "/settings/modules"
+SETTINGS_INTEGRATIONS_PATH = "/settings/integrations"
+SETTINGS_BRIEF_PATH = "/settings/brief"
+SETTINGS_SECURITY_PATH = "/settings/security"
+SETTINGS_DATA_PATH = "/settings/data"
+
 
 def compatibility_override(name: str, default: _T) -> _T:
     """Honor explicit seams historically patched on ``web.routers.settings``."""
@@ -48,8 +56,19 @@ def is_known_timezone(zone: str) -> bool:
     return True
 
 
-def redirect(suffix: str = "") -> RedirectResponse:
+def redirect(
+    suffix: str = "",
+    *,
+    destination: str = SETTINGS_INDEX_PATH,
+) -> RedirectResponse:
+    """Return a PRG redirect to one server-chosen settings destination.
+
+    Callers pass only module constants for ``destination``.  Keeping the target
+    out of submitted form data prevents a settings save from becoming an open
+    redirect, while ``suffix`` remains limited to non-sensitive status markers.
+    """
+
     return RedirectResponse(
-        url=f"/settings{suffix}",
+        url=f"{destination}{suffix}",
         status_code=status.HTTP_303_SEE_OTHER,
     )

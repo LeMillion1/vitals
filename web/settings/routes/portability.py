@@ -6,6 +6,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.access import PolicyAction, PolicyResourceType
@@ -20,7 +21,7 @@ from vitals.services.tenancy.ownership import resolve_legacy_ownership_context
 from vitals.services.portability import llm_projection, v1_contract, v1_export, v1_import
 from vitals.utils.timeutils import today_local
 from web.care_context import principal_user_id
-from web.deps import get_session, require_recent_auth
+from web.deps import get_session, require_auth, require_recent_auth
 from web.downloads import private_json_download
 from web.ratelimit import rate_limit
 from web.templating import templates
@@ -51,6 +52,22 @@ async def _authorize_export(db: AsyncSession, username: str):
         action=PolicyAction.EXPORT,
     )
     return ownership
+
+
+@router.get("/data", response_class=HTMLResponse)
+async def data_settings_page(
+    request: Request,
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Render the personal portability entry point without moving any data."""
+
+    await _authorize_export(db, username)
+    return templates.TemplateResponse(
+        request,
+        "settings/data.html",
+        {"username": username},
+    )
 
 
 
