@@ -108,6 +108,7 @@ async def test_unknown_step_up_stays_an_ordinary_login_refusal(
 async def test_member_intent_creates_one_member_with_a_health_subject(
     db_session, legacy_owner_roots, monkeypatch
 ):
+    monkeypatch.setenv("VITALS_TIMEZONE", "Asia/Almaty")
     intent = await _issue(
         db_session,
         monkeypatch,
@@ -131,12 +132,13 @@ async def test_member_intent_creates_one_member_with_a_health_subject(
     assert roles == [UserRoleName.MEMBER.value]
     subjects = list(
         await db_session.scalars(
-            select(HealthSubject.id).where(
+            select(HealthSubject).where(
                 HealthSubject.owner_user_id == decision.user_id
             )
         )
     )
-    assert subjects == [decision.subject_id]
+    assert [subject.id for subject in subjects] == [decision.subject_id]
+    assert subjects[0].timezone == "Asia/Almaty"
 
 
 @pytest.mark.parametrize(

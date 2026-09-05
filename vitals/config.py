@@ -32,6 +32,17 @@ DEFAULT_HEVY_BASE_URL = "https://api.hevyapp.com"
 DEFAULT_GARMIN_TOKEN_DIR = "/data/garmin_session"
 
 
+def configured_timezone() -> str:
+    """Return the installation timezone without consulting subject context.
+
+    This is the safe default for a newly created health record.  Runtime work
+    about an existing person uses ``health_subjects.timezone`` instead, through
+    ``vitals.utils.timeutils``' subject context.
+    """
+
+    return os.getenv("VITALS_TIMEZONE", DEFAULT_TIMEZONE) or DEFAULT_TIMEZONE
+
+
 def _pos_int(env_name: str, default: int) -> int:
     raw = (os.getenv(env_name) or "").strip()
     return int(raw) if raw.isdigit() and int(raw) > 0 else default
@@ -184,7 +195,7 @@ def load_config() -> Config:
     return Config(
         database_url=database_url,
         redis_url=redis_url,
-        timezone=os.getenv("VITALS_TIMEZONE", DEFAULT_TIMEZONE) or DEFAULT_TIMEZONE,
+        timezone=configured_timezone(),
         height_cm=height_cm,
         sex=sex,
         body_fat_source=body_fat_source,

@@ -11,14 +11,83 @@ heartbeat lets ``/health`` flag a stalled scheduler.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 import uuid
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Optional
 
 from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
+
+
+# A retained occurrence claim is deliberately not a lock.  Releasing it after
+# work would let a rolling worker or a repeated DST wall-clock minute run the
+# same occurrence again.  Eight days is long enough to cover every local-time
+# replay hazard in the registry (including the weekly job) while keeping the
+# Redis footprint bounded.
+SUBJECT_SLOT_CLAIM_TTL_SECONDS = 8 * 24 * 60 * 60
+
+
+class SchedulerSlotClaimError(RuntimeError):
+    """A subject-local occurrence could not be claimed safely."""
+
+
+def _subject_slot_claim_digest(
+    job_id: str,
+    subject_id: uuid.UUID,
+    local_slot: datetime,
+) -> str:
+    """Opaque identity for one logical job/subject/local wall-clock minute."""
+
+    if local_slot.tzinfo is not None:
+        raise ValueError("local_slot must be a naive wall-clock datetime")
+    material = "\0".join(
+        (
+            "v1",
+            job_id,
+            str(subject_id),
+            local_slot.strftime("%Y-%m-%dT%H:%M"),
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+async def claim_subject_schedule_slot(
+    redis: Redis,
+    *,
+    job_id: str,
+    subject_id: uuid.UUID,
+    local_slot: datetime,
+    ttl_seconds: int = SUBJECT_SLOT_CLAIM_TTL_SECONDS,
+) -> str | None:
+    """Retain an at-most-once claim for a subject's current local slot.
+
+    The returned digest is safe to reuse in an in-memory APScheduler job id.
+    ``None`` means another worker already claimed the occurrence.  Redis errors
+    propagate as a bounded scheduler error: running without a claim would turn
+    an infrastructure outage into duplicate scheduled work.
+    """
+
+    if not isinstance(subject_id, uuid.UUID) or subject_id.int == 0:
+        raise ValueError("subject_id must be a non-zero UUID")
+    if (
+        not isinstance(ttl_seconds, int)
+        or isinstance(ttl_seconds, bool)
+        or ttl_seconds <= 0
+    ):
+        raise ValueError("ttl_seconds must be a positive integer")
+    digest = _subject_slot_claim_digest(job_id, subject_id, local_slot)
+    key = f"scheduler:subject_slot:v1:{digest}"
+    try:
+        acquired = await redis.set(key, "1", nx=True, ex=ttl_seconds)
+    except Exception as exc:
+        raise SchedulerSlotClaimError(
+            f"could not claim subject-local slot for {job_id}"
+        ) from exc
+    return digest if acquired else None
 
 
 # ── Heartbeat ────────────────────────────────────────────────────────────────

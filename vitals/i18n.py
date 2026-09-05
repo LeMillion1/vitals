@@ -2201,11 +2201,11 @@ _EN: dict[str, str] = {
 
     # ── Settings: proactive layer ─────────────────────────────────────────
     "settings.proactive_title": "Proactive layer",
-    "settings.proactive_description": "When the brief is built, and how fresh the data behind it is. Saved here, applied immediately — no restart.",
+    "settings.proactive_description": "Choose when your brief is built and how integrations are polled. Brief time applies without a restart; polling intervals may remain shared.",
     "settings.proactive_no_channel": "Quiet hours, the daily message budget and the nudge switches are not shown: each of them decides whether a message may be sent, and there is nothing to send with until push notifications land. The brief is still built on the schedule above and kept in Reports.",
     "settings.proactive_off_chip": "module off",
     "settings.proactive_adjusted": "Some values were adjusted to the allowed range.",
-    "settings.proactive_deferred": "Saved. The timings apply to your own brief; the shared schedule is not rebuilt from one record.",
+    "settings.proactive_deferred": "Your brief uses its saved time. Garmin polling and weight-export intervals keep the shared schedule on installations with several records.",
     "settings.proactive_reload_deferred": "Saved, but the immediate reload signal could not be delivered. The background worker will discover the durable settings on its next control poll.",
     "settings.brief_time": "Morning brief",
     "settings.brief_time_hint": "Syncs Garmin first, so last night's sleep is in it.",
@@ -2233,7 +2233,7 @@ _EN: dict[str, str] = {
     "settings.breaker_paused": "Login breaker: paused — {used} of {max} logins used. Garmin sync is on hold for a few hours; that is deliberate, retrying is what turns a limit into a multi-day block.",
     "settings.breaker_unknown": "Login breaker: state unreadable (no Redis).",
     "settings.save_proactive": "Save proactive layer",
-    "settings.saved.proactive": "Proactive settings saved — the schedule was rebuilt, no restart needed.",
+    "settings.saved.proactive": "Proactive settings saved.",
     "settings.brief_model": "Brief model",
     "settings.brief_model_hint": "Runs daily off ready-made numbers — a cheaper model fits. Empty = the digest model.",
 
@@ -4440,11 +4440,11 @@ _RU: dict[str, str] = {
 
     # ── Настройки: проактивный слой ───────────────────────────────────────
     "settings.proactive_title": "Проактивный слой",
-    "settings.proactive_description": "Когда собирается бриф и насколько свежие данные за ним стоят. Сохраняется здесь и применяется сразу — без перезапуска.",
+    "settings.proactive_description": "Когда собирается бриф и как часто опрашиваются интеграции. Время брифа применяется без перезапуска; интервалы опроса могут оставаться общими.",
     "settings.proactive_no_channel": "Тихие часы, дневной бюджет сообщений и переключатели нуджей не показаны: каждый из них решает, можно ли отправить сообщение, а отправлять пока нечем — до пушей. Бриф при этом собирается по расписанию выше и лежит в «Отчётах».",
     "settings.proactive_off_chip": "модуль выключен",
     "settings.proactive_adjusted": "Некоторые значения скорректированы под допустимый диапазон.",
-    "settings.proactive_deferred": "Сохранено. Время действует для вашей сводки; общее расписание не перестраивается по одной записи.",
+    "settings.proactive_deferred": "Бриф использует сохранённое время. При нескольких записях интервалы опроса Garmin и экспорта веса остаются общими.",
     "settings.proactive_reload_deferred": "Сохранено, но быстрый сигнал перезагрузки не доставлен. Фоновый процесс обнаружит сохранённые настройки при следующей контрольной проверке.",
     "settings.brief_time": "Утренний бриф",
     "settings.brief_time_hint": "Сначала синкает Garmin, чтобы ночной сон был внутри.",
@@ -4472,7 +4472,7 @@ _RU: dict[str, str] = {
     "settings.breaker_paused": "Предохранитель входа: пауза — израсходовано {used} из {max}. Синк Garmin приостановлен на несколько часов, и это специально: повторные попытки превращают лимит в блокировку на дни.",
     "settings.breaker_unknown": "Предохранитель входа: состояние недоступно (нет Redis).",
     "settings.save_proactive": "Сохранить проактивный слой",
-    "settings.saved.proactive": "Настройки сохранены — расписание пересобрано, перезапуск не нужен.",
+    "settings.saved.proactive": "Настройки проактивного слоя сохранены.",
     "settings.brief_model": "Модель брифа",
     "settings.brief_model_hint": "Работает каждый день по готовым числам — подойдёт модель попроще. Пусто = модель дайджеста.",
 

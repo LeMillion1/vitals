@@ -99,6 +99,27 @@ async def test_a_provisioned_subject_is_not_one_row(db_session, legacy_owner_roo
     assert enabled == {**DEFAULT_STATE, "nutrition": True}
 
 
+async def test_an_omitted_timezone_uses_the_deployment_not_ambient_subject_clock(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    """Provisioning defaults are installation config, never request context."""
+
+    from vitals.utils.timeutils import subject_timezone
+
+    monkeypatch.setenv("VITALS_TIMEZONE", "Asia/Almaty")
+    with subject_timezone("Pacific/Kiritimati"):
+        provisioned = await account_provisioning_service.provision_account(
+            db_session,
+            username="deployment-zone-patient",
+        )
+    await db_session.flush()
+
+    subject = await db_session.get(HealthSubject, provisioned.subject_id)
+    assert subject.timezone == "Asia/Almaty"
+
+
 async def test_web_member_provisioning_binds_before_subject_roots(
     db_session, legacy_owner_roots, monkeypatch
 ):

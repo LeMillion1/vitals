@@ -49,11 +49,15 @@ async def start_brief_dispatch(
         # the frozen owner separately so an owner suspension/rotation between T1
         # and T2 cannot authorize platform spend. This takes canonical
         # governance -> subject -> owner locks before gateway root/quota locks.
-        await digest_ownership.prepare_digest_owner_for_identity(
+        owner = await digest_ownership.prepare_subject_digest_owner(
             session,
-            identity=identity,
-            owner_user_id=snapshot._owner_user_id,
+            subject_id=snapshot._subject_id,
         )
+        if (
+            owner.identity != identity
+            or owner.owner_user_id != snapshot._owner_user_id
+        ):
+            raise BriefOwnershipError("Daily Brief owner changed")
     return await ai_gateway_service_dispatch.start_ai_dispatch(
         session,
         identity=identity,

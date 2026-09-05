@@ -28,10 +28,16 @@
             mapping: {},
             result: null,
 
+            clearExportError: function () {
+                // Native validation runs before submit. Editing either field
+                // must release a prior mismatch so prepareExport can run again.
+                this.$refs.exportPassphraseConfirmation.setCustomValidity('');
+            },
+
             prepareExport: function (event) {
                 var passphrase = this.$refs.exportPassphrase;
                 var confirmation = this.$refs.exportPassphraseConfirmation;
-                confirmation.setCustomValidity('');
+                this.clearExportError();
                 if (passphrase.value !== confirmation.value) {
                     event.preventDefault();
                     confirmation.setCustomValidity(translated(

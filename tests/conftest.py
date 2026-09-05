@@ -8,6 +8,7 @@ on SQLite.
 """
 
 from contextlib import asynccontextmanager, nullcontext
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -176,6 +177,27 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip_pg)
+
+
+@pytest.fixture(autouse=True)
+def _restore_logger_enabled_state():
+    """Do not leak in-process Alembic logging configuration to later tests.
+
+    Migration rehearsals run Alembic's ``fileConfig`` in this process, where its
+    default disables already imported application loggers. Production migrations
+    run separately. Preserve each test's normal starting flags without forcing
+    logging on during the test, so a real diagnostic regression still fails.
+    """
+
+    original = {
+        logger: logger.disabled
+        for logger in tuple(logging.Logger.manager.loggerDict.values())
+        if isinstance(logger, logging.Logger)
+    }
+    yield
+    for logger in tuple(logging.Logger.manager.loggerDict.values()):
+        if isinstance(logger, logging.Logger):
+            logger.disabled = original.get(logger, False)
 
 
 @pytest.fixture(autouse=True)

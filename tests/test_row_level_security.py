@@ -898,6 +898,7 @@ async def test_real_postgres_member_provisioning_binds_only_its_new_subject(
     from alembic.config import Config as AlembicConfig
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from vitals.enums import RegistrationAccountKind
     from vitals.models.identity import (
         AuditEvent,
         HealthSubject,
@@ -908,7 +909,7 @@ async def test_real_postgres_member_provisioning_binds_only_its_new_subject(
     from vitals.models.scoped_settings import SubjectSetting
     from vitals.models.tenancy import IntegrationConnection
     from vitals.persistence.rls import bound_subject, in_platform_scope
-    from vitals.services.authentication import federation, registration
+    from vitals.services.authentication import admission, federation, registration
     from vitals.services.authentication.provisioning import (
         provision_account,
         provision_bound_account,
@@ -949,6 +950,10 @@ async def test_real_postgres_member_provisioning_binds_only_its_new_subject(
             assert await admitting.scalar(
                 sa.select(sa.func.count()).select_from(SubjectSetting)
             ) == 0
+            intent = await admission.issue_intent(
+                admitting,
+                account_kind=RegistrationAccountKind.MEMBER,
+            )
 
             admitted_user = await federation.resolve_federated_user(
                 admitting,
@@ -957,6 +962,7 @@ async def test_real_postgres_member_provisioning_binds_only_its_new_subject(
                 email="rls-admitted-member@example.test",
                 email_verified=True,
                 preferred_username="rls-admitted-member",
+                registration_intent_id=intent.id,
             )
             admitted_subject_id = await admitting.scalar(
                 sa.select(HealthSubject.id).where(
@@ -1054,6 +1060,10 @@ async def test_real_postgres_member_provisioning_binds_only_its_new_subject(
             ) == 2
 
         async with restricted_factory() as rolled_back:
+            transient_intent = await admission.issue_intent(
+                rolled_back,
+                account_kind=RegistrationAccountKind.MEMBER,
+            )
             transient_user = await federation.resolve_federated_user(
                 rolled_back,
                 issuer="https://rls-idp.example.test",
@@ -1061,6 +1071,7 @@ async def test_real_postgres_member_provisioning_binds_only_its_new_subject(
                 email="rls-rolled-back-member@example.test",
                 email_verified=True,
                 preferred_username="rls-rolled-back-member",
+                registration_intent_id=transient_intent.id,
             )
             transient_user_id = transient_user.id
             transient_subject_id = await rolled_back.scalar(
@@ -2639,6 +2650,370 @@ async def test_real_postgres_platform_scope_is_transaction_local(
             assert await session.scalar(
                 sa.text("SELECT count(*) FROM supplements")
             ) == 0
+    finally:
+        if capability_role is not None:
+            await _drop_probe_platform_capability(admin, capability_role)
+        await restricted.dispose()
+        await admin.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_scheduled_brief_fallback_and_replay_bind_every_worker_session(
+    db_session,
+    monkeypatch,
+):
+    """Two-subject Brief phases stay in the named RLS partition.
+
+    The scheduler opens a fresh transaction for preparation, fallback
+    persistence, and replay.  A subject carried only in the first transaction
+    leaves the later ones seeing zero rows under FORCE RLS; using the legacy
+    exact-one bridge instead refuses as soon as this installation has two
+    records.  The restricted worker role makes both failures observable.
+    """
+
+    from contextlib import asynccontextmanager
+    from datetime import date
+
+    from alembic.config import Config as AlembicConfig
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from vitals.enums import DigestKind, Source
+    from vitals.models.milestones import WeeklyDigest
+    from vitals.persistence.rls import bound_subject, in_platform_scope
+    from vitals.services.proactive.brief import jobs as brief_jobs
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
+    await db_session.close()
+
+    admin = await _migrated_engine(
+        database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
+    )
+    restricted = await restricted_engine(database_url)
+    capability_role: str | None = None
+    try:
+        first, second = await _seed_two_subjects(admin)
+        capability_role = await _grant_probe_platform_capability(admin)
+        on_date = date(2026, 9, 4)
+        async with admin.begin() as connection:
+            await connection.execute(
+                sa.text(
+                    "INSERT INTO weight_logs "
+                    "(subject_id, actor_user_id, integration_connection_id, "
+                    "date, domain, source, weight_kg, superseded, created_at, "
+                    "updated_at) VALUES "
+                    "(:first, NULL, NULL, :day, 'weight', 'manual', 71.25, "
+                    "false, now(), now()), "
+                    "(:second, NULL, NULL, :day, 'weight', 'manual', 199.5, "
+                    "false, now(), now())"
+                ),
+                {"first": first, "second": second, "day": on_date},
+            )
+
+        factory = async_sessionmaker(
+            restricted, expire_on_commit=False, class_=AsyncSession
+        )
+        phase_sessions: list[AsyncSession] = []
+
+        @asynccontextmanager
+        async def audited_factory():
+            async with factory() as session:
+                phase_sessions.append(session)
+                yield session
+
+        async def no_provider(*_args, **_kwargs):
+            raise AssertionError("an unfunded Brief must not call a provider")
+
+        monkeypatch.setattr(brief_jobs, "render_brief", no_provider)
+        stored, prepared, outcome = await brief_jobs._run_scheduled_brief_generation(
+            audited_factory,
+            subject_id=first,
+            on_date=on_date,
+        )
+        replayed, replay_prepared, replay_outcome = (
+            await brief_jobs._run_scheduled_brief_generation(
+                audited_factory,
+                subject_id=first,
+                on_date=on_date,
+            )
+        )
+
+        assert outcome == "header"
+        assert replay_outcome == "existing"
+        assert prepared is not None
+        assert replay_prepared is not None
+        assert stored is not None
+        assert replayed is not None
+        assert replayed.id == stored.id
+        assert len(phase_sessions) == 4
+        assert all(bound_subject(session) == first for session in phase_sessions)
+        assert not any(in_platform_scope(session) for session in phase_sessions)
+
+        async with admin.connect() as verification:
+            rows = list(
+                await verification.execute(
+                    sa.select(
+                        WeeklyDigest.id,
+                        WeeklyDigest.subject_id,
+                        WeeklyDigest.actor_user_id,
+                        WeeklyDigest.source,
+                        WeeklyDigest.model,
+                        WeeklyDigest.context_json,
+                    ).where(WeeklyDigest.kind == DigestKind.DAILY_BRIEF.value)
+                )
+            )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.id == stored.id
+        assert row.subject_id == first
+        assert row.actor_user_id is None
+        assert row.source == Source.SCHEDULER.value
+        assert row.model is None
+        assert row.context_json["weight"]["latest_kg"] == 71.25
+        assert row.context_json["weight"]["latest_kg"] != 199.5
+    finally:
+        if capability_role is not None:
+            await _drop_probe_platform_capability(admin, capability_role)
+        await restricted.dispose()
+        await admin.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_funded_scheduled_brief_binds_t2_and_finalizes_after_owner_suspension(
+    db_session,
+    monkeypatch,
+):
+    """Paid Brief T2/T3 stay exact-S across fresh restricted-worker sessions."""
+
+    from datetime import UTC, date, datetime
+
+    from alembic.config import Config as AlembicConfig
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from vitals.enums import (
+        AIInvocationSource,
+        AIInvocationStatus,
+        DigestKind,
+        IntegrationConnectionStatus,
+        IntegrationConnectionType,
+        IntegrationProvider,
+        Source,
+    )
+    from vitals.integrations.llm_client import LLMCallResult
+    from vitals.models.ai import (
+        AIInvocation,
+        AIPlatformQuotaPeriod,
+        AISubjectQuotaPeriod,
+    )
+    from vitals.models.identity import HealthSubject, User
+    from vitals.models.milestones import WeeklyDigest
+    from vitals.models.tenancy import PlatformIntegrationConnection
+    from vitals.persistence.rls import bound_subject, in_platform_scope
+    from vitals.services.ai_gateway import contracts as gateway_contracts
+    from vitals.services.ai_gateway import dispatch as gateway_dispatch
+    from vitals.services.ai_gateway import invocations as gateway_invocations
+    from vitals.services.proactive.brief import contracts as brief_contracts
+    from vitals.services.proactive.brief import persistence as brief_persistence
+    from vitals.services.proactive.brief import preparation as brief_preparation
+    from vitals.services.proactive.brief import rendering as brief_rendering
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
+    await db_session.close()
+
+    admin = await _migrated_engine(
+        database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
+    )
+    restricted = await restricted_engine(database_url)
+    capability_role: str | None = None
+    admin_factory = async_sessionmaker(
+        admin, expire_on_commit=False, class_=AsyncSession
+    )
+    restricted_factory = async_sessionmaker(
+        restricted, expire_on_commit=False, class_=AsyncSession
+    )
+    fixed_now = datetime(2026, 9, 5, 12, tzinfo=UTC)
+    for module in (gateway_dispatch, gateway_invocations, brief_preparation):
+        monkeypatch.setattr(module, "now_utc", lambda: fixed_now)
+    try:
+        first, second = await _seed_two_subjects(admin)
+        capability_role = await _grant_probe_platform_capability(admin)
+        on_date = date(2026, 9, 4)
+        period_start = date(2026, 1, 1)
+        period_end = date(2027, 1, 1)
+        async with admin_factory() as seed:
+            owner_user_id = await seed.scalar(
+                sa.select(HealthSubject.owner_user_id).where(
+                    HealthSubject.id == first
+                )
+            )
+            assert owner_user_id is not None
+            seed.add_all(
+                (
+                    PlatformIntegrationConnection(
+                        provider=IntegrationProvider.OPENROUTER.value,
+                        connection_type=IntegrationConnectionType.AI_GATEWAY.value,
+                        external_account_discriminator="opaque-rls-funded-brief",
+                        credential_ref="env:VITALS_OPENROUTER_API_KEY",
+                        status=IntegrationConnectionStatus.ACTIVE.value,
+                        config_version=1,
+                        configured_by_user_id=owner_user_id,
+                    ),
+                    AIPlatformQuotaPeriod(
+                        period_start=period_start,
+                        period_end=period_end,
+                        cost_limit_microunits=10_000_000,
+                        unit_limit=1_000_000,
+                        configured_by_user_id=owner_user_id,
+                    ),
+                    AISubjectQuotaPeriod(
+                        subject_id=first,
+                        period_start=period_start,
+                        period_end=period_end,
+                        cost_limit_microunits=10_000_000,
+                        unit_limit=1_000_000,
+                        configured_by_user_id=owner_user_id,
+                    ),
+                )
+            )
+            await seed.execute(
+                sa.text(
+                    "INSERT INTO weight_logs "
+                    "(subject_id, actor_user_id, integration_connection_id, "
+                    "date, domain, source, weight_kg, superseded, created_at, "
+                    "updated_at) VALUES "
+                    "(:first, NULL, NULL, :day, 'weight', 'manual', 72.5, "
+                    "false, now(), now()), "
+                    "(:second, NULL, NULL, :day, 'weight', 'manual', 198.0, "
+                    "false, now(), now())"
+                ),
+                {"first": first, "second": second, "day": on_date},
+            )
+            await seed.commit()
+
+        async with restricted_factory() as preparation_session:
+            prepared = await brief_preparation.prepare_brief(
+                preparation_session,
+                actor_username=None,
+                invocation_source=AIInvocationSource.SCHEDULER,
+                surface=brief_contracts.BriefSurface.SCHEDULER,
+                subject_id=first,
+                on_date=on_date,
+            )
+            assert prepared is not None and prepared.dispatchable
+            assert prepared.context["weight"]["latest_kg"] == 72.5
+            assert bound_subject(preparation_session) == first
+            assert not in_platform_scope(preparation_session)
+            await preparation_session.commit()
+
+        phase = "t2"
+        invocation_key_scopes: list[tuple[str, uuid.UUID | None]] = []
+        original_invocation_key = gateway_dispatch._invocation_key
+
+        async def scoped_invocation_key(session, invocation_id):
+            invocation_key_scopes.append((phase, bound_subject(session)))
+            return await original_invocation_key(session, invocation_id)
+
+        monkeypatch.setattr(
+            gateway_dispatch,
+            "_invocation_key",
+            scoped_invocation_key,
+        )
+        async with restricted_factory() as dispatch_session:
+            lease = await brief_rendering.start_brief_dispatch(
+                dispatch_session,
+                prepared,
+                credential_resolver=lambda _ref: "synthetic-secret",
+            )
+            assert bound_subject(dispatch_session) == first
+            assert not in_platform_scope(dispatch_session)
+            await dispatch_session.commit()
+
+        provider_calls = 0
+
+        async def fake_provider(request):
+            nonlocal provider_calls
+            provider_calls += 1
+            assert request.credential == "synthetic-secret"
+            return LLMCallResult(
+                value="Synthetic paid Daily Brief narrative.",
+                upstream_request_id="opaque-rls-brief-request",
+                model=request.model,
+                input_tokens=7,
+                output_tokens=11,
+                cost_microunits=13,
+            )
+
+        completion = await gateway_dispatch.dispatch_ai(
+            lease,
+            provider_call=fake_provider,
+            usage_extractor=lambda result: gateway_contracts.SanitizedAIUsage(
+                upstream_request_id=result.upstream_request_id,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                cost_microunits=result.cost_microunits,
+            ),
+        )
+        assert provider_calls == 1
+        assert completion.status is AIInvocationStatus.SUCCEEDED
+
+        async with admin.begin() as connection:
+            updated = await connection.execute(
+                sa.update(User)
+                .where(User.id == owner_user_id)
+                .values(status="suspended")
+            )
+            assert updated.rowcount == 1
+
+        phase = "t3"
+        async with restricted_factory() as finalization_session:
+            artifact = await brief_persistence.persist_brief(
+                finalization_session,
+                prepared,
+                completion,
+            )
+            assert bound_subject(finalization_session) == first
+            assert not in_platform_scope(finalization_session)
+            await finalization_session.commit()
+
+        assert invocation_key_scopes == [("t2", first), ("t3", first)]
+        assert completion.payload is None
+        async with admin_factory() as verification:
+            invocation = await verification.scalar(
+                sa.select(AIInvocation).where(
+                    AIInvocation.id == prepared.invocation_id
+                )
+            )
+            stored = await verification.scalar(
+                sa.select(WeeklyDigest).where(WeeklyDigest.id == artifact.id)
+            )
+            owner_status = await verification.scalar(
+                sa.select(User.status).where(User.id == owner_user_id)
+            )
+        assert owner_status == "suspended"
+        assert invocation is not None
+        assert invocation.subject_id == first
+        assert invocation.actor_user_id is None
+        assert invocation.source == AIInvocationSource.SCHEDULER.value
+        assert invocation.status == AIInvocationStatus.SUCCEEDED.value
+        assert invocation.upstream_request_id == "opaque-rls-brief-request"
+        assert invocation.input_tokens == 7
+        assert invocation.output_tokens == 11
+        assert invocation.cost_microunits == 13
+        assert stored is not None
+        assert stored.subject_id == first
+        assert stored.actor_user_id is None
+        assert stored.source == Source.SCHEDULER.value
+        assert stored.kind == DigestKind.DAILY_BRIEF.value
+        assert stored.ai_invocation_id == invocation.id
+        assert stored.model is not None
+        assert "Synthetic paid Daily Brief narrative." in stored.content
+        assert stored.context_json["weight"]["latest_kg"] == 72.5
+        assert stored.context_json["weight"]["latest_kg"] != 198.0
     finally:
         if capability_role is not None:
             await _drop_probe_platform_capability(admin, capability_role)

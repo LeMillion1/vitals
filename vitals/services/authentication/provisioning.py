@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vitals.config import configured_timezone
 from vitals.enums import UserRoleName, UserStatus
 from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.models.scoped_settings import SubjectSetting
@@ -40,7 +41,6 @@ from vitals.services.identity.bootstrap import validate_timezone
 from vitals.services.identity.contracts import IdentityValidationError
 from vitals.services.identity.governance import acquire_identity_governance_lock
 from vitals.services.identity.normalization import normalize_email, normalize_username
-from vitals.utils.timeutils import DEFAULT_TIMEZONE
 
 
 class AccountProvisioningError(Exception):
@@ -121,7 +121,7 @@ async def provision_account(
     email: str | None = None,
     password_hash: str | None = None,
     display_name: str | None = None,
-    timezone: str = DEFAULT_TIMEZONE,
+    timezone: str | None = None,
     roles: tuple[str, ...] = (UserRoleName.MEMBER.value,),
     with_health_record: bool = True,
 ) -> ProvisionedAccount:
@@ -158,7 +158,7 @@ async def provision_bound_member_account(
     email: str | None = None,
     password_hash: str | None = None,
     display_name: str | None = None,
-    timezone: str = DEFAULT_TIMEZONE,
+    timezone: str | None = None,
 ) -> ProvisionedAccount:
     """Create one member and bind the transaction to its new record.
 
@@ -193,7 +193,7 @@ async def provision_bound_account(
     email: str | None = None,
     password_hash: str | None = None,
     display_name: str | None = None,
-    timezone: str = DEFAULT_TIMEZONE,
+    timezone: str | None = None,
     roles: tuple[str, ...] = (UserRoleName.MEMBER.value,),
 ) -> ProvisionedAccount:
     """Create one record-owning account in a fresh subject-bound transaction.
@@ -230,7 +230,7 @@ async def _provision_account(
     email: str | None,
     password_hash: str | None,
     display_name: str | None,
-    timezone: str,
+    timezone: str | None,
     roles: tuple[str, ...],
     with_health_record: bool,
     bind_new_subject: bool,
@@ -254,7 +254,9 @@ async def _provision_account(
         raise AccountProvisioningValidationError("an account needs at least one role")
 
     try:
-        subject_timezone = validate_timezone(timezone)
+        subject_timezone = validate_timezone(
+            configured_timezone() if timezone is None else timezone
+        )
     except ValueError as exc:
         raise AccountProvisioningValidationError(str(exc)) from exc
 

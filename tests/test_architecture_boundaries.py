@@ -445,7 +445,12 @@ def test_architecture_reference_counters_match_the_source_tree() -> None:
     fanout_jobs = sum(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id in {"for_each_subject", "for_each_connection"}
+        and node.func.id
+        in {
+            "for_each_subject",
+            "for_each_connection",
+            "register_subject_cron_job",
+        }
         for node in ast.walk(jobs_tree)
     )
     conflict_tree = ast.parse(

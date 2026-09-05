@@ -314,6 +314,7 @@ async def _run_brief_generation(
             actor_username=actor_username,
             invocation_source=AIInvocationSource.WEB,
             surface=surface,
+            subject_id=None,
             request_token=request_token,
             on_date=on_date,
         )
@@ -355,6 +356,7 @@ async def _run_brief_generation(
                 actor_username=actor_username,
                 invocation_source=AIInvocationSource.WEB,
                 surface=surface,
+                subject_id=None,
                 request_token=request_token,
                 on_date=on_date,
             )
@@ -384,6 +386,7 @@ async def _run_brief_generation(
                 actor_username=actor_username,
                 invocation_source=AIInvocationSource.WEB,
                 surface=surface,
+                subject_id=None,
                 request_token=request_token,
                 on_date=on_date,
             )

@@ -348,6 +348,127 @@ async def test_goal_reads_as_distance_covered(db_session, legacy_owner_roots, ow
     assert goal["pct"] == 40
 
 
+async def test_equal_baseline_goal_stays_visible_without_invented_progress(
+    auth_client,
+    db_session,
+    legacy_owner_roots,
+    owner_write,
+):
+    """A valid active goal exists even when its progress span is zero."""
+
+    for offset, kg in ((1, 72.0), (0, 72.5)):
+        on_date = today_local() - timedelta(days=offset)
+        await weight_domain.writes.log_weight(
+            db_session,
+            on_date=on_date,
+            weight_kg=kg,
+            identity=owner_write.identity,
+            prepared_weight_write=await owner_write.weight_write(on_date),
+        )
+    await milestone_goals.create_milestone(
+        db_session,
+        name="QA active target",
+        domain=Domain.WEIGHT.value,
+        target_value=72.0,
+        target_unit="kg",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
+    await db_session.commit()
+
+    goal = (
+        await today_service.build(
+            db_session,
+            subject_id=legacy_owner_roots.subject_id,
+            prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
+                db_session,
+                identity=WriteIdentity(
+                    legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+                ),
+                owner_user_id=legacy_owner_roots.user_id,
+            ),
+            enabled_modules=ALL_OFF,
+        )
+    )["goal"]
+
+    assert goal["name"] == "QA active target"
+    assert goal["target"] == "72"
+    assert goal["current"] == "72.5"
+    assert goal["pct"] is None
+    assert goal["done"] is None
+    assert goal["total"] is None
+
+    response = await auth_client.get("/today", headers={"Accept": "text/html"})
+    assert response.status_code == 200
+    assert "QA active target" in response.text
+    assert "72,5 kg" in response.text
+    assert '<div class="v-meter">' not in response.text
+    assert 'href="/reports"' in response.text
+
+
+async def test_today_selects_an_active_goal_without_a_weight_baseline(
+    db_session,
+    legacy_owner_roots,
+    owner_write,
+):
+    """Inactive or unit-incompatible goals cannot hide a current weight goal."""
+
+    inactive = await milestone_goals.create_milestone(
+        db_session,
+        name="Old paused goal",
+        domain=Domain.WEIGHT.value,
+        target_value=80.0,
+        target_unit="kg",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
+    await milestone_goals.set_status(
+        db_session,
+        inactive.id,
+        "paused",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
+    await milestone_goals.create_milestone(
+        db_session,
+        name="Mislabeled body-fat goal",
+        domain=Domain.WEIGHT.value,
+        target_value=15.0,
+        target_unit="%",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
+    await milestone_goals.create_milestone(
+        db_session,
+        name="Current active goal",
+        domain=Domain.WEIGHT.value,
+        target_value=72.0,
+        target_unit="kg",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
+    await db_session.commit()
+
+    goal = (
+        await today_service.build(
+            db_session,
+            subject_id=legacy_owner_roots.subject_id,
+            prepared_digest_owner=await digest_ownership.prepare_digest_owner_for_identity(
+                db_session,
+                identity=WriteIdentity(
+                    legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+                ),
+                owner_user_id=legacy_owner_roots.user_id,
+            ),
+            enabled_modules=ALL_OFF,
+        )
+    )["goal"]
+
+    assert goal["name"] == "Current active goal"
+    assert goal["current"] is None
+    assert goal["pct"] is None
+
+
 async def test_recovery_advice_arrives_as_an_observation(db_session, legacy_owner_roots, *, garmin_connection_id):
     """An interpretation of the numbers is not a failure: it joins the attention
     card on the quietest rung, never as a warning."""

@@ -174,7 +174,7 @@ async def test_missing_data_is_not_a_nudge(garmin_owned_scope, db_session, scope
 
 
 async def test_protein_nudge_fires_while_the_day_is_still_open(
-    db_session, owner_write, monkeypatch
+    db_session, owner_write, monkeypatch, all_modules_on
 ):
     await nutrition_writes.log_meal(
         db_session,
@@ -205,6 +205,128 @@ async def test_protein_nudge_fires_while_the_day_is_still_open(
     assert await nudges.run(
         db_session, notifier, now=EVENING.replace(hour=22), ownership=ownership
     ) == []
+
+
+async def test_nutrition_module_gate_is_subject_specific_and_keeps_other_nudges(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    import uuid
+
+    from vitals.enums import UserStatus
+    from vitals.models.identity import HealthSubject, User
+    from vitals.models.scoped_settings import SubjectSetting
+    from vitals.services.modules.preferences import SETTINGS_KEY
+    from vitals.services.proactive.ownership import ProactiveOwnershipContext
+    from vitals.services.proactive.preferences.contracts import SUBJECT_POLICY_KEY
+
+    enabled_owner = User(
+        username="nutrition-nudge-enabled",
+        normalized_username="nutrition-nudge-enabled",
+        password_hash="synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(enabled_owner)
+    await db_session.flush()
+    enabled_subject = HealthSubject(
+        owner_user_id=enabled_owner.id,
+        timezone="America/St_Johns",
+    )
+    db_session.add(enabled_subject)
+    await db_session.flush()
+    policy = {
+        "brief_time": "11:00",
+        "nudges": {"activity": True, "nutrition": True, "data": True},
+    }
+    for subject_id, nutrition_enabled in (
+        (legacy_owner_roots.subject_id, False),
+        (enabled_subject.id, True),
+    ):
+        await db_session.merge(
+            SubjectSetting(
+                subject_id=subject_id,
+                key=SETTINGS_KEY,
+                value={"nutrition": nutrition_enabled},
+            )
+        )
+        await db_session.merge(
+            SubjectSetting(
+                subject_id=subject_id,
+                key=SUBJECT_POLICY_KEY,
+                value=policy,
+            )
+        )
+    await db_session.commit()
+
+    activity_checks = []
+    nutrition_reads = []
+
+    async def activity_condition(_session, ctx):
+        activity_checks.append(ctx["ownership"].subject_id)
+        return False
+
+    async def meals(_session, _on_date, *, subject_id):
+        nutrition_reads.append(subject_id)
+        return []
+
+    async def policy_clock(_session, *, ownership, now):
+        del ownership
+        return now, now
+
+    monkeypatch.setattr(nudges.nutrition_queries, "list_meals_for_date", meals)
+    monkeypatch.setattr(nudges.delivery_queries, "delivery_policy_clock", policy_clock)
+    monkeypatch.setattr(
+        nudges,
+        "NUDGES",
+        (
+            nudges.NudgeSpec(
+                "activity-probe",
+                nudges.CATEGORY_ACTIVITY,
+                activity_condition,
+                lambda _ctx: "unused",
+            ),
+            nudges.NudgeSpec(
+                "protein_short",
+                nudges.CATEGORY_NUTRITION,
+                nudges._protein_short,
+                lambda _ctx: "unused",
+            ),
+        ),
+    )
+    off = ProactiveOwnershipContext(
+        subject_id=legacy_owner_roots.subject_id,
+        recipient_user_id=legacy_owner_roots.user_id,
+        connection_id=uuid.uuid4(),
+        include_legacy_unowned=False,
+    )
+    on = ProactiveOwnershipContext(
+        subject_id=enabled_subject.id,
+        recipient_user_id=enabled_owner.id,
+        connection_id=uuid.uuid4(),
+        include_legacy_unowned=False,
+    )
+    notifier = FakeNotifier()
+
+    assert await nudges.run(
+        db_session,
+        notifier,
+        now=AFTERNOON,
+        ownership=off,
+    ) == []
+    assert await nudges.run(
+        db_session,
+        notifier,
+        now=AFTERNOON,
+        ownership=on,
+    ) == []
+
+    assert activity_checks == [
+        legacy_owner_roots.subject_id,
+        enabled_subject.id,
+    ]
+    assert nutrition_reads == [enabled_subject.id]
+    assert notifier.sent == []
 
 
 async def test_garmin_silence_needs_two_days_and_some_history(garmin_owned_scope, db_session, scoped_nudges):
@@ -387,7 +509,7 @@ async def test_ambiguous_garmin_silence_claim_blocks_the_whole_episode(
 # ── The budget ────────────────────────────────────────────────────────────────
 async def test_budget_cuts_the_nudge_that_does_not_fit(
     garmin_owned_scope, db_session, owner_write, monkeypatch,
-    legacy_owner_roots, telegram_connection_id,
+    legacy_owner_roots, telegram_connection_id, all_modules_on,
 ):
     """Two conditions hold, one slot is left — so exactly one goes out. The brief
     and the evening block spend two of the four every day, which is why a nudge

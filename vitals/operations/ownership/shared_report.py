@@ -982,7 +982,9 @@ async def _create_checkpoint(
         data_checksum_before=_EMPTY_SHA256,
         data_checksum_after=_EMPTY_SHA256,
         ownership_checksum_after=_EMPTY_SHA256,
-        completed_at=now_utc() if empty else None,
+        started_at=func.now(),
+        updated_at=func.now(),
+        completed_at=func.now() if empty else None,
     )
     session.add(checkpoint)
     await session.flush()

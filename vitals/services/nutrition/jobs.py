@@ -6,6 +6,7 @@ import uuid
 
 from vitals.enums import Domain
 from vitals.services.conflicts import engine
+from vitals.services.modules import preferences as modules_service
 from vitals.utils.timeutils import today_local
 
 
@@ -29,6 +30,14 @@ async def day_end_job(
             subject_id=subject_id,
             evaluation_date=on_date,
         )
+        enabled = await modules_service.get_enabled_modules(
+            session,
+            redis,
+            subject_id=context.identity.subject_id,
+        )
+        if not enabled.get("nutrition", False):
+            await session.commit()
+            return
         await engine.reconcile_day_end_scoped(
             session,
             context=context,

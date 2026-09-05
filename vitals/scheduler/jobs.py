@@ -19,8 +19,40 @@ from typing import Any, Optional
 
 from vitals.enums import IntegrationProvider
 from vitals.scheduler.fanout import for_each_connection, for_each_subject
-from vitals.scheduler.scheduler import JobFailureFamily, clear_jobs, register_job
+from vitals.scheduler.scheduler import (
+    JobFailureFamily,
+    clear_jobs,
+    register_job,
+    register_subject_cron_job,
+)
 from vitals.services.proactive.preferences import codec as preference_codec
+
+
+async def _daily_brief_schedule(session_factory, subject_id):
+    """Resolve one subject's current Brief retry-window cron fields."""
+
+    from vitals.persistence.rls import bind_session_subject
+    from vitals.services.proactive.brief.jobs import last_attempt_hour
+    from vitals.services.proactive.preferences import contracts as preference_contracts
+    from vitals.services.proactive.preferences import queries as preference_queries
+
+    async with session_factory() as session:
+        await bind_session_subject(session, subject_id)
+        try:
+            policy = await preference_queries.get_subject_policy(
+                session,
+                subject_id=subject_id,
+            )
+        except preference_contracts.ProactivePreferencesNotConfiguredError:
+            await session.rollback()
+            return None
+        await session.rollback()
+
+    brief_hour = policy.brief_time.hour
+    return {
+        "hour": f"{brief_hour}-{last_attempt_hour(brief_hour)}",
+        "minute": policy.brief_time.minute,
+    }
 
 
 def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
@@ -65,7 +97,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.nutrition.jobs import day_end_job as nutrition_day_end_job
     from vitals.services.hrt.reminders import reminders_job as hrt_reminders_job
     from vitals.services.garmin.jobs import pulse_job as garmin_pulse_job
-    from vitals.services.proactive.brief.jobs import brief_job, last_attempt_hour
+    from vitals.services.proactive.brief.jobs import brief_job
     from vitals.services.proactive.nudges import nudges_job
     from vitals.services.proactive.delivery.reconciliation import (
         delivery_reconciliation_job,
@@ -82,10 +114,9 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
 
     # GLP-1 plateau check — once a day at 06:00 local. Cheap read; raises/clears a
     # passive warn alert so it's fresh even on days the dashboard isn't opened.
-    register_job(
+    register_subject_cron_job(
         "glp1_plateau",
-        for_each_subject(plateau_job, job_id="glp1_plateau"),
-        trigger="cron",
+        plateau_job,
         failure_family=JobFailureFamily.SUBJECT,
         hour=6,
         minute=0,
@@ -93,10 +124,9 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
 
     # HRT reminders — once a day at 07:00 local. Nags for overdue bloodwork
     # (while on cycle) and for missed scheduled injections; both idempotent.
-    register_job(
+    register_subject_cron_job(
         "hrt_reminders",
-        for_each_subject(hrt_reminders_job, job_id="hrt_reminders"),
-        trigger="cron",
+        hrt_reminders_job,
         failure_family=JobFailureFamily.SUBJECT,
         hour=7,
         minute=0,
@@ -105,10 +135,9 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # Nutrition day-end check — once a day at 23:00 local, once today's logged
     # totals are effectively final. Raises the very-low-calorie/protein GLP-1
     # warnings, which must never fire off a partial mid-day total.
-    register_job(
+    register_subject_cron_job(
         "nutrition_day_end",
-        for_each_subject(nutrition_day_end_job, job_id="nutrition_day_end"),
-        trigger="cron",
+        nutrition_day_end_job,
         failure_family=JobFailureFamily.SUBJECT,
         hour=23,
         minute=0,
@@ -243,14 +272,11 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # the brief refuses to read recovery off a running night. Each later hour
     # looks again; the delivery journal keeps it to one message a day, and the job
     # returns before the Garmin pull once that message has gone.
-    brief_hour, brief_minute = preference_codec.hhmm(settings["brief_time"])
-    register_job(
+    register_subject_cron_job(
         "daily_brief",
-        for_each_subject(brief_job, job_id="daily_brief"),
-        trigger="cron",
+        brief_job,
         failure_family=JobFailureFamily.SUBJECT,
-        hour=f"{brief_hour}-{last_attempt_hour(brief_hour)}",
-        minute=brief_minute,
+        schedule_resolver=_daily_brief_schedule,
         lock_ttl=900,
     )
 
@@ -277,20 +303,18 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # Nudges — hourly, at :05 so it never lands on top of the polls. Nothing is
     # sent unless a condition actually holds; quiet hours and the daily budget are
     # enforced downstream by delivery_legacy.send.
-    register_job(
+    register_subject_cron_job(
         "nudges",
-        for_each_subject(nudges_job, job_id="nudges"),
-        trigger="cron",
+        nudges_job,
         failure_family=JobFailureFamily.SUBJECT,
         minute=5,
     )
 
     # Weekly AI digest — Mondays at 08:00 local. The database gateway/quota state
     # is authoritative; an unavailable platform gateway causes a clean no-op.
-    register_job(
+    register_subject_cron_job(
         "weekly_digest",
-        for_each_subject(digest_job, job_id="weekly_digest"),
-        trigger="cron",
+        digest_job,
         failure_family=JobFailureFamily.SUBJECT,
         day_of_week="mon",
         hour=8,

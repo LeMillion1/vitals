@@ -17,27 +17,40 @@ from vitals.services.alerts import lifecycle as alerts_service_lifecycle
 import logging
 import uuid
 from collections.abc import Iterable
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from functools import partial
 from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Optional
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vitals.scheduler.scheduler_lock import (
+    SchedulerSlotClaimError,
+    claim_subject_schedule_slot,
     record_scheduler_heartbeat,
     with_scheduler_lock,
 )
+from vitals.utils.timeutils import now_utc, subject_timezone
 
 logger = logging.getLogger(__name__)
 
 JobFunc = Callable[[async_sessionmaker[AsyncSession], Optional[Redis]], Awaitable[None]]
+SubjectJobFunc = Callable[..., Awaitable[Any]]
+SubjectScheduleResolver = Callable[
+    [async_sessionmaker[AsyncSession], uuid.UUID],
+    Awaitable[dict[str, Any] | None],
+]
 
 KEEPALIVE_JOB_ID = "keepalive"
+SUBJECT_CRON_TRIGGER = "subject_cron"
+SUBJECT_DISPATCH_GRACE_SECONDS = 45
+SUBJECT_DISPATCH_LOCK_TTL_SECONDS = 55
+SUBJECT_OCCURRENCE_JOB_PREFIX = "subject_occurrence:"
 
 # One active alert per failing job — the id is part of the key (never a timestamp,
 # which would defeat the dedupe index and pile up a row per failed tick).
@@ -146,6 +159,7 @@ class JobSpec:
     trigger_kwargs: dict = field(default_factory=dict)
     lock_ttl: int = 300
     heartbeat: bool = True
+    subject_schedule_resolver: SubjectScheduleResolver | None = None
 
 
 _registry: dict[str, JobSpec] = {}
@@ -175,6 +189,47 @@ def register_job(
     )
 
 
+def register_subject_cron_job(
+    job_id: str,
+    func: SubjectJobFunc,
+    *,
+    failure_family: JobFailureFamily,
+    schedule_resolver: SubjectScheduleResolver | None = None,
+    lock_ttl: int = 300,
+    heartbeat: bool = True,
+    **trigger_kwargs: Any,
+) -> None:
+    """Register one logical job whose cron is evaluated per subject timezone.
+
+    APScheduler receives a minute-level dispatcher under the same logical id;
+    the dispatcher creates short-lived one-shot jobs only for subjects whose
+    current local minute matches this cron.  A resolver supplies per-subject
+    cron fields for preferences such as Daily Brief's start time.
+    """
+
+    _require_failure_family(job_id, failure_family)
+    if failure_family is not JobFailureFamily.SUBJECT:
+        raise JobFailureClassificationError(
+            "subject-local cron jobs must use the subject failure family"
+        )
+    if schedule_resolver is None and not trigger_kwargs:
+        raise ValueError("subject-local cron jobs need cron fields or a resolver")
+    if schedule_resolver is not None and trigger_kwargs:
+        raise ValueError(
+            "subject-local cron jobs use either fixed cron fields or a resolver"
+        )
+    _registry[job_id] = JobSpec(
+        id=job_id,
+        func=func,
+        trigger=SUBJECT_CRON_TRIGGER,
+        failure_family=failure_family,
+        trigger_kwargs=trigger_kwargs,
+        lock_ttl=lock_ttl,
+        heartbeat=heartbeat,
+        subject_schedule_resolver=schedule_resolver,
+    )
+
+
 def clear_jobs() -> None:
     """Drop all registered jobs (test isolation)."""
     _registry.clear()
@@ -197,14 +252,269 @@ _FIRE_SAMPLES = 8
 _BUDGET_SLACK_SECONDS = 300.0
 
 
-def _build_trigger(spec: JobSpec, timezone):
+def _build_trigger(spec: JobSpec, scheduler_timezone):
     """Build one trigger without mutating a live scheduler."""
 
     from apscheduler.triggers.cron import CronTrigger
     from apscheduler.triggers.interval import IntervalTrigger
 
+    if spec.trigger == SUBJECT_CRON_TRIGGER:
+        # The real cron is evaluated against each subject's ZoneInfo inside the
+        # dispatcher.  This process-level trigger is only a UTC-invariant minute
+        # boundary and deliberately carries no person's schedule.
+        return CronTrigger(timezone="UTC", minute="*", second=0)
     factory = CronTrigger if spec.trigger == "cron" else IntervalTrigger
-    return factory(timezone=timezone, **spec.trigger_kwargs)
+    return factory(timezone=scheduler_timezone, **spec.trigger_kwargs)
+
+
+def _validate_subject_cron_spec(spec: JobSpec) -> None:
+    """Validate every static local cron before mutating a live scheduler."""
+
+    if spec.trigger != SUBJECT_CRON_TRIGGER or spec.subject_schedule_resolver:
+        return
+    from apscheduler.triggers.cron import CronTrigger
+
+    CronTrigger(timezone="UTC", **spec.trigger_kwargs)
+
+
+def _subject_cron_matches(
+    *,
+    utc_minute: datetime,
+    zone: ZoneInfo,
+    trigger_kwargs: dict[str, Any],
+) -> bool:
+    """Whether a subject's cron contains exactly this absolute minute."""
+
+    from apscheduler.triggers.cron import CronTrigger
+
+    trigger = CronTrigger(timezone=zone, **trigger_kwargs)
+    next_fire = trigger.get_next_fire_time(None, utc_minute)
+    return (
+        next_fire is not None
+        and next_fire.astimezone(timezone.utc) == utc_minute
+    )
+
+
+def _subject_execution_lock_id(job_id: str, subject_id: uuid.UUID) -> str:
+    """A scoped mutex name; the retained slot claim owns occurrence dedupe."""
+
+    import hashlib
+
+    opaque_subject = hashlib.sha256(str(subject_id).encode("ascii")).hexdigest()
+    return f"{job_id}:subject:{opaque_subject}"
+
+
+def _make_subject_occurrence_runner(
+    spec: JobSpec,
+    session_factory: async_sessionmaker[AsyncSession],
+    redis: Optional[Redis],
+    *,
+    subject_id: uuid.UUID,
+    zone_name: str,
+    deadline: datetime,
+) -> Callable[[], Awaitable[None]]:
+    """Build one independently executing, already-claimed subject occurrence."""
+
+    async def _run() -> None:
+        # A busy worker must omit a stale occurrence, never turn it into a late
+        # notification or a day-end evaluation against the wrong date.
+        if now_utc() > deadline:
+            logger.warning(
+                "%s occurrence for subject %s missed its current-slot deadline",
+                spec.id,
+                subject_id,
+            )
+            return
+
+        executed = False
+
+        async def _execute_locked() -> None:
+            nonlocal executed
+            # The outer check avoids needless lock traffic for work already
+            # stale when APScheduler starts it.  This second check is the
+            # authoritative one: acquiring the distributed mutex can itself
+            # take the occurrence past its current-minute boundary.
+            if now_utc() > deadline:
+                logger.warning(
+                    "%s occurrence for subject %s expired while waiting to run",
+                    spec.id,
+                    subject_id,
+                )
+                return
+            executed = True
+            with subject_timezone(zone_name):
+                await spec.func(
+                    session_factory,
+                    redis,
+                    subject_id=subject_id,
+                )
+
+        try:
+            if redis is None:
+                await _execute_locked()
+            else:
+                await with_scheduler_lock(
+                    redis,
+                    _subject_execution_lock_id(spec.id, subject_id),
+                    spec.lock_ttl,
+                    _execute_locked,
+                )
+        except Exception as exc:
+            logger.exception(
+                "%s failed for subject %s",
+                spec.id,
+                subject_id,
+            )
+            detail = str(exc)[:200] or exc.__class__.__name__
+            await record_subject_job_outcome(
+                session_factory,
+                spec.id,
+                detail,
+                subject_id=subject_id,
+            )
+            raise
+        else:
+            # A busy subject mutex is an omitted occurrence, not proof that an
+            # earlier failure recovered.
+            if executed:
+                await record_subject_job_outcome(
+                    session_factory,
+                    spec.id,
+                    None,
+                    subject_id=subject_id,
+                )
+
+    return _run
+
+
+async def _record_subject_dispatch_error(
+    spec: JobSpec,
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    subject_id: uuid.UUID,
+    error: BaseException,
+) -> None:
+    logger.exception(
+        "%s could not dispatch subject %s",
+        spec.id,
+        subject_id,
+        exc_info=error,
+    )
+    detail = str(error)[:200] or error.__class__.__name__
+    await record_subject_job_outcome(
+        session_factory,
+        spec.id,
+        detail,
+        subject_id=subject_id,
+    )
+
+
+def _make_subject_dispatcher(
+    spec: JobSpec,
+    scheduler: AsyncIOScheduler,
+    session_factory: async_sessionmaker[AsyncSession],
+    redis: Optional[Redis],
+) -> JobFunc:
+    """Turn one logical subject cron into a short minute-level dispatcher."""
+
+    async def _dispatch(_session_factory, _redis) -> None:
+        from vitals.scheduler.fanout import list_active_subject_schedules
+
+        observed_at = now_utc()
+        utc_minute = observed_at.replace(second=0, microsecond=0)
+        deadline = utc_minute + timedelta(
+            seconds=SUBJECT_DISPATCH_GRACE_SECONDS
+        )
+        if observed_at > deadline:
+            # APScheduler's own grace normally drops this tick first.  Keep the
+            # same fail-closed boundary when the dispatcher is invoked directly.
+            return
+
+        subjects = await list_active_subject_schedules(session_factory)
+        if now_utc() > deadline:
+            return
+        for subject_id, zone_name in subjects:
+            if now_utc() > deadline:
+                return
+            try:
+                zone = ZoneInfo(zone_name)
+                trigger_kwargs = spec.trigger_kwargs
+                if spec.subject_schedule_resolver is not None:
+                    resolved = await spec.subject_schedule_resolver(
+                        session_factory,
+                        subject_id,
+                    )
+                    if resolved is None:
+                        continue
+                    if not isinstance(resolved, dict):
+                        raise TypeError("subject schedule resolver must return a dict")
+                    trigger_kwargs = resolved
+                if now_utc() > deadline:
+                    return
+                if not _subject_cron_matches(
+                    utc_minute=utc_minute,
+                    zone=zone,
+                    trigger_kwargs=trigger_kwargs,
+                ):
+                    continue
+
+                local_slot = utc_minute.astimezone(zone).replace(tzinfo=None)
+                if redis is None:
+                    # ``setup_scheduler`` supports a dependency-light local/test
+                    # mode.  The production worker always constructs Redis; only
+                    # that path promises cross-worker and DST-fold deduplication.
+                    from vitals.scheduler.scheduler_lock import (
+                        _subject_slot_claim_digest,
+                    )
+
+                    claim_digest = _subject_slot_claim_digest(
+                        spec.id,
+                        subject_id,
+                        local_slot,
+                    )
+                else:
+                    claim_digest = await claim_subject_schedule_slot(
+                        redis,
+                        job_id=spec.id,
+                        subject_id=subject_id,
+                        local_slot=local_slot,
+                    )
+                    if claim_digest is None:
+                        continue
+                if now_utc() > deadline:
+                    return
+
+                occurrence_id = (
+                    f"{SUBJECT_OCCURRENCE_JOB_PREFIX}{spec.id}:{claim_digest}"
+                )
+                scheduler.add_job(
+                    _make_subject_occurrence_runner(
+                        spec,
+                        session_factory,
+                        redis,
+                        subject_id=subject_id,
+                        zone_name=zone_name,
+                        deadline=deadline,
+                    ),
+                    trigger="date",
+                    run_date=observed_at,
+                    id=occurrence_id,
+                    replace_existing=False,
+                    misfire_grace_time=SUBJECT_DISPATCH_GRACE_SECONDS,
+                )
+            except SchedulerSlotClaimError:
+                # An unavailable Redis is a process-wide safety failure.  Do not
+                # keep walking and produce a partial unclaimed fan-out.
+                raise
+            except Exception as exc:  # noqa: BLE001 — isolate one bad subject
+                await _record_subject_dispatch_error(
+                    spec,
+                    session_factory,
+                    subject_id=subject_id,
+                    error=exc,
+                )
+
+    return _dispatch
 
 
 def _max_gap_seconds(spec: JobSpec, timezone: str) -> float:
@@ -477,22 +787,51 @@ def apply_registry(
     # boundary value must not replace the first half of the jobs and then fail,
     # leaving a mixed registry that is retried and rephased on every poll.
     heartbeat_budgets(scheduler.timezone)
+    for spec in _registry.values():
+        _validate_subject_cron_spec(spec)
     prepared = [
         (spec, _build_trigger(spec, scheduler.timezone))
         for spec in _registry.values()
     ]
     for spec, trigger in prepared:
+        runner_spec = spec
+        job_options: dict[str, Any] = {}
+        trigger_options = spec.trigger_kwargs
+        if spec.trigger == SUBJECT_CRON_TRIGGER:
+            runner_spec = replace(
+                spec,
+                func=_make_subject_dispatcher(
+                    spec,
+                    scheduler,
+                    session_factory,
+                    redis,
+                ),
+                # A crash during discovery must not strand a daily slot behind
+                # the old service-execution TTL.  Retained occurrence claims
+                # make overlap after this short TTL safe.
+                lock_ttl=SUBJECT_DISPATCH_LOCK_TTL_SECONDS,
+            )
+            trigger_options = {}
+            job_options = {
+                "coalesce": True,
+                "misfire_grace_time": SUBJECT_DISPATCH_GRACE_SECONDS,
+                "max_instances": 1,
+            }
         scheduler.add_job(
-            _make_runner(spec, session_factory, redis),
+            _make_runner(runner_spec, session_factory, redis),
             trigger=trigger,
             id=spec.id,
             replace_existing=True,
-            **spec.trigger_kwargs,
+            **job_options,
+            **trigger_options,
         )
 
     keep = set(_registry) | {KEEPALIVE_JOB_ID}
     for job in scheduler.get_jobs():
-        if job.id not in keep:
+        if (
+            job.id not in keep
+            and not job.id.startswith(SUBJECT_OCCURRENCE_JOB_PREFIX)
+        ):
             scheduler.remove_job(job.id)
 
 

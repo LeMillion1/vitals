@@ -8,6 +8,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — protected export recovers after a passphrase mismatch
+
+Editing either protected-export passphrase field now clears a previous native
+validation error before the browser checks the next submit. Correcting a typo
+no longer leaves the download button stuck; mismatched passphrases still block
+the export and successful submissions still clear both fields shortly afterward.
+
+### Fixed — active weight goals stay visible on Today
+
+Today now shows an active numeric weight goal even when there is no trustworthy
+starting span for a progress percentage. In that case it keeps the goal, target,
+and current weight visible without inventing a progress bar; inactive goals no
+longer hide the active one.
+
+### Fixed — empty portability checkpoints use one database clock
+
+An empty retained shared-report checkpoint now receives its start, update, and
+completion timestamps from the same database clock. A restore crossing a clock
+tick can no longer fail its timestamp-order integrity check.
+
+### Fixed — new records and Today share one local clock
+
+New health records now start with the deployment's `VITALS_TIMEZONE` unless an
+explicit IANA timezone is supplied. Existing records keep their saved timezone.
+Today now keeps one coherent date-and-time snapshot in that saved subject
+timezone instead of silently switching its clock to the browser's
+operating-system timezone after first paint while the page's facts and write
+forms stay on the previous day.
+
+### Fixed — scheduled health work follows each owner's clock
+
+Daily briefs, nudges, weekly digests, HRT reminders, GLP-1 plateau checks, and
+nutrition day-end checks now evaluate their schedules independently in each
+active record owner's saved timezone. Brief retry windows also use that owner's
+current Brief preference, and every Brief phase remains bound to that record.
+Shared provider polling keeps its existing cadence. Opaque retained Redis claims
+prevent rolling workers and repeated DST wall-clock minutes from dispatching the
+same occurrence twice; missed minutes are deliberately not replayed later.
+Nutrition day-end checks and protein nudges also stay inactive while that
+record's Nutrition module is off.
+
 ### Fixed — deterministic briefs follow the reader's language
 
 New morning briefs use English or Russian labels and decimal formatting for

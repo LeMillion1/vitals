@@ -499,18 +499,17 @@ async def governs_the_process_schedule(
     *,
     subject_id: uuid.UUID,
 ) -> bool:
-    """Whether this subject's timings are also the installation's.
+    """Whether this subject may govern process-wide provider cadences.
 
-    ``brief_time`` and the Garmin cadences are stored per subject, but the
-    scheduler registry is one per process: rebuilding it from a settings save
-    re-registers ``daily_brief`` at *that* person's hour for everybody. While an
-    installation is one person those are the same statement. With two they are
-    not, and the second person's Save would quietly move the first person's
-    brief.
+    Garmin polling and weight-export cadences are stored per subject but still
+    produce one process-wide scheduler trigger.  While an installation is one
+    person those are the same schedule.  With two, rebuilding the registry from
+    either person's Save would quietly move provider work for everybody.
 
-    Startup already decided this, in ``web/main.py``: a shared installation
-    keeps the default schedule rather than faking one from somebody's row. This
-    answers the same question for the save path, so the two agree.
+    Daily Brief is not part of this compatibility decision: its minutely
+    dispatcher reads each active subject's own time at the tick. Startup already
+    keeps shared-install provider defaults rather than guessing one person's
+    cadence; this gives the save path the same answer.
     """
 
     if not isinstance(subject_id, uuid.UUID) or subject_id.int == 0:

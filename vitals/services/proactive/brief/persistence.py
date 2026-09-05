@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import (
     AIInvocationErrorCode,
     AIInvocationPurpose,
+    AIInvocationSource,
     AIInvocationStatus,
     DigestKind,
 )
@@ -37,10 +38,16 @@ async def _require_fresh_owner(
     session: AsyncSession,
     prepared: PreparedBrief,
 ) -> WriteIdentity:
-    owner = await digest_ownership.prepare_digest_owner(
-        session,
-        actor_username=prepared._actor_username,
-    )
+    if prepared._invocation_source is AIInvocationSource.SCHEDULER:
+        owner = await digest_ownership.prepare_subject_digest_owner(
+            session,
+            subject_id=prepared._subject_id,
+        )
+    else:
+        owner = await digest_ownership.prepare_digest_owner(
+            session,
+            actor_username=prepared._actor_username,
+        )
     identity = owner.identity
     if (
         identity.subject_id != prepared._subject_id
@@ -114,6 +121,14 @@ async def persist_brief(
     """Finalize accounting and persist one narrative or deterministic header."""
 
     snapshot = _require_prepared_brief(prepared)
+    if snapshot._invocation_source is AIInvocationSource.SCHEDULER:
+        from vitals.persistence.rls import bind_session_subject
+
+        # A paid completion must reach terminal accounting even if the owner was
+        # suspended during provider I/O, so this is deliberately only the exact
+        # RLS partition binding. The current-owner recheck below remains limited
+        # to paths that have not spent platform funds.
+        await bind_session_subject(session, snapshot._subject_id)
     # A sealed paid completion must always reach terminal accounting, even when
     # the human was suspended or ownership changed during provider I/O. Current
     # authorization still gates T1/T2, non-AI writes, cancellation, and reads.

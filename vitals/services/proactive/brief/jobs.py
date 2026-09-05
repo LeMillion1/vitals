@@ -194,6 +194,7 @@ async def night_scored(
 async def _run_scheduled_brief_generation(
     session_factory,
     *,
+    subject_id: uuid.UUID,
     on_date: date_type,
 ) -> tuple[WeeklyDigest | None, PreparedBrief | None, str]:
     """Run scheduler T1/T2/provider/T3 with ambiguous-commit reconciliation."""
@@ -206,6 +207,7 @@ async def _run_scheduled_brief_generation(
                 actor_username=None,
                 invocation_source=AIInvocationSource.SCHEDULER,
                 surface=BriefSurface.SCHEDULER,
+                subject_id=subject_id,
                 on_date=on_date,
             )
             try:
@@ -263,6 +265,7 @@ async def _run_scheduled_brief_generation(
                     actor_username=None,
                     invocation_source=AIInvocationSource.SCHEDULER,
                     surface=BriefSurface.SCHEDULER,
+                    subject_id=subject_id,
                     on_date=on_date,
                 )
                 await recovery_session.commit()
@@ -434,6 +437,7 @@ async def brief_job(session_factory, redis=None, *, subject_id) -> None:
     system_identity = ownership.system_action()
     row, prepared, generation_outcome = await _run_scheduled_brief_generation(
         session_factory,
+        subject_id=subject_id,
         on_date=today,
     )
     if generation_outcome == "empty":

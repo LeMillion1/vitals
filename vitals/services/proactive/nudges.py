@@ -29,6 +29,7 @@ from vitals.services.proactive.delivery import legacy as delivery_legacy
 
 from vitals.services.nutrition import analytics as nutrition_analytics
 from vitals.services.nutrition import queries as nutrition_queries
+from vitals.services.modules import preferences as module_preferences
 
 import logging
 from dataclasses import dataclass
@@ -273,12 +274,23 @@ async def run(
             key for key, enabled in categories.items() if enabled
         }
     else:
-        enabled_categories = (
-            await preference_queries.get_subject_policy(
-                session,
-                subject_id=ownership.subject_id,
-            )
-        ).enabled_nudge_categories
+        enabled_categories = set(
+            (
+                await preference_queries.get_subject_policy(
+                    session,
+                    subject_id=ownership.subject_id,
+                )
+            ).enabled_nudge_categories
+        )
+        enabled_modules = await module_preferences.get_enabled_modules(
+            session,
+            subject_id=ownership.subject_id,
+        )
+        if not enabled_modules.get("nutrition", False):
+            # The category toggle controls whether a wanted Nutrition nudge may
+            # speak. The module gate controls whether this service may inspect
+            # Nutrition at all; turning the module off wins.
+            enabled_categories.discard(CATEGORY_NUTRITION)
 
     sent: list[Notification] = []
     for spec in NUDGES:

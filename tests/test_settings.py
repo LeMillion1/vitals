@@ -1016,6 +1016,47 @@ async def test_web_only_schedule_save_is_honestly_deferred(
     assert response.headers["location"] == ("/settings?saved=proactive&deferred=reload")
 
 
+@pytest.mark.parametrize("lang", ["en", "ru"])
+@pytest.mark.parametrize("deferred", ["", "1", "reload"])
+async def test_proactive_save_banner_does_not_claim_a_shared_schedule_reload(
+    auth_client,
+    lang,
+    deferred,
+):
+    """A durable save is not proof that the shared worker trigger was rebuilt."""
+
+    language_response = await auth_client.post(
+        "/settings/language",
+        data={"language": lang},
+    )
+    assert language_response.status_code == 303
+    response = await auth_client.get(
+        "/settings",
+        params={"saved": "proactive", "deferred": deferred},
+    )
+
+    assert response.status_code == 200
+    expected_saved = {
+        "en": "Proactive settings saved.",
+        "ru": "Настройки проактивного слоя сохранены.",
+    }
+    assert expected_saved[lang] in response.text
+    assert "the schedule was rebuilt" not in response.text
+    assert "расписание пересобрано" not in response.text
+    if deferred == "1":
+        expected_shared = {
+            "en": "Garmin polling and weight-export intervals keep the shared schedule",
+            "ru": "интервалы опроса Garmin и экспорта веса остаются общими",
+        }
+        assert expected_shared[lang] in response.text
+    elif deferred == "reload":
+        expected_reload = {
+            "en": "the immediate reload signal could not be delivered",
+            "ru": "быстрый сигнал перезагрузки не доставлен",
+        }
+        assert expected_reload[lang] in response.text
+
+
 async def test_web_only_schedule_save_signals_after_commit(
     auth_client,
     session_factory,

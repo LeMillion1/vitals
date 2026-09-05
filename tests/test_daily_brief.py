@@ -53,6 +53,7 @@ from vitals.services.proactive import channels, compose
 from vitals.services.proactive.brief import context as brief_context
 from vitals.services.proactive.brief import contracts as brief_contracts
 from vitals.services.proactive.brief import jobs as brief_jobs
+from vitals.services.proactive.brief import preparation as brief_preparation
 from vitals.services.proactive.brief import prompt as brief_prompt
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 
@@ -902,6 +903,161 @@ async def _second_person(db_session) -> None:
         )
     )
     await db_session.commit()
+
+
+async def test_scheduled_brief_generation_keeps_its_named_subject_when_another_exists(
+    garmin_owned_scope,
+    db_session,
+    session_factory,
+    legacy_owner_roots,
+    owner_write,
+):
+    """Fallback persistence and replay must not use the sole-subject bridge."""
+
+    await _seed_day(
+        db_session,
+        owner_write,
+        garmin_owned_scope=garmin_owned_scope,
+    )
+    await _second_person(db_session)
+
+    stored, prepared, outcome = await brief_jobs._run_scheduled_brief_generation(
+        session_factory,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=DAY,
+    )
+    replayed, replay_prepared, replay_outcome = (
+        await brief_jobs._run_scheduled_brief_generation(
+            session_factory,
+            subject_id=legacy_owner_roots.subject_id,
+            on_date=DAY,
+        )
+    )
+
+    assert outcome == "header"
+    assert prepared is not None
+    assert replay_outcome == "existing"
+    assert replay_prepared is not None
+    assert replayed is not None
+    assert stored is not None
+    assert replayed.id == stored.id
+    assert stored.subject_id == legacy_owner_roots.subject_id
+    assert stored.actor_user_id is None
+    assert stored.source == Source.SCHEDULER.value
+    assert stored.model is None
+    assert list(
+        await db_session.scalars(
+            select(WeeklyDigest).where(
+                WeeklyDigest.subject_id != legacy_owner_roots.subject_id
+            )
+        )
+    ) == []
+
+
+async def test_scheduled_brief_preparation_requires_an_explicit_subject(
+    db_session,
+):
+    with pytest.raises(
+        brief_contracts.BriefOwnershipError,
+        match="requires an explicit subject",
+    ):
+        await brief_preparation.prepare_brief(
+            db_session,
+            actor_username=None,
+            invocation_source="scheduler",
+            surface=brief_contracts.BriefSurface.SCHEDULER,
+            subject_id=None,
+            on_date=DAY,
+        )
+
+
+async def test_scheduled_brief_recovery_keeps_the_explicit_subject(monkeypatch):
+    """An ambiguous dispatch-start commit must recover the same subject."""
+
+    subject_id = uuid.uuid4()
+    prepared = type(
+        "PreparedProbe",
+        (),
+        {
+            "existing_artifact_id": None,
+            "dispatchable": True,
+            "reservation_status": None,
+        },
+    )()
+    recovered = type(
+        "RecoveredProbe",
+        (),
+        {
+            "existing_artifact_id": uuid.uuid4(),
+            "dispatchable": False,
+            "reservation_status": None,
+        },
+    )()
+    expected_row = object()
+    prepare_calls = []
+
+    async def prepare(_session, **kwargs):
+        prepare_calls.append(kwargs)
+        return prepared if len(prepare_calls) == 1 else recovered
+
+    async def start(_session, candidate):
+        assert candidate is prepared
+        return object()
+
+    async def existing(_session, candidate):
+        assert candidate is recovered
+        return expected_row
+
+    async def no_render(*_args, **_kwargs):
+        raise AssertionError("ambiguous start must not dispatch a provider call")
+
+    monkeypatch.setattr(brief_jobs, "prepare_brief", prepare)
+    monkeypatch.setattr(brief_jobs, "start_brief_dispatch", start)
+    monkeypatch.setattr(brief_jobs, "existing_brief_for_prepared", existing)
+    monkeypatch.setattr(brief_jobs, "render_brief", no_render)
+
+    class SessionProbe:
+        def __init__(self, *, fail_commit=False):
+            self.fail_commit = fail_commit
+            self.rolled_back = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def commit(self):
+            if self.fail_commit:
+                self.fail_commit = False
+                raise RuntimeError("synthetic ambiguous commit")
+
+        async def rollback(self):
+            self.rolled_back = True
+
+    sessions = iter(
+        (
+            SessionProbe(),
+            SessionProbe(fail_commit=True),
+            SessionProbe(),
+            SessionProbe(),
+        )
+    )
+
+    row, candidate, outcome = await brief_jobs._run_scheduled_brief_generation(
+        lambda: next(sessions),
+        subject_id=subject_id,
+        on_date=DAY,
+    )
+
+    assert (row, candidate, outcome) == (expected_row, recovered, "existing")
+    assert [call["subject_id"] for call in prepare_calls] == [
+        subject_id,
+        subject_id,
+    ]
+    assert all(call["actor_username"] is None for call in prepare_calls)
+    assert all(call["invocation_source"].value == "scheduler" for call in prepare_calls)
+    assert all(call["surface"].value == "scheduler" for call in prepare_calls)
 
 
 async def test_the_empty_day_alert_is_written_for_its_own_subject(

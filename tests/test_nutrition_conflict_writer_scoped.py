@@ -475,6 +475,7 @@ async def test_day_end_job_uses_system_actor_and_exact_subject_date(
     session_factory,
     legacy_owner_roots,
     monkeypatch,
+    all_modules_on,
 ):
     rule = await _seed_rule(
         db_session,
@@ -535,6 +536,73 @@ async def test_day_end_job_uses_system_actor_and_exact_subject_date(
         None,
     )
     assert alert.entity_ref == f"meal:{EVALUATION_DATE.isoformat()}"
+
+
+async def test_day_end_job_honours_each_subjects_nutrition_module(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    from vitals.models.scoped_settings import SubjectSetting
+    from vitals.services.modules.preferences import SETTINGS_KEY
+
+    enabled_owner = User(
+        username="nutrition-schedule-enabled",
+        normalized_username="nutrition-schedule-enabled",
+        password_hash="synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(enabled_owner)
+    await db_session.flush()
+    enabled_subject = HealthSubject(
+        owner_user_id=enabled_owner.id,
+        timezone="America/St_Johns",
+    )
+    db_session.add(enabled_subject)
+    await db_session.flush()
+    for subject_id, enabled in (
+        (legacy_owner_roots.subject_id, False),
+        (enabled_subject.id, True),
+    ):
+        await db_session.merge(
+            SubjectSetting(
+                subject_id=subject_id,
+                key=SETTINGS_KEY,
+                value={"nutrition": enabled},
+            )
+        )
+    await db_session.commit()
+
+    reconciled = []
+
+    async def reconcile(_session, *, context, domain, entity_ref):
+        reconciled.append((context.identity.subject_id, domain, entity_ref))
+        return []
+
+    monkeypatch.setattr(engine, "reconcile_day_end_scoped", reconcile)
+    monkeypatch.setattr(nutrition_jobs, "today_local", lambda: EVALUATION_DATE)
+    independent_factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+
+    await nutrition_jobs.day_end_job(
+        independent_factory,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    await nutrition_jobs.day_end_job(
+        independent_factory,
+        subject_id=enabled_subject.id,
+    )
+
+    assert reconciled == [
+        (
+            enabled_subject.id,
+            Domain.NUTRITION,
+            f"meal:{EVALUATION_DATE.isoformat()}",
+        )
+    ]
 
 
 async def test_web_create_and_update_block_then_override_with_human_provenance(

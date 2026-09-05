@@ -49,7 +49,6 @@ from vitals.enums import UserRoleName  # noqa: E402
 from vitals.services.authentication import (  # noqa: E402
     provisioning as account_provisioning_service,
 )
-from vitals.utils.timeutils import DEFAULT_TIMEZONE  # noqa: E402
 
 _ROLES = (
     UserRoleName.MEMBER.value,
@@ -65,7 +64,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--username", required=True)
     parser.add_argument("--email", default=None)
     parser.add_argument("--display-name", default=None)
-    parser.add_argument("--timezone", default=DEFAULT_TIMEZONE)
+    parser.add_argument(
+        "--timezone",
+        default=None,
+        help=(
+            "IANA timezone for an owned health record; defaults to the "
+            "deployment VITALS_TIMEZONE"
+        ),
+    )
     parser.add_argument(
         "--role",
         action="append",

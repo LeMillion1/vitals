@@ -125,6 +125,23 @@ def test_module_toggle_response_refreshes_the_phone_bar():
     assert mobile.count('hx-swap-oob="true"') == 1
 
 
+def test_today_timestamp_never_switches_to_the_browser_clock():
+    """Header and write forms stay on the server's coherent subject-local day."""
+
+    today = (TEMPLATES / "today/index.html").read_text(encoding="utf-8")
+    assert "{{ date | format_date }} · {{ time }}" in today
+    assert "Intl.DateTimeFormat" not in today
+    assert "toLocaleTimeString" not in today
+
+
+def test_today_keeps_an_active_goal_visible_without_a_progress_meter():
+    today = (TEMPLATES / "today/index.html").read_text(encoding="utf-8")
+    assert "{{ goal.name }}" in today
+    assert "{% if goal.pct is not none %}" in today
+    assert "{% elif goal.current is not none %}" in today
+    assert '<a href="/reports"' in today
+
+
 # ── Display fonts and Cyrillic ───────────────────────────────────────────────
 
 FONT_FAMILY = re.compile(r"font-family:\s*([^;}]+)", re.I)

@@ -29,6 +29,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from vitals.enums import UserStatus
 from vitals.utils.timeutils import subject_timezone
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,29 @@ async def _list_subjects(
             select(HealthSubject.id, HealthSubject.timezone).order_by(
                 HealthSubject.id
             )
+        )
+        return [(row[0], row[1]) for row in rows]
+
+
+async def list_active_subject_schedules(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> Sequence[tuple[uuid.UUID, str]]:
+    """Active record owners and the timezone their scheduled work uses.
+
+    ``users`` and ``health_subjects`` are identity roots rather than
+    subject-owned health tables, so this bounded discovery query does not need
+    the worker's platform RLS bypass.  Any later read of subject-owned settings
+    is performed in a separately subject-bound transaction.
+    """
+
+    from vitals.models.identity import HealthSubject, User
+
+    async with session_factory() as session:
+        rows = await session.execute(
+            select(HealthSubject.id, HealthSubject.timezone)
+            .join(User, User.id == HealthSubject.owner_user_id)
+            .where(User.status == UserStatus.ACTIVE.value)
+            .order_by(HealthSubject.id)
         )
         return [(row[0], row[1]) for row in rows]
 

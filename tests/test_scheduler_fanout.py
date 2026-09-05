@@ -163,7 +163,10 @@ def test_every_job_about_a_record_runs_once_per_record():
         fanned = {
             job_id
             for job_id, spec in _registry.items()
-            if getattr(spec.func, "__wrapped__", None) is not None
+            if (
+                getattr(spec.func, "__wrapped__", None) is not None
+                or spec.trigger == "subject_cron"
+            )
         }
     finally:
         clear_jobs()

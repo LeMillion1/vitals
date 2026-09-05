@@ -43,6 +43,7 @@ async def test_record_owning_cli_uses_the_bound_runtime_path(
     argv,
     expected_roles,
 ):
+    monkeypatch.setenv("VITALS_TIMEZONE", "Asia/Almaty")
     original = provisioning.provision_bound_account
     observed: list[tuple[object, object]] = []
 
@@ -71,6 +72,9 @@ async def test_record_owning_cli_uses_the_bound_runtime_path(
                 select(HealthSubject.id).where(HealthSubject.owner_user_id == user_id)
             )
             assert subject_id is not None
+            assert await session.scalar(
+                select(HealthSubject.timezone).where(HealthSubject.id == subject_id)
+            ) == "Asia/Almaty"
             assert tuple(
                 await session.scalars(
                     select(UserRole.role)

@@ -25,6 +25,7 @@ from vitals.services.digest.projection import assembly as digest_projection
 from datetime import date
 
 import pytest
+from freezegun import freeze_time
 
 from vitals.enums import (
     Domain,
@@ -413,6 +414,28 @@ async def test_the_page_shows_the_readers_day_not_the_servers(
         assert server_day.strftime("%d-%m-%Y") not in response.text
     finally:
         set_timezone("Europe/Chisinau")
+
+
+async def test_today_timestamp_renders_one_subject_zone_across_a_date_boundary(
+    auth_client,
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    """The header and write form share one subject-local day snapshot."""
+
+    monkeypatch.setenv("VITALS_TIMEZONE", "Asia/Almaty")
+    subject = await db_session.get(HealthSubject, legacy_owner_roots.subject_id)
+    subject.timezone = "Europe/Chisinau"
+    await db_session.commit()
+
+    # In Almaty it is already 06 September; the subject is still on 05 September.
+    with freeze_time("2026-09-05 19:30:00+00:00"):
+        response = await auth_client.get("/today", headers={"Accept": "text/html"})
+
+    assert response.status_code == 200
+    assert "05-09-2026 · 22:30" in response.text
+    assert 'value="2026-09-05"' in response.text
 
 
 #: Mutating routes the sweep below deliberately does not call, each for a reason

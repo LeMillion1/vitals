@@ -137,10 +137,9 @@ async def save_proactive(
             actor_username=username,
         )
     ).as_flat_dict()
-    # Asked before the commit closes the transaction, and answered about this
-    # person: the scheduler registry is one per process, so rebuilding it from
-    # a save re-times everybody's jobs. Whose Save that is allowed to be is a
-    # question the row itself cannot answer.
+    # Brief time is read per subject by its minutely dispatcher. Provider
+    # cadences still rebuild one process-wide trigger, so only a sole subject's
+    # save may govern those shared jobs.
     governs_schedule = await preference_queries.governs_the_process_schedule(
         db, subject_id=preference_scope.subject_id
     )
@@ -170,9 +169,8 @@ async def save_proactive(
         query += "&adjusted=1"
     deferred = not governs_schedule or reload_failed
     if deferred:
-        # Saved, and deliberately not applied to the running scheduler. A plain
-        # "saved" here would be true about the row and false about the effect,
-        # which is the worse of the two silences.
+        # The owner's Brief time applies directly from its durable row. This
+        # notice is about the process-wide provider cadence only.
         query += "&deferred=reload" if reload_failed else "&deferred=1"
     return _redirect(query)
 

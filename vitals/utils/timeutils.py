@@ -95,7 +95,9 @@ def _zone() -> ZoneInfo:
     subject = _subject_zone.get()
     if subject is not None:
         return subject
-    configured = os.getenv("VITALS_TIMEZONE", DEFAULT_TIMEZONE) or DEFAULT_TIMEZONE
+    from vitals.config import configured_timezone
+
+    configured = configured_timezone()
     if _tz is None or configured != _tz_name:
         _tz_name = configured
         _tz = ZoneInfo(configured)

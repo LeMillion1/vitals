@@ -152,7 +152,7 @@ Vitals написан с Claude в качестве основного инст�
 
 > [!IMPORTANT]
 > **3. Локализованное время (Timezone Engine)**
-> Время «сегодня» и границы дат строго в зоне пользователя (`VITALS_TIMEZONE`). Никаких сбитых графиков при вечерних тренировках. Всё время через `vitals/utils/timeutils`.
+> Время «сегодня» и границы дат строго в сохранённой зоне владельца записи (`health_subjects.timezone`). Новая запись начинает с зоны развёртывания `VITALS_TIMEZONE`, пока владелец явно не изменит её в Настройках. Никаких сбитых графиков при вечерних тренировках. Всё время через `vitals/utils/timeutils`.
 
 > [!CAUTION]
 > **4. Self-hosted и изолированная по субъекту приватность**
@@ -360,7 +360,7 @@ graph TD
 
 #### Фоновые задачи (APScheduler)
 
-Каждая задача идёт под Redis-локом (один исполнитель на всех воркеров) и штампует heartbeat, который видит `/health`.
+Каждая задача идёт под Redis-локом (один исполнитель на всех воркеров) и штампует heartbeat, который видит `/health`. Задачи, привязанные к календарному дню записи, сверяют расписание отдельно для каждого активного владельца в его сохранённой зоне; время брифа также берётся из его собственных настроек. Пропущенная минута не воспроизводится позже, а сохранённая непрозрачная отметка Redis не даёт повторить один локальный слот при смене воркера или переводе часов назад.
 
 | Задача | Расписание | Что делает |
 | :--- | :--- | :--- |
@@ -377,7 +377,7 @@ graph TD
 | `nudges` | ежечасно в :05 | Обход реестра подсказок: условие, кулдаун, категория |
 | `weekly_digest` | понедельник, 08:00 | AI-дайджест |
 
-Время брифа, вечернего блока, частота опроса Garmin, интервал экспорта веса и его окно свежести живут в БД (карточка в `/settings`), а не в `.env` — сохранение перерегистрирует задачи на работающем планировщике, перезапуск не нужен.
+Время брифа, вечернего блока, частота опроса Garmin, интервал экспорта веса и его окно свежести живут в БД (карточка в `/settings`), а не в `.env`. Бриф читает текущее время каждого владельца прямо из его записи; в установке с одним владельцем сохранение частоты Garmin также перерегистрирует общие задачи без перезапуска.
 
 ---
 
@@ -1015,7 +1015,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 
 > [!IMPORTANT]
 > **3. Localized Time Boundaries**
-> Daily resets and calendar math resolve against the user's timezone (`VITALS_TIMEZONE`), not the server clock. No more split days from late-night workouts. All time via `vitals/utils/timeutils`.
+> Daily resets and calendar math resolve against the record owner's saved timezone (`health_subjects.timezone`), not the server clock. A new record starts with the deployment's `VITALS_TIMEZONE` until its owner explicitly changes it in Settings. No more split days from late-night workouts. All time via `vitals/utils/timeutils`.
 
 > [!CAUTION]
 > **4. Subject-Isolated Self-Hosted Privacy**
@@ -1223,7 +1223,7 @@ graph TD
 
 #### Background jobs (APScheduler)
 
-Every job runs under a Redis lock (one runner across workers) and stamps a heartbeat that `/health` watches.
+Every job runs under a Redis lock (one runner across workers) and stamps a heartbeat that `/health` watches. Jobs tied to a record's calendar day evaluate their schedules independently for each active owner in that owner's saved timezone; Brief time also comes from that owner's own settings. A missed minute is not replayed later, while a retained opaque Redis claim prevents a rolling worker or repeated DST wall-clock minute from dispatching the same local slot twice.
 
 | Job | Schedule | What it does |
 | :--- | :--- | :--- |
@@ -1240,7 +1240,7 @@ Every job runs under a Redis lock (one runner across workers) and stamps a heart
 | `nudges` | hourly at :05 | Walks the nudge registry: condition, cooldown, category |
 | `weekly_digest` | Mondays, 08:00 | AI digest |
 
-Brief time, evening time, the Garmin poll rate, the weight-export interval and its freshness window live in the database (the `/settings` card), not in `.env` — saving re-registers the jobs on the running scheduler, no restart needed.
+Brief time, evening time, the Garmin poll rate, the weight-export interval and its freshness window live in the database (the `/settings` card), not in `.env`. The Brief dispatcher reads each owner's current time directly from that row; on a single-owner installation, saving a Garmin cadence also re-registers the shared jobs without a restart.
 
 ---
 

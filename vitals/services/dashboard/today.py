@@ -30,9 +30,9 @@ from typing import Any, Optional, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import DigestKind, Domain, Severity
+from vitals.enums import DigestKind, Domain, MilestoneStatus, Severity
 from vitals.i18n import decimal, t
-from vitals.utils.timeutils import now_local, today_local
+from vitals.utils.timeutils import now_local
 
 # How far off his own mean a number has to sit before the baseline is worth
 # printing next to it. 5% is ~3 bpm of resting HR and ~4 points of sleep score —
@@ -41,6 +41,8 @@ _NOTABLE = 0.05
 
 # How many rows the day's feed may hold before it stops being a glance.
 _FEED_LIMIT = 12
+
+_WEIGHT_GOAL_UNITS = {"kg", "кг"}
 
 # Metrics compared week over week, in the order they are offered to the card.
 _RECOVERY_KEYS = ("sleep_score", "hrv_avg", "body_battery_high")
@@ -132,7 +134,8 @@ async def build(
     from vitals.services.weight import analytics as weight_analytics
 
     em = enabled_modules or {}
-    today = today_local()
+    local_now = now_local()
+    today = local_now.date()
 
     ctx = await brief_context.build_context(
         session,
@@ -292,7 +295,7 @@ async def build(
 
     return {
         "date": today,
-        "time": now_local().strftime("%H:%M"),
+        "time": local_now.strftime("%H:%M"),
         "narrative": narrative,
         "narrative_source": narrative_source,
         "sync": _sync_rows(ctx, em),
@@ -379,14 +382,14 @@ async def _goal(
     *,
     subject_id: uuid.UUID,
 ) -> Optional[dict]:
-    """The first weight goal, as distance covered rather than distance left.
+    """The first active numeric weight goal and its optional loss-progress bar.
 
     ``milestone_progress.progress`` knows the target and where he is now but has
     no notion of where he started, and a bar needs all three — so the starting
     point is the first logged weight, which is also what "пройдено 11.2 из 17.5"
-    means to the owner.
+    means to the owner.  The goal remains real and visible when that bar cannot
+    be computed; no percentage is preferable to inventing a denominator.
     """
-
 
     raw = series.get("raw") or []
     start = raw[0]["weight_kg"] if raw else None
@@ -394,22 +397,38 @@ async def _goal(
         session,
         subject_id=subject_id,
     ):
-        if card["domain"] != Domain.WEIGHT.value or card["current"] is None:
+        if (
+            card["domain"] != Domain.WEIGHT.value
+            or card["status"] != MilestoneStatus.ACTIVE.value
+            or card["target_value"] is None
+        ):
             continue
-        if card["target_value"] is None or start is None:
+        stored_unit = (card["target_unit"] or "").strip()
+        if stored_unit and stored_unit.lower() not in _WEIGHT_GOAL_UNITS:
             continue
-        total = start - card["target_value"]
-        done = start - card["current"]
-        if total <= 0:
-            continue
-        return {
+        current = card["current"]
+        goal = {
             "name": card["name"],
             "target": _num(card["target_value"]),
-            "done": _num(done),
-            "total": _num(total),
-            "pct": max(0, min(100, round(done / total * 100))),
+            "unit": stored_unit or t("common.kg"),
+            "current": _num(current) if current is not None else None,
+            "done": None,
+            "total": None,
+            "pct": None,
             "deadline": card["deadline"],
         }
+        if current is None or start is None or start == 0:
+            return goal
+        total = start - card["target_value"]
+        done = start - current
+        if total <= 0:
+            return goal
+        goal.update(
+            done=_num(done),
+            total=_num(total),
+            pct=max(0, min(100, round(done / total * 100))),
+        )
+        return goal
     return None
 
 

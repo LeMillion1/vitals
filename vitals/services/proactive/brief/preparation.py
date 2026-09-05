@@ -243,6 +243,7 @@ async def prepare_brief(
     actor_username: str | None,
     invocation_source: AIInvocationSource | str,
     surface: BriefSurface | str,
+    subject_id: uuid.UUID | None,
     request_token: str | None = None,
     on_date: date_type | None = None,
 ) -> PreparedBrief | None:
@@ -253,12 +254,25 @@ async def prepare_brief(
     if source is AIInvocationSource.SCHEDULER:
         if actor_username is not None:
             raise BriefOwnershipError("scheduled Daily Brief must be actorless")
-    elif actor_username is None:
-        raise BriefOwnershipError("web Daily Brief requires its human actor")
-    owner = await digest_ownership.prepare_digest_owner(
-        session,
-        actor_username=actor_username,
-    )
+        if not isinstance(subject_id, uuid.UUID) or subject_id.int == 0:
+            raise BriefOwnershipError(
+                "scheduled Daily Brief requires an explicit subject"
+            )
+        owner = await digest_ownership.prepare_subject_digest_owner(
+            session,
+            subject_id=subject_id,
+        )
+    else:
+        if actor_username is None:
+            raise BriefOwnershipError("web Daily Brief requires its human actor")
+        if subject_id is not None:
+            raise BriefOwnershipError(
+                "web Daily Brief derives its subject from the human actor"
+            )
+        owner = await digest_ownership.prepare_digest_owner(
+            session,
+            actor_username=actor_username,
+        )
     identity = owner.identity
     owner_user_id = owner.owner_user_id
     artifact_source = _ARTIFACT_SOURCE_BY_INVOCATION_SOURCE[source]

@@ -129,6 +129,22 @@ def test_no_template_disables_a_submit_button_by_hand():
     assert not offenders, f"inline onsubmit still present in: {offenders}"
 
 
+def test_protected_export_clears_mismatch_before_native_submit_validation():
+    """An old custom validity error must not strand a corrected passphrase."""
+
+    settings = (TEMPLATES / "settings/settings.html").read_text(encoding="utf-8")
+    export_form = re.search(
+        r'<form action="/settings/portability-v2/export".*?</form>',
+        settings,
+        re.DOTALL,
+    ).group()
+    assert '@input="clearExportError()"' in export_form
+    assert '@submit="prepareExport($event)"' in export_form
+    assert 'x-ref="exportPassphrase"' in export_form
+    assert 'x-ref="exportPassphraseConfirmation"' in export_form
+    assert 'hx-boost="false"' in export_form
+
+
 def test_navigating_forms_use_hx_disabled_elt():
     """htmx disables *and re-enables* the button on every response code."""
     for name in DISABLED_ELT_FORMS:

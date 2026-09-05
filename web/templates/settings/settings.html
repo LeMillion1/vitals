@@ -383,6 +383,7 @@
             </div>
             <form action="/settings/portability-v2/export" method="POST" hx-boost="false"
                   class="grid grid-cols-1 sm:grid-cols-2 gap-3"
+                  @input="clearExportError()"
                   @submit="prepareExport($event)">
                 <label class="space-y-1.5">
                     <span class="v-label">{{ t("settings.portability_v2_passphrase") }}</span>

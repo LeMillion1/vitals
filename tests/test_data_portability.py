@@ -2011,6 +2011,36 @@ async def test_full_import_completes_exact_empty_retained_shared_report_stage3k(
     assert checkpoint.completed_at is not None
 
 
+async def test_empty_shared_report_checkpoint_uses_one_database_clock(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    """A stale process clock cannot predate DB-generated checkpoint timestamps."""
+
+    from vitals.operations.ownership import shared_report as shared_report_ownership
+
+    monkeypatch.setattr(
+        shared_report_ownership,
+        "now_utc",
+        lambda: datetime(2000, 1, 1, tzinfo=UTC),
+    )
+
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    phase = SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["shared_reports"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert checkpoint.completed_at >= checkpoint.started_at
+    assert checkpoint.updated_at >= checkpoint.started_at
+
+
 
 
 
