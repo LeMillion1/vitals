@@ -18,7 +18,7 @@ from vitals.models.garmin import GarminDaily
 from vitals.models.labs import LabResult
 from vitals.models.nutrition import MealLog
 from vitals.models.share import SharedReport
-from vitals.models.identity import HealthSubject
+from vitals.models.identity import HealthSubject, User
 from vitals.models.weight import WeightLog
 from vitals.utils.timeutils import today_local
 
@@ -254,17 +254,23 @@ async def test_custom_period_end_is_capped_at_today(
 @pytest.mark.asyncio
 async def test_today_comes_from_the_record_owners_timezone_near_a_utc_boundary(
     legacy_owner_roots,
-    auth_client,
+    client,
     db_session,
     owned_by_legacy_subject,
 ):
     subject = await db_session.get(HealthSubject, legacy_owner_roots.subject_id)
     subject.timezone = "Asia/Almaty"
     await db_session.commit()
+    owner = await db_session.get(User, subject.owner_user_id)
 
     # It is still September 5 in the installation's Europe/Chisinau timezone,
     # but already September 6 for this record owner in Almaty.
     with freeze_time("2026-09-05 20:30:00+00:00"):
+        # Authentication and the report must use the same test clock.
+        login = await client.post(
+            "/login", data={"username": owner.username, "password": "password"},
+        )
+        assert login.status_code == 303
         owners_today = date(2026, 9, 6)
         db_session.add(
             WeightLog(
@@ -278,7 +284,7 @@ async def test_today_comes_from_the_record_owners_timezone_near_a_utc_boundary(
         await db_session.commit()
 
         _, row = await _created(
-            auth_client,
+            client,
             db_session,
             domains=[Domain.WEIGHT.value],
             period="custom",

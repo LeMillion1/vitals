@@ -28,6 +28,7 @@ from vitals.models.identity import HealthSubject
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
+from vitals.ownership_transition import bridges as ownership_bridges
 from vitals.services.files import contracts as file_contracts
 from vitals.services.conflicts import engine
 from vitals.services.weight import writes as weight_writes
@@ -179,6 +180,33 @@ async def _body_scan_parse_invocations(
     return list(await session.scalars(invocation_stmt))
 
 
+async def _is_reviewed_historical_scan_raw(
+    session: AsyncSession,
+    *,
+    scan_id: int | None,
+    raw_payload_id: int,
+    subject_id: uuid.UUID,
+) -> bool:
+    """Recognize a persisted, migrated fact, never authorize a new ingestion.
+
+    A second subject closes adoption of unowned history, but cannot invalidate
+    an already reviewed, explicitly owned scan. The checkpoint bounds the fact
+    and the persisted link prevents borrowing its proof for another payload.
+    """
+    if scan_id is None:
+        return False
+    bound = await ownership_bridges.body_scan_historical_processed_bound(
+        session, subject_id=subject_id,
+    )
+    if bound is None or not 0 < scan_id <= bound:
+        return False
+    return await session.scalar(select(BodyScan.id).where(
+        BodyScan.id == scan_id,
+        BodyScan.subject_id == subject_id,
+        BodyScan.raw_payload_id == raw_payload_id,
+    )) is not None
+
+
 async def _lock_historical_parser_connection_before_raw(
     session: AsyncSession,
     *,
@@ -186,6 +214,7 @@ async def _lock_historical_parser_connection_before_raw(
     subject_id: uuid.UUID,
     allow_historical_parser_raw: bool,
     for_update: bool,
+    historical_scan_id: int | None = None,
 ) -> uuid.UUID | None:
     """Validate exact Stage-3A parser roots and acquire C before raw."""
 
@@ -227,7 +256,10 @@ async def _lock_historical_parser_connection_before_raw(
             select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
         )
     )
-    if subject_ids != [subject_id]:
+    if subject_ids != [subject_id] and not await _is_reviewed_historical_scan_raw(
+        session, scan_id=historical_scan_id,
+        raw_payload_id=raw_payload_id, subject_id=subject_id,
+    ):
         raise engine.ConflictRawOwnershipError(
             "historical body-scan parser raw requires exactly one subject"
         )
@@ -282,6 +314,7 @@ async def _historical_mcp_raw_before_lock(
     raw_payload_id: int,
     subject_id: uuid.UUID,
     allow_historical_mcp_raw: bool,
+    historical_scan_id: int | None = None,
 ) -> bool:
     """Recognize only the exact connectionless Stage-3A MCP history shape."""
 
@@ -313,7 +346,10 @@ async def _historical_mcp_raw_before_lock(
             select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
         )
     )
-    if subject_ids != [subject_id]:
+    if subject_ids != [subject_id] and not await _is_reviewed_historical_scan_raw(
+        session, scan_id=historical_scan_id,
+        raw_payload_id=raw_payload_id, subject_id=subject_id,
+    ):
         raise engine.ConflictRawOwnershipError(
             "historical MCP body-scan raw requires exactly one subject"
         )

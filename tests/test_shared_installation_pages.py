@@ -476,7 +476,7 @@ async def test_the_page_shows_the_readers_day_not_the_servers(
 
 
 async def test_today_timestamp_renders_one_subject_zone_across_a_date_boundary(
-    auth_client,
+    client,
     db_session,
     legacy_owner_roots,
     monkeypatch,
@@ -487,10 +487,17 @@ async def test_today_timestamp_renders_one_subject_zone_across_a_date_boundary(
     subject = await db_session.get(HealthSubject, legacy_owner_roots.subject_id)
     subject.timezone = "Europe/Chisinau"
     await db_session.commit()
+    owner = await db_session.get(User, subject.owner_user_id)
 
     # In Almaty it is already 06 September; the subject is still on 05 September.
     with freeze_time("2026-09-05 19:30:00+00:00"):
-        response = await auth_client.get("/today", headers={"Accept": "text/html"})
+        # Issue the test cookie under the same clock; a real-time cookie may be
+        # in the future (or expired) relative to this historical boundary.
+        login = await client.post(
+            "/login", data={"username": owner.username, "password": "password"},
+        )
+        assert login.status_code == 303
+        response = await client.get("/today", headers={"Accept": "text/html"})
 
     assert response.status_code == 200
     assert "05-09-2026 · 22:30" in response.text

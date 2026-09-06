@@ -363,6 +363,7 @@ async def _validate_historical_provider_raw(
     subject_id: uuid.UUID,
     fact_source: str,
     for_update: bool,
+    historical_weight_id: int | None = None,
 ) -> bool:
     """Prove one exact Stage-3A raw shape without adopting its C or actor."""
 
@@ -404,7 +405,31 @@ async def _validate_historical_provider_raw(
             select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
         )
     )
-    if subject_ids != [subject_id]:
+    reviewed_fact = False
+    if subject_ids != [subject_id] and historical_weight_id is not None:
+        # Reading a migrated, explicitly owned fact is not adoption. Bound the
+        # exception to its completed checkpoint and exact persisted raw link;
+        # new writes never supply a fact id and keep the sole-subject boundary.
+        reviewed_fact = await session.scalar(
+            select(WeightLog.id)
+            .join(
+                OwnershipBackfillCheckpoint,
+                OwnershipBackfillCheckpoint.subject_id == WeightLog.subject_id,
+            )
+            .where(
+                WeightLog.id == historical_weight_id,
+                WeightLog.subject_id == subject_id,
+                WeightLog.raw_payload_id == raw.id,
+                WeightLog.source == fact_source,
+                OwnershipBackfillCheckpoint.phase_key
+                == _WEIGHT_OWNERSHIP_CHECKPOINT_PHASE,
+                OwnershipBackfillCheckpoint.status == "completed",
+                OwnershipBackfillCheckpoint.data_checksum_before
+                == OwnershipBackfillCheckpoint.data_checksum_after,
+                WeightLog.id <= OwnershipBackfillCheckpoint.scan_high_watermark_id,
+            )
+        ) is not None
+    if subject_ids != [subject_id] and not reviewed_fact:
         raise engine.ConflictRawOwnershipError(
             "historical Weight raw requires exactly one subject"
         )
@@ -700,6 +725,7 @@ async def _validate_persisted_weight_provenance(
             subject_id=subject_id,
             fact_source=row.source,
             for_update=False,
+            historical_weight_id=row.id,
         )
         if historical_provider_raw:
             if (

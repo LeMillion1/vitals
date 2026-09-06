@@ -155,6 +155,7 @@ async def _validate_persisted_scan(
             subject_id=subject_id,
             allow_historical_parser_raw=scan.source == Source.BODY_SCAN.value,
             for_update=for_update,
+            historical_scan_id=scan.id,
         )
     )
     historical_mcp_raw = await _historical_mcp_raw_before_lock(
@@ -162,6 +163,7 @@ async def _validate_persisted_scan(
         raw_payload_id=scan.raw_payload_id,
         subject_id=subject_id,
         allow_historical_mcp_raw=scan.source == Source.MCP.value,
+        historical_scan_id=scan.id,
     )
     stmt = select(RawPayload).where(RawPayload.id == scan.raw_payload_id)
     if for_update:

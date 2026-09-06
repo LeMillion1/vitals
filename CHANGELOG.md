@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — migrated body-composition history survives new registrations
+
+Weight and Charts can read explicitly owned historical body scans and derived
+weights after additional accounts register. Reads now recognize the bounded,
+reviewed ownership migration evidence instead of treating an existing fact as
+new legacy ingestion. Raw provenance, provider checks, subject isolation, and
+the stricter admission rules for new writes remain intact. No health records,
+payloads, or migration checkpoints are rewritten by this fix.
+
 ### Changed — Settings has a short index and focused screens
 
 Settings now opens a role-aware index with separate Profile, Modules,
